@@ -1,4 +1,10 @@
-// Shared utility functions (pure functions only)
-// Export shared utilities here
-
-export type {};
+export {
+  isIsoDateString,
+  toEpochDay,
+  compareIsoDates,
+  addDays,
+  listIsoDatesInRange,
+  getWeekday,
+  getWeekStart,
+  listWeekStartsInRange,
+} from './date-utils';

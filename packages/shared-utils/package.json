@@ -10,6 +10,9 @@
     "test": "jest",
     "test:watch": "jest --watch"
   },
+  "dependencies": {
+    "@aggregated-plan/shared-types": "workspace:*"
+  },
   "devDependencies": {
     "jest": "^29.7.0",
     "ts-jest": "^29.1.1",
