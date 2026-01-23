@@ -1,0 +1,99 @@
+# Règles de développement pour ce projet
+
+## Principes fondamentaux
+
+### Typage strict
+- **JAMAIS** utiliser `any`. Toujours typer explicitement.
+- Utiliser `unknown` si le type est vraiment inconnu, puis valider avec type guards.
+- Activer tous les flags strict de TypeScript.
+- Utiliser des types utilitaires (Pick, Omit, Partial, etc.) plutôt que de dupliquer.
+
+### Paradigme fonctionnel
+- Privilégier les fonctions pures (pas d'effets de bord).
+- Utiliser l'immutabilité : ne jamais muter directement les objets/tableaux.
+- Préférer `const` à `let`, éviter `var`.
+- Utiliser la composition de fonctions plutôt que l'héritage.
+- Utiliser `map`, `filter`, `reduce` plutôt que les boucles impératives.
+- Éviter les mutations : utiliser `Object.freeze()` ou des librairies d'immutabilité si nécessaire.
+
+### Types uniquement, pas de classes
+- Utiliser `type` et `interface` uniquement.
+- Pas de classes, pas de `new`, pas d'héritage.
+- Pour les factories, utiliser des fonctions qui retournent des objets typés.
+- Pour les modules, utiliser des objets avec des fonctions.
+
+### Test Driven Development (TDD)
+- **TOUJOURS** écrire les tests AVANT le code de production.
+- Structure : Red → Green → Refactor.
+- Tests unitaires pour chaque fonction pure.
+- Tests d'intégration pour les workflows.
+- Coverage minimum : 80%.
+
+### Domain Driven Design (DDD)
+- Séparer clairement : Domain / Application / Infrastructure / Presentation.
+- Domain : logique métier pure, pas de dépendances externes.
+- Application : orchestration, use cases.
+- Infrastructure : implémentations concrètes (DB, HTTP, etc.).
+- Presentation : UI, API routes.
+
+### Design Patterns
+- Factory : pour créer des objets complexes.
+- Repository : pour l'abstraction de la persistance.
+- Strategy : pour des algorithmes interchangeables.
+- Adapter : pour adapter des interfaces externes.
+- Utiliser la composition plutôt que l'héritage.
+
+## Structure de code
+
+### Organisation des fichiers
+- Un fichier = une responsabilité principale.
+- Nommer les fichiers en kebab-case : `user-repository.ts`.
+- Exporter les types/interfaces avec le préfixe du domaine : `User`, `UserRepository`, etc.
+
+### Naming conventions
+- Types/Interfaces : PascalCase (`User`, `UserRepository`).
+- Fonctions : camelCase (`getUserById`, `createUser`).
+- Constantes : UPPER_SNAKE_CASE (`MAX_RETRY_COUNT`).
+- Fichiers : kebab-case (`user-repository.ts`).
+
+### Documentation
+- Documenter les fonctions publiques avec JSDoc.
+- Maintenir à jour `SPEC_FONCTIONNELLE.md` et `SPEC_TECHNIQUE.md`.
+- Mettre à jour le README.md lors des changements majeurs.
+
+## Exemples de code
+
+### ✅ Bon
+```typescript
+type User = {
+  readonly id: string;
+  readonly name: string;
+  readonly email: string;
+};
+
+type CreateUserParams = {
+  readonly name: string;
+  readonly email: string;
+};
+
+const createUser = (params: CreateUserParams): User => ({
+  id: crypto.randomUUID(),
+  name: params.name,
+  email: params.email,
+});
+```
+
+### ❌ Mauvais
+```typescript
+class User {
+  id: any;
+  name: any;
+  email: any;
+  
+  constructor(name: any, email: any) {
+    this.id = Math.random();
+    this.name = name;
+    this.email = email;
+  }
+}
+```

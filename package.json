@@ -1,0 +1,23 @@
+{
+  "name": "aggregated-plan",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Projet TypeScript avec architecture DDD, TDD et paradigme fonctionnel",
+  "scripts": {
+    "dev": "pnpm --filter frontend dev & pnpm --filter backend dev",
+    "build": "pnpm --filter frontend build && pnpm --filter backend build",
+    "test": "pnpm --recursive test",
+    "test:watch": "pnpm --recursive test:watch",
+    "lint": "pnpm --recursive lint",
+    "type-check": "pnpm --recursive type-check",
+    "clean": "pnpm --recursive clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.6"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
