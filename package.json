@@ -2,7 +2,7 @@
   "name": "aggregated-plan",
   "version": "1.0.0",
   "private": true,
-  "description": "Projet TypeScript avec architecture DDD, TDD et paradigme fonctionnel",
+  "description": "TypeScript project with DDD architecture, TDD and functional paradigm",
   "scripts": {
     "dev": "pnpm --filter frontend dev & pnpm --filter backend dev",
     "build": "pnpm --filter frontend build && pnpm --filter backend build",

@@ -70,6 +70,20 @@ export const createProject = async (
 export const fetchDevelopers = async (): Promise<readonly Developer[]> =>
   requestJson<readonly Developer[]>('/developers');
 
+export type CreateDeveloperInput = {
+  readonly displayName: string;
+  readonly email: string;
+  readonly capacityHalfDaysPerWeek?: number;
+};
+
+export const createDeveloper = async (
+  input: CreateDeveloperInput,
+): Promise<Developer> =>
+  requestJson<Developer>('/developers', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+
 export type CreateAssignmentInput = {
   readonly projectId: string;
   readonly developerId: string;
@@ -84,6 +98,9 @@ export const createAssignment = async (
     method: 'POST',
     body: JSON.stringify(input),
   });
+
+export const fetchAssignments = async (): Promise<readonly Assignment[]> =>
+  requestJson<readonly Assignment[]>('/assignments');
 
 export type CreateWeeklyAllocationInput = {
   readonly projectId: string;

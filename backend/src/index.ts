@@ -85,13 +85,13 @@ const projectStatusSchema = z.enum([
 ]);
 const projectPrioritySchema = z.enum(['high', 'medium', 'low']);
 
-const respondWithResult = <T>(
+const respondWithResult = <T extends Record<string, unknown>>(
   c: Context,
   result: Result<T, DomainError>,
   successStatus = 200,
 ): Response => {
   if (result.ok) {
-    return c.json(result.value, successStatus);
+    return c.json(result.value as T, successStatus);
   }
   const status = (() => {
     switch (result.error.code) {

@@ -1,21 +1,21 @@
 # Aggregated Plan
 
-Projet TypeScript avec architecture DDD (Domain Driven Design), TDD (Test Driven Development) et paradigme fonctionnel.
+TypeScript project with DDD (Domain Driven Design) architecture, TDD (Test Driven Development) and functional paradigm.
 
 ## 🏗️ Architecture
 
-Ce projet utilise une architecture monorepo avec pnpm workspace, séparant le frontend et le backend en deux applications distinctes.
+This project uses a monorepo architecture with pnpm workspace, separating frontend and backend into two distinct applications.
 
-### Structure du projet
+### Project Structure
 
 ```
 aggregated_plan/
-├── frontend/          # Application React avec Vite
-├── backend/           # API Hono (programmation fonctionnelle)
-├── packages/          # Packages partagés
-│   ├── shared-types/  # Types TypeScript partagés
-│   └── shared-utils/  # Utilitaires fonctionnels
-├── .cursorrules       # Règles de développement Cursor
+├── frontend/          # React application with Vite
+├── backend/           # Hono API (functional programming)
+├── packages/          # Shared packages
+│   ├── shared-types/  # Shared TypeScript types
+│   └── shared-utils/  # Functional utilities
+├── .cursorrules       # Cursor development rules
 ├── pnpm-workspace.yaml
 ├── package.json
 ├── tsconfig.json
@@ -24,9 +24,9 @@ aggregated_plan/
 └── SPEC_TECHNIQUE.md
 ```
 
-## 🚀 Démarrage rapide
+## 🚀 Quick Start
 
-### Prérequis
+### Prerequisites
 
 - Node.js >= 18.0.0
 - pnpm >= 8.0.0
@@ -37,13 +37,13 @@ aggregated_plan/
 pnpm install
 ```
 
-### Développement
+### Development
 
 ```bash
-# Démarrer frontend et backend en parallèle
+# Start frontend and backend in parallel
 pnpm dev
 
-# Ou séparément
+# Or separately
 pnpm --filter frontend dev
 pnpm --filter backend dev
 ```
@@ -57,13 +57,13 @@ pnpm build
 ### Tests
 
 ```bash
-# Tous les tests
+# All tests
 pnpm test
 
-# En mode watch
+# Watch mode
 pnpm test:watch
 
-# Avec coverage
+# With coverage
 pnpm --filter frontend test:coverage
 pnpm --filter backend test:coverage
 ```
@@ -74,51 +74,51 @@ pnpm --filter backend test:coverage
 pnpm lint
 ```
 
-### Vérification de types
+### Type Checking
 
 ```bash
 pnpm type-check
 ```
 
-## 📋 Principes de développement
+## 📋 Development Principles
 
-### Typage strict
+### Strict Typing
 
-- **JAMAIS** utiliser `any`. Toujours typer explicitement.
-- Utiliser `unknown` si le type est vraiment inconnu, puis valider avec type guards.
-- Tous les flags strict de TypeScript sont activés.
+- **NEVER** use `any`. Always type explicitly.
+- Use `unknown` if the type is truly unknown, then validate with type guards.
+- All TypeScript strict flags are enabled.
 
-### Paradigme fonctionnel
+### Functional Paradigm
 
-- Privilégier les fonctions pures (pas d'effets de bord).
-- Utiliser l'immutabilité : ne jamais muter directement les objets/tableaux.
-- Préférer `const` à `let`, éviter `var`.
-- Utiliser la composition de fonctions plutôt que l'héritage.
-- Utiliser `map`, `filter`, `reduce` plutôt que les boucles impératives.
+- Prefer pure functions (no side effects).
+- Use immutability: never mutate objects/arrays directly.
+- Prefer `const` over `let`, avoid `var`.
+- Use function composition rather than inheritance.
+- Use `map`, `filter`, `reduce` rather than imperative loops.
 
-### Types uniquement, pas de classes
+### Types Only, No Classes
 
-- Utiliser `type` et `interface` uniquement.
-- Pas de classes, pas de `new`, pas d'héritage.
-- Pour les factories, utiliser des fonctions qui retournent des objets typés.
+- Use `type` and `interface` only.
+- No classes, no `new`, no inheritance.
+- For factories, use functions that return typed objects.
 
 ### Test Driven Development (TDD)
 
-- **TOUJOURS** écrire les tests AVANT le code de production.
-- Structure : Red → Green → Refactor.
-- Coverage minimum : 80%.
+- **ALWAYS** write tests BEFORE production code.
+- Structure: Red → Green → Refactor.
+- Minimum coverage: 80%.
 
 ### Domain Driven Design (DDD)
 
-- **Domain** : logique métier pure, pas de dépendances externes.
-- **Application** : orchestration, use cases.
-- **Infrastructure** : implémentations concrètes (DB, HTTP, etc.).
-- **Presentation** : UI, API routes.
+- **Domain**: pure business logic, no external dependencies.
+- **Application**: orchestration, use cases.
+- **Infrastructure**: concrete implementations (DB, HTTP, etc.).
+- **Presentation**: UI, API routes.
 
 ## 📚 Documentation
 
-- [Spécification fonctionnelle](./SPEC_FONCTIONNELLE.md)
-- [Spécification technique](./SPEC_TECHNIQUE.md)
+- [Functional specification](./SPEC_FONCTIONNELLE.md)
+- [Technical specification](./SPEC_TECHNIQUE.md)
 
 ## 🛠️ Technologies
 
@@ -132,53 +132,53 @@ pnpm type-check
 
 ### Backend
 
-- Hono (framework fonctionnel et rapide)
+- Hono (fast functional framework)
 - TypeScript
-- Zod (validation fonctionnelle)
+- Zod (functional validation)
 - Jest
 - ESLint + Prettier
 
-### Outils
+### Tools
 
-- pnpm (gestionnaire de paquets)
-- TypeScript (langage)
+- pnpm (package manager)
+- TypeScript (language)
 - ESLint (linting)
-- Prettier (formatage)
-- Jest (tests)
+- Prettier (formatting)
+- Jest (testing)
 
-## 📝 Scripts disponibles
+## 📝 Available Scripts
 
 ### Workspace root
 
-- `pnpm dev` : Démarre frontend et backend en parallèle
-- `pnpm build` : Build tous les packages
-- `pnpm test` : Lance tous les tests
-- `pnpm lint` : Lint tous les packages
-- `pnpm type-check` : Vérifie les types partout
+- `pnpm dev`: Start frontend and backend in parallel
+- `pnpm build`: Build all packages
+- `pnpm test`: Run all tests
+- `pnpm lint`: Lint all packages
+- `pnpm type-check`: Check types everywhere
 
 ### Frontend
 
-- `pnpm --filter frontend dev` : Serveur de développement
-- `pnpm --filter frontend build` : Build de production
-- `pnpm --filter frontend test` : Tests
-- `pnpm --filter frontend lint` : Linting
+- `pnpm --filter frontend dev`: Development server
+- `pnpm --filter frontend build`: Production build
+- `pnpm --filter frontend test`: Tests
+- `pnpm --filter frontend lint`: Linting
 
 ### Backend
 
-- `pnpm --filter backend dev` : Serveur de développement
-- `pnpm --filter backend build` : Build de production
-- `pnpm --filter backend start` : Serveur de production
-- `pnpm --filter backend test` : Tests
-- `pnpm --filter backend lint` : Linting
+- `pnpm --filter backend dev`: Development server
+- `pnpm --filter backend build`: Production build
+- `pnpm --filter backend start`: Production server
+- `pnpm --filter backend test`: Tests
+- `pnpm --filter backend lint`: Linting
 
-## 🤝 Contribution
+## 🤝 Contributing
 
-1. Écrire les tests en premier (TDD)
-2. Respecter l'architecture DDD
-3. Utiliser uniquement des types, pas de classes
-4. Privilégier le paradigme fonctionnel
-5. Maintenir la documentation à jour
+1. Write tests first (TDD)
+2. Respect DDD architecture
+3. Use types only, no classes
+4. Prefer functional paradigm
+5. Keep documentation up to date
 
-## 📄 Licence
+## 📄 License
 
-[À définir]
+[To be defined]
