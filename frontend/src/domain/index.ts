@@ -1,4 +1,10 @@
-// Domain layer - Business logic only, no external dependencies
-// Export domain types and pure functions here
-
-export type {};
+export type {
+  Assignment,
+  Conflict,
+  Developer,
+  HalfDay,
+  IsoDateString,
+  Project,
+  ProjectPriority,
+  ProjectStatus,
+} from '@aggregated-plan/shared-types';

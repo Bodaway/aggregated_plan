@@ -1,4 +1,13 @@
-// Infrastructure layer - External implementations (API, storage, etc.)
-// Export infrastructure adapters here
-
-export type {};
+export type {
+  CreateProjectInput,
+  CreateAssignmentInput,
+  CreateWeeklyAllocationInput,
+} from './api-client';
+export {
+  fetchProjects,
+  createProject,
+  fetchDevelopers,
+  createAssignment,
+  createWeeklyAllocation,
+  fetchConflicts,
+} from './api-client';
