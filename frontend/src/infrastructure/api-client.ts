@@ -4,6 +4,8 @@ import type {
   Developer,
   HalfDay,
   IsoDateString,
+  Milestone,
+  MilestoneType,
   Project,
   ProjectPriority,
   ProjectStatus,
@@ -67,6 +69,28 @@ export const createProject = async (
     body: JSON.stringify(input),
   });
 
+export const fetchMilestones = async (): Promise<readonly Milestone[]> =>
+  requestJson<readonly Milestone[]>('/milestones');
+
+export type CreateMilestoneInput = {
+  readonly projectId: string;
+  readonly name: string;
+  readonly date: IsoDateString;
+  readonly type?: MilestoneType;
+};
+
+export const createMilestone = async (
+  input: CreateMilestoneInput,
+): Promise<Milestone> =>
+  requestJson<Milestone>(`/projects/${input.projectId}/milestones`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: input.name,
+      date: input.date,
+      type: input.type,
+    }),
+  });
+
 export const fetchDevelopers = async (): Promise<readonly Developer[]> =>
   requestJson<readonly Developer[]>('/developers');
 
@@ -81,6 +105,21 @@ export const createDeveloper = async (
 ): Promise<Developer> =>
   requestJson<Developer>('/developers', {
     method: 'POST',
+    body: JSON.stringify(input),
+  });
+
+export type UpdateDeveloperInput = {
+  readonly displayName?: string;
+  readonly email?: string;
+  readonly capacityHalfDaysPerWeek?: number;
+};
+
+export const updateDeveloper = async (
+  id: string,
+  input: UpdateDeveloperInput,
+): Promise<Developer> =>
+  requestJson<Developer>(`/developers/${id}`, {
+    method: 'PUT',
     body: JSON.stringify(input),
   });
 

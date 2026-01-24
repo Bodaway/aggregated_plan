@@ -198,6 +198,19 @@ p[role='alert'] {
   overflow-x: auto;
 }
 
+.timeline-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.timeline-zoom {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .timeline-grid {
   display: grid;
   gap: 1px;
@@ -219,6 +232,10 @@ p[role='alert'] {
   white-space: nowrap;
 }
 
+.gantt-grid {
+  position: relative;
+}
+
 .timeline-cell.header {
   background: var(--color-bg);
   font-weight: 600;
@@ -226,6 +243,20 @@ p[role='alert'] {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.6875rem;
+}
+
+.timeline-cell.header.gantt-header {
+  text-align: center;
+}
+
+.timeline-cell.header.gantt-header.secondary {
+  font-size: 0.625rem;
+  color: var(--color-text);
+}
+
+.timeline-cell.header.gantt-header.tertiary {
+  font-size: 0.625rem;
+  color: var(--color-text-muted);
 }
 
 .timeline-cell.project-name {
@@ -236,15 +267,78 @@ p[role='alert'] {
   z-index: 1;
 }
 
-.timeline-cell.assigned {
-  background: rgba(0, 217, 255, 0.15);
-  color: var(--color-primary);
-  text-align: center;
-}
-
 .timeline-cell.empty {
   color: var(--color-text-muted);
   text-align: center;
+}
+
+.gantt-cell {
+  position: relative;
+  text-align: center;
+  padding: 0.25rem;
+  min-height: 2.25rem;
+}
+
+.gantt-bar {
+  background: rgba(0, 217, 255, 0.18);
+  border-top: 1px solid rgba(0, 217, 255, 0.35);
+  border-bottom: 1px solid rgba(0, 217, 255, 0.35);
+  color: var(--color-primary);
+}
+
+.gantt-start {
+  border-top-left-radius: 10px;
+  border-bottom-left-radius: 10px;
+}
+
+.gantt-end {
+  border-top-right-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+.gantt-assignment {
+  display: inline-block;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  color: var(--color-text);
+}
+
+.gantt-milestone {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin-right: 0.25rem;
+  border-radius: 4px;
+  background: rgba(255, 214, 0, 0.2);
+  color: #ffd600;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.gantt-conflict {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-right: 0.25rem;
+  border-radius: 999px;
+  background: rgba(255, 77, 106, 0.2);
+  color: var(--color-danger);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.gantt-today {
+  background: var(--color-danger);
+  width: 2px;
+  justify-self: center;
+  z-index: 2;
+  pointer-events: none;
 }
 
 @media (max-width: 768px) {

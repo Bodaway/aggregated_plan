@@ -7,10 +7,8 @@ import type {
 import {
   allocationToAssignmentSeeds,
   createAssignment,
-  createDomainError,
   createWeeklyAllocation,
   detectConflicts,
-  err,
   ok,
 } from '@domain/index';
 import type {
@@ -95,21 +93,6 @@ export const createStaffingUseCases = (deps: {
       return assignmentResult;
     }
 
-    const context = await loadConflictContext();
-    const conflicts = detectConflicts({
-      assignments: [...context.assignments, assignmentResult.value],
-      availabilities: context.availabilities,
-      capacities: context.capacities,
-    }).filter((conflict) => conflict.developerId === assignmentResult.value.developerId);
-
-    if (conflicts.length > 0) {
-      return err(
-        createDomainError('assignment-conflict', 'Assignment conflicts detected.', {
-          conflicts,
-        }),
-      );
-    }
-
     const saved = await deps.assignmentRepository.save(assignmentResult.value);
     return ok(saved);
   };
@@ -142,21 +125,6 @@ export const createStaffingUseCases = (deps: {
       return newAssignmentsResult;
     }
     const newAssignments = newAssignmentsResult.value;
-
-    const context = await loadConflictContext();
-    const conflicts = detectConflicts({
-      assignments: [...context.assignments, ...newAssignments],
-      availabilities: context.availabilities,
-      capacities: context.capacities,
-    }).filter((conflict) => conflict.developerId === allocationResult.value.developerId);
-
-    if (conflicts.length > 0) {
-      return err(
-        createDomainError('assignment-conflict', 'Allocation conflicts detected.', {
-          conflicts,
-        }),
-      );
-    }
 
     const savedAllocation = await deps.allocationRepository.save(allocationResult.value);
     await deps.assignmentRepository.saveMany(newAssignments);

@@ -21,3 +21,5 @@ export type { ConflictInput, CapacitySnapshot } from './conflict-domain';
 export { detectConflicts } from './conflict-domain';
 export type { CreateAvailabilityParams, AvailabilityContext } from './availability-domain';
 export { createAvailability } from './availability-domain';
+export type { CreateMilestoneParams, MilestoneContext } from './milestone-domain';
+export { createMilestone } from './milestone-domain';

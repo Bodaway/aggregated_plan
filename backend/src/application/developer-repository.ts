@@ -4,4 +4,5 @@ export type DeveloperRepository = {
   readonly list: () => Promise<readonly Developer[]>;
   readonly getById: (id: EntityId) => Promise<Developer | null>;
   readonly save: (developer: Developer) => Promise<Developer>;
+  readonly update: (developer: Developer) => Promise<Developer>;
 };

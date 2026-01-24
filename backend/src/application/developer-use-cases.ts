@@ -10,12 +10,22 @@ export type CreateDeveloperParams = {
   readonly capacityHalfDaysPerWeek?: number;
 };
 
+export type UpdateDeveloperParams = {
+  readonly displayName?: string;
+  readonly email?: string;
+  readonly capacityHalfDaysPerWeek?: number;
+};
+
 export type DeveloperUseCases = {
   readonly createDeveloper: (
     params: CreateDeveloperParams,
   ) => Promise<Result<Developer, DomainError>>;
   readonly listDevelopers: () => Promise<readonly Developer[]>;
   readonly getDeveloper: (id: string) => Promise<Developer | null>;
+  readonly updateDeveloper: (
+    id: string,
+    params: UpdateDeveloperParams,
+  ) => Promise<Result<Developer, DomainError>>;
 };
 
 const ensureValidDeveloper = (
@@ -61,9 +71,40 @@ export const createDeveloperUseCases = (deps: {
     return ok(saved);
   };
 
+  const updateDeveloperHandler = async (
+    id: string,
+    params: UpdateDeveloperParams,
+  ): Promise<Result<Developer, DomainError>> => {
+    const existing = await deps.developerRepository.getById(id);
+    if (!existing) {
+      return err(createDomainError('not-found', 'Developer not found.'));
+    }
+
+    const normalizedParams: CreateDeveloperParams = {
+      displayName: params.displayName ?? existing.displayName,
+      email: params.email ?? existing.email,
+      capacityHalfDaysPerWeek: params.capacityHalfDaysPerWeek ?? existing.capacityHalfDaysPerWeek,
+    };
+    const validation = ensureValidDeveloper(normalizedParams);
+    if (!validation.ok) {
+      return validation;
+    }
+
+    const updated: Developer = {
+      ...existing,
+      displayName: validation.value.name,
+      email: validation.value.email,
+      capacityHalfDaysPerWeek: validation.value.capacity,
+    };
+
+    const saved = await deps.developerRepository.update(updated);
+    return ok(saved);
+  };
+
   return {
     createDeveloper: createDeveloperHandler,
     listDevelopers: deps.developerRepository.list,
     getDeveloper: deps.developerRepository.getById,
+    updateDeveloper: updateDeveloperHandler,
   };
 };

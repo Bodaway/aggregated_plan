@@ -4,6 +4,8 @@ export type {
   Developer,
   HalfDay,
   IsoDateString,
+  Milestone,
+  MilestoneType,
   Project,
   ProjectPriority,
   ProjectStatus,

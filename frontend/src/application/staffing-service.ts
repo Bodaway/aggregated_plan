@@ -1,8 +1,13 @@
 import type { Assignment, Conflict, Developer } from '@aggregated-plan/shared-types';
-import type { CreateAssignmentInput, CreateDeveloperInput } from '@infrastructure/index';
+import type {
+  CreateAssignmentInput,
+  CreateDeveloperInput,
+  UpdateDeveloperInput,
+} from '@infrastructure/index';
 import {
   createAssignment,
   createDeveloper,
+  updateDeveloper,
   fetchAssignments,
   fetchConflicts,
   fetchDevelopers,
@@ -17,6 +22,11 @@ export const submitAssignment = async (
 export const submitDeveloper = async (
   input: CreateDeveloperInput,
 ): Promise<Developer> => createDeveloper(input);
+
+export const editDeveloper = async (
+  id: string,
+  input: UpdateDeveloperInput,
+): Promise<Developer> => updateDeveloper(id, input);
 
 export const loadAssignments = async (): Promise<readonly Assignment[]> => fetchAssignments();
 

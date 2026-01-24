@@ -4,6 +4,7 @@ export type { InMemoryRepositories } from './in-memory-repositories';
 export {
   createInMemoryRepositories,
   createProjectRepository,
+  createMilestoneRepository,
   createAssignmentRepository,
   createAllocationRepository,
   createAvailabilityRepository,

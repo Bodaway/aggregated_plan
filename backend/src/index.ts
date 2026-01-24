@@ -8,6 +8,7 @@ import type { DomainError, Result } from '@domain/index';
 import {
   createAvailabilityUseCases,
   createDeveloperUseCases,
+  createMilestoneUseCases,
   createProjectUseCases,
   createStaffingUseCases,
 } from '@application/index';
@@ -63,6 +64,12 @@ const developerUseCases = createDeveloperUseCases({
   developerRepository: repositories.developerRepository,
   idProvider,
 });
+const milestoneUseCases = createMilestoneUseCases({
+  milestoneRepository: repositories.milestoneRepository,
+  projectRepository: repositories.projectRepository,
+  idProvider,
+  clock,
+});
 
 const isoDateSchema = z
   .string()
@@ -85,6 +92,7 @@ const projectStatusSchema = z.enum([
   'cancelled',
 ]);
 const projectPrioritySchema = z.enum(['high', 'medium', 'low']);
+const milestoneTypeSchema = z.enum(['delivery', 'review', 'demo', 'other']);
 
 const respondWithResult = <T extends Record<string, unknown>>(
   c: Context,
@@ -170,6 +178,35 @@ app.delete('/projects/:id', async (c) => {
   return respondWithResult(c, result);
 });
 
+app.get('/milestones', async (c) => {
+  const milestones = await milestoneUseCases.listMilestones();
+  return c.json(milestones);
+});
+
+app.get('/projects/:id/milestones', async (c) => {
+  const milestones = await milestoneUseCases.listMilestonesByProject(c.req.param('id'));
+  return c.json(milestones);
+});
+
+app.post('/projects/:id/milestones', async (c) => {
+  const schema = z.object({
+    name: z.string().min(1),
+    date: isoDateSchema,
+    type: milestoneTypeSchema.optional(),
+  });
+  const parseResult = schema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await milestoneUseCases.createMilestone({
+    projectId: c.req.param('id'),
+    name: parseResult.data.name,
+    date: parseResult.data.date,
+    type: parseResult.data.type,
+  });
+  return respondWithResult(c, result, 201);
+});
+
 app.get('/developers', async (c) => {
   const developers = await developerUseCases.listDevelopers();
   return c.json(developers);
@@ -187,6 +224,20 @@ app.post('/developers', async (c) => {
   }
   const result = await developerUseCases.createDeveloper(parseResult.data);
   return respondWithResult(c, result, 201);
+});
+
+app.put('/developers/:id', async (c) => {
+  const schema = z.object({
+    displayName: z.string().min(1).optional(),
+    email: z.string().min(3).optional(),
+    capacityHalfDaysPerWeek: z.number().int().min(1).max(10).optional(),
+  });
+  const parseResult = schema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await developerUseCases.updateDeveloper(c.req.param('id'), parseResult.data);
+  return respondWithResult(c, result);
 });
 
 app.get('/assignments', async (c) => {
