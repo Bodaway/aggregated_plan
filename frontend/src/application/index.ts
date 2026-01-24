@@ -1,4 +1,9 @@
-// Application layer - Use cases and orchestration
-// Export application services here
-
-export type {};
+export { loadProjects, submitProject, loadMilestones, submitMilestone } from './portfolio-service';
+export {
+  loadDevelopers,
+  submitAssignment,
+  submitDeveloper,
+  editDeveloper,
+  loadAssignments,
+  loadConflicts,
+} from './staffing-service';

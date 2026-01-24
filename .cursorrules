@@ -1,69 +1,69 @@
-# Règles de développement pour ce projet
+# Development Rules for this Project
 
-## Principes fondamentaux
+## Fundamental Principles
 
-### Typage strict
-- **JAMAIS** utiliser `any`. Toujours typer explicitement.
-- Utiliser `unknown` si le type est vraiment inconnu, puis valider avec type guards.
-- Activer tous les flags strict de TypeScript.
-- Utiliser des types utilitaires (Pick, Omit, Partial, etc.) plutôt que de dupliquer.
+### Strict Typing
+- **NEVER** use `any`. Always type explicitly.
+- Use `unknown` if the type is truly unknown, then validate with type guards.
+- Enable all TypeScript strict flags.
+- Use utility types (Pick, Omit, Partial, etc.) rather than duplicating.
 
-### Paradigme fonctionnel
-- Privilégier les fonctions pures (pas d'effets de bord).
-- Utiliser l'immutabilité : ne jamais muter directement les objets/tableaux.
-- Préférer `const` à `let`, éviter `var`.
-- Utiliser la composition de fonctions plutôt que l'héritage.
-- Utiliser `map`, `filter`, `reduce` plutôt que les boucles impératives.
-- Éviter les mutations : utiliser `Object.freeze()` ou des librairies d'immutabilité si nécessaire.
+### Functional Paradigm
+- Prefer pure functions (no side effects).
+- Use immutability: never mutate objects/arrays directly.
+- Prefer `const` over `let`, avoid `var`.
+- Use function composition rather than inheritance.
+- Use `map`, `filter`, `reduce` rather than imperative loops.
+- Avoid mutations: use `Object.freeze()` or immutability libraries if necessary.
 
-### Types uniquement, pas de classes
-- Utiliser `type` et `interface` uniquement.
-- Pas de classes, pas de `new`, pas d'héritage.
-- Pour les factories, utiliser des fonctions qui retournent des objets typés.
-- Pour les modules, utiliser des objets avec des fonctions.
+### Types Only, No Classes
+- Use `type` and `interface` only.
+- No classes, no `new`, no inheritance.
+- For factories, use functions that return typed objects.
+- For modules, use objects with functions.
 
 ### Test Driven Development (TDD)
-- **TOUJOURS** écrire les tests AVANT le code de production.
-- Structure : Red → Green → Refactor.
-- Tests unitaires pour chaque fonction pure.
-- Tests d'intégration pour les workflows.
-- Coverage minimum : 80%.
+- **ALWAYS** write tests BEFORE production code.
+- Structure: Red → Green → Refactor.
+- Unit tests for each pure function.
+- Integration tests for workflows.
+- Minimum coverage: 80%.
 
 ### Domain Driven Design (DDD)
-- Séparer clairement : Domain / Application / Infrastructure / Presentation.
-- Domain : logique métier pure, pas de dépendances externes.
-- Application : orchestration, use cases.
-- Infrastructure : implémentations concrètes (DB, HTTP, etc.).
-- Presentation : UI, API routes.
+- Clearly separate: Domain / Application / Infrastructure / Presentation.
+- Domain: pure business logic, no external dependencies.
+- Application: orchestration, use cases.
+- Infrastructure: concrete implementations (DB, HTTP, etc.).
+- Presentation: UI, API routes.
 
 ### Design Patterns
-- Factory : pour créer des objets complexes.
-- Repository : pour l'abstraction de la persistance.
-- Strategy : pour des algorithmes interchangeables.
-- Adapter : pour adapter des interfaces externes.
-- Utiliser la composition plutôt que l'héritage.
+- Factory: for creating complex objects.
+- Repository: for persistence abstraction.
+- Strategy: for interchangeable algorithms.
+- Adapter: for adapting external interfaces.
+- Use composition rather than inheritance.
 
-## Structure de code
+## Code Structure
 
-### Organisation des fichiers
-- Un fichier = une responsabilité principale.
-- Nommer les fichiers en kebab-case : `user-repository.ts`.
-- Exporter les types/interfaces avec le préfixe du domaine : `User`, `UserRepository`, etc.
+### File Organization
+- One file = one main responsibility.
+- Name files in kebab-case: `user-repository.ts`.
+- Export types/interfaces with domain prefix: `User`, `UserRepository`, etc.
 
-### Naming conventions
-- Types/Interfaces : PascalCase (`User`, `UserRepository`).
-- Fonctions : camelCase (`getUserById`, `createUser`).
-- Constantes : UPPER_SNAKE_CASE (`MAX_RETRY_COUNT`).
-- Fichiers : kebab-case (`user-repository.ts`).
+### Naming Conventions
+- Types/Interfaces: PascalCase (`User`, `UserRepository`).
+- Functions: camelCase (`getUserById`, `createUser`).
+- Constants: UPPER_SNAKE_CASE (`MAX_RETRY_COUNT`).
+- Files: kebab-case (`user-repository.ts`).
 
 ### Documentation
-- Documenter les fonctions publiques avec JSDoc.
-- Maintenir à jour `SPEC_FONCTIONNELLE.md` et `SPEC_TECHNIQUE.md`.
-- Mettre à jour le README.md lors des changements majeurs.
+- Document public functions with JSDoc.
+- Keep `SPEC_FONCTIONNELLE.md` and `SPEC_TECHNIQUE.md` up to date.
+- Update README.md for major changes.
 
-## Exemples de code
+## Code Examples
 
-### ✅ Bon
+### ✅ Good
 ```typescript
 type User = {
   readonly id: string;
@@ -83,7 +83,7 @@ const createUser = (params: CreateUserParams): User => ({
 });
 ```
 
-### ❌ Mauvais
+### ❌ Bad
 ```typescript
 class User {
   id: any;

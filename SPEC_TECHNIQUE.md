@@ -33,6 +33,19 @@ Le projet est organisé en monorepo utilisant pnpm workspace pour gérer les dé
   - `application/` : Use cases et orchestration
   - `infrastructure/` : Adaptateurs (DB, HTTP clients)
 
+##### Implémentation MVP (en cours)
+
+- **Persistance** : Référentiels en mémoire (in-memory) pour les projets, affectations,
+  allocations, disponibilités et développeurs.
+- **API HTTP** :
+  - `GET /projects`, `POST /projects`, `PUT /projects/:id`, `DELETE /projects/:id`
+  - `GET /developers`, `POST /developers`
+  - `GET /assignments`, `POST /assignments`
+  - `POST /allocations`
+  - `GET /conflicts`
+  - `GET /availabilities`, `POST /availabilities`
+- **Validation** : Parsing des payloads avec Zod avant passage aux use cases.
+
 #### Packages partagés
 
 - `@aggregated-plan/shared-types` : Types TypeScript partagés

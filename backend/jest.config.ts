@@ -9,6 +9,8 @@ const config: Config = {
     '^@domain/(.*)$': '<rootDir>/src/domain/$1',
     '^@application/(.*)$': '<rootDir>/src/application/$1',
     '^@infrastructure/(.*)$': '<rootDir>/src/infrastructure/$1',
+    '^@aggregated-plan/shared-types$': '<rootDir>/../packages/shared-types/src/index.ts',
+    '^@aggregated-plan/shared-utils$': '<rootDir>/../packages/shared-utils/src/index.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',
