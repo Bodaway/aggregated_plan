@@ -1,0 +1,62 @@
+# CLAUDE.md
+
+## Project Guidelines
+
+### Strict Typing
+- NEVER use `any`. Always type explicitly.
+- Use `unknown` if the type is truly unknown, then validate with type guards.
+- Enable all TypeScript strict flags.
+- Use utility types (`Pick`, `Omit`, `Partial`, etc.) rather than duplicating.
+
+### Functional Paradigm
+- Prefer pure functions (no side effects).
+- Use immutability: never mutate objects/arrays directly.
+- Prefer `const` over `let`, avoid `var`.
+- Use function composition rather than inheritance.
+- Use `map`, `filter`, `reduce` rather than imperative loops.
+- Avoid mutations: use `Object.freeze()` or immutability libraries if necessary.
+
+### Types Only, No Classes
+- Use `type` and `interface` only.
+- No classes, no `new`, no inheritance.
+- For factories, use functions that return typed objects.
+- For modules, use objects with functions.
+
+### Test Driven Development (TDD)
+- ALWAYS write tests BEFORE production code.
+- Structure: Red -> Green -> Refactor.
+- Unit tests for each pure function.
+- Integration tests for workflows.
+- Minimum coverage: 80%.
+
+### Domain Driven Design (DDD)
+- Clearly separate: Domain / Application / Infrastructure / Presentation.
+- Domain: pure business logic, no external dependencies.
+- Application: orchestration, use cases.
+- Infrastructure: concrete implementations (DB, HTTP, etc.).
+- Presentation: UI, API routes.
+
+### Design Patterns
+- Factory: for creating complex objects.
+- Repository: for persistence abstraction.
+- Strategy: for interchangeable algorithms.
+- Adapter: for adapting external interfaces.
+- Use composition rather than inheritance.
+
+## Code Structure
+
+### File Organization
+- One file = one main responsibility.
+- Name files in kebab-case: `user-repository.ts`.
+- Export types/interfaces with domain prefix: `User`, `UserRepository`, etc.
+
+### Naming Conventions
+- Types/Interfaces: PascalCase (`User`, `UserRepository`).
+- Functions: camelCase (`getUserById`, `createUser`).
+- Constants: UPPER_SNAKE_CASE (`MAX_RETRY_COUNT`).
+- Files: kebab-case (`user-repository.ts`).
+
+### Documentation
+- Document public functions with JSDoc.
+- Keep `SPEC_FONCTIONNELLE.md` and `SPEC_TECHNIQUE.md` up to date.
+- Update README.md for major changes.
