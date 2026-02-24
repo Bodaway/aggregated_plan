@@ -24,4 +24,6 @@ export {
   createTaskApi,
   updateTaskApi,
   deleteTaskApi,
+  setTokenProvider,
+  triggerSharePointImport,
 } from './api-client';

@@ -22,3 +22,7 @@ export { createMilestoneUseCases } from './milestone-use-cases';
 export type { TaskRepository } from './task-repository';
 export type { TaskUseCases } from './task-use-cases';
 export { createTaskUseCases } from './task-use-cases';
+export type { SharePointAdapter, SharePointFileContent } from './sharepoint-adapter';
+export type { ExcelParserAdapter } from './excel-parser-adapter';
+export type { ImportUseCases } from './import-use-cases';
+export { createImportUseCases } from './import-use-cases';

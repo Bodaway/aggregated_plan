@@ -28,7 +28,11 @@ import {
 } from '@application/index';
 import { Timeline } from './timeline';
 import { KanbanBoard } from './kanban-board';
+import { ImportButton } from './import-button';
 import type { CreateTaskInput, UpdateTaskInput } from '@infrastructure/index';
+import { setTokenProvider } from '@infrastructure/index';
+import { isMsalEnabled } from '../infrastructure/auth/msal-config';
+import { useAccessToken } from '../infrastructure/auth/use-access-token';
 
 type ProjectFormState = {
   readonly name: string;
@@ -126,6 +130,15 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ViewTab>('portfolio');
+
+  // Set up auth token provider when MSAL is enabled
+  const msalEnabled = isMsalEnabled();
+  const accessTokenHook = msalEnabled ? useAccessToken() : null;
+  useEffect(() => {
+    if (accessTokenHook) {
+      setTokenProvider(accessTokenHook.getToken);
+    }
+  }, [accessTokenHook]);
 
   const refreshData = async (): Promise<void> => {
     setIsLoading(true);
@@ -398,7 +411,10 @@ export const App: React.FC = () => {
       {activeTab === 'portfolio' ? (
         <>
           <section>
-            <h2>Portfolio</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Portfolio</h2>
+              <ImportButton onImportComplete={refreshData} />
+            </div>
             <form onSubmit={handleCreateProject}>
               <label>
                 Name

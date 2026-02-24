@@ -4,7 +4,7 @@
   "private": true,
   "description": "TypeScript project with DDD architecture, TDD and functional paradigm",
   "scripts": {
-    "dev": "pnpm --filter frontend dev & pnpm --filter backend dev",
+    "dev": "set -a && . config/env/local.env && set +a && (pnpm --filter frontend dev &) && pnpm --filter backend dev",
     "build": "pnpm --filter frontend build && pnpm --filter backend build",
     "test": "pnpm --recursive test",
     "test:watch": "pnpm --recursive test:watch",

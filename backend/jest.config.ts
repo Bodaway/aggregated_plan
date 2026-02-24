@@ -12,6 +12,13 @@ const config: Config = {
     '^@aggregated-plan/shared-types$': '<rootDir>/../packages/shared-types/src/index.ts',
     '^@aggregated-plan/shared-utils$': '<rootDir>/../packages/shared-utils/src/index.ts',
   },
+  transformIgnorePatterns: [
+    'node_modules/(?!(\\.pnpm/(jose|@azure\\+msal-node|exceljs))|jose|@azure/msal-node|exceljs)',
+  ],
+  transform: {
+    '^.+\\.tsx?$': 'ts-jest',
+    '^.+\\.m?js$': 'ts-jest',
+  },
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',

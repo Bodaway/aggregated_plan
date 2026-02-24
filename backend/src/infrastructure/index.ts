@@ -21,3 +21,11 @@ export {
   createPostgresConnection,
   createPostgresRepositories,
 } from './postgres/index';
+export type { AuthConfig } from './auth/index';
+export { isAuthEnabled, getAuthConfig, createJwtMiddleware } from './auth/index';
+export type { OboTokenProvider } from './auth/index';
+export { createOboTokenProvider } from './auth/index';
+export type { SharePointConfig } from './sharepoint/sharepoint-config';
+export { getSharePointConfig } from './sharepoint/sharepoint-config';
+export { createGraphSharePointAdapter } from './sharepoint/graph-sharepoint-adapter';
+export { createExcelJsParserAdapter } from './excel/exceljs-parser-adapter';

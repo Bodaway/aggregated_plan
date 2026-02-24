@@ -4,10 +4,12 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
 import type { Context } from 'hono';
+import type { AuthUser } from '@aggregated-plan/shared-types';
 import type { DomainError, Result } from '@domain/index';
 import {
   createAvailabilityUseCases,
   createDeveloperUseCases,
+  createImportUseCases,
   createMilestoneUseCases,
   createProjectUseCases,
   createStaffingUseCases,
@@ -15,13 +17,20 @@ import {
 } from '@application/index';
 import {
   createClock,
+  createExcelJsParserAdapter,
+  createGraphSharePointAdapter,
   createIdProvider,
   createInMemoryRepositories,
   createInMemoryStore,
+  createJwtMiddleware,
+  createOboTokenProvider,
   createPostgresConnection,
   createPostgresRepositories,
+  getAuthConfig,
   getDatabaseConfig,
   getPersistenceKind,
+  getSharePointConfig,
+  isAuthEnabled,
 } from '@infrastructure/index';
 
 const app = new Hono();
@@ -98,6 +107,46 @@ const taskUseCases = createTaskUseCases({
   clock,
 });
 
+// Auth + Import setup (conditional)
+if (isAuthEnabled(process.env)) {
+  const authConfig = getAuthConfig(process.env);
+  const jwtMiddleware = createJwtMiddleware(authConfig);
+
+  app.use('/projects/*', jwtMiddleware);
+  app.use('/tasks/*', jwtMiddleware);
+  app.use('/milestones/*', jwtMiddleware);
+  app.use('/developers/*', jwtMiddleware);
+  app.use('/assignments/*', jwtMiddleware);
+  app.use('/allocations/*', jwtMiddleware);
+  app.use('/conflicts/*', jwtMiddleware);
+  app.use('/availabilities/*', jwtMiddleware);
+  app.use('/import/*', jwtMiddleware);
+  app.use('/auth/*', jwtMiddleware);
+
+  console.log('Auth enabled: JWT middleware applied to all protected routes');
+} else {
+  console.log('Auth disabled: running without authentication (dev mode)');
+}
+
+// SharePoint import setup
+const sharePointConfig = getSharePointConfig(process.env);
+const oboTokenProvider = isAuthEnabled(process.env)
+  ? createOboTokenProvider(getAuthConfig(process.env))
+  : null;
+const sharePointAdapter = createGraphSharePointAdapter(sharePointConfig);
+const excelParserAdapter = createExcelJsParserAdapter();
+
+const importUseCases = createImportUseCases({
+  projectRepository: repositories.projectRepository,
+  taskRepository: repositories.taskRepository,
+  milestoneRepository: repositories.milestoneRepository,
+  sharePointAdapter,
+  excelParserAdapter,
+  idProvider,
+  clock,
+  referenceYear: new Date().getFullYear(),
+});
+
 const isoDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
@@ -146,6 +195,36 @@ const respondWithResult = <T extends Record<string, unknown>>(
 };
 
 app.get('/', (c) => c.json({ message: 'Aggregated Plan API' }));
+
+// Auth routes
+app.get('/auth/me', (c) => {
+  const authUser = (c as unknown as { get: (key: string) => unknown }).get('authUser') as AuthUser | undefined;
+  if (!authUser) {
+    return c.json({ authenticated: false });
+  }
+  return c.json({ authenticated: true, user: authUser });
+});
+
+// Import route
+app.post('/import/sharepoint', async (c) => {
+  const ctx = c as unknown as { get: (key: string) => unknown };
+  const accessToken = ctx.get('accessToken') as string | undefined;
+  const authUser = ctx.get('authUser') as AuthUser | undefined;
+
+  if (!oboTokenProvider || !accessToken) {
+    return c.json({ error: 'Authentication required for SharePoint import' }, 401);
+  }
+
+  try {
+    const graphToken = await oboTokenProvider.getGraphToken(accessToken);
+    const userId = authUser?.oid ?? 'import-user';
+    const result = await importUseCases.importFromSharePoint(graphToken, userId);
+    return c.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Import failed';
+    return c.json({ error: message }, 500);
+  }
+});
 
 app.get('/projects', async (c) => {
   const projects = await projectUseCases.listProjects();

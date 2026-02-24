@@ -3,12 +3,11 @@ import type {
   Conflict,
   Developer,
   HalfDay,
+  ImportResult,
   IsoDateString,
   Milestone,
   MilestoneType,
   Project,
-  ProjectPriority,
-  ProjectStatus,
   Task,
   TaskPriority,
   TaskStatus,
@@ -19,13 +18,32 @@ import type {
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.toString() ?? 'http://localhost:3001';
 
+type TokenProvider = () => Promise<string>;
+
+let tokenProvider: TokenProvider | null = null;
+
+export const setTokenProvider = (provider: TokenProvider): void => {
+  tokenProvider = provider;
+};
+
 const requestJson = async <T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> => {
+  const authHeaders: Record<string, string> = {};
+  if (tokenProvider) {
+    try {
+      const token = await tokenProvider();
+      authHeaders['Authorization'] = `Bearer ${token}`;
+    } catch {
+      // Token acquisition failed silently — request proceeds without auth
+    }
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
       ...(options?.headers ?? {}),
     },
     ...options,
@@ -54,10 +72,10 @@ export type CreateProjectInput = {
   readonly description?: string;
   readonly startDate: IsoDateString;
   readonly endDate: IsoDateString;
-  readonly status?: ProjectStatus;
+  readonly status?: string;
   readonly teamIds?: readonly string[];
   readonly client?: string;
-  readonly priority?: ProjectPriority;
+  readonly priority?: string;
   readonly createdBy: string;
 };
 
@@ -205,4 +223,9 @@ export const updateTaskApi = async (
 export const deleteTaskApi = async (id: string): Promise<void> =>
   requestJson<void>(`/tasks/${id}`, {
     method: 'DELETE',
+  });
+
+export const triggerSharePointImport = async (): Promise<ImportResult> =>
+  requestJson<ImportResult>('/import/sharepoint', {
+    method: 'POST',
   });

@@ -25,3 +25,14 @@ export type { CreateMilestoneParams, MilestoneContext } from './milestone-domain
 export { createMilestone } from './milestone-domain';
 export type { CreateTaskParams, UpdateTaskParams, TaskContext } from './task-domain';
 export { createTask, updateTask } from './task-domain';
+export type { RawExcelRow, ExcelProjectPhase } from './excel-parsing-domain';
+export {
+  isPhaseHeader,
+  extractPhaseInfo,
+  parseFrenchDate,
+  parseExcelRow,
+  groupRowsByProject,
+  extractProjectDates,
+} from './excel-parsing-domain';
+export type { ExcelProjectSummary, ProjectSyncItem } from './import-sync-domain';
+export { computeSyncPlan } from './import-sync-domain';
