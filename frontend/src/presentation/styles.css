@@ -1,16 +1,45 @@
+/* ============================================================
+   CYBERPUNK TERMINAL THEME
+   ============================================================ */
+
 :root {
-  --color-bg: #0f0f0f;
-  --color-surface: #1a1a1a;
-  --color-border: #2a2a2a;
-  --color-text: #e8e8e8;
-  --color-text-muted: #888;
-  --color-primary: #00d9ff;
-  --color-primary-hover: #00b8d9;
-  --color-danger: #ff4d6a;
-  --color-success: #00e676;
-  --font-sans: 'DM Sans', system-ui, sans-serif;
+  /* Core palette */
+  --color-bg: #050510;
+  --color-surface: #0d0d1a;
+  --color-surface-raised: #12122a;
+  --color-border: #1a1a2e;
+  --color-text: #c0c8d8;
+  --color-text-bright: #e0e6f0;
+  --color-text-muted: #5a6278;
+
+  /* Accent colors */
+  --color-primary: #00f0ff;
+  --color-primary-hover: #00c8d9;
+  --color-danger: #ff2a6d;
+  --color-success: #05ffa1;
+  --color-warning: #ffab00;
+
+  /* Dim accent backgrounds */
+  --color-primary-dim: rgba(0, 240, 255, 0.08);
+  --color-danger-dim: rgba(255, 42, 109, 0.08);
+  --color-success-dim: rgba(5, 255, 161, 0.08);
+
+  /* Glow box-shadows */
+  --color-primary-glow: 0 0 8px rgba(0, 240, 255, 0.4), 0 0 20px rgba(0, 240, 255, 0.15);
+  --color-danger-glow: 0 0 8px rgba(255, 42, 109, 0.4), 0 0 20px rgba(255, 42, 109, 0.15);
+  --color-success-glow: 0 0 8px rgba(5, 255, 161, 0.4), 0 0 20px rgba(5, 255, 161, 0.15);
+
+  /* Typography */
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: 'Share Tech Mono', monospace;
+
+  /* Effects */
+  --scanline-opacity: 0.03;
 }
+
+/* ============================================================
+   RESET
+   ============================================================ */
 
 *,
 *::before,
@@ -24,18 +53,81 @@ html {
   font-size: 16px;
 }
 
+/* ============================================================
+   GLOBAL / BODY
+   ============================================================ */
+
 body {
-  font-family: var(--font-sans);
+  font-family: var(--font-mono);
   background: var(--color-bg);
   color: var(--color-text);
   line-height: 1.6;
   min-height: 100vh;
+  overflow-x: hidden;
 }
+
+/* Custom scrollbar */
+body::-webkit-scrollbar {
+  width: 6px;
+}
+
+body::-webkit-scrollbar-track {
+  background: var(--color-bg);
+}
+
+body::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+body::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+}
+
+/* Scanline overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 240, 255, var(--scanline-opacity)) 2px,
+    rgba(0, 240, 255, var(--scanline-opacity)) 4px
+  );
+}
+
+/* CRT vignette */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 60%,
+    rgba(0, 0, 0, 0.4) 100%
+  );
+}
+
+/* ============================================================
+   ROOT CONTAINER
+   ============================================================ */
 
 #root {
   max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
+  position: relative;
+  background-image: radial-gradient(
+    rgba(0, 240, 255, 0.06) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
 }
 
 main {
@@ -44,22 +136,64 @@ main {
   gap: 2rem;
 }
 
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+
+/* h1 — Glitch Effect */
 h1 {
+  font-family: var(--font-display);
   font-size: 2.5rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-weight: 400;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
   color: var(--color-primary);
   margin-bottom: 1rem;
+  text-shadow:
+    0 0 10px rgba(0, 240, 255, 0.5),
+    0 0 30px rgba(0, 240, 255, 0.2);
+  position: relative;
 }
 
+h1::before,
+h1::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+h1::before {
+  clip-path: inset(0 0 55% 0);
+  animation: glitch-top 4s infinite linear;
+}
+
+h1::after {
+  clip-path: inset(45% 0 0 0);
+  animation: glitch-bottom 4s infinite linear;
+}
+
+/* h2 — Blinking cursor */
 h2 {
+  font-family: var(--font-display);
   font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   margin-bottom: 1rem;
-  color: var(--color-text);
+  color: var(--color-text-bright);
 }
 
+h2::after {
+  content: '_';
+  color: var(--color-primary);
+  animation: blink-cursor 1s step-end infinite;
+}
+
+/* h3 — Terminal prefix */
 h3 {
   font-size: 1.125rem;
   font-weight: 600;
@@ -67,42 +201,89 @@ h3 {
   color: var(--color-text-muted);
 }
 
+h3::before {
+  content: '> ';
+  color: var(--color-primary);
+}
+
+/* ============================================================
+   SECTIONS (PANELS) — Corner bracket decorations
+   ============================================================ */
+
 section {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border-radius: 2px;
   padding: 1.5rem;
+  position: relative;
 }
+
+section::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 16px;
+  height: 16px;
+  border-top: 2px solid var(--color-primary);
+  border-left: 2px solid var(--color-primary);
+  pointer-events: none;
+}
+
+section::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 16px;
+  height: 16px;
+  border-bottom: 2px solid var(--color-primary);
+  border-right: 2px solid var(--color-primary);
+  pointer-events: none;
+}
+
+/* ============================================================
+   TABS — Underline navigation
+   ============================================================ */
 
 .tabs {
   display: flex;
   gap: 0.5rem;
   margin-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0;
 }
 
 .tab-button {
   background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   padding: 0.5rem 1.25rem;
-  font-family: var(--font-sans);
+  font-family: var(--font-mono);
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--color-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .tab-button:hover {
-  color: var(--color-text);
-  border-color: var(--color-text-muted);
+  color: var(--color-text-bright);
 }
 
 .tab-button.active {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: var(--color-bg);
+  background: transparent;
+  border-bottom-color: var(--color-primary);
+  color: var(--color-primary);
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
 }
+
+/* ============================================================
+   FORMS
+   ============================================================ */
 
 form {
   display: flex;
@@ -115,10 +296,10 @@ label {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.1em;
   color: var(--color-text-muted);
 }
 
@@ -126,45 +307,57 @@ input,
 select {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 2px;
   padding: 0.625rem 0.75rem;
-  font-family: var(--font-sans);
+  font-family: var(--font-mono);
   font-size: 0.9375rem;
   color: var(--color-text);
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 input:focus,
 select:focus {
   outline: none;
   border-color: var(--color-primary);
+  box-shadow: var(--color-primary-glow);
 }
 
 input::placeholder {
   color: var(--color-text-muted);
 }
 
+/* ============================================================
+   BUTTONS — Ghost / Outlined style
+   ============================================================ */
+
 button {
-  background: var(--color-primary);
-  border: none;
-  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--color-primary);
+  border-radius: 2px;
   padding: 0.625rem 1.25rem;
-  font-family: var(--font-sans);
+  font-family: var(--font-mono);
   font-size: 0.875rem;
   font-weight: 600;
-  color: var(--color-bg);
+  color: var(--color-primary);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: all 0.15s ease;
   align-self: flex-end;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 button:hover {
-  background: var(--color-primary-hover);
+  background: var(--color-primary-dim);
+  box-shadow: var(--color-primary-glow);
 }
 
 button[type='submit'] {
   margin-top: 0.5rem;
 }
+
+/* ============================================================
+   LISTS — Left accent border
+   ============================================================ */
 
 ul {
   list-style: none;
@@ -176,23 +369,44 @@ ul {
 li {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-left: 3px solid var(--color-primary);
+  border-radius: 2px;
   padding: 0.75rem 1rem;
   font-size: 0.9375rem;
+  transition: box-shadow 0.15s ease;
+}
+
+li:hover {
+  box-shadow: inset 4px 0 12px rgba(0, 240, 255, 0.08);
 }
 
 li strong {
   color: var(--color-primary);
+  text-shadow: 0 0 6px rgba(0, 240, 255, 0.3);
 }
 
+/* ============================================================
+   ALERTS
+   ============================================================ */
+
 p[role='alert'] {
-  background: rgba(255, 77, 106, 0.1);
+  background: var(--color-danger-dim);
   border: 1px solid var(--color-danger);
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 0.75rem 1rem;
   color: var(--color-danger);
   font-size: 0.875rem;
+  box-shadow: var(--color-danger-glow);
 }
+
+p[role='alert']::before {
+  content: '[!] ';
+  font-weight: 700;
+}
+
+/* ============================================================
+   TIMELINE
+   ============================================================ */
 
 .timeline {
   overflow-x: auto;
@@ -215,7 +429,7 @@ p[role='alert'] {
   display: grid;
   gap: 1px;
   background: var(--color-border);
-  border-radius: 8px;
+  border-radius: 2px;
   overflow: hidden;
   min-width: max-content;
 }
@@ -243,6 +457,7 @@ p[role='alert'] {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.6875rem;
+  font-family: var(--font-mono);
 }
 
 .timeline-cell.header.gantt-header {
@@ -265,6 +480,7 @@ p[role='alert'] {
   position: sticky;
   left: 0;
   z-index: 1;
+  text-shadow: 0 0 6px rgba(0, 240, 255, 0.15);
 }
 
 .timeline-cell.empty {
@@ -272,6 +488,7 @@ p[role='alert'] {
   text-align: center;
 }
 
+/* Gantt bars — sharp edges */
 .gantt-cell {
   position: relative;
   text-align: center;
@@ -280,29 +497,32 @@ p[role='alert'] {
 }
 
 .gantt-bar {
-  background: rgba(0, 217, 255, 0.18);
-  border-top: 1px solid rgba(0, 217, 255, 0.35);
-  border-bottom: 1px solid rgba(0, 217, 255, 0.35);
+  background: rgba(0, 240, 255, 0.12);
+  border-top: 1px solid rgba(0, 240, 255, 0.3);
+  border-bottom: 1px solid rgba(0, 240, 255, 0.3);
   color: var(--color-primary);
 }
 
 .gantt-start {
-  border-top-left-radius: 10px;
-  border-bottom-left-radius: 10px;
+  border-left: 2px solid var(--color-primary);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .gantt-end {
-  border-top-right-radius: 10px;
-  border-bottom-right-radius: 10px;
+  border-right: 2px solid var(--color-primary);
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .gantt-assignment {
   display: inline-block;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--color-primary-dim);
   padding: 0.1rem 0.35rem;
-  border-radius: 999px;
+  border-radius: 2px;
   font-size: 0.625rem;
-  color: var(--color-text);
+  font-family: var(--font-mono);
+  color: var(--color-primary);
 }
 
 .gantt-milestone {
@@ -312,11 +532,12 @@ p[role='alert'] {
   width: 1.2rem;
   height: 1.2rem;
   margin-right: 0.25rem;
-  border-radius: 4px;
-  background: rgba(255, 214, 0, 0.2);
+  border-radius: 2px;
+  background: rgba(255, 214, 0, 0.15);
   color: #ffd600;
   font-size: 0.7rem;
   font-weight: 600;
+  text-shadow: 0 0 6px rgba(255, 214, 0, 0.5);
 }
 
 .gantt-conflict {
@@ -326,11 +547,12 @@ p[role='alert'] {
   width: 1rem;
   height: 1rem;
   margin-right: 0.25rem;
-  border-radius: 999px;
-  background: rgba(255, 77, 106, 0.2);
+  border-radius: 2px;
+  background: rgba(255, 42, 109, 0.15);
   color: var(--color-danger);
   font-size: 0.7rem;
   font-weight: 700;
+  animation: pulse-danger 2s ease-in-out infinite;
 }
 
 .gantt-today {
@@ -339,12 +561,23 @@ p[role='alert'] {
   justify-self: center;
   z-index: 2;
   pointer-events: none;
+  box-shadow: 0 0 6px rgba(255, 42, 109, 0.5);
 }
+
+/* ============================================================
+   KANBAN
+   ============================================================ */
 
 .kanban-section {
   background: transparent;
   border: none;
   padding: 0;
+}
+
+/* Remove corner brackets from kanban-section */
+.kanban-section::before,
+.kanban-section::after {
+  display: none;
 }
 
 .kanban-board {
@@ -360,7 +593,7 @@ p[role='alert'] {
   flex: 1;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border-radius: 2px;
   display: flex;
   flex-direction: column;
 }
@@ -370,20 +603,22 @@ p[role='alert'] {
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1rem;
+  font-family: var(--font-mono);
   font-weight: 600;
   font-size: 0.875rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   color: var(--color-text-muted);
   border-bottom: 1px solid var(--color-border);
 }
 
 .kanban-count {
-  background: var(--color-border);
-  color: var(--color-text-muted);
+  background: var(--color-primary-dim);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  color: var(--color-primary);
   font-size: 0.75rem;
   padding: 0.125rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 2px;
 }
 
 .kanban-column-body {
@@ -398,15 +633,16 @@ p[role='alert'] {
 .kanban-card {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: 2px;
   padding: 0.75rem;
   cursor: grab;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
   position: relative;
 }
 
 .kanban-card:hover {
   border-color: var(--color-primary);
+  box-shadow: var(--color-primary-glow);
 }
 
 .kanban-card-top {
@@ -420,32 +656,38 @@ p[role='alert'] {
 .kanban-card-name {
   font-weight: 600;
   font-size: 0.875rem;
-  color: var(--color-text);
+  color: var(--color-text-bright);
 }
 
 .priority-badge {
   font-size: 0.6875rem;
   font-weight: 600;
   padding: 0.125rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 2px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   flex-shrink: 0;
 }
 
 .priority-badge.high {
-  background: rgba(255, 77, 106, 0.15);
-  color: #ff4d6a;
+  background: rgba(255, 42, 109, 0.1);
+  border: 1px solid rgba(255, 42, 109, 0.3);
+  color: #ff2a6d;
+  text-shadow: 0 0 6px rgba(255, 42, 109, 0.4);
 }
 
 .priority-badge.medium {
-  background: rgba(255, 171, 0, 0.15);
+  background: rgba(255, 171, 0, 0.1);
+  border: 1px solid rgba(255, 171, 0, 0.3);
   color: #ffab00;
+  text-shadow: 0 0 6px rgba(255, 171, 0, 0.4);
 }
 
 .priority-badge.low {
-  background: rgba(0, 230, 118, 0.15);
-  color: #00e676;
+  background: rgba(5, 255, 161, 0.1);
+  border: 1px solid rgba(5, 255, 161, 0.3);
+  color: #05ffa1;
+  text-shadow: 0 0 6px rgba(5, 255, 161, 0.4);
 }
 
 .kanban-card-desc {
@@ -472,10 +714,11 @@ p[role='alert'] {
 
 .kanban-card-project {
   font-size: 0.6875rem;
-  background: rgba(0, 217, 255, 0.1);
+  background: var(--color-primary-dim);
+  border: 1px solid rgba(0, 240, 255, 0.15);
   color: var(--color-primary);
   padding: 0.125rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 2px;
 }
 
 .kanban-card-actions {
@@ -494,21 +737,26 @@ p[role='alert'] {
 .kanban-delete-btn {
   font-size: 0.75rem;
   padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+  border-radius: 2px;
   border: 1px solid var(--color-border);
   background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .kanban-edit-btn:hover {
   color: var(--color-primary);
   border-color: var(--color-primary);
+  box-shadow: var(--color-primary-glow);
 }
 
 .kanban-delete-btn:hover {
   color: var(--color-danger);
   border-color: var(--color-danger);
+  box-shadow: var(--color-danger-glow);
 }
 
 .kanban-add-btn {
@@ -516,9 +764,10 @@ p[role='alert'] {
   padding: 0.5rem;
   background: transparent;
   border: 1px dashed var(--color-border);
-  border-radius: 8px;
+  border-radius: 2px;
   color: var(--color-text-muted);
   font-size: 0.8125rem;
+  font-family: var(--font-mono);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -526,13 +775,19 @@ p[role='alert'] {
 .kanban-add-btn:hover {
   border-color: var(--color-primary);
   color: var(--color-primary);
-  background: transparent;
+  background: var(--color-primary-dim);
+  box-shadow: var(--color-primary-glow);
 }
+
+/* ============================================================
+   MODAL
+   ============================================================ */
 
 .task-modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -541,16 +796,27 @@ p[role='alert'] {
 
 .task-modal {
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border: 1px solid var(--color-primary);
+  border-radius: 2px;
   padding: 1.5rem;
   width: 100%;
   max-width: 480px;
+  box-shadow: var(--color-primary-glow);
 }
 
 .task-modal h3 {
   margin-bottom: 1rem;
-  color: var(--color-text);
+  color: var(--color-text-bright);
+}
+
+.task-modal h3::before {
+  content: '[ ';
+  color: var(--color-primary);
+}
+
+.task-modal h3::after {
+  content: ' ]';
+  color: var(--color-primary);
 }
 
 .task-modal form {
@@ -562,18 +828,20 @@ p[role='alert'] {
 .task-textarea {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 2px;
   padding: 0.625rem 0.75rem;
-  font-family: var(--font-sans);
+  font-family: var(--font-mono);
   font-size: 0.9375rem;
   color: var(--color-text);
   resize: vertical;
   min-height: 60px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .task-textarea:focus {
   outline: none;
   border-color: var(--color-primary);
+  box-shadow: var(--color-primary-glow);
 }
 
 .task-modal-buttons {
@@ -594,13 +862,125 @@ p[role='alert'] {
   background: transparent;
 }
 
+/* ============================================================
+   ANIMATIONS
+   ============================================================ */
+
+@keyframes glitch-top {
+  0%, 93%, 100% {
+    transform: translate(0);
+    text-shadow: none;
+  }
+  94% {
+    transform: translate(2px, -1px);
+    text-shadow: -2px 0 var(--color-danger);
+  }
+  95% {
+    transform: translate(-2px, 1px);
+    text-shadow: 2px 0 var(--color-danger);
+  }
+  96% {
+    transform: translate(0);
+    text-shadow: none;
+  }
+}
+
+@keyframes glitch-bottom {
+  0%, 93%, 100% {
+    transform: translate(0);
+    text-shadow: none;
+  }
+  94% {
+    transform: translate(-2px, 1px);
+    text-shadow: 2px 0 var(--color-success);
+  }
+  95% {
+    transform: translate(2px, -1px);
+    text-shadow: -2px 0 var(--color-success);
+  }
+  96% {
+    transform: translate(0);
+    text-shadow: none;
+  }
+}
+
+@keyframes blink-cursor {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes pulse-danger {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(255, 42, 109, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(255, 42, 109, 0.6);
+  }
+}
+
+/* ============================================================
+   FOCUS INDICATORS
+   ============================================================ */
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  box-shadow: var(--color-primary-glow);
+}
+
+input:focus-visible,
+select:focus-visible,
+.task-textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--color-primary-glow);
+}
+
+/* ============================================================
+   ACCESSIBILITY — Reduced motion
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  h1::before,
+  h1::after {
+    animation: none;
+  }
+
+  h2::after {
+    animation: none;
+  }
+
+  .gantt-conflict {
+    animation: none;
+  }
+
+  body::after {
+    display: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+
 @media (max-width: 768px) {
   #root {
     padding: 1rem;
   }
 
   h1 {
-    font-size: 1.75rem;
+    font-size: 1.5rem;
+    letter-spacing: 0.08em;
   }
 
   form {
@@ -613,5 +993,13 @@ p[role='alert'] {
 
   button {
     width: 100%;
+  }
+
+  .kanban-board {
+    flex-direction: column;
+  }
+
+  .kanban-column {
+    max-width: 100%;
   }
 }

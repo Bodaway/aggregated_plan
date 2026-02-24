@@ -367,7 +367,7 @@ export const App: React.FC = () => {
 
   return (
     <main>
-      <h1>Aggregated Plan</h1>
+      <h1 data-text="Aggregated Plan">Aggregated Plan</h1>
       {errorMessage ? <p role="alert">{errorMessage}</p> : null}
       {isLoading ? <p>Loading data...</p> : null}
 
