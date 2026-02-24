@@ -19,3 +19,6 @@ export type {
 export { createDeveloperUseCases } from './developer-use-cases';
 export type { MilestoneUseCases } from './milestone-use-cases';
 export { createMilestoneUseCases } from './milestone-use-cases';
+export type { TaskRepository } from './task-repository';
+export type { TaskUseCases } from './task-use-cases';
+export { createTaskUseCases } from './task-use-cases';

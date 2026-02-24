@@ -433,6 +433,11 @@ Les données suivantes sont stockées localement :
 - **Configuration** : Paramètres de l'application
 - **Historique** : Logs des modifications
 
+**Implémentation technique (dev/local/test)** :
+
+- PostgreSQL comme source de vérité locale.
+- Environnements séparés par base (`aggregated_plan`, `aggregated_plan_dev`, `aggregated_plan_test`).
+
 **Avantages** :
 - Performance : Accès rapide aux données
 - Contrôle : Gestion complète des données

@@ -9,6 +9,9 @@ import type {
   Project,
   ProjectPriority,
   ProjectStatus,
+  Task,
+  TaskPriority,
+  TaskStatus,
   Weekday,
   WeeklyAllocation,
 } from '@aggregated-plan/shared-types';
@@ -160,3 +163,46 @@ export const createWeeklyAllocation = async (
 
 export const fetchConflicts = async (): Promise<readonly Conflict[]> =>
   requestJson<readonly Conflict[]>('/conflicts');
+
+export type CreateTaskInput = {
+  readonly name: string;
+  readonly description?: string;
+  readonly projectId?: string;
+  readonly status?: TaskStatus;
+  readonly priority?: TaskPriority;
+  readonly dueDate?: IsoDateString;
+};
+
+export type UpdateTaskInput = {
+  readonly name?: string;
+  readonly description?: string;
+  readonly projectId?: string;
+  readonly status?: TaskStatus;
+  readonly priority?: TaskPriority;
+  readonly dueDate?: IsoDateString;
+};
+
+export const fetchTasks = async (): Promise<readonly Task[]> =>
+  requestJson<readonly Task[]>('/tasks');
+
+export const createTaskApi = async (
+  input: CreateTaskInput,
+): Promise<Task> =>
+  requestJson<Task>('/tasks', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+
+export const updateTaskApi = async (
+  id: string,
+  input: UpdateTaskInput,
+): Promise<Task> =>
+  requestJson<Task>(`/tasks/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+
+export const deleteTaskApi = async (id: string): Promise<void> =>
+  requestJson<void>(`/tasks/${id}`, {
+    method: 'DELETE',
+  });

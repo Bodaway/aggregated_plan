@@ -23,3 +23,5 @@ export type { CreateAvailabilityParams, AvailabilityContext } from './availabili
 export { createAvailability } from './availability-domain';
 export type { CreateMilestoneParams, MilestoneContext } from './milestone-domain';
 export { createMilestone } from './milestone-domain';
+export type { CreateTaskParams, UpdateTaskParams, TaskContext } from './task-domain';
+export { createTask, updateTask } from './task-domain';

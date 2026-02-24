@@ -5,6 +5,8 @@ export type {
   UpdateDeveloperInput,
   CreateAssignmentInput,
   CreateWeeklyAllocationInput,
+  CreateTaskInput,
+  UpdateTaskInput,
 } from './api-client';
 export {
   fetchProjects,
@@ -18,4 +20,8 @@ export {
   fetchAssignments,
   createWeeklyAllocation,
   fetchConflicts,
+  fetchTasks,
+  createTaskApi,
+  updateTaskApi,
+  deleteTaskApi,
 } from './api-client';

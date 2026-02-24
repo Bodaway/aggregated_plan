@@ -1,4 +1,4 @@
-import type { DateRange, IsoDateString } from './time-types';
+import type { IsoDateString } from './time-types';
 import type { EntityId } from './user-types';
 
 export type ProjectStatus =
@@ -27,22 +27,16 @@ export type Project = {
 
 export type TaskStatus = 'todo' | 'in-progress' | 'done';
 
-export type TaskType =
-  | 'development'
-  | 'test'
-  | 'documentation'
-  | 'meeting'
-  | 'other';
+export type TaskPriority = 'high' | 'medium' | 'low';
 
 export type Task = {
   readonly id: EntityId;
-  readonly projectId: EntityId;
+  readonly projectId?: EntityId;
   readonly name: string;
+  readonly description?: string;
   readonly status: TaskStatus;
-  readonly type: TaskType;
-  readonly estimateHalfDays?: number;
-  readonly dateRange: DateRange;
-  readonly assigneeIds: readonly EntityId[];
+  readonly priority: TaskPriority;
+  readonly dueDate?: IsoDateString;
   readonly createdAt: IsoDateString;
   readonly updatedAt: IsoDateString;
 };

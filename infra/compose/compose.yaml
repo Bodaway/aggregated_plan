@@ -1,0 +1,93 @@
+name: aggregated-plan
+
+services:
+  db:
+    image: docker.io/library/postgres:16.2-alpine
+    container_name: aggregated-plan-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - aggregated-plan
+
+  backend:
+    image: docker.io/library/node:20-alpine
+    working_dir: /workspace
+    command: sh -c "corepack enable && pnpm install --filter backend... && pnpm --filter backend db:migrate && pnpm --filter backend dev"
+    environment:
+      APP_ENV: ${APP_ENV}
+      PERSISTENCE_KIND: postgres
+      BACKEND_HOST: ${BACKEND_HOST}
+      BACKEND_PORT: ${BACKEND_PORT}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SSL: ${DB_SSL}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS}
+    ports:
+      - "${BACKEND_PORT}:3001"
+    volumes:
+      - ../../:/workspace
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - aggregated-plan
+
+  frontend:
+    image: docker.io/library/node:20-alpine
+    working_dir: /workspace
+    command: sh -c "corepack enable && pnpm install --filter frontend... && pnpm --filter frontend dev --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+    ports:
+      - "${FRONTEND_PORT}:5173"
+    volumes:
+      - ../../:/workspace
+    depends_on:
+      - backend
+    networks:
+      - aggregated-plan
+
+  migrate:
+    image: docker.io/library/node:20-alpine
+    profiles: ["migrate"]
+    working_dir: /workspace
+    command: sh -c "corepack enable && pnpm install --filter backend... && pnpm --filter backend db:migrate"
+    environment:
+      APP_ENV: ${APP_ENV}
+      PERSISTENCE_KIND: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_SSL: ${DB_SSL}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS}
+    volumes:
+      - ../../:/workspace
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - aggregated-plan
+
+volumes:
+  pg-data:
+
+networks:
+  aggregated-plan:
+    name: aggregated-plan

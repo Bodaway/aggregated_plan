@@ -48,6 +48,34 @@ pnpm --filter frontend dev
 pnpm --filter backend dev
 ```
 
+### Database (PostgreSQL)
+
+Local dev uses PostgreSQL with a selectable persistence driver.
+
+```bash
+# Start Postgres (Docker or Podman)
+docker compose --env-file config/env/local.env -f infra/compose/compose.yaml up -d db
+
+# Run migrations
+pnpm --filter backend db:migrate
+```
+
+### Test Environment (full stack)
+
+```bash
+# Single command (Docker/Podman)
+./scripts/start-test.sh
+```
+
+Environment templates live in `config/env/`:
+
+- `config/env/example.env`
+- `config/env/local.env`
+- `config/env/dev.env`
+- `config/env/test.env`
+
+Set `PERSISTENCE_KIND=in-memory` to fall back to the in-memory repositories.
+
 ### Build
 
 ```bash
@@ -170,6 +198,10 @@ pnpm type-check
 - `pnpm --filter backend start`: Production server
 - `pnpm --filter backend test`: Tests
 - `pnpm --filter backend lint`: Linting
+- `pnpm --filter backend db:generate`: Generate migrations (Drizzle)
+- `pnpm --filter backend db:migrate`: Apply SQL migrations
+- `pnpm --filter backend db:push`: Push schema (dev only)
+- `pnpm --filter backend db:studio`: Open Drizzle Studio
 
 ## 🤝 Contributing
 

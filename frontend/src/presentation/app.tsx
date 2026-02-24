@@ -8,6 +8,7 @@ import type {
   Milestone,
   MilestoneType,
   Project,
+  Task,
 } from '@domain/index';
 import {
   loadAssignments,
@@ -15,13 +16,19 @@ import {
   loadDevelopers,
   loadMilestones,
   loadProjects,
+  loadTasks,
   editDeveloper,
+  editTask,
+  removeTask,
   submitAssignment,
   submitDeveloper,
   submitMilestone,
   submitProject,
+  submitTask,
 } from '@application/index';
 import { Timeline } from './timeline';
+import { KanbanBoard } from './kanban-board';
+import type { CreateTaskInput, UpdateTaskInput } from '@infrastructure/index';
 
 type ProjectFormState = {
   readonly name: string;
@@ -58,7 +65,7 @@ type MilestoneFormState = {
   readonly type: MilestoneType;
 };
 
-type ViewTab = 'portfolio' | 'timeline';
+type ViewTab = 'portfolio' | 'timeline' | 'board';
 
 const DEFAULT_PROJECT_FORM: ProjectFormState = {
   name: '',
@@ -108,6 +115,7 @@ export const App: React.FC = () => {
   const [developers, setDevelopers] = useState<readonly Developer[]>([]);
   const [assignments, setAssignments] = useState<readonly Assignment[]>([]);
   const [conflicts, setConflicts] = useState<readonly Conflict[]>([]);
+  const [tasks, setTasks] = useState<readonly Task[]>([]);
   const [projectForm, setProjectForm] = useState<ProjectFormState>(DEFAULT_PROJECT_FORM);
   const [assignmentForm, setAssignmentForm] = useState<AssignmentFormState>(DEFAULT_ASSIGNMENT_FORM);
   const [developerForm, setDeveloperForm] = useState<DeveloperFormState>(DEFAULT_DEVELOPER_FORM);
@@ -123,18 +131,20 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [projectsData, milestonesData, developersData, conflictsData, assignmentsData] = await Promise.all([
+      const [projectsData, milestonesData, developersData, conflictsData, assignmentsData, tasksData] = await Promise.all([
         loadProjects(),
         loadMilestones(),
         loadDevelopers(),
         loadConflicts(),
         loadAssignments(),
+        loadTasks(),
       ]);
       setProjects(projectsData);
       setMilestones(milestonesData);
       setDevelopers(developersData);
       setConflicts(conflictsData);
       setAssignments(assignmentsData);
+      setTasks(tasksData);
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -375,6 +385,13 @@ export const App: React.FC = () => {
           onClick={() => setActiveTab('timeline')}
         >
           Timeline
+        </button>
+        <button
+          type="button"
+          className={`tab-button ${activeTab === 'board' ? 'active' : ''}`}
+          onClick={() => setActiveTab('board')}
+        >
+          Board
         </button>
       </div>
 
@@ -659,13 +676,30 @@ export const App: React.FC = () => {
             )}
           </section>
         </>
-      ) : (
+      ) : activeTab === 'timeline' ? (
         <Timeline
           projects={projects}
           assignments={assignments}
           developers={developers}
           milestones={milestones}
           conflicts={conflicts}
+        />
+      ) : (
+        <KanbanBoard
+          tasks={tasks}
+          projects={projects}
+          onCreateTask={async (input: CreateTaskInput) => {
+            await submitTask(input);
+            await refreshData();
+          }}
+          onUpdateTask={async (id: string, input: UpdateTaskInput) => {
+            await editTask(id, input);
+            await refreshData();
+          }}
+          onDeleteTask={async (id: string) => {
+            await removeTask(id);
+            await refreshData();
+          }}
         />
       )}
     </main>

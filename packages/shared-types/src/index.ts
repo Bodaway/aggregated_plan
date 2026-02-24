@@ -5,7 +5,7 @@ export type {
   ProjectPriority,
   Project,
   TaskStatus,
-  TaskType,
+  TaskPriority,
   Task,
   MilestoneType,
   Milestone,

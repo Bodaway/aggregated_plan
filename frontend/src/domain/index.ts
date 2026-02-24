@@ -9,4 +9,7 @@ export type {
   Project,
   ProjectPriority,
   ProjectStatus,
+  Task,
+  TaskPriority,
+  TaskStatus,
 } from '@aggregated-plan/shared-types';

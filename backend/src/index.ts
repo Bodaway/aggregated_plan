@@ -11,34 +11,56 @@ import {
   createMilestoneUseCases,
   createProjectUseCases,
   createStaffingUseCases,
+  createTaskUseCases,
 } from '@application/index';
 import {
   createClock,
   createIdProvider,
   createInMemoryRepositories,
   createInMemoryStore,
+  createPostgresConnection,
+  createPostgresRepositories,
+  getDatabaseConfig,
+  getPersistenceKind,
 } from '@infrastructure/index';
 
 const app = new Hono();
 app.use('*', cors());
 
-const store = createInMemoryStore({
-  developers: [
-    {
-      id: 'developer-1',
-      displayName: 'Jean Dupont',
-      email: 'jean.dupont@example.com',
-      capacityHalfDaysPerWeek: 10,
-    },
-    {
-      id: 'developer-2',
-      displayName: 'Maria Silva',
-      email: 'maria.silva@example.com',
-      capacityHalfDaysPerWeek: 8,
-    },
-  ],
-});
-const repositories = createInMemoryRepositories(store);
+const persistenceKind = getPersistenceKind(process.env);
+const persistence = (() => {
+  if (persistenceKind === 'postgres') {
+    const dbConfig = getDatabaseConfig(process.env);
+    const { db, close } = createPostgresConnection(dbConfig);
+    return {
+      repositories: createPostgresRepositories(db),
+      close,
+    };
+  }
+
+  const store = createInMemoryStore({
+    developers: [
+      {
+        id: 'developer-1',
+        displayName: 'Jean Dupont',
+        email: 'jean.dupont@example.com',
+        capacityHalfDaysPerWeek: 10,
+      },
+      {
+        id: 'developer-2',
+        displayName: 'Maria Silva',
+        email: 'maria.silva@example.com',
+        capacityHalfDaysPerWeek: 8,
+      },
+    ],
+  });
+
+  return {
+    repositories: createInMemoryRepositories(store),
+    close: null,
+  };
+})();
+const repositories = persistence.repositories;
 const idProvider = createIdProvider();
 const clock = createClock();
 
@@ -70,6 +92,11 @@ const milestoneUseCases = createMilestoneUseCases({
   idProvider,
   clock,
 });
+const taskUseCases = createTaskUseCases({
+  taskRepository: repositories.taskRepository,
+  idProvider,
+  clock,
+});
 
 const isoDateSchema = z
   .string()
@@ -93,6 +120,8 @@ const projectStatusSchema = z.enum([
 ]);
 const projectPrioritySchema = z.enum(['high', 'medium', 'low']);
 const milestoneTypeSchema = z.enum(['delivery', 'review', 'demo', 'other']);
+const taskStatusSchema = z.enum(['todo', 'in-progress', 'done']);
+const taskPrioritySchema = z.enum(['high', 'medium', 'low']);
 
 const respondWithResult = <T extends Record<string, unknown>>(
   c: Context,
@@ -303,6 +332,61 @@ app.post('/availabilities', async (c) => {
   return respondWithResult(c, result, 201);
 });
 
+app.get('/tasks', async (c) => {
+  const taskList = await taskUseCases.listTasks();
+  return c.json(taskList);
+});
+
+app.get('/tasks/:id', async (c) => {
+  const task = await taskUseCases.getTask(c.req.param('id'));
+  if (!task) {
+    return c.json({ error: 'Task not found' }, 404);
+  }
+  return c.json(task);
+});
+
+app.post('/tasks', async (c) => {
+  const schema = z.object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    projectId: z.string().optional(),
+    status: taskStatusSchema.optional(),
+    priority: taskPrioritySchema.optional(),
+    dueDate: isoDateSchema.optional(),
+  });
+  const parseResult = schema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await taskUseCases.createTask(parseResult.data);
+  return respondWithResult(c, result, 201);
+});
+
+app.put('/tasks/:id', async (c) => {
+  const schema = z.object({
+    name: z.string().min(1).optional(),
+    description: z.string().optional(),
+    projectId: z.string().optional(),
+    status: taskStatusSchema.optional(),
+    priority: taskPrioritySchema.optional(),
+    dueDate: isoDateSchema.optional(),
+  });
+  const parseResult = schema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await taskUseCases.updateTask(c.req.param('id'), parseResult.data);
+  return respondWithResult(c, result);
+});
+
+app.delete('/tasks/:id', async (c) => {
+  const result = await taskUseCases.deleteTask(c.req.param('id'));
+  if (result.ok) {
+    return c.body(null, 204);
+  }
+  return respondWithResult(c, result);
+});
+
 const serverConfig = getServerConfig(process.env);
 console.log(`Server is running on ${serverConfig.host}:${serverConfig.port}`);
 
@@ -311,3 +395,12 @@ serve({
   port: serverConfig.port,
   hostname: serverConfig.host,
 });
+
+if (persistence.close) {
+  const shutdown = async (): Promise<void> => {
+    await persistence.close();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
+}

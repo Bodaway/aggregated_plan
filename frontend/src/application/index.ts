@@ -7,3 +7,4 @@ export {
   loadAssignments,
   loadConflicts,
 } from './staffing-service';
+export { loadTasks, submitTask, editTask, removeTask } from './task-service';

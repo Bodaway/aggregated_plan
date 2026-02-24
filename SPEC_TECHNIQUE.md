@@ -35,8 +35,9 @@ Le projet est organisé en monorepo utilisant pnpm workspace pour gérer les dé
 
 ##### Implémentation MVP (en cours)
 
-- **Persistance** : Référentiels en mémoire (in-memory) pour les projets, affectations,
-  allocations, disponibilités et développeurs.
+- **Persistance** : Référentiels PostgreSQL (Drizzle ORM) avec sélection par configuration
+  (`PERSISTENCE_KIND=in-memory|postgres`). Les référentiels en mémoire restent disponibles
+  pour les tests rapides.
 - **API HTTP** :
   - `GET /projects`, `POST /projects`, `PUT /projects/:id`, `DELETE /projects/:id`
   - `GET /developers`, `POST /developers`
@@ -71,6 +72,7 @@ Le projet est organisé en monorepo utilisant pnpm workspace pour gérer les dé
 ### Backend
 
 - Hono 3.12.0
+- Drizzle ORM (PostgreSQL)
 - Zod 3.22.4 (validation)
 - Jest 29.7.0
 - ESLint 8.56.0
@@ -133,6 +135,14 @@ Configuration uniforme pour tous les packages.
 - Coverage threshold : 80% pour branches, functions, lines, statements
 - Configuration par package avec paths mapping
 
+### Configuration multi-environnements
+
+- Variables disponibles : `APP_ENV`, `PERSISTENCE_KIND`, `DB_HOST`, `DB_PORT`,
+  `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL`, `DB_MAX_CONNECTIONS`,
+  `DATABASE_URL` (optionnel).
+- Fichiers d’exemple : `config/env/example.env`, `config/env/local.env`,
+  `config/env/dev.env`, `config/env/test.env`.
+
 ## Dépendances partagées
 
 Les dépendances communes sont définies au niveau root pour éviter les duplications :
@@ -166,7 +176,18 @@ Les dépendances communes sont définies au niveau root pour éviter les duplica
 
 ## Déploiement
 
-[À compléter avec les informations de déploiement]
+### Infra locale (Docker/Podman)
+
+- Compose compatible Docker/Podman : `infra/compose/compose.yaml`
+- Démarrage base locale :
+  - `docker compose --env-file config/env/local.env -f infra/compose/compose.yaml up -d db`
+- Migrations :
+  - `pnpm --filter backend db:migrate`
+
+### Migrations
+
+- SQL versionné dans `backend/drizzle/`
+- Génération via Drizzle Kit (`pnpm --filter backend db:generate`)
 
 ## Historique des modifications
 

@@ -6,6 +6,7 @@ import type {
   DeveloperRepository,
   MilestoneRepository,
   ProjectRepository,
+  TaskRepository,
 } from '@application/index';
 import type { InMemoryStore } from './in-memory-store';
 
@@ -95,6 +96,22 @@ export const createMilestoneRepository = (store: InMemoryStore): MilestoneReposi
   },
 });
 
+export const createTaskRepository = (store: InMemoryStore): TaskRepository => ({
+  list: async () => [...store.tasks],
+  getById: async (id) => findById(store.tasks, id),
+  save: async (task) => {
+    store.tasks = [...store.tasks, task];
+    return task;
+  },
+  update: async (task) => {
+    store.tasks = store.tasks.map((item) => (item.id === task.id ? task : item));
+    return task;
+  },
+  remove: async (id) => {
+    store.tasks = store.tasks.filter((item) => item.id !== id);
+  },
+});
+
 export type InMemoryRepositories = {
   readonly projectRepository: ProjectRepository;
   readonly milestoneRepository: MilestoneRepository;
@@ -102,6 +119,7 @@ export type InMemoryRepositories = {
   readonly allocationRepository: AllocationRepository;
   readonly availabilityRepository: AvailabilityRepository;
   readonly developerRepository: DeveloperRepository;
+  readonly taskRepository: TaskRepository;
 };
 
 export const createInMemoryRepositories = (store: InMemoryStore): InMemoryRepositories => ({
@@ -111,4 +129,5 @@ export const createInMemoryRepositories = (store: InMemoryStore): InMemoryReposi
   allocationRepository: createAllocationRepository(store),
   availabilityRepository: createAvailabilityRepository(store),
   developerRepository: createDeveloperRepository(store),
+  taskRepository: createTaskRepository(store),
 });
