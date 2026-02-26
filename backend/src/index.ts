@@ -8,6 +8,7 @@ import type { DomainError, Result } from '@domain/index';
 import {
   createAvailabilityUseCases,
   createDeveloperUseCases,
+  createJiraImportUseCases,
   createMilestoneUseCases,
   createProjectUseCases,
   createStaffingUseCases,
@@ -17,6 +18,7 @@ import {
   createIdProvider,
   createInMemoryRepositories,
   createInMemoryStore,
+  createJiraHttpClient,
 } from '@infrastructure/index';
 
 const app = new Hono();
@@ -67,6 +69,13 @@ const developerUseCases = createDeveloperUseCases({
 const milestoneUseCases = createMilestoneUseCases({
   milestoneRepository: repositories.milestoneRepository,
   projectRepository: repositories.projectRepository,
+  idProvider,
+  clock,
+});
+const jiraImportUseCases = createJiraImportUseCases({
+  jiraConnector: createJiraHttpClient(),
+  projectRepository: repositories.projectRepository,
+  taskRepository: repositories.taskRepository,
   idProvider,
   clock,
 });
@@ -301,6 +310,81 @@ app.post('/availabilities', async (c) => {
   }
   const result = await availabilityUseCases.createAvailability(parseResult.data);
   return respondWithResult(c, result, 201);
+});
+
+// --- Jira import routes ---
+
+const jiraConfigSchema = z.object({
+  baseUrl: z.string().url(),
+  email: z.string().email(),
+  apiToken: z.string().min(1),
+  projectKey: z.string().min(1),
+});
+
+const jiraFilterSchema = z.object({
+  projectKey: z.string().min(1),
+  issueTypes: z.array(z.string()).optional(),
+  statuses: z.array(z.string()).optional(),
+  jql: z.string().optional(),
+  maxResults: z.number().int().min(1).max(100).optional(),
+});
+
+app.post('/jira/test-connection', async (c) => {
+  const parseResult = jiraConfigSchema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await jiraImportUseCases.testConnection(parseResult.data);
+  return respondWithResult(c, result);
+});
+
+app.post('/jira/preview', async (c) => {
+  const schema = z.object({
+    config: jiraConfigSchema,
+    filter: jiraFilterSchema,
+  });
+  const parseResult = schema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await jiraImportUseCases.previewIssues(
+    parseResult.data.config,
+    parseResult.data.filter,
+  );
+  if (result.ok) {
+    return c.json(result.value);
+  }
+  return c.json({ error: result.error }, 400);
+});
+
+app.post('/jira/import', async (c) => {
+  const schema = z.object({
+    config: jiraConfigSchema,
+    filter: jiraFilterSchema,
+    createdBy: z.string().min(1),
+  });
+  const parseResult = schema.safeParse(await c.req.json());
+  if (!parseResult.success) {
+    return c.json({ error: 'Invalid payload', details: parseResult.error.flatten() }, 400);
+  }
+  const result = await jiraImportUseCases.importIssues(
+    parseResult.data.config,
+    parseResult.data.filter,
+    parseResult.data.createdBy,
+  );
+  return respondWithResult(c, result, 201);
+});
+
+app.get('/tasks', async () => {
+  const tasks = await repositories.taskRepository.list();
+  return new Response(JSON.stringify(tasks), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+});
+
+app.get('/projects/:id/tasks', async (c) => {
+  const tasks = await repositories.taskRepository.listByProject(c.req.param('id'));
+  return c.json(tasks);
 });
 
 const serverConfig = getServerConfig(process.env);

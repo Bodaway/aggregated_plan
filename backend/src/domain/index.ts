@@ -23,3 +23,12 @@ export type { CreateAvailabilityParams, AvailabilityContext } from './availabili
 export { createAvailability } from './availability-domain';
 export type { CreateMilestoneParams, MilestoneContext } from './milestone-domain';
 export { createMilestone } from './milestone-domain';
+export type { JiraMappingContext } from './jira-mapping';
+export {
+  mapJiraIssueToTask,
+  mapJiraProjectToCreateParams,
+  mapJiraStatusToTaskStatus,
+  mapJiraTypeToTaskType,
+  mapJiraPriorityToProjectPriority,
+  estimateHalfDaysFromStoryPoints,
+} from './jira-mapping';

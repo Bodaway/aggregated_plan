@@ -18,3 +18,16 @@ export type {
   Availability,
 } from './staffing-types';
 export type { ConflictType, Conflict } from './conflict-types';
+export type {
+  JiraIssueType,
+  JiraIssueStatus,
+  JiraPriority,
+  JiraUser,
+  JiraIssue,
+  JiraImportConfig,
+  JiraImportFilter,
+  JiraImportResult,
+  JiraImportError,
+  JiraSyncStatus,
+  JiraSyncConfig,
+} from './jira-types';
