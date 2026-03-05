@@ -94,6 +94,7 @@ class User { ... }
 - `const` over `let`, never `var`
 - `map`/`filter`/`reduce` over imperative loops
 - Function composition over inheritance
+- Avoid mutations: use `Object.freeze()` or immutability libraries if necessary
 
 ### Result Type for Error Handling
 
@@ -114,6 +115,14 @@ Use the `ok()` and `err()` helpers from `backend/src/domain/result.ts`.
 - **Infrastructure** (`src/infrastructure/`): Concrete implementations. Depends on domain and application.
 - **Presentation** (`src/presentation/`, frontend only): React components. Can depend on all layers.
 
+### Design Patterns
+
+- **Factory**: for creating complex objects (plain functions returning typed objects)
+- **Repository**: for persistence abstraction (interfaces in application, implementations in infrastructure)
+- **Strategy**: for interchangeable algorithms
+- **Adapter**: for adapting external interfaces
+- Use composition rather than inheritance
+
 ### Test-Driven Development
 
 Write tests BEFORE production code. Follow Red -> Green -> Refactor cycle. Minimum coverage: 80% for branches, functions, lines, and statements.
@@ -128,6 +137,20 @@ Tests are colocated with source in `__tests__/` subdirectories or use `.test.ts(
 | Functions | camelCase | `getUserById`, `createProject` |
 | Constants | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT` |
 | Files | kebab-case | `user-repository.ts` |
+
+## Code Structure
+
+### File Organization
+
+- One file = one main responsibility
+- Name files in kebab-case: `user-repository.ts`
+- Export types/interfaces with domain prefix: `User`, `UserRepository`, etc.
+
+### Documentation
+
+- Document public functions with JSDoc
+- Keep `SPEC_FONCTIONNELLE.md` and `SPEC_TECHNIQUE.md` up to date
+- Update README.md for major changes
 
 ## Path Aliases
 
