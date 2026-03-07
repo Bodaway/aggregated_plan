@@ -31,6 +31,18 @@ const navItems: readonly NavItem[] = [
     iconPath: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
   },
   {
+    path: '/dedup',
+    label: 'Deduplication',
+    iconPath:
+      'M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5',
+  },
+  {
+    path: '/alerts',
+    label: 'Alerts',
+    iconPath:
+      'M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0',
+  },
+  {
     path: '/settings',
     label: 'Settings',
     iconPath:

@@ -1,0 +1,25 @@
+mutation StartActivity($taskId: ID) {
+  startActivity(taskId: $taskId) {
+    id
+    startTime
+    halfDay
+    task {
+      id
+      title
+    }
+  }
+}
+
+mutation StopActivity {
+  stopActivity {
+    id
+    startTime
+    endTime
+    halfDay
+    durationMinutes
+  }
+}
+
+mutation DeleteActivitySlot($id: ID!) {
+  deleteActivitySlot(id: $id)
+}

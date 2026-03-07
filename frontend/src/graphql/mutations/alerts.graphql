@@ -1,0 +1,6 @@
+mutation ResolveAlert($id: ID!) {
+  resolveAlert(id: $id) {
+    id
+    resolved
+  }
+}

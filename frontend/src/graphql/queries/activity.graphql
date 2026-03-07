@@ -1,0 +1,23 @@
+query ActivityJournal($date: Date!) {
+  activityJournal(date: $date) {
+    id
+    task {
+      id
+      title
+    }
+    startTime
+    endTime
+    halfDay
+    date
+    durationMinutes
+  }
+  currentActivity {
+    id
+    task {
+      id
+      title
+    }
+    startTime
+    halfDay
+  }
+}

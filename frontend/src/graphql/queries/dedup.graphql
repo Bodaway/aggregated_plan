@@ -1,0 +1,27 @@
+query DeduplicationSuggestions {
+  deduplicationSuggestions {
+    id
+    taskA {
+      id
+      title
+      source
+      assignee
+      project {
+        name
+      }
+    }
+    taskB {
+      id
+      title
+      source
+      assignee
+      project {
+        name
+      }
+    }
+    confidenceScore
+    titleSimilarity
+    assigneeMatch
+    projectMatch
+  }
+}

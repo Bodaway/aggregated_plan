@@ -1,0 +1,20 @@
+query Alerts($resolved: Boolean, $first: Int, $after: String) {
+  alerts(resolved: $resolved, first: $first, after: $after) {
+    edges {
+      node {
+        id
+        alertType
+        severity
+        message
+        date
+        resolved
+        createdAt
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    totalCount
+  }
+}

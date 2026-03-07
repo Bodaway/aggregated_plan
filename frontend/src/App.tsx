@@ -3,15 +3,10 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { PriorityMatrixPage } from '@/pages/PriorityMatrixPage';
 import { WorkloadPage } from '@/pages/WorkloadPage';
+import { ActivityJournalPage } from '@/pages/ActivityJournalPage';
+import { DeduplicationPage } from '@/pages/DeduplicationPage';
+import { AlertsPage } from '@/pages/AlertsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
-
-function PlaceholderContent({ name }: { readonly name: string }) {
-  return (
-    <div className="flex items-center justify-center h-full">
-      <p className="text-gray-500 text-lg">{name} content coming soon</p>
-    </div>
-  );
-}
 
 export function App() {
   return (
@@ -46,7 +41,23 @@ export function App() {
           path="/activity"
           element={
             <PageLayout title="Activity Journal">
-              <PlaceholderContent name="Activity Journal" />
+              <ActivityJournalPage />
+            </PageLayout>
+          }
+        />
+        <Route
+          path="/dedup"
+          element={
+            <PageLayout title="Deduplication">
+              <DeduplicationPage />
+            </PageLayout>
+          }
+        />
+        <Route
+          path="/alerts"
+          element={
+            <PageLayout title="Alerts">
+              <AlertsPage />
             </PageLayout>
           }
         />

@@ -1,0 +1,3 @@
+mutation ConfirmDeduplication($suggestionId: ID!, $accept: Boolean!) {
+  confirmDeduplication(suggestionId: $suggestionId, accept: $accept)
+}
