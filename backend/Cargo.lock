@@ -1275,6 +1275,7 @@ version = "0.1.0"
 dependencies = [
  "application",
  "async-trait",
+ "base64",
  "chrono",
  "domain",
  "reqwest",

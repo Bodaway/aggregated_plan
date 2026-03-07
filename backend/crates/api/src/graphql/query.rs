@@ -197,6 +197,19 @@ impl QueryRoot {
             neither: data.neither.into_iter().map(TaskGql).collect(),
         })
     }
+
+    /// Fetch all sync statuses for the current user.
+    async fn sync_statuses(&self, ctx: &Context<'_>) -> Result<Vec<SyncStatusGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let sync_repo = ctx.data::<Arc<dyn SyncStatusRepository>>()?;
+
+        let statuses = sync_repo
+            .find_by_user(*user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(statuses.into_iter().map(SyncStatusGql).collect())
+    }
 }
 
 /// Convert GraphQL TaskFilterInput to the application layer TaskFilter.

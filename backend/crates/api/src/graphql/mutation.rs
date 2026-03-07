@@ -5,7 +5,8 @@ use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
-use application::use_cases::{priority, task_management};
+use application::services::*;
+use application::use_cases::{priority, sync, task_management};
 
 use super::types::*;
 
@@ -137,6 +138,80 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(TaskGql(task))
+    }
+
+    /// Trigger a sync for a specific source (or all sources if not specified).
+    /// Returns updated sync statuses.
+    async fn force_sync(
+        &self,
+        ctx: &Context<'_>,
+        source: Option<SourceGql>,
+    ) -> Result<Vec<SyncStatusGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+        let project_repo = ctx.data::<Arc<dyn ProjectRepository>>()?;
+        let sync_repo = ctx.data::<Arc<dyn SyncStatusRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+
+        // Try to retrieve optional clients from context. If not available, use None.
+        let jira_client = ctx
+            .data::<Arc<dyn JiraClient>>()
+            .ok()
+            .map(|c| c.clone());
+        let outlook_client = ctx
+            .data::<Arc<dyn OutlookClient>>()
+            .ok()
+            .map(|c| c.clone());
+        let excel_client = ctx
+            .data::<Arc<dyn ExcelClient>>()
+            .ok()
+            .map(|c| c.clone());
+
+        match source {
+            Some(src) => {
+                // Sync a single source.
+                let domain_source: domain::types::Source = src.into();
+                sync::sync_source(
+                    domain_source,
+                    task_repo.as_ref(),
+                    meeting_repo.as_ref(),
+                    project_repo.as_ref(),
+                    sync_repo.as_ref(),
+                    jira_client.as_deref(),
+                    outlook_client.as_deref(),
+                    excel_client.as_deref(),
+                    config_repo.as_ref(),
+                    *user_id,
+                )
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            }
+            None => {
+                // Sync all sources.
+                sync::sync_all(
+                    jira_client.as_deref(),
+                    outlook_client.as_deref(),
+                    excel_client.as_deref(),
+                    task_repo.as_ref(),
+                    meeting_repo.as_ref(),
+                    project_repo.as_ref(),
+                    sync_repo.as_ref(),
+                    config_repo.as_ref(),
+                    *user_id,
+                )
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            }
+        }
+
+        // Return all sync statuses.
+        let statuses = sync_repo
+            .find_by_user(*user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(statuses.into_iter().map(SyncStatusGql).collect())
     }
 }
 
