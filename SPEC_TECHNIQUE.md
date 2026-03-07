@@ -663,6 +663,9 @@ pub struct Task {
     pub project_id: Option<ProjectId>,
     pub assignee: Option<String>,
     pub deadline: Option<NaiveDate>,
+    pub planned_start: Option<DateTime<Utc>>,
+    pub planned_end: Option<DateTime<Utc>>,
+    pub estimated_hours: Option<f32>,
     pub urgency: UrgencyLevel,
     pub urgency_manual: bool,
     pub impact: ImpactLevel,
@@ -849,23 +852,20 @@ pub fn sort_tasks_by_priority(tasks: &mut [Task]) {
 ```rust
 // rules/workload.rs
 
-/// R03: Calculate half-day consumption for a meeting based on its duration.
-/// Meetings >= 2 hours on a half-day consume the entire half-day (1.0).
-/// Shorter meetings consume a proportional fraction (duration / 4 hours).
-pub fn meeting_half_day_consumption(duration_hours: f64) -> f64 {
-    if duration_hours >= 2.0 { 1.0 } else { duration_hours / 4.0 }
+/// Calculate hours consumed by a meeting.
+pub fn meeting_hours(start: DateTime<Utc>, end: DateTime<Utc>) -> f64 {
+    (end - start).num_minutes() as f64 / 60.0
 }
 
 /// R16: Detect overload for a week.
-/// Returns Some(excess) if total load exceeds capacity, None otherwise.
+/// Returns Some(excess_hours) if total load exceeds capacity, None otherwise.
 pub fn detect_overload(
-    planned_task_half_days: f64,
-    meeting_half_days: f64,
-    weekly_capacity: u32,
+    planned_task_hours: f64,
+    meeting_hours: f64,
+    weekly_capacity_hours: f64,
 ) -> Option<f64> {
-    let total = planned_task_half_days + meeting_half_days;
-    let capacity = weekly_capacity as f64;
-    if total > capacity { Some(total - capacity) } else { None }
+    let total = planned_task_hours + meeting_hours;
+    if total > weekly_capacity_hours { Some(total - weekly_capacity_hours) } else { None }
 }
 
 /// Determine which half-day a datetime falls into.
@@ -920,13 +920,18 @@ pub fn check_deadline_alerts(
 }
 
 /// R18: Check for scheduling conflicts on a given date.
-/// A conflict occurs when two items are on the same half-day.
+/// A conflict occurs when two items have overlapping time ranges.
+/// Overlap condition: start_a < end_b AND start_b < end_a
 pub fn check_conflict_alerts(
-    tasks_by_half_day: &[(Task, HalfDay)],
-    meetings_by_half_day: &[(Meeting, HalfDay)],
+    scheduled_items: &[ScheduledItem],
     date: NaiveDate,
 ) -> Vec<AlertData> {
-    // Group by half-day, detect >1 item per half-day
+    // For each pair of items, check if [start_a, end_a) overlaps [start_b, end_b)
+}
+
+pub enum ScheduledItem {
+    Task { id: TaskId, title: String, start: DateTime<Utc>, end: DateTime<Utc> },
+    Meeting { id: MeetingId, title: String, start: DateTime<Utc>, end: DateTime<Utc> },
 }
 
 /// R16: Check overload for the week.
@@ -1248,6 +1253,9 @@ pub struct CreateTaskInput {
     pub description: Option<String>,
     pub project_id: Option<ProjectId>,
     pub deadline: Option<NaiveDate>,
+    pub planned_start: Option<DateTime<Utc>>,
+    pub planned_end: Option<DateTime<Utc>>,
+    pub estimated_hours: Option<f32>,
     pub impact: Option<ImpactLevel>,
     pub urgency: Option<UrgencyLevel>,
     pub tags: Vec<TagId>,
@@ -1276,6 +1284,9 @@ pub async fn create_personal_task(
         project_id: input.project_id,
         assignee: None,
         deadline: input.deadline,
+        planned_start: input.planned_start,
+        planned_end: input.planned_end,
+        estimated_hours: input.estimated_hours,
         urgency,
         urgency_manual,
         impact: input.impact.unwrap_or(ImpactLevel::Medium),
@@ -1946,6 +1957,9 @@ CREATE TABLE tasks (
     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
     assignee TEXT,
     deadline TEXT,
+    planned_start TEXT,
+    planned_end TEXT,
+    estimated_hours REAL,
     urgency INTEGER NOT NULL DEFAULT 1 CHECK (urgency BETWEEN 1 AND 4),
     urgency_manual INTEGER NOT NULL DEFAULT 0,
     impact INTEGER NOT NULL DEFAULT 2 CHECK (impact BETWEEN 1 AND 4),
@@ -2135,6 +2149,9 @@ type Task {
   project: Project
   assignee: String
   deadline: Date
+  plannedStart: DateTime
+  plannedEnd: DateTime
+  estimatedHours: Float
   urgency: Int!
   urgencyManual: Boolean!
   impact: Int!
@@ -2222,6 +2239,8 @@ type WeeklyWorkload {
   overload: Float
 }
 
+# HalfDaySlot is used for the project assignment view (developer-to-project allocation).
+# Individual tasks and meetings use hour-based time slots (plannedStart/plannedEnd).
 type HalfDaySlot {
   date: Date!
   halfDay: HalfDay!
@@ -2307,6 +2326,9 @@ input CreateTaskInput {
   description: String
   projectId: ID
   deadline: Date
+  plannedStart: DateTime
+  plannedEnd: DateTime
+  estimatedHours: Float
   impact: Int
   urgency: Int
   tagIds: [ID!]
@@ -2317,6 +2339,9 @@ input UpdateTaskInput {
   description: String
   projectId: ID
   deadline: Date
+  plannedStart: DateTime
+  plannedEnd: DateTime
+  estimatedHours: Float
   status: TaskStatus
   impact: Int
   urgency: Int
@@ -2644,7 +2669,7 @@ The alert engine runs:
 2. Run pure domain functions:
    - check_deadline_alerts(tasks, today, threshold)
    - check_overload_alerts(tasks, meetings, capacity, week_start)
-   - check_conflict_alerts(tasks_by_half_day, meetings_by_half_day, dates)
+   - check_conflict_alerts(scheduled_items, dates) — using time-range overlap
 3. Diff new alerts against existing alerts:
    - New alerts -> INSERT
    - Existing alerts still valid -> keep

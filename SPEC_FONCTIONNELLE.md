@@ -484,7 +484,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 > En tant que Tech Lead, je veux être alerté quand ma charge dépasse ma capacité afin de réagir avant la surcharge.
 
 **Critères d'acceptation :**
-- L'alerte se déclenche quand le total des tâches planifiées + réunions dépasse la capacité en demi-journées de la semaine
+- L'alerte se déclenche quand le total des heures planifiées (tâches + réunions) dépasse la capacité hebdomadaire en heures
 - La capacité par défaut est de 10 demi-journées par semaine (configurable)
 - Les réunions Outlook comptent dans la charge
 - L'alerte indique le dépassement en nombre de demi-journées
@@ -498,8 +498,8 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 > En tant que Tech Lead, je veux être alerté quand une tâche planifiée entre en conflit avec une réunion afin de réorganiser mon planning.
 
 **Critères d'acceptation :**
-- Un conflit est détecté quand une tâche est planifiée sur un créneau déjà occupé par une réunion Outlook
-- Un conflit est détecté quand deux tâches sont planifiées sur le même créneau (demi-journée)
+- Un conflit est détecté quand le créneau horaire d'une tâche chevauche celui d'une réunion Outlook
+- Un conflit est détecté quand les créneaux horaires de deux tâches se chevauchent
 - L'alerte indique les deux éléments en conflit et le créneau concerné
 - L'utilisateur peut résoudre le conflit en déplaçant l'une des tâches
 
@@ -594,7 +594,8 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 | Règle | Description |
 |-------|-------------|
-| **R01** | Toute planification utilise la granularité **demi-journée** : matin (8h-12h) et après-midi (13h-17h) |
+| **R01a** | L'affectation des développeurs aux projets utilise la granularité **demi-journée** : matin (8h-12h) et après-midi (13h-17h) |
+| **R01b** | La planification des **tâches** et des **réunions** utilise des **créneaux horaires** (heures de début et de fin). Les tâches sont représentées visuellement à une taille proportionnelle à leur estimation. |
 | **R02** | La capacité hebdomadaire par défaut est de **10 demi-journées** (5 jours × 2 demi-journées). Cette valeur est configurable. |
 | **R03** | Les réunions Outlook de plus de 2 heures sur une demi-journée consomment la totalité de cette demi-journée. Les réunions de moins de 2 heures consomment une fraction proportionnelle. |
 
@@ -629,9 +630,9 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 | Règle | Description |
 |-------|-------------|
-| **R16** | Une alerte de surcharge est émise lorsque la charge totale (tâches planifiées + réunions) dépasse la capacité hebdomadaire (R02). |
+| **R16** | Une alerte de surcharge est émise lorsque la charge totale en heures (tâches planifiées + réunions) dépasse la capacité hebdomadaire. |
 | **R17** | Une alerte de deadline est émise lorsque l'échéance d'une tâche est à J-2 ou moins (configurable). |
-| **R18** | Une alerte de conflit est émise lorsque deux éléments (tâche/réunion) sont planifiés sur le même créneau (même demi-journée). |
+| **R18** | Une alerte de conflit est émise lorsque les créneaux horaires de deux éléments (tâche/réunion) se chevauchent. |
 | **R19** | Les alertes sont classées par gravité : **Critique** (dépassement, deadline dépassée), **Avertissement** (surcharge proche, deadline proche), **Information** (conflit mineur). |
 
 ### 7.6 Suivi d'activité
@@ -672,6 +673,9 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | projet | Référence Projet | Non | Projet associé |
 | assigné | Texte | Non | Personne assignée |
 | échéance | Date | Non | Date limite |
+| planificationDébut | Date/heure | Non | Date et heure de début planifiée |
+| planificationFin | Date/heure | Non | Date et heure de fin planifiée |
+| estimationHeures | Décimal | Non | Estimation de la durée en heures. Détermine la taille visuelle de la tâche. |
 | urgence | Entier (1-4) | Oui | Calculée ou manuelle (R10-R15) |
 | urgenceManuelle | Booléen | Oui | Indique si l'urgence a été forcée manuellement |
 | impact | Entier (1-4) | Oui | Qualifié par l'utilisateur, défaut : 2 |
@@ -877,9 +881,9 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 |-------|-----------|
 | **Demi-journée** | Unité de temps de base. Matin : 8h-12h, Après-midi : 13h-17h |
 | **Capacité** | Nombre de demi-journées disponibles par semaine (défaut : 10) |
-| **Charge** | Nombre de demi-journées consommées par les tâches planifiées et les réunions |
+| **Charge** | Nombre d'heures consommées par les tâches planifiées et les réunions |
 | **Surcharge** | Situation où la charge dépasse la capacité |
-| **Conflit** | Deux éléments (tâche/réunion) planifiés sur le même créneau |
+| **Conflit** | Deux éléments (tâche/réunion) dont les créneaux horaires se chevauchent |
 | **Source** | Système externe dont les données sont importées (Jira, Outlook, Excel, Obsidian) |
 | **Tâche agrégée** | Tâche dans l'outil, pouvant résulter de la fusion de données de plusieurs sources |
 | **Dédoublonnage** | Processus de détection et fusion de tâches apparaissant dans plusieurs sources |
@@ -888,3 +892,5 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | **Tag** | Catégorie personnalisée permettant de classifier les tâches transversalement |
 | **Cache** | Copie locale des données agrégées, utilisée quand les sources sont indisponibles |
 | **Créneau d'activité** | Période de temps associée à une tâche dans le journal d'activité |
+| **Créneau horaire** | Plage horaire définie par une heure de début et une heure de fin, utilisée pour planifier tâches et réunions |
+| **Estimation** | Durée estimée d'une tâche en heures, déterminant sa taille visuelle dans les vues planning |
