@@ -3,3 +3,6 @@ pub mod query;
 pub mod mutation;
 pub mod subscription;
 pub mod types;
+
+#[cfg(test)]
+mod tests;
