@@ -1,1 +1,1 @@
-// Data transfer objects - implemented in Task 12
+// Data transfer objects -- populated as use cases are implemented.
