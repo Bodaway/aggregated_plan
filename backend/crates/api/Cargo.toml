@@ -7,15 +7,16 @@ edition = "2021"
 domain = { path = "../domain" }
 application = { path = "../application" }
 infrastructure = { path = "../infrastructure" }
-axum = "0.7"
+axum = "0.8"
 async-graphql = { version = "7", features = ["chrono", "uuid"] }
 async-graphql-axum = "7"
 tokio = { workspace = true }
 tower = "0.5"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+chrono = { workspace = true }
 dotenvy = "0.15"
