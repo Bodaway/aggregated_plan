@@ -51,6 +51,7 @@ This specification is self-contained. An implementation agent should be able to 
 | **Workload** | Half-days consumed by planned tasks + meetings |
 | **Source** | External system: Jira, Outlook, Excel, Obsidian |
 | **Aggregated task** | A task in the application, possibly merged from multiple sources |
+| **Week** | Monday to Friday (5 business days). Monday is the first day of the week. `week_start_of(date)` returns the Monday of the given date's week. |
 
 ---
 
@@ -659,6 +660,7 @@ pub struct Task {
     pub description: Option<String>,
     pub source: Source,
     pub source_id: Option<String>,
+    pub jira_status: Option<String>,
     pub status: TaskStatus,
     pub project_id: Option<ProjectId>,
     pub assignee: Option<String>,
@@ -1950,6 +1952,7 @@ CREATE TABLE tasks (
     description TEXT,
     source TEXT NOT NULL CHECK (source IN ('jira', 'excel', 'obsidian', 'personal')),
     source_id TEXT,
+    jira_status TEXT,
     status TEXT NOT NULL DEFAULT 'todo'
         CHECK (status IN ('todo', 'in_progress', 'done', 'blocked')),
     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
@@ -2142,6 +2145,7 @@ type Task {
   description: String
   source: Source!
   sourceId: String
+  jiraStatus: String
   status: TaskStatus!
   project: Project
   assignee: String
@@ -2412,6 +2416,9 @@ type Mutation {
   # Sync
   forceSync(source: Source): [SyncStatus!]!
 
+  # Meeting-Project association
+  updateMeetingProject(meetingId: ID!, projectId: ID): Meeting!
+
   # Configuration
   updateConfiguration(key: String!, value: JSON!): Boolean!
 }
@@ -2468,7 +2475,8 @@ project IN ({configured_keys})
 | `key` | `source_id` | Direct |
 | `fields.summary` | `title` | Direct |
 | `fields.description` | `description` | ADF -> plain text |
-| `fields.status.name` | `status` | Map: "To Do"->Todo, "In Progress"->InProgress, "Done"->Done |
+| `fields.status.name` | `jira_status` | Direct — raw Jira status string stored as-is |
+| `fields.status.statusCategory.key` | `status` | Map: "new"->Todo, "indeterminate"->InProgress, "done"->Done. Uses Jira status category (3 universal values) rather than custom status names. |
 | `fields.assignee.displayName` | `assignee` | Direct |
 | `fields.duedate` | `deadline` | Parse ISO date |
 | `fields.project.key` | project `source_id` | Direct |
@@ -2508,6 +2516,8 @@ project IN ({configured_keys})
 | `location.displayName` | `location` | Direct |
 | `attendees[].emailAddress.name` | `participants` | Extract names |
 | `isCancelled` | -- | If true, skip/delete |
+
+**Project auto-detection:** After mapping, the sync engine scans the meeting `title` for known project names (case-insensitive substring match). If found, `project_id` is set automatically. The user can override this association via the `updateMeetingProject` mutation.
 
 **Excel data mapping:**
 The Excel file structure is fully configurable (R24-R26). The `ExcelMappingConfig` defines which columns map to which fields. The raw cell values are read from the `usedRange` response and mapped to `ExcelRow` structs using the configured column names.

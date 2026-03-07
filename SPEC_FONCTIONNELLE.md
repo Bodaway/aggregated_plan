@@ -531,7 +531,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 **Critères d'acceptation :**
 - La vue projet affiche :
   - Les tâches du projet (Jira + Excel, dédoublonnées)
-  - Les réunions associées au projet (si le projet est dans le titre de la réunion Outlook)
+  - Les réunions associées au projet (détection automatique depuis le titre de la réunion Outlook, modifiable manuellement par l'utilisateur)
   - Les notes Obsidian liées au projet (v2, si intégration Obsidian active)
   - La charge par développeur sur ce projet
 - L'utilisateur peut naviguer entre les projets
@@ -894,3 +894,4 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | **Créneau d'activité** | Période de temps associée à une tâche dans le journal d'activité |
 | **Créneau horaire** | Plage horaire définie par une heure de début et une heure de fin, utilisée pour planifier tâches et réunions |
 | **Estimation** | Durée estimée d'une tâche en heures, déterminant sa taille visuelle dans les vues planning |
+| **Semaine** | Période du lundi au vendredi (5 jours ouvrés). Le lundi est le premier jour de la semaine. |
