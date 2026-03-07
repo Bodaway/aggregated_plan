@@ -1,0 +1,25 @@
+query WeeklyWorkload($weekStart: Date!) {
+  weeklyWorkload(weekStart: $weekStart) {
+    weekStart
+    capacity
+    totalPlanned
+    totalMeetings
+    overload
+    halfDays {
+      date
+      halfDay
+      consumption
+      isFree
+      meetings {
+        title
+        startTime
+        endTime
+        durationHours
+      }
+      tasks {
+        title
+        estimatedHours
+      }
+    }
+  }
+}

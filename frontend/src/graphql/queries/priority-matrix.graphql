@@ -1,0 +1,52 @@
+query PriorityMatrix {
+  priorityMatrix {
+    urgentImportant {
+      id
+      title
+      status
+      urgency
+      impact
+      deadline
+      assignee
+      project {
+        name
+      }
+    }
+    important {
+      id
+      title
+      status
+      urgency
+      impact
+      deadline
+      assignee
+      project {
+        name
+      }
+    }
+    urgent {
+      id
+      title
+      status
+      urgency
+      impact
+      deadline
+      assignee
+      project {
+        name
+      }
+    }
+    neither {
+      id
+      title
+      status
+      urgency
+      impact
+      deadline
+      assignee
+      project {
+        name
+      }
+    }
+  }
+}

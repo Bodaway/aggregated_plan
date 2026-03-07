@@ -1,5 +1,8 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { PageLayout } from '@/components/layout/PageLayout';
+import { DashboardPage } from '@/pages/DashboardPage';
+import { PriorityMatrixPage } from '@/pages/PriorityMatrixPage';
+import { WorkloadPage } from '@/pages/WorkloadPage';
 
 function PlaceholderContent({ name }: { readonly name: string }) {
   return (
@@ -18,7 +21,7 @@ export function App() {
           path="/dashboard"
           element={
             <PageLayout title="Dashboard">
-              <PlaceholderContent name="Dashboard" />
+              <DashboardPage />
             </PageLayout>
           }
         />
@@ -26,7 +29,7 @@ export function App() {
           path="/priority"
           element={
             <PageLayout title="Priority Matrix">
-              <PlaceholderContent name="Priority Matrix" />
+              <PriorityMatrixPage />
             </PageLayout>
           }
         />
@@ -34,7 +37,7 @@ export function App() {
           path="/workload"
           element={
             <PageLayout title="Workload">
-              <PlaceholderContent name="Workload" />
+              <WorkloadPage />
             </PageLayout>
           }
         />
