@@ -981,6 +981,340 @@ async fn daily_dashboard_returns_structure() {
     assert_eq!(slots[9]["halfDay"], "AFTERNOON");
 }
 
+// ─── Tag CRUD Tests ───
+
+#[tokio::test]
+async fn create_tag_mutation() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r##"mutation { createTag(name: "frontend", color: "#ff0000") { id name color } }"##,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let tag = &data["createTag"];
+
+    assert_eq!(tag["name"], "frontend");
+    assert_eq!(tag["color"], "#ff0000");
+    assert!(tag["id"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn create_tag_without_color() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"mutation { createTag(name: "backend") { id name color } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let tag = &data["createTag"];
+
+    assert_eq!(tag["name"], "backend");
+    assert!(tag["color"].is_null());
+}
+
+#[tokio::test]
+async fn create_and_list_tags() {
+    let schema = build_test_schema();
+
+    // Create two tags
+    schema
+        .execute(r#"mutation { createTag(name: "tag1") { id } }"#)
+        .await;
+    schema
+        .execute(r#"mutation { createTag(name: "tag2") { id } }"#)
+        .await;
+
+    // List tags
+    let result = schema
+        .execute("{ tags { id name } }")
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let tags = data["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 2);
+}
+
+#[tokio::test]
+async fn update_tag_mutation() {
+    let schema = build_test_schema();
+
+    // Create tag
+    let create_result = schema
+        .execute(r#"mutation { createTag(name: "old") { id } }"#)
+        .await;
+    let create_data = create_result.data.into_json().unwrap();
+    let tag_id = create_data["createTag"]["id"].as_str().unwrap();
+
+    // Update tag
+    let query = format!(
+        r##"mutation {{ updateTag(id: "{}", name: "new", color: "#00ff00") {{ id name color }} }}"##,
+        tag_id
+    );
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+
+    assert_eq!(data["updateTag"]["name"], "new");
+    assert_eq!(data["updateTag"]["color"], "#00ff00");
+}
+
+#[tokio::test]
+async fn delete_tag_mutation() {
+    let schema = build_test_schema();
+
+    // Create tag
+    let create_result = schema
+        .execute(r#"mutation { createTag(name: "delete-me") { id } }"#)
+        .await;
+    let create_data = create_result.data.into_json().unwrap();
+    let tag_id = create_data["createTag"]["id"].as_str().unwrap();
+
+    // Delete tag
+    let query = format!(r#"mutation {{ deleteTag(id: "{}") }}"#, tag_id);
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["deleteTag"], true);
+
+    // Verify tags list is empty
+    let result = schema.execute("{ tags { id } }").await;
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["tags"].as_array().unwrap().len(), 0);
+}
+
+// ─── Activity Tracking Tests ───
+
+#[tokio::test]
+async fn start_activity_mutation() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"mutation { startActivity { id halfDay startTime endTime taskId } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let slot = &data["startActivity"];
+
+    assert!(slot["id"].as_str().is_some());
+    assert!(slot["endTime"].is_null(), "New activity should have no end time");
+}
+
+#[tokio::test]
+async fn start_activity_with_task_id() {
+    let schema = build_test_schema();
+
+    // Create a task first
+    let create_result = schema
+        .execute(r#"mutation { createTask(input: { title: "Work Item" }) { id } }"#)
+        .await;
+    let create_data = create_result.data.into_json().unwrap();
+    let task_id = create_data["createTask"]["id"].as_str().unwrap();
+
+    // Start activity linked to the task
+    let query = format!(
+        r#"mutation {{ startActivity(taskId: "{}") {{ id taskId }} }}"#,
+        task_id
+    );
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+
+    assert_eq!(data["startActivity"]["taskId"], task_id);
+}
+
+#[tokio::test]
+async fn stop_activity_mutation_when_no_active() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"mutation { stopActivity { id endTime } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+
+    assert!(data["stopActivity"].is_null(), "No active activity should return null");
+}
+
+#[tokio::test]
+async fn current_activity_query_returns_null_when_none() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"{ currentActivity { id } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert!(data["currentActivity"].is_null());
+}
+
+#[tokio::test]
+async fn activity_journal_query_returns_empty() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"{ activityJournal(date: "2026-03-09") { id halfDay startTime } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["activityJournal"].as_array().unwrap().len(), 0);
+}
+
+// ─── Alerts Tests ───
+
+#[tokio::test]
+async fn alerts_query_returns_empty() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r#"{ alerts { edges { node { id message alertType severity resolved } cursor } pageInfo { hasNextPage } totalCount } }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let alerts = &data["alerts"];
+
+    assert_eq!(alerts["totalCount"], 0);
+    assert_eq!(alerts["edges"].as_array().unwrap().len(), 0);
+    assert_eq!(alerts["pageInfo"]["hasNextPage"], false);
+}
+
+#[tokio::test]
+async fn alerts_query_with_resolved_filter() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r#"{ alerts(resolved: false) { edges { node { id } } totalCount } }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["alerts"]["totalCount"], 0);
+}
+
+// ─── Configuration Tests ───
+
+#[tokio::test]
+async fn configuration_query_returns_empty_object() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"{ configuration }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let config = data["configuration"].as_object().unwrap();
+    assert!(config.is_empty());
+}
+
+#[tokio::test]
+async fn update_configuration_mutation() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r#"mutation { updateConfiguration(key: "jira.url", value: "https://jira.test.com") }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["updateConfiguration"], true);
+}
+
+// ─── Deduplication Tests ───
+
+#[tokio::test]
+async fn deduplication_suggestions_query_empty() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r#"{ deduplicationSuggestions { id confidenceScore taskA { title } taskB { title } } }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let suggestions = data["deduplicationSuggestions"].as_array().unwrap();
+    assert!(suggestions.is_empty());
+}
+
+#[tokio::test]
+async fn link_tasks_mutation() {
+    let schema = build_test_schema();
+
+    // Create two tasks
+    let create1 = schema
+        .execute(r#"mutation { createTask(input: { title: "Task A" }) { id } }"#)
+        .await;
+    let data1 = create1.data.into_json().unwrap();
+    let id1 = data1["createTask"]["id"].as_str().unwrap();
+
+    let create2 = schema
+        .execute(r#"mutation { createTask(input: { title: "Task B" }) { id } }"#)
+        .await;
+    let data2 = create2.data.into_json().unwrap();
+    let id2 = data2["createTask"]["id"].as_str().unwrap();
+
+    // Link them
+    let query = format!(
+        r#"mutation {{ linkTasks(taskIdPrimary: "{}", taskIdSecondary: "{}") }}"#,
+        id1, id2
+    );
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["linkTasks"], true);
+}
+
+#[tokio::test]
+async fn confirm_deduplication_mutation() {
+    let schema = build_test_schema();
+
+    let id1 = Uuid::new_v4().to_string();
+    let id2 = Uuid::new_v4().to_string();
+
+    let query = format!(
+        r#"mutation {{ confirmDeduplication(taskIdPrimary: "{}", taskIdSecondary: "{}", accept: true) }}"#,
+        id1, id2
+    );
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["confirmDeduplication"], true);
+}
+
+#[tokio::test]
+async fn unlink_tasks_mutation() {
+    let schema = build_test_schema();
+
+    let link_id = Uuid::new_v4().to_string();
+    let query = format!(r#"mutation {{ unlinkTasks(linkId: "{}") }}"#, link_id);
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["unlinkTasks"], true);
+}
+
+// ─── Sync Status Tests ───
+
+#[tokio::test]
+async fn sync_statuses_query_returns_empty() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"{ syncStatuses { source status lastSyncAt errorMessage } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let statuses = data["syncStatuses"].as_array().unwrap();
+    assert!(statuses.is_empty());
+}
+
 #[tokio::test]
 async fn weekly_workload_returns_structure() {
     let schema = build_test_schema();

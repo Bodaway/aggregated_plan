@@ -202,3 +202,419 @@ pub async fn unlink_tasks(
     task_link_repo.delete(link_id).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use chrono::{NaiveDate, Utc};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use crate::errors::RepositoryError;
+    use crate::repositories::TaskFilter;
+
+    // ---- In-memory repos ----
+
+    struct InMemoryTaskRepository {
+        tasks: Mutex<HashMap<TaskId, Task>>,
+    }
+
+    impl InMemoryTaskRepository {
+        fn new() -> Self {
+            Self {
+                tasks: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn insert(&self, task: Task) {
+            let mut tasks = self.tasks.lock().unwrap();
+            tasks.insert(task.id, task);
+        }
+    }
+
+    #[async_trait]
+    impl TaskRepository for InMemoryTaskRepository {
+        async fn find_by_id(&self, id: TaskId) -> Result<Option<Task>, RepositoryError> {
+            let tasks = self.tasks.lock().unwrap();
+            Ok(tasks.get(&id).cloned())
+        }
+
+        async fn find_by_user(
+            &self,
+            user_id: UserId,
+            filter: &TaskFilter,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            let tasks = self.tasks.lock().unwrap();
+            Ok(tasks
+                .values()
+                .filter(|t| t.user_id == user_id)
+                .filter(|t| {
+                    if let Some(ref statuses) = filter.status {
+                        statuses.contains(&t.status)
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn find_by_source(
+            &self,
+            _user_id: UserId,
+            _source: Source,
+            _source_id: &str,
+        ) -> Result<Option<Task>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn find_by_date_range(
+            &self,
+            _user_id: UserId,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
+            let mut tasks = self.tasks.lock().unwrap();
+            tasks.insert(task.id, task.clone());
+            Ok(())
+        }
+
+        async fn save_batch(&self, tasks: &[Task]) -> Result<(), RepositoryError> {
+            let mut store = self.tasks.lock().unwrap();
+            for task in tasks {
+                store.insert(task.id, task.clone());
+            }
+            Ok(())
+        }
+
+        async fn delete(&self, id: TaskId) -> Result<(), RepositoryError> {
+            let mut tasks = self.tasks.lock().unwrap();
+            tasks.remove(&id);
+            Ok(())
+        }
+    }
+
+    struct InMemoryTaskLinkRepository {
+        links: Mutex<HashMap<TaskLinkId, TaskLink>>,
+    }
+
+    impl InMemoryTaskLinkRepository {
+        fn new() -> Self {
+            Self {
+                links: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TaskLinkRepository for InMemoryTaskLinkRepository {
+        async fn find_by_user(
+            &self,
+            _user_id: UserId,
+        ) -> Result<Vec<TaskLink>, RepositoryError> {
+            let links = self.links.lock().unwrap();
+            Ok(links.values().cloned().collect())
+        }
+
+        async fn find_rejected_pairs(
+            &self,
+            _user_id: UserId,
+        ) -> Result<Vec<(TaskId, TaskId)>, RepositoryError> {
+            let links = self.links.lock().unwrap();
+            Ok(links
+                .values()
+                .filter(|l| l.link_type == TaskLinkType::Rejected)
+                .map(|l| (l.task_id_primary, l.task_id_secondary))
+                .collect())
+        }
+
+        async fn save(&self, link: &TaskLink) -> Result<(), RepositoryError> {
+            let mut links = self.links.lock().unwrap();
+            links.insert(link.id, link.clone());
+            Ok(())
+        }
+
+        async fn delete(&self, id: TaskLinkId) -> Result<(), RepositoryError> {
+            let mut links = self.links.lock().unwrap();
+            links.remove(&id);
+            Ok(())
+        }
+    }
+
+    fn test_user_id() -> UserId {
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+    }
+
+    fn make_task(title: &str) -> Task {
+        Task {
+            id: Uuid::new_v4(),
+            user_id: test_user_id(),
+            title: title.to_string(),
+            description: None,
+            source: Source::Personal,
+            source_id: None,
+            jira_status: None,
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            urgency: UrgencyLevel::Low,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn make_jira_task(title: &str, jira_key: &str) -> Task {
+        let mut task = make_task(title);
+        task.source = Source::Jira;
+        task.source_id = Some(jira_key.to_string());
+        task
+    }
+
+    // ---- Tests ----
+
+    #[tokio::test]
+    async fn find_suggestions_empty_when_no_tasks() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(suggestions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_no_duplicates_for_different_tasks() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        task_repo.insert(make_task("Build frontend login page"));
+        task_repo.insert(make_task("Configure database replication"));
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(
+            suggestions.is_empty(),
+            "Different tasks should not generate suggestions"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_detects_similar_titles_with_assignee() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Two tasks with identical titles AND same assignee yields
+        // overall = 1.0 * 0.6 + 0.2 (assignee) = 0.8 which passes the 0.7 threshold.
+        let mut t1 = make_task("Fix login page bug");
+        t1.assignee = Some("alice".to_string());
+        let mut t2 = make_task("Fix login page bug");
+        t2.assignee = Some("alice".to_string());
+        task_repo.insert(t1);
+        task_repo.insert(t2);
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert_eq!(suggestions.len(), 1);
+        assert!(suggestions[0].confidence_score >= DEDUP_CONFIDENCE_THRESHOLD);
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_detects_jira_key_match() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Jira task with key PROJ-123
+        task_repo.insert(make_jira_task("Implement feature X", "PROJ-123"));
+        // Personal task mentioning the key in its title
+        let mut personal_task = make_task("Work on PROJ-123 feature X");
+        personal_task.source = Source::Personal;
+        task_repo.insert(personal_task);
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(!suggestions.is_empty());
+        assert!(
+            (suggestions[0].confidence_score - 1.0).abs() < f64::EPSILON,
+            "Jira key match should have confidence 1.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_excludes_rejected_pairs() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Use Jira key matching to guarantee they would match
+        let task_a = make_jira_task("Fix login page bug", "PROJ-100");
+        let mut task_b = make_task("Fix PROJ-100 login page bug");
+        task_b.source = Source::Personal;
+        let a_id = task_a.id;
+        let b_id = task_b.id;
+        task_repo.insert(task_a);
+        task_repo.insert(task_b);
+
+        // Reject the pair
+        confirm_suggestion(&link_repo, a_id, b_id, false)
+            .await
+            .unwrap();
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(
+            suggestions.is_empty(),
+            "Rejected pairs should be excluded from suggestions"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_excludes_already_linked_pairs() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Use Jira key matching to guarantee they would match
+        let task_a = make_jira_task("Fix login page bug", "PROJ-200");
+        let mut task_b = make_task("Fix PROJ-200 login page bug");
+        task_b.source = Source::Personal;
+        let a_id = task_a.id;
+        let b_id = task_b.id;
+        task_repo.insert(task_a);
+        task_repo.insert(task_b);
+
+        // Link the pair
+        link_tasks(&link_repo, a_id, b_id).await.unwrap();
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(
+            suggestions.is_empty(),
+            "Already linked pairs should be excluded from suggestions"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirm_suggestion_accept_creates_auto_merged_link() {
+        let link_repo = InMemoryTaskLinkRepository::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+
+        confirm_suggestion(&link_repo, a, b, true).await.unwrap();
+
+        let links = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].link_type, TaskLinkType::AutoMerged);
+        assert_eq!(links[0].task_id_primary, a);
+        assert_eq!(links[0].task_id_secondary, b);
+    }
+
+    #[tokio::test]
+    async fn confirm_suggestion_reject_creates_rejected_link() {
+        let link_repo = InMemoryTaskLinkRepository::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+
+        confirm_suggestion(&link_repo, a, b, false).await.unwrap();
+
+        let links = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].link_type, TaskLinkType::Rejected);
+    }
+
+    #[tokio::test]
+    async fn link_tasks_creates_manual_merged_link() {
+        let link_repo = InMemoryTaskLinkRepository::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+
+        link_tasks(&link_repo, a, b).await.unwrap();
+
+        let links = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].link_type, TaskLinkType::ManualMerged);
+        assert_eq!(links[0].task_id_primary, a);
+        assert_eq!(links[0].task_id_secondary, b);
+    }
+
+    #[tokio::test]
+    async fn unlink_tasks_removes_link() {
+        let link_repo = InMemoryTaskLinkRepository::new();
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+
+        link_tasks(&link_repo, a, b).await.unwrap();
+
+        let links = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert_eq!(links.len(), 1);
+
+        let link_id = links[0].id;
+        unlink_tasks(&link_repo, link_id).await.unwrap();
+
+        let links_after = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert!(links_after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_sorted_by_confidence_descending() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Pair 1: Jira key match (always 1.0)
+        task_repo.insert(make_jira_task("Build API endpoint", "API-42"));
+        let mut personal = make_task("Review API-42 endpoint code");
+        personal.source = Source::Personal;
+        task_repo.insert(personal);
+
+        // Pair 2: same title + same assignee = 0.6 + 0.2 = 0.8
+        let mut t1 = make_task("Database migration script");
+        t1.assignee = Some("bob".to_string());
+        let mut t2 = make_task("Database migration script");
+        t2.assignee = Some("bob".to_string());
+        task_repo.insert(t1);
+        task_repo.insert(t2);
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(
+            suggestions.len() >= 2,
+            "Expected at least 2 suggestions, got {}",
+            suggestions.len()
+        );
+        // Should be sorted descending by confidence
+        for i in 1..suggestions.len() {
+            assert!(
+                suggestions[i - 1].confidence_score >= suggestions[i].confidence_score,
+                "Suggestions should be sorted by confidence descending"
+            );
+        }
+        // First suggestion should be the Jira match (1.0)
+        assert!(
+            (suggestions[0].confidence_score - 1.0).abs() < f64::EPSILON,
+            "First suggestion should be the Jira key match with confidence 1.0"
+        );
+    }
+}
