@@ -1,0 +1,9 @@
+query Configuration {
+  configuration
+  syncStatuses {
+    source
+    status
+    lastSyncAt
+    errorMessage
+  }
+}

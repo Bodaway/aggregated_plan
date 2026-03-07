@@ -1,0 +1,12 @@
+mutation UpdateConfiguration($key: String!, $value: JSON!) {
+  updateConfiguration(key: $key, value: $value)
+}
+
+mutation ForceSync($source: Source) {
+  forceSync(source: $source) {
+    source
+    status
+    lastSyncAt
+    errorMessage
+  }
+}

@@ -3,6 +3,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { PriorityMatrixPage } from '@/pages/PriorityMatrixPage';
 import { WorkloadPage } from '@/pages/WorkloadPage';
+import { SettingsPage } from '@/pages/SettingsPage';
 
 function PlaceholderContent({ name }: { readonly name: string }) {
   return (
@@ -53,7 +54,7 @@ export function App() {
           path="/settings"
           element={
             <PageLayout title="Settings">
-              <PlaceholderContent name="Settings" />
+              <SettingsPage />
             </PageLayout>
           }
         />
