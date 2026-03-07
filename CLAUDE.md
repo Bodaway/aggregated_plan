@@ -4,212 +4,153 @@ Guide for AI assistants working on the Aggregated Plan codebase.
 
 ## Project Overview
 
-A planning and staffing management application for software development teams. Features include portfolio management, developer staffing with half-day granularity (morning/afternoon), conflict detection, availability tracking, and milestone management. Currently in MVP phase with in-memory data storage.
+A personal Tech Lead cockpit that aggregates Jira tasks, Outlook meetings, and Excel/SharePoint data into a unified planning view. Features include priority matrix (Eisenhower), workload visualization, activity tracking with half-day granularity, automatic deduplication, and real-time alerts. Currently in MVP phase with SQLite storage.
 
 ## Repository Structure
 
 ```
-aggregated_plan/                  # pnpm monorepo
+aggregated_plan/
+├── backend/                      # Rust workspace (Cargo)
+│   ├── Cargo.toml                # Workspace root
+│   ├── crates/
+│   │   ├── domain/               # Pure business logic, zero I/O
+│   │   ├── application/          # Use cases, repository traits, service traits
+│   │   ├── infrastructure/       # SQLite repos, HTTP connectors, sync engine
+│   │   └── api/                  # Axum server + async-graphql resolvers
+│   └── .env.example
 ├── frontend/                     # React 18 + Vite (port 3000)
-├── backend/                      # Hono API server (port 3001)
-├── packages/
-│   ├── shared-types/             # Shared TypeScript type definitions
-│   └── shared-utils/             # Pure utility functions (date handling)
+├── migrations/
+│   └── sqlite/                   # SQLite migration files
+│       └── 001_initial.sql
+├── docs/
+│   └── plans/                    # Implementation plans
 ├── SPEC_FONCTIONNELLE.md         # Functional specification (French)
-├── SPEC_TECHNIQUE.md             # Technical specification (French)
-├── .cursorrules                  # IDE coding rules
-├── pnpm-workspace.yaml           # Workspace config
-└── tsconfig.json                 # Root TypeScript config (strict)
+├── SPEC_TECHNIQUE.md             # Technical specification
+└── CLAUDE.md                     # This file
 ```
 
-Each package follows DDD layer separation:
+### Backend DDD Layer Separation
 
 ```
-src/
-├── domain/          # Pure business logic, NO external dependencies
-├── application/     # Use cases, repository interfaces, orchestration
-├── infrastructure/  # Concrete implementations (in-memory stores, HTTP clients)
-└── presentation/    # UI components (frontend only)
+backend/crates/
+├── domain/          # Pure types, business rules. NO external deps (except chrono/serde/uuid/thiserror)
+├── application/     # Repository traits, service traits, use case functions. Depends on domain only.
+├── infrastructure/  # SQLite repos (sqlx), HTTP connectors (reqwest), sync/dedup engines
+└── api/             # Axum routes, async-graphql schema, middleware. Depends on all layers.
 ```
 
 ## Quick Reference Commands
 
 ```bash
-pnpm install                        # Install all dependencies
-pnpm dev                            # Start frontend + backend in parallel
-pnpm test                           # Run all tests (recursive across workspaces)
-pnpm test:watch                     # Watch mode for tests
-pnpm lint                           # Lint all packages
-pnpm type-check                     # TypeScript type checking (no emit)
-pnpm build                          # Build all packages
-pnpm clean                          # Clean build artifacts
+# Backend (Rust)
+cd backend && cargo build                    # Build all crates
+cd backend && cargo test                     # Run all backend tests
+cd backend && cargo test -p domain           # Domain tests only (52 tests)
+cd backend && cargo test -p infrastructure   # Infrastructure tests only (50 tests)
+cd backend && cargo check                    # Type-check without building
+cd backend && cargo run -p api               # Start API server (port 3001)
+cd backend && cargo clippy                   # Lint
 
-# Per-package commands
-pnpm --filter frontend test         # Frontend tests only
-pnpm --filter backend test          # Backend tests only
-pnpm --filter frontend test:coverage  # Frontend coverage (threshold: 80%)
-pnpm --filter backend test:coverage   # Backend coverage (threshold: 80%)
+# Frontend (TypeScript/React) — not yet set up
+cd frontend && pnpm install                  # Install dependencies
+cd frontend && pnpm dev                      # Start dev server (port 3000)
+cd frontend && pnpm test                     # Run tests
+cd frontend && pnpm build                    # Production build
 ```
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
-| Language | TypeScript 5.3 (all strict flags enabled) |
-| Package manager | pnpm 8+ with workspaces |
-| Runtime | Node.js >= 18 |
-| Frontend | React 18, Vite 5 |
-| Backend | Hono 4, Zod (validation) |
-| Testing | Jest 29, React Testing Library, ts-jest |
-| Linting | ESLint 8 + @typescript-eslint |
-| Formatting | Prettier (single quotes, trailing commas, 100 char width, 2-space indent) |
+| Backend language | Rust (stable) |
+| HTTP framework | Axum 0.7 |
+| GraphQL | async-graphql 7 (queries, mutations, SSE subscriptions) |
+| Database | SQLite via sqlx 0.8 (compile-time unchecked, runtime queries) |
+| Async runtime | Tokio 1 |
+| HTTP client | reqwest 0.12 |
+| Frontend language | TypeScript 5.3+ (strict) |
+| Frontend framework | React 18, Vite 5 |
+| GraphQL client | urql 4, graphql-sse |
+| UI components | shadcn/ui, Tailwind CSS 3 |
+| Charts | Recharts 2 |
+| Drag & drop | @dnd-kit |
+| Testing (backend) | Rust built-in `#[test]` + tokio::test |
+| Testing (frontend) | Vitest, React Testing Library, Playwright (E2E) |
 
 ## Mandatory Coding Conventions
 
-These are non-negotiable rules enforced by linting and project standards.
+### DDD Layer Rules (strict)
 
-### No `any` Types
+- **Domain** (`crates/domain/`): Pure business logic. Zero I/O. Only depends on chrono, serde, uuid, thiserror.
+- **Application** (`crates/application/`): Defines repository and service traits. Use case functions. Depends only on domain.
+- **Infrastructure** (`crates/infrastructure/`): Implements traits with real I/O (SQLite, HTTP). Depends on domain + application.
+- **API** (`crates/api/`): Axum server, GraphQL resolvers, middleware. Depends on all layers.
 
-ESLint enforces `@typescript-eslint/no-explicit-any: error`. Use `unknown` with type guards if the type is genuinely unknown.
+### Rust Conventions
 
-### No Classes
+- Use `struct` with `impl` blocks. No OOP inheritance.
+- Factory pattern: `StructName::new(...)` associated functions
+- Repository pattern: traits in application, implementations in infrastructure
+- Error handling: `thiserror` for error enums, `Result<T, E>` everywhere, no `.unwrap()` in production
+- Domain functions return `DomainResult<T>` (alias for `Result<T, DomainError>`)
+- Use `async_trait` for async trait definitions
+- Map `sqlx::Error` → `RepositoryError::Database(e.to_string())`
 
-Use `type` and `interface` only. No `class`, no `new`, no inheritance. Factories are plain functions returning typed objects:
+### TypeScript/Frontend Conventions
 
-```typescript
-// Correct
-const createUser = (params: CreateUserParams): User => ({
-  id: crypto.randomUUID(),
-  name: params.name,
-});
-
-// Wrong - do NOT use classes
-class User { ... }
-```
-
-### Functional Paradigm
-
-- Pure functions preferred (no side effects)
-- Immutability enforced: `readonly` properties, no direct mutation
+- Strict TypeScript (all strict flags enabled)
+- Functional components with hooks
+- urql for GraphQL queries/mutations
+- shadcn/ui components (New York variant)
+- Tailwind CSS for styling
 - `const` over `let`, never `var`
-- `map`/`filter`/`reduce` over imperative loops
-- Function composition over inheritance
-- Avoid mutations: use `Object.freeze()` or immutability libraries if necessary
-
-### Result Type for Error Handling
-
-Domain functions return `Result<T, DomainError>` instead of throwing exceptions:
-
-```typescript
-type Result<T, E> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: E };
-```
-
-Use the `ok()` and `err()` helpers from `backend/src/domain/result.ts`.
-
-### DDD Layer Rules
-
-- **Domain** (`src/domain/`): Pure business logic. Zero imports from application/infrastructure/presentation layers. No external library dependencies.
-- **Application** (`src/application/`): Use cases and repository interfaces. Depends only on domain.
-- **Infrastructure** (`src/infrastructure/`): Concrete implementations. Depends on domain and application.
-- **Presentation** (`src/presentation/`, frontend only): React components. Can depend on all layers.
-
-### Design Patterns
-
-- **Factory**: for creating complex objects (plain functions returning typed objects)
-- **Repository**: for persistence abstraction (interfaces in application, implementations in infrastructure)
-- **Strategy**: for interchangeable algorithms
-- **Adapter**: for adapting external interfaces
-- Use composition rather than inheritance
 
 ### Test-Driven Development
 
-Write tests BEFORE production code. Follow Red -> Green -> Refactor cycle. Minimum coverage: 80% for branches, functions, lines, and statements.
+Write tests BEFORE production code. Follow Red → Green → Refactor cycle.
 
-Tests are colocated with source in `__tests__/` subdirectories or use `.test.ts(x)` suffix.
+Backend tests are inline with `#[cfg(test)] mod tests`. Integration tests use in-memory SQLite (`sqlite::memory:`).
 
 ## Naming Conventions
 
-| Entity | Convention | Example |
-|--------|-----------|---------|
-| Types/Interfaces | PascalCase | `User`, `ProjectRepository` |
-| Functions | camelCase | `getUserById`, `createProject` |
-| Constants | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT` |
-| Files | kebab-case | `user-repository.ts` |
+| Entity | Backend (Rust) | Frontend (TypeScript) |
+|--------|---------------|----------------------|
+| Types/Structs | PascalCase | PascalCase |
+| Functions | snake_case | camelCase |
+| Constants | UPPER_SNAKE_CASE | UPPER_SNAKE_CASE |
+| Files | snake_case (`task_repo.rs`) | kebab-case (`task-list.tsx`) |
+| Modules | snake_case | kebab-case |
 
-## Code Structure
+## GraphQL API
 
-### File Organization
+The backend exposes a single GraphQL endpoint:
+- `POST /graphql` — queries and mutations
+- `GET /graphql/sse` — SSE subscriptions
 
-- One file = one main responsibility
-- Name files in kebab-case: `user-repository.ts`
-- Export types/interfaces with domain prefix: `User`, `UserRepository`, etc.
+Key queries: `tasks`, `task`, `projects`, `dashboard`, `priorityMatrix`, `workload`, `alerts`
+Key mutations: `createTask`, `updateTask`, `deleteTask`, `updatePriority`, `startActivity`, `stopActivity`, `triggerSync`
 
-### Documentation
+## Database
 
-- Document public functions with JSDoc
-- Keep `SPEC_FONCTIONNELLE.md` and `SPEC_TECHNIQUE.md` up to date
-- Update README.md for major changes
+SQLite with migrations at `migrations/sqlite/`. All IDs are UUID strings (`TEXT`). Dates stored as ISO 8601 `TEXT`. Enums as lowercase `TEXT`. Booleans as `INTEGER` (0/1).
 
-## Path Aliases
-
-**Backend:** `@domain/*`, `@application/*`, `@infrastructure/*`
-**Frontend:** `@domain/*`, `@application/*`, `@infrastructure/*`, `@presentation/*`
-**Shared packages:** Referenced via `@aggregated-plan/shared-types` and `@aggregated-plan/shared-utils` (workspace protocol)
-
-## API Endpoints (Backend)
-
-```
-GET    /projects                     # List all projects
-POST   /projects                     # Create project
-GET    /projects/:id                 # Get project by ID
-PUT    /projects/:id                 # Update project
-DELETE /projects/:id                 # Delete project
-GET    /milestones                   # List all milestones
-GET    /projects/:id/milestones      # List milestones for project
-POST   /projects/:id/milestones      # Create milestone for project
-GET    /developers                   # List developers
-POST   /developers                   # Create developer
-PUT    /developers/:id               # Update developer
-GET    /assignments                  # List assignments
-POST   /assignments                  # Create assignment
-POST   /allocations                  # Create weekly allocation
-GET    /conflicts                    # List detected conflicts
-GET    /availabilities               # List availabilities
-POST   /availabilities               # Create availability
-```
-
-All request bodies are validated with Zod schemas. Dates use `YYYY-MM-DD` format (`IsoDateString` type).
+11 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration.
 
 ## Key Domain Concepts
 
-- **Half-day granularity**: All scheduling uses morning/afternoon slots, not full days
-- **Weekly capacity**: Developers have 1-10 half-days per week capacity
-- **Assignments**: Concrete developer-to-project mapping on a specific date + half-day
-- **Weekly allocations**: Recurring assignments expanded from a date range and preferred weekdays
-- **Conflicts**: Automatically detected - capacity overloads and double bookings
-- **Availability**: Leave, training, unavailability periods that constrain assignments
-
-## Prettier Config
-
-```json
-{
-  "semi": true,
-  "trailingComma": "es5",
-  "singleQuote": true,
-  "printWidth": 100,
-  "tabWidth": 2,
-  "useTabs": false,
-  "arrowParens": "avoid"
-}
-```
+- **Half-day granularity**: Activity tracking uses morning (08:00-12:00) and afternoon (13:00-17:00) slots
+- **Priority matrix**: Eisenhower quadrant based on urgency (1-4) × impact (1-4)
+- **Urgency calculation**: Auto-computed from deadline proximity (R10-R14), manual override possible (R15)
+- **Workload detection**: Overload alerts when planned hours + meeting hours > capacity (R16)
+- **Deduplication**: Jira key matching (R08) + similarity scoring (R09) with 0.7 threshold
+- **External integrations**: Read-only sync from Jira REST API, Microsoft Graph (Outlook + Excel/SharePoint)
+- **Multi-user ready**: All tables include `user_id`, auth middleware injects default user locally
 
 ## Common Gotchas
 
-- The project uses `"type": "module"` in both frontend and backend `package.json` files
-- Backend dev server uses `tsx watch` (not `ts-node`)
-- Frontend uses Vite's `import.meta.env` for environment variables (prefix: `VITE_`)
-- The backend API base URL defaults to `http://localhost:3001` in the frontend API client
-- All TypeScript strict flags are individually enabled in root `tsconfig.json` -- do not relax them
+- `sqlx::migrate!` macro path is relative to the crate's `Cargo.toml`, not the workspace root
+- Infrastructure repos use runtime queries (`sqlx::query`), not compile-time checked (`sqlx::query!`)
+- The `participants` field in meetings and `related_items` in alerts are JSON-serialized `TEXT` columns
+- Task tags live in a junction table `task_tags`, not as a column on the tasks table
 - Specifications are written in French; code and comments should be in English
+- Backend serves on port 3001, frontend on port 3000
