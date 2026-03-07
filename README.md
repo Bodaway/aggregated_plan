@@ -1,184 +1,136 @@
 # Aggregated Plan
 
-TypeScript project with DDD (Domain Driven Design) architecture, TDD (Test Driven Development) and functional paradigm.
+A personal Tech Lead cockpit that aggregates Jira tasks, Outlook meetings, and Excel/SharePoint data into a unified planning view. Features include an Eisenhower priority matrix, workload visualization, activity tracking with half-day granularity, automatic task deduplication, and real-time alerts.
 
-## 🏗️ Architecture
+## Architecture
 
-This project uses a monorepo architecture with pnpm workspace, separating frontend and backend into two distinct applications.
-
-### Project Structure
+Rust backend (DDD with 4 crates) + React frontend communicating via GraphQL.
 
 ```
 aggregated_plan/
-├── frontend/          # React application with Vite
-├── backend/           # Hono API (functional programming)
-├── packages/          # Shared packages
-│   ├── shared-types/  # Shared TypeScript types
-│   └── shared-utils/  # Functional utilities
-├── .cursorrules       # Cursor development rules
-├── pnpm-workspace.yaml
-├── package.json
-├── tsconfig.json
-├── README.md
-├── SPEC_FONCTIONNELLE.md
-└── SPEC_TECHNIQUE.md
+├── backend/                      # Rust workspace (Cargo)
+│   ├── crates/
+│   │   ├── domain/               # Pure business logic, zero I/O
+│   │   ├── application/          # Use cases, repository traits, service traits
+│   │   ├── infrastructure/       # SQLite repos, HTTP connectors, sync engine
+│   │   └── api/                  # Axum server + async-graphql resolvers
+│   └── .env.example
+├── frontend/                     # React 18 + Vite (port 3000)
+│   ├── src/
+│   │   ├── components/           # Reusable UI components
+│   │   ├── pages/                # Page components (7 pages)
+│   │   ├── hooks/                # Custom React hooks
+│   │   ├── graphql/              # GraphQL queries and mutations
+│   │   └── lib/                  # Utilities, urql client, constants
+│   └── e2e/                      # Playwright E2E tests
+├── migrations/sqlite/            # Database migrations
+├── docs/plans/                   # Implementation plans
+├── SPEC_FONCTIONNELLE.md         # Functional specification (French)
+└── SPEC_TECHNIQUE.md             # Technical specification
 ```
 
-## 🚀 Quick Start
+## Prerequisites
 
-### Prerequisites
+- **Rust** (stable toolchain) - [rustup.rs](https://rustup.rs)
+- **Node.js** >= 18
+- **pnpm** >= 8
 
-- Node.js >= 18.0.0
-- pnpm >= 8.0.0
+## Quick Start
 
-### Installation
+### Backend
 
 ```bash
+cd backend
+
+# Copy environment config
+cp .env.example .env
+# Edit .env with your database path and connector credentials
+
+# Build and run
+cargo build
+cargo run -p api
+# Server starts on http://localhost:3001
+# GraphQL playground at http://localhost:3001/graphql/playground
+```
+
+### Frontend
+
+```bash
+cd frontend
 pnpm install
-```
-
-### Development
-
-```bash
-# Start frontend and backend in parallel
 pnpm dev
-
-# Or separately
-pnpm --filter frontend dev
-pnpm --filter backend dev
+# Dev server starts on http://localhost:3000
 ```
 
-### Build
+### Run Tests
 
 ```bash
-pnpm build
+# Backend (178 tests)
+cd backend && cargo test
+
+# Frontend type check
+cd frontend && pnpm type-check
+
+# Frontend build
+cd frontend && pnpm build
+
+# E2E tests (requires both servers running)
+cd frontend && pnpm test:e2e
 ```
 
-### Tests
+## Tech Stack
 
-```bash
-# All tests
-pnpm test
+| Component | Technology |
+|-----------|-----------|
+| Backend | Rust, Axum 0.8, async-graphql 7, sqlx 0.8 (SQLite), Tokio |
+| Frontend | TypeScript 5, React 18, Vite 5, urql 4, Tailwind CSS 3 |
+| UI | shadcn/ui (New York), Recharts 2, @dnd-kit |
+| Database | SQLite (MVP), PostgreSQL (future) |
+| Testing | Rust #[test], Vitest, Playwright |
 
-# Watch mode
-pnpm test:watch
+## Environment Variables
 
-# With coverage
-pnpm --filter frontend test:coverage
-pnpm --filter backend test:coverage
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `sqlite:aggregated_plan.db?mode=rwc` | SQLite database path |
+| `RUST_LOG` | `info` | Log level (trace, debug, info, warn, error) |
+| `VITE_API_URL` | `http://localhost:3001` | Backend API URL (frontend) |
 
-### Linting
+Connector credentials are managed via the Settings page and stored in the `configuration` table.
 
-```bash
-pnpm lint
-```
+## Key Features
 
-### Type Checking
+- **Dashboard**: Daily view with tasks, meetings, workload chart, and alerts
+- **Priority Matrix**: Eisenhower quadrant with drag-and-drop
+- **Workload View**: Half-day capacity visualization for the week
+- **Activity Journal**: Time tracking with start/stop timer
+- **Deduplication**: Automatic detection of duplicate tasks across sources
+- **Alerts**: Deadline warnings, schedule conflicts, overload detection
+- **External Sync**: Read-only integration with Jira, Outlook, Excel/SharePoint
+- **Settings**: Connector configuration and preferences
 
-```bash
-pnpm type-check
-```
+## GraphQL API
 
-## 📋 Development Principles
+The backend exposes a single GraphQL endpoint:
+- `POST /graphql` - queries and mutations
+- `GET /graphql/playground` - GraphiQL IDE
 
-### Strict Typing
+15 queries, 20 mutations, 3 subscriptions (SSE).
 
-- **NEVER** use `any`. Always type explicitly.
-- Use `unknown` if the type is truly unknown, then validate with type guards.
-- All TypeScript strict flags are enabled.
+## Documentation
 
-### Functional Paradigm
+- [Functional Specification](./SPEC_FONCTIONNELLE.md) (French)
+- [Technical Specification](./SPEC_TECHNIQUE.md)
+- [Implementation Plan](./docs/plans/2026-03-07-full-mvp-rebuild.md)
 
-- Prefer pure functions (no side effects).
-- Use immutability: never mutate objects/arrays directly.
-- Prefer `const` over `let`, avoid `var`.
-- Use function composition rather than inheritance.
-- Use `map`, `filter`, `reduce` rather than imperative loops.
+## Development Principles
 
-### Types Only, No Classes
+- **DDD**: Domain layer has zero I/O dependencies
+- **TDD**: Tests written before production code
+- **Business rules**: R01-R26 implemented in `domain/src/rules/`
+- **Repository pattern**: Traits in application, implementations in infrastructure
+- **Error handling**: `thiserror` enums, `Result<T, E>` everywhere, no `.unwrap()` in production
 
-- Use `type` and `interface` only.
-- No classes, no `new`, no inheritance.
-- For factories, use functions that return typed objects.
-
-### Test Driven Development (TDD)
-
-- **ALWAYS** write tests BEFORE production code.
-- Structure: Red → Green → Refactor.
-- Minimum coverage: 80%.
-
-### Domain Driven Design (DDD)
-
-- **Domain**: pure business logic, no external dependencies.
-- **Application**: orchestration, use cases.
-- **Infrastructure**: concrete implementations (DB, HTTP, etc.).
-- **Presentation**: UI, API routes.
-
-## 📚 Documentation
-
-- [Functional specification](./SPEC_FONCTIONNELLE.md)
-- [Technical specification](./SPEC_TECHNIQUE.md)
-
-## 🛠️ Technologies
-
-### Frontend
-
-- React 18
-- Vite
-- TypeScript
-- Jest + React Testing Library
-- ESLint + Prettier
-
-### Backend
-
-- Hono (fast functional framework)
-- TypeScript
-- Zod (functional validation)
-- Jest
-- ESLint + Prettier
-
-### Tools
-
-- pnpm (package manager)
-- TypeScript (language)
-- ESLint (linting)
-- Prettier (formatting)
-- Jest (testing)
-
-## 📝 Available Scripts
-
-### Workspace root
-
-- `pnpm dev`: Start frontend and backend in parallel
-- `pnpm build`: Build all packages
-- `pnpm test`: Run all tests
-- `pnpm lint`: Lint all packages
-- `pnpm type-check`: Check types everywhere
-
-### Frontend
-
-- `pnpm --filter frontend dev`: Development server
-- `pnpm --filter frontend build`: Production build
-- `pnpm --filter frontend test`: Tests
-- `pnpm --filter frontend lint`: Linting
-
-### Backend
-
-- `pnpm --filter backend dev`: Development server
-- `pnpm --filter backend build`: Production build
-- `pnpm --filter backend start`: Production server
-- `pnpm --filter backend test`: Tests
-- `pnpm --filter backend lint`: Linting
-
-## 🤝 Contributing
-
-1. Write tests first (TDD)
-2. Respect DDD architecture
-3. Use types only, no classes
-4. Prefer functional paradigm
-5. Keep documentation up to date
-
-## 📄 License
+## License
 
 [To be defined]
