@@ -45,6 +45,7 @@ dependencies = [
  "application",
  "async-graphql",
  "async-graphql-axum",
+ "async-trait",
  "axum",
  "chrono",
  "domain",

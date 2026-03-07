@@ -1,6 +1,8 @@
 use async_graphql::Object;
 use chrono::NaiveDate;
 
+use application::use_cases::dashboard::{DailyDashboard, HalfDaySlotData, WeeklyWorkload};
+
 use super::alert::AlertGql;
 use super::enums::HalfDayGql;
 use super::meeting::MeetingGql;
@@ -13,7 +15,21 @@ pub struct DailyDashboardGql {
     pub tasks: Vec<TaskGql>,
     pub meetings: Vec<MeetingGql>,
     pub alerts: Vec<AlertGql>,
+    pub weekly_workload: WeeklyWorkloadGql,
     pub sync_statuses: Vec<SyncStatusGql>,
+}
+
+impl From<DailyDashboard> for DailyDashboardGql {
+    fn from(data: DailyDashboard) -> Self {
+        DailyDashboardGql {
+            date: data.date,
+            tasks: data.tasks.into_iter().map(TaskGql).collect(),
+            meetings: data.meetings.into_iter().map(MeetingGql).collect(),
+            alerts: data.alerts.into_iter().map(AlertGql).collect(),
+            weekly_workload: WeeklyWorkloadGql::from(data.weekly_workload),
+            sync_statuses: data.sync_statuses.into_iter().map(SyncStatusGql).collect(),
+        }
+    }
 }
 
 #[Object]
@@ -34,6 +50,10 @@ impl DailyDashboardGql {
         &self.alerts
     }
 
+    async fn weekly_workload(&self) -> &WeeklyWorkloadGql {
+        &self.weekly_workload
+    }
+
     async fn sync_statuses(&self) -> &[SyncStatusGql] {
         &self.sync_statuses
     }
@@ -42,16 +62,36 @@ impl DailyDashboardGql {
 /// Weekly workload summary.
 pub struct WeeklyWorkloadGql {
     pub week_start: NaiveDate,
+    pub capacity: i32,
     pub total_task_hours: f64,
     pub total_meeting_hours: f64,
     pub capacity_hours: f64,
     pub slots: Vec<HalfDaySlotGql>,
 }
 
+impl From<WeeklyWorkload> for WeeklyWorkloadGql {
+    fn from(data: WeeklyWorkload) -> Self {
+        let capacity_hours = data.capacity as f64 * 4.0;
+        WeeklyWorkloadGql {
+            week_start: data.week_start,
+            capacity: data.capacity,
+            total_task_hours: data.total_planned,
+            total_meeting_hours: data.total_meetings,
+            capacity_hours,
+            slots: data.half_days.into_iter().map(HalfDaySlotGql::from).collect(),
+        }
+    }
+}
+
 #[Object]
 impl WeeklyWorkloadGql {
     async fn week_start(&self) -> NaiveDate {
         self.week_start
+    }
+
+    /// Number of half-day slots available in the week (default 10).
+    async fn capacity(&self) -> i32 {
+        self.capacity
     }
 
     async fn total_task_hours(&self) -> f64 {
@@ -90,9 +130,23 @@ impl WeeklyWorkloadGql {
 pub struct HalfDaySlotGql {
     pub date: NaiveDate,
     pub half_day: HalfDayGql,
-    pub task_title: Option<String>,
-    pub meeting_title: Option<String>,
-    pub is_occupied: bool,
+    pub meetings: Vec<MeetingGql>,
+    pub tasks: Vec<TaskGql>,
+    pub consumption: f64,
+    pub is_free: bool,
+}
+
+impl From<HalfDaySlotData> for HalfDaySlotGql {
+    fn from(data: HalfDaySlotData) -> Self {
+        HalfDaySlotGql {
+            date: data.date,
+            half_day: data.half_day.into(),
+            meetings: data.meetings.into_iter().map(MeetingGql).collect(),
+            tasks: data.tasks.into_iter().map(TaskGql).collect(),
+            consumption: data.consumption,
+            is_free: data.is_free,
+        }
+    }
 }
 
 #[Object]
@@ -105,15 +159,21 @@ impl HalfDaySlotGql {
         self.half_day
     }
 
-    async fn task_title(&self) -> Option<&str> {
-        self.task_title.as_deref()
+    async fn meetings(&self) -> &[MeetingGql] {
+        &self.meetings
     }
 
-    async fn meeting_title(&self) -> Option<&str> {
-        self.meeting_title.as_deref()
+    async fn tasks(&self) -> &[TaskGql] {
+        &self.tasks
     }
 
-    async fn is_occupied(&self) -> bool {
-        self.is_occupied
+    /// Fraction of the half-day consumed (0.0 to 1.0+).
+    async fn consumption(&self) -> f64 {
+        self.consumption
+    }
+
+    /// Whether this slot is considered free (consumption < 0.5).
+    async fn is_free(&self) -> bool {
+        self.is_free
     }
 }

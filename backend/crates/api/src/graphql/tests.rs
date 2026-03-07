@@ -875,3 +875,138 @@ async fn noop_mutation_still_works() {
     let data = result.data.into_json().unwrap();
     assert_eq!(data["noop"], true);
 }
+
+#[tokio::test]
+async fn daily_dashboard_returns_structure() {
+    let schema = build_test_schema();
+
+    // Create a task first
+    let create_result = schema
+        .execute(
+            r#"mutation { createTask(input: { title: "Dashboard Task" }) { id } }"#,
+        )
+        .await;
+    assert!(
+        create_result.errors.is_empty(),
+        "Errors: {:?}",
+        create_result.errors
+    );
+
+    // Query the daily dashboard
+    let result = schema
+        .execute(
+            r#"{
+                dailyDashboard(date: "2026-03-09") {
+                    date
+                    tasks { title }
+                    meetings { title }
+                    alerts { message }
+                    syncStatuses { source status }
+                    weeklyWorkload {
+                        weekStart
+                        capacity
+                        totalTaskHours
+                        totalMeetingHours
+                        capacityHours
+                        isOverloaded
+                        excessHours
+                        slots {
+                            date
+                            halfDay
+                            consumption
+                            isFree
+                        }
+                    }
+                }
+            }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let dashboard = &data["dailyDashboard"];
+
+    assert_eq!(dashboard["date"], "2026-03-09");
+
+    // Tasks should include the one we created (it's in TODO status)
+    let tasks = dashboard["tasks"].as_array().unwrap();
+    assert!(
+        tasks.iter().any(|t| t["title"] == "Dashboard Task"),
+        "Expected 'Dashboard Task' in results"
+    );
+
+    // Meetings, alerts, sync statuses are empty from stubs
+    assert_eq!(dashboard["meetings"].as_array().unwrap().len(), 0);
+    assert_eq!(dashboard["alerts"].as_array().unwrap().len(), 0);
+    assert_eq!(dashboard["syncStatuses"].as_array().unwrap().len(), 0);
+
+    // Weekly workload should have 10 slots
+    let workload = &dashboard["weeklyWorkload"];
+    assert_eq!(workload["weekStart"], "2026-03-09");
+    assert_eq!(workload["capacity"], 10);
+    assert_eq!(workload["capacityHours"], 40.0);
+    assert_eq!(workload["isOverloaded"], false);
+    assert_eq!(workload["excessHours"], 0.0);
+
+    let slots = workload["slots"].as_array().unwrap();
+    assert_eq!(slots.len(), 10);
+
+    // First slot should be Monday Morning
+    assert_eq!(slots[0]["date"], "2026-03-09");
+    assert_eq!(slots[0]["halfDay"], "MORNING");
+    assert_eq!(slots[0]["isFree"], true);
+
+    // Last slot should be Friday Afternoon
+    assert_eq!(slots[9]["date"], "2026-03-13");
+    assert_eq!(slots[9]["halfDay"], "AFTERNOON");
+}
+
+#[tokio::test]
+async fn weekly_workload_returns_structure() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r#"{
+                weeklyWorkload(weekStart: "2026-03-09") {
+                    weekStart
+                    capacity
+                    totalTaskHours
+                    totalMeetingHours
+                    capacityHours
+                    isOverloaded
+                    excessHours
+                    slots {
+                        date
+                        halfDay
+                        consumption
+                        isFree
+                        meetings { title }
+                        tasks { title }
+                    }
+                }
+            }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let workload = &data["weeklyWorkload"];
+
+    assert_eq!(workload["weekStart"], "2026-03-09");
+    assert_eq!(workload["capacity"], 10);
+    assert_eq!(workload["capacityHours"], 40.0);
+    assert_eq!(workload["totalTaskHours"], 0.0);
+    assert_eq!(workload["totalMeetingHours"], 0.0);
+    assert_eq!(workload["isOverloaded"], false);
+    assert_eq!(workload["excessHours"], 0.0);
+
+    let slots = workload["slots"].as_array().unwrap();
+    assert_eq!(slots.len(), 10);
+
+    // All slots should be free with no meetings or tasks
+    for slot in slots {
+        assert_eq!(slot["isFree"], true);
+        assert_eq!(slot["consumption"], 0.0);
+        assert_eq!(slot["meetings"].as_array().unwrap().len(), 0);
+        assert_eq!(slot["tasks"].as_array().unwrap().len(), 0);
+    }
+}

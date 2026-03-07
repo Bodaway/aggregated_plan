@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, Object, Result, ID};
+use chrono::NaiveDate;
 use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
-use application::use_cases::{priority, task_management};
+use application::use_cases::{dashboard, priority, task_management};
 
 use super::types::*;
 
@@ -128,6 +129,55 @@ impl QueryRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(tags.into_iter().map(TagGql).collect())
+    }
+
+    /// Fetch the daily dashboard for a given date, including tasks, meetings, alerts,
+    /// sync statuses, and the weekly workload for the containing week.
+    async fn daily_dashboard(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+    ) -> Result<DailyDashboardGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+        let alert_repo = ctx.data::<Arc<dyn AlertRepository>>()?;
+        let sync_repo = ctx.data::<Arc<dyn SyncStatusRepository>>()?;
+
+        let data = dashboard::get_daily_dashboard(
+            task_repo.as_ref(),
+            meeting_repo.as_ref(),
+            alert_repo.as_ref(),
+            sync_repo.as_ref(),
+            *user_id,
+            date,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(DailyDashboardGql::from(data))
+    }
+
+    /// Fetch the weekly workload for a given week (identified by the Monday date).
+    async fn weekly_workload(
+        &self,
+        ctx: &Context<'_>,
+        week_start: NaiveDate,
+    ) -> Result<WeeklyWorkloadGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+
+        let data = dashboard::get_weekly_workload(
+            task_repo.as_ref(),
+            meeting_repo.as_ref(),
+            *user_id,
+            week_start,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(WeeklyWorkloadGql::from(data))
     }
 
     /// Get the Eisenhower priority matrix for the current user.
