@@ -65,6 +65,19 @@ fn map_alert_row(row: &SqliteRow) -> Result<Alert, RepositoryError> {
 
 #[async_trait]
 impl AlertRepository for SqliteAlertRepository {
+    async fn find_by_id(&self, id: AlertId) -> Result<Option<Alert>, RepositoryError> {
+        let rows = sqlx::query("SELECT * FROM alerts WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => Ok(Some(map_alert_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn find_unresolved(&self, user_id: UserId) -> Result<Vec<Alert>, RepositoryError> {
         let rows = sqlx::query(
             "SELECT * FROM alerts WHERE user_id = ? AND resolved = 0 ORDER BY created_at DESC",

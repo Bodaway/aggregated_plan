@@ -213,6 +213,15 @@ impl TagRepository for InMemoryTagRepository {
 struct StubMeetingRepository;
 #[async_trait]
 impl MeetingRepository for StubMeetingRepository {
+    async fn find_by_id(
+        &self,
+        _id: MeetingId,
+    ) -> Result<Option<Meeting>, RepositoryError> {
+        Ok(None)
+    }
+    async fn update(&self, _meeting: &Meeting) -> Result<(), RepositoryError> {
+        Ok(())
+    }
     async fn find_by_user_and_date(
         &self,
         _user_id: UserId,
@@ -250,6 +259,12 @@ impl MeetingRepository for StubMeetingRepository {
 struct StubActivitySlotRepository;
 #[async_trait]
 impl ActivitySlotRepository for StubActivitySlotRepository {
+    async fn find_by_id(
+        &self,
+        _id: ActivitySlotId,
+    ) -> Result<Option<ActivitySlot>, RepositoryError> {
+        Ok(None)
+    }
     async fn find_by_user_and_date(
         &self,
         _user_id: UserId,
@@ -277,6 +292,12 @@ impl ActivitySlotRepository for StubActivitySlotRepository {
 struct StubAlertRepository;
 #[async_trait]
 impl AlertRepository for StubAlertRepository {
+    async fn find_by_id(
+        &self,
+        _id: AlertId,
+    ) -> Result<Option<Alert>, RepositoryError> {
+        Ok(None)
+    }
     async fn find_by_user(
         &self,
         _user_id: UserId,

@@ -6,7 +6,7 @@ use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
-use application::use_cases::{dashboard, priority, task_management};
+use application::use_cases::{activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management};
 
 use super::types::*;
 
@@ -209,6 +209,143 @@ impl QueryRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(statuses.into_iter().map(SyncStatusGql).collect())
+    }
+
+    /// Get deduplication suggestions for the current user.
+    async fn deduplication_suggestions(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<Vec<DeduplicationSuggestionGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let task_link_repo = ctx.data::<Arc<dyn TaskLinkRepository>>()?;
+
+        let suggestions = deduplication::find_suggestions(
+            task_repo.as_ref(),
+            task_link_repo.as_ref(),
+            *user_id,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(suggestions
+            .into_iter()
+            .map(DeduplicationSuggestionGql::from)
+            .collect())
+    }
+
+    /// Get alerts for the current user with optional filtering and cursor-based pagination.
+    async fn alerts(
+        &self,
+        ctx: &Context<'_>,
+        resolved: Option<bool>,
+        #[graphql(default = 50)] first: i32,
+        after: Option<String>,
+    ) -> Result<AlertConnection> {
+        let user_id = ctx.data::<UserId>()?;
+        let alert_repo = ctx.data::<Arc<dyn AlertRepository>>()?;
+
+        let all_alerts = alerts::get_alerts(alert_repo.as_ref(), *user_id, resolved)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        let total_count = all_alerts.len() as i32;
+
+        let start_index = match after {
+            Some(ref cursor) => cursor
+                .parse::<usize>()
+                .map(|i| i + 1)
+                .unwrap_or(0),
+            None => 0,
+        };
+
+        let limit = first.max(0) as usize;
+        let page: Vec<_> = all_alerts
+            .into_iter()
+            .skip(start_index)
+            .take(limit)
+            .collect();
+
+        let edges: Vec<AlertEdge> = page
+            .into_iter()
+            .enumerate()
+            .map(|(i, alert)| {
+                let cursor = (start_index + i).to_string();
+                AlertEdge {
+                    node: AlertGql(alert),
+                    cursor,
+                }
+            })
+            .collect();
+
+        let has_next_page = if let Some(last_edge) = edges.last() {
+            last_edge
+                .cursor
+                .parse::<usize>()
+                .map(|i| (i + 1) < total_count as usize)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let page_info = PageInfo {
+            has_next_page,
+            has_previous_page: start_index > 0,
+            start_cursor: edges.first().map(|e| e.cursor.clone()),
+            end_cursor: edges.last().map(|e| e.cursor.clone()),
+        };
+
+        Ok(AlertConnection {
+            edges,
+            page_info,
+            total_count,
+        })
+    }
+
+    /// Get the activity journal for a given date.
+    async fn activity_journal(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+    ) -> Result<Vec<ActivitySlotGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+
+        let slots =
+            activity_tracking::get_activity_journal(activity_repo.as_ref(), *user_id, date)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(slots.into_iter().map(ActivitySlotGql).collect())
+    }
+
+    /// Get the currently active activity slot.
+    async fn current_activity(&self, ctx: &Context<'_>) -> Result<Option<ActivitySlotGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+
+        let slot = activity_tracking::get_current_activity(activity_repo.as_ref(), *user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(slot.map(ActivitySlotGql))
+    }
+
+    /// Get user configuration as a JSON-like list of key-value pairs.
+    async fn configuration(&self, ctx: &Context<'_>) -> Result<serde_json::Value> {
+        let user_id = ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+
+        let pairs = configuration::get_all_config(config_repo.as_ref(), *user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        let map: serde_json::Map<String, serde_json::Value> = pairs
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect();
+
+        Ok(serde_json::Value::Object(map))
     }
 }
 

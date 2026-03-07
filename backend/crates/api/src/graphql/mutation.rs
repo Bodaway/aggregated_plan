@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use application::repositories::*;
 use application::services::*;
-use application::use_cases::{priority, sync, task_management};
+use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management};
 
 use super::types::*;
 
@@ -212,6 +212,287 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(statuses.into_iter().map(SyncStatusGql).collect())
+    }
+
+    // ─── Deduplication mutations ───
+
+    /// Manually link two tasks.
+    async fn link_tasks(
+        &self,
+        ctx: &Context<'_>,
+        task_id_primary: ID,
+        task_id_secondary: ID,
+    ) -> Result<bool> {
+        let task_link_repo = ctx.data::<Arc<dyn TaskLinkRepository>>()?;
+        let primary = Uuid::parse_str(&task_id_primary)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
+        let secondary = Uuid::parse_str(&task_id_secondary)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
+
+        deduplication::link_tasks(task_link_repo.as_ref(), primary, secondary)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(true)
+    }
+
+    /// Unlink two tasks by removing their link.
+    async fn unlink_tasks(&self, ctx: &Context<'_>, link_id: ID) -> Result<bool> {
+        let task_link_repo = ctx.data::<Arc<dyn TaskLinkRepository>>()?;
+        let id = Uuid::parse_str(&link_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid link ID: {}", e)))?;
+
+        deduplication::unlink_tasks(task_link_repo.as_ref(), id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(true)
+    }
+
+    /// Confirm or reject a deduplication suggestion.
+    async fn confirm_deduplication(
+        &self,
+        ctx: &Context<'_>,
+        task_id_primary: ID,
+        task_id_secondary: ID,
+        accept: bool,
+    ) -> Result<bool> {
+        let task_link_repo = ctx.data::<Arc<dyn TaskLinkRepository>>()?;
+        let primary = Uuid::parse_str(&task_id_primary)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
+        let secondary = Uuid::parse_str(&task_id_secondary)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
+
+        deduplication::confirm_suggestion(task_link_repo.as_ref(), primary, secondary, accept)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(true)
+    }
+
+    // ─── Alert mutations ───
+
+    /// Resolve an alert by ID.
+    async fn resolve_alert(&self, ctx: &Context<'_>, id: ID) -> Result<AlertGql> {
+        let alert_repo = ctx.data::<Arc<dyn AlertRepository>>()?;
+        let alert_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid alert ID: {}", e)))?;
+
+        let alert = alerts::resolve_alert(alert_repo.as_ref(), alert_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(AlertGql(alert))
+    }
+
+    // ─── Activity tracking mutations ───
+
+    /// Start tracking a new activity. Stops the previous active slot (if any).
+    async fn start_activity(
+        &self,
+        ctx: &Context<'_>,
+        task_id: Option<ID>,
+    ) -> Result<ActivitySlotGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let now = chrono::Utc::now();
+
+        let tid = match task_id {
+            Some(id) => Some(
+                Uuid::parse_str(&id)
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?,
+            ),
+            None => None,
+        };
+
+        let slot =
+            activity_tracking::start_activity(activity_repo.as_ref(), *user_id, tid, now)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(ActivitySlotGql(slot))
+    }
+
+    /// Stop the currently active activity tracking.
+    async fn stop_activity(&self, ctx: &Context<'_>) -> Result<Option<ActivitySlotGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let now = chrono::Utc::now();
+
+        let slot = activity_tracking::stop_activity(activity_repo.as_ref(), *user_id, now)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(slot.map(ActivitySlotGql))
+    }
+
+    /// Update an existing activity slot.
+    async fn update_activity_slot(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        input: UpdateActivitySlotInput,
+    ) -> Result<ActivitySlotGql> {
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let slot_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid slot ID: {}", e)))?;
+
+        // Convert task_id: if provided, parse UUID; if explicitly set to empty, clear it
+        let task_id = match input.task_id {
+            Some(tid) => {
+                let parsed = Uuid::parse_str(&tid)
+                    .map_err(|e| {
+                        async_graphql::Error::new(format!("Invalid task ID: {}", e))
+                    })?;
+                Some(Some(parsed))
+            }
+            None => None,
+        };
+
+        let slot = activity_tracking::update_activity_slot(
+            activity_repo.as_ref(),
+            slot_id,
+            task_id,
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(ActivitySlotGql(slot))
+    }
+
+    /// Delete an activity slot by ID.
+    async fn delete_activity_slot(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let slot_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid slot ID: {}", e)))?;
+
+        activity_tracking::delete_activity_slot(activity_repo.as_ref(), slot_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(true)
+    }
+
+    // ─── Meeting-project association (Task 38) ───
+
+    /// Update the project association of a meeting.
+    async fn update_meeting_project(
+        &self,
+        ctx: &Context<'_>,
+        meeting_id: ID,
+        project_id: Option<ID>,
+    ) -> Result<MeetingGql> {
+        let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+
+        let mid = Uuid::parse_str(&meeting_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid meeting ID: {}", e)))?;
+
+        let pid = match project_id {
+            Some(id) => Some(
+                Uuid::parse_str(&id).map_err(|e| {
+                    async_graphql::Error::new(format!("Invalid project ID: {}", e))
+                })?,
+            ),
+            None => None,
+        };
+
+        let mut meeting = meeting_repo
+            .find_by_id(mid)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .ok_or_else(|| {
+                async_graphql::Error::new(format!("Meeting {} not found", mid))
+            })?;
+
+        meeting.project_id = pid;
+        meeting_repo
+            .update(&meeting)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(MeetingGql(meeting))
+    }
+
+    // ─── Tag management mutations (Task 39) ───
+
+    /// Create a new tag.
+    async fn create_tag(
+        &self,
+        ctx: &Context<'_>,
+        name: String,
+        color: Option<String>,
+    ) -> Result<TagGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let tag_repo = ctx.data::<Arc<dyn TagRepository>>()?;
+
+        let tag = configuration::create_tag(tag_repo.as_ref(), *user_id, name, color)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(TagGql(tag))
+    }
+
+    /// Update an existing tag.
+    async fn update_tag(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        name: Option<String>,
+        color: Option<String>,
+    ) -> Result<TagGql> {
+        let tag_repo = ctx.data::<Arc<dyn TagRepository>>()?;
+        let tag_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid tag ID: {}", e)))?;
+
+        // Wrap color in Option<Option<String>> for the use case:
+        // Some(color_value) means update, None means don't change.
+        let color_update = color.map(|c| {
+            if c.is_empty() {
+                None
+            } else {
+                Some(c)
+            }
+        });
+
+        let tag = configuration::update_tag(tag_repo.as_ref(), tag_id, name, color_update)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(TagGql(tag))
+    }
+
+    /// Delete a tag by ID. Returns true on success.
+    async fn delete_tag(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let tag_repo = ctx.data::<Arc<dyn TagRepository>>()?;
+        let tag_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid tag ID: {}", e)))?;
+
+        configuration::delete_tag(tag_repo.as_ref(), tag_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(true)
+    }
+
+    // ─── Configuration mutations ───
+
+    /// Update a configuration key-value pair.
+    async fn update_configuration(
+        &self,
+        ctx: &Context<'_>,
+        key: String,
+        value: String,
+    ) -> Result<bool> {
+        let user_id = ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+
+        configuration::set_config(config_repo.as_ref(), *user_id, &key, &value)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(true)
     }
 }
 

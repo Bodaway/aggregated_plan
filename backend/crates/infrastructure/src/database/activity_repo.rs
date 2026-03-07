@@ -73,6 +73,19 @@ fn map_activity_slot_row(row: &SqliteRow) -> Result<ActivitySlot, RepositoryErro
 
 #[async_trait]
 impl ActivitySlotRepository for SqliteActivitySlotRepository {
+    async fn find_by_id(&self, id: ActivitySlotId) -> Result<Option<ActivitySlot>, RepositoryError> {
+        let rows = sqlx::query("SELECT * FROM activity_slots WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => Ok(Some(map_activity_slot_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn find_by_user_and_date(
         &self,
         user_id: UserId,

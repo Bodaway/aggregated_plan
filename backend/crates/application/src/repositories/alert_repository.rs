@@ -6,6 +6,9 @@ use crate::errors::RepositoryError;
 /// Repository trait for persisting and querying alerts.
 #[async_trait]
 pub trait AlertRepository: Send + Sync {
+    /// Find an alert by its unique identifier.
+    async fn find_by_id(&self, id: AlertId) -> Result<Option<Alert>, RepositoryError>;
+
     /// Find all unresolved alerts for a user.
     async fn find_unresolved(&self, user_id: UserId) -> Result<Vec<Alert>, RepositoryError>;
 

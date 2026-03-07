@@ -68,6 +68,40 @@ fn map_meeting_row(row: &SqliteRow) -> Result<Meeting, RepositoryError> {
 
 #[async_trait]
 impl MeetingRepository for SqliteMeetingRepository {
+    async fn find_by_id(&self, id: MeetingId) -> Result<Option<Meeting>, RepositoryError> {
+        let rows = sqlx::query("SELECT * FROM meetings WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => Ok(Some(map_meeting_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn update(&self, meeting: &Meeting) -> Result<(), RepositoryError> {
+        let participants_json = serde_json::to_string(&meeting.participants)
+            .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
+
+        sqlx::query(
+            "UPDATE meetings SET title = ?, start_time = ?, end_time = ?, location = ?, participants = ?, project_id = ? WHERE id = ?",
+        )
+        .bind(&meeting.title)
+        .bind(meeting.start_time.to_rfc3339())
+        .bind(meeting.end_time.to_rfc3339())
+        .bind(&meeting.location)
+        .bind(&participants_json)
+        .bind(meeting.project_id.map(|id| id.to_string()))
+        .bind(meeting.id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn find_by_user_and_date(
         &self,
         user_id: UserId,

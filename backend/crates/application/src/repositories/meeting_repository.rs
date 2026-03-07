@@ -7,6 +7,12 @@ use crate::errors::RepositoryError;
 /// Repository trait for persisting and querying meetings.
 #[async_trait]
 pub trait MeetingRepository: Send + Sync {
+    /// Find a meeting by its unique identifier.
+    async fn find_by_id(&self, id: MeetingId) -> Result<Option<Meeting>, RepositoryError>;
+
+    /// Update an existing meeting.
+    async fn update(&self, meeting: &Meeting) -> Result<(), RepositoryError>;
+
     /// Find all meetings for a user on a specific date.
     async fn find_by_user_and_date(
         &self,
