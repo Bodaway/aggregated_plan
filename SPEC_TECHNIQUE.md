@@ -670,7 +670,6 @@ pub struct Task {
     pub urgency_manual: bool,
     pub impact: ImpactLevel,
     pub tags: Vec<TagId>,
-    pub linked_task_id: Option<TaskId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1291,7 +1290,6 @@ pub async fn create_personal_task(
         urgency_manual,
         impact: input.impact.unwrap_or(ImpactLevel::Medium),
         tags: input.tags,
-        linked_task_id: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -1963,7 +1961,6 @@ CREATE TABLE tasks (
     urgency INTEGER NOT NULL DEFAULT 1 CHECK (urgency BETWEEN 1 AND 4),
     urgency_manual INTEGER NOT NULL DEFAULT 0,
     impact INTEGER NOT NULL DEFAULT 2 CHECK (impact BETWEEN 1 AND 4),
-    linked_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -2156,7 +2153,6 @@ type Task {
   urgencyManual: Boolean!
   impact: Int!
   tags: [Tag!]!
-  linkedTask: Task
   quadrant: String!
   createdAt: DateTime!
   updatedAt: DateTime!
@@ -2597,7 +2593,6 @@ When a synced task is updated from the source, the following local fields are **
 - `urgency` + `urgency_manual` (if `urgency_manual = true`)
 - `impact`
 - `tags`
-- `linked_task_id`
 
 These fields belong to the user's local enrichment and persist across syncs.
 
@@ -2624,7 +2619,7 @@ The deduplication engine runs after each sync that involves both Jira and Excel 
 5. For auto-merged tasks:
    - Jira task becomes the primary (source of truth for common fields)
    - Excel data enriches: fields present in Excel but not in Jira are added
-   - The Excel task's linked_task_id points to the Jira task
+   - A `task_link` record (type: auto_merged) links the Excel task to the Jira task
    - The Excel task is hidden from normal views (only the merged Jira task is shown)
 ```
 

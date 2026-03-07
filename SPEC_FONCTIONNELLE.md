@@ -584,7 +584,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - Les tags sont utilisés dans la rétrospective hebdomadaire pour ventiler le temps
 - Les tags sont persistés localement
 
-**Priorité** : Could (v2)
+**Priorité** : Must (MVP v1)
 
 ---
 
@@ -680,7 +680,6 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | urgenceManuelle | Booléen | Oui | Indique si l'urgence a été forcée manuellement |
 | impact | Entier (1-4) | Oui | Qualifié par l'utilisateur, défaut : 2 |
 | tags | Liste de textes | Non | Catégories transverses |
-| liée_à | Référence Tâche | Non | Référence vers tâche fusionnée (dédoublonnage) |
 | créé_le | Date/heure | Oui | Date de création/import |
 | modifié_le | Date/heure | Oui | Date de dernière modification |
 
@@ -872,6 +871,7 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | D3 | Granularité demi-journée conservée | Cohérent avec la réalité du travail du Tech Lead |
 | D4 | Priorité Jira ≠ Priorité de l'outil | L'outil a sa propre matrice impact/urgence, indépendante de la priorité Jira |
 | D5 | Le journal d'activité est pour usage personnel uniquement | Pas d'export automatique ni de partage |
+| D6 | Architecture multi-user ready (`user_id` sur toutes les tables, middleware d'authentification) | Prépare le déploiement futur en tant qu'application Microsoft Teams. Utilisateur unique en MVP — utilisateur par défaut créé automatiquement. |
 
 ---
 
