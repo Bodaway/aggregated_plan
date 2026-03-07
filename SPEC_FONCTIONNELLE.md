@@ -747,6 +747,8 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | seuilAlerteDeadline | Entier (jours) | 2 | Nombre de jours avant échéance pour déclencher l'alerte |
 | déclencheurPostRéunion | Booléen | true | Activer/désactiver la notification après chaque réunion |
 | déclencheurPériodique | Booléen | true | Activer/désactiver le rappel périodique |
+| heuresDébutTravail | Heure (HH:MM) | 08:00 | Heure de début de la journée de travail |
+| heuresFinTravail | Heure (HH:MM) | 17:00 | Heure de fin de la journée de travail |
 | jiraUrl | Texte | — | URL de l'instance Jira |
 | jiraProjetKeys | Liste de textes | — | Clés de projets Jira à importer |
 | excelSharepointPath | Texte | — | Chemin du fichier Excel sur SharePoint |

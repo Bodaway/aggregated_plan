@@ -1094,6 +1094,9 @@ pub trait MeetingRepository: Send + Sync {
     async fn delete_stale(
         &self, user_id: UserId, current_outlook_ids: &[String],
     ) -> Result<u64, RepositoryError>;
+    async fn find_by_project(
+        &self, user_id: UserId, project_id: ProjectId,
+    ) -> Result<Vec<Meeting>, RepositoryError>;
 }
 ```
 
@@ -2067,6 +2070,7 @@ CREATE INDEX idx_tasks_deadline ON tasks(user_id, deadline);
 CREATE INDEX idx_tasks_project ON tasks(project_id);
 CREATE INDEX idx_tasks_status ON tasks(user_id, status);
 CREATE INDEX idx_meetings_user_time ON meetings(user_id, start_time);
+CREATE INDEX idx_meetings_project ON meetings(project_id);
 CREATE INDEX idx_activity_user_date ON activity_slots(user_id, date);
 CREATE INDEX idx_alerts_user_resolved ON alerts(user_id, resolved);
 CREATE INDEX idx_projects_user ON projects(user_id);
@@ -2360,17 +2364,46 @@ input TeamFilter {
   weekStart: Date
 }
 
+# --- Pagination ---
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type TaskEdge {
+  node: Task!
+  cursor: String!
+}
+
+type TaskConnection {
+  edges: [TaskEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type AlertEdge {
+  node: Alert!
+  cursor: String!
+}
+
+type AlertConnection {
+  edges: [AlertEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
 # --- Queries ---
 
 type Query {
   dailyDashboard(date: Date!): DailyDashboard!
-  tasks(filter: TaskFilter): [Task!]!
+  tasks(filter: TaskFilter, first: Int = 50, after: String): TaskConnection!
   task(id: ID!): Task
   priorityMatrix: PriorityMatrix!
   weeklyWorkload(weekStart: Date!): WeeklyWorkload!
   activityJournal(date: Date!): [ActivitySlot!]!
   currentActivity: ActivitySlot
-  alerts(resolved: Boolean): [Alert!]!
+  alerts(resolved: Boolean, first: Int = 50, after: String): AlertConnection!
   projects: [Project!]!
   project(id: ID!): Project
   tags: [Tag!]!
@@ -2723,7 +2756,7 @@ Activity tracking uses three trigger types (US-031):
 
 ### 13.3 Reminder Suppression
 
-- No reminders on weekends or outside working hours (08:00-17:00)
+- No reminders on weekends or outside configured working hours (default: 08:00-17:00, configurable via `working_hours_start` / `working_hours_end`)
 - Post-meeting reminders: only for meetings the user attended (not declined)
 - If the user already changed activity within the last 15 minutes, skip the periodic reminder
 
@@ -2771,6 +2804,8 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `deadline_alert_threshold_days` | integer | `2` | Days before deadline to trigger alert |
 | `post_meeting_reminder_enabled` | boolean | `true` | Enable post-meeting activity prompt |
 | `periodic_reminder_enabled` | boolean | `true` | Enable periodic activity prompt |
+| `working_hours_start` | string | `"08:00"` | Start of working day (HH:MM format) |
+| `working_hours_end` | string | `"17:00"` | End of working day (HH:MM format) |
 | `jira_base_url` | string | `""` | Jira instance URL |
 | `jira_api_token` | string (encrypted) | `""` | Jira API token |
 | `jira_email` | string | `""` | Jira user email |
@@ -2938,6 +2973,7 @@ The MVP should be built in this order, with each phase being independently testa
 - Repository traits (application layer)
 - SQLite repository implementations (infrastructure layer)
 - Repository integration tests
+- Update `CLAUDE.md` to reflect new tech stack (Rust/Axum backend, GraphQL API, SQLite, urql frontend)
 
 **Phase 2: Core API**
 - GraphQL schema setup (async-graphql + Axum)
