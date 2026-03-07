@@ -1,3 +1,7 @@
+# Rust
+target/
+*.db
+
 # Dependencies
 node_modules/
 .pnp
