@@ -88,7 +88,7 @@ mod tests {
 
     async fn setup() -> SqlitePool {
         let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
-        sqlx::query("INSERT INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR IGNORE INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)")
             .bind("00000000-0000-0000-0000-000000000001")
             .bind("Test User")
             .bind("test@example.com")

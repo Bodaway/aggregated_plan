@@ -17,5 +17,15 @@ pub async fn create_sqlite_pool(database_url: &str) -> Result<SqlitePool, sqlx::
         .run(&pool)
         .await?;
 
+    // Seed the default local user if it does not exist yet.
+    sqlx::query(
+        "INSERT OR IGNORE INTO users (id, name, email) VALUES (?, ?, ?)"
+    )
+    .bind("00000000-0000-0000-0000-000000000001")
+    .bind("Local User")
+    .bind("local@aggregated-plan.local")
+    .execute(&pool)
+    .await?;
+
     Ok(pool)
 }

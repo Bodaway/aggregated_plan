@@ -241,6 +241,16 @@ impl TaskRepository for SqliteTaskRepository {
             }
         }
 
+        if let Some(ref states) = filter.tracking_state {
+            if !states.is_empty() {
+                let placeholders: Vec<&str> = states.iter().map(|_| "?").collect();
+                sql.push_str(&format!(" AND tracking_state IN ({})", placeholders.join(",")));
+                for s in states {
+                    bind_values.push(s.to_string());
+                }
+            }
+        }
+
         sql.push_str(" ORDER BY created_at DESC");
 
         let mut query = sqlx::query(&sql);
@@ -309,8 +319,8 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
@@ -329,6 +339,7 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(urgency_to_i32(task.urgency))
         .bind(if task.urgency_manual { 1i32 } else { 0i32 })
         .bind(impact_to_i32(task.impact))
+        .bind(task.tracking_state.to_string())
         .bind(task.created_at.to_rfc3339())
         .bind(task.updated_at.to_rfc3339())
         .execute(&self.pool)
@@ -405,7 +416,7 @@ mod tests {
 
     async fn setup() -> SqlitePool {
         let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
-        sqlx::query("INSERT INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR IGNORE INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)")
             .bind("00000000-0000-0000-0000-000000000001")
             .bind("Test User")
             .bind("test@example.com")
@@ -740,5 +751,48 @@ mod tests {
         let tasks = repo.find_by_user(user_id(), &filter).await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "Early");
+    }
+
+    #[tokio::test]
+    async fn save_and_read_tracking_state() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let task = Task {
+            id: Uuid::new_v4(),
+            user_id: user_id(),
+            title: "Tracked task".to_string(),
+            description: None,
+            source: Source::Jira,
+            source_id: Some("SCB-999".to_string()),
+            jira_status: None,
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            urgency: UrgencyLevel::Low,
+            urgency_manual: false,
+            impact: ImpactLevel::Low,
+            tags: vec![],
+            tracking_state: TrackingState::Inbox,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        repo.save(&task).await.unwrap();
+
+        let loaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert_eq!(loaded.tracking_state, TrackingState::Inbox);
+
+        // Filter by tracking state
+        let filter = TaskFilter {
+            tracking_state: Some(vec![TrackingState::Followed]),
+            ..TaskFilter::empty()
+        };
+        let results = repo.find_by_user(user_id(), &filter).await.unwrap();
+        assert!(results.is_empty()); // task is Inbox, not Followed
     }
 }
