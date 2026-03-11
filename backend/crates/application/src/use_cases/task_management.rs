@@ -33,6 +33,8 @@ pub struct UpdateTaskInput {
     pub impact: Option<ImpactLevel>,
     pub urgency: Option<UrgencyLevel>,
     pub tags: Option<Vec<TagId>>,
+    pub remaining_hours_override: Option<Option<f32>>,
+    pub estimated_hours_override: Option<Option<f32>>,
 }
 
 /// Create a new personal task with auto-calculated urgency if not provided.
@@ -152,6 +154,12 @@ pub async fn update_task(
     }
     if let Some(tags) = input.tags {
         task.tags = tags;
+    }
+    if let Some(remaining) = input.remaining_hours_override {
+        task.remaining_hours_override = remaining;
+    }
+    if let Some(estimated) = input.estimated_hours_override {
+        task.estimated_hours_override = estimated;
     }
 
     task.updated_at = Utc::now();
@@ -528,6 +536,8 @@ mod tests {
             impact: Some(ImpactLevel::High),
             urgency: None,
             tags: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
         };
 
         let updated = update_task(&repo, created.id, update, today())
@@ -557,6 +567,8 @@ mod tests {
             impact: None,
             urgency: None,
             tags: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
         };
 
         let result = update_task(&repo, Uuid::new_v4(), update, today()).await;
@@ -596,6 +608,8 @@ mod tests {
             impact: None,
             urgency: Some(UrgencyLevel::Critical),
             tags: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
         };
 
         let updated = update_task(&repo, created.id, update, today())
@@ -669,6 +683,113 @@ mod tests {
         let repo = InMemoryTaskRepository::new();
         let result = complete_task(&repo, Uuid::new_v4()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_task_with_time_overrides() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Jira Task".to_string(),
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+
+        let created = create_personal_task(&repo, test_user_id(), input, today())
+            .await
+            .unwrap();
+
+        assert!(created.remaining_hours_override.is_none());
+        assert!(created.estimated_hours_override.is_none());
+
+        let update = UpdateTaskInput {
+            title: None,
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            status: None,
+            impact: None,
+            urgency: None,
+            tags: None,
+            remaining_hours_override: Some(Some(4.5)),
+            estimated_hours_override: Some(Some(8.0)),
+        };
+
+        let updated = update_task(&repo, created.id, update, today())
+            .await
+            .unwrap();
+
+        assert_eq!(updated.remaining_hours_override, Some(4.5));
+        assert_eq!(updated.estimated_hours_override, Some(8.0));
+    }
+
+    #[tokio::test]
+    async fn update_task_clear_time_overrides() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Task".to_string(),
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+
+        let created = create_personal_task(&repo, test_user_id(), input, today())
+            .await
+            .unwrap();
+
+        // Set overrides
+        let update1 = UpdateTaskInput {
+            title: None,
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            status: None,
+            impact: None,
+            urgency: None,
+            tags: None,
+            remaining_hours_override: Some(Some(4.5)),
+            estimated_hours_override: Some(Some(8.0)),
+        };
+        let t = update_task(&repo, created.id, update1, today()).await.unwrap();
+        assert_eq!(t.remaining_hours_override, Some(4.5));
+
+        // Clear overrides with Some(None)
+        let update2 = UpdateTaskInput {
+            title: None,
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            status: None,
+            impact: None,
+            urgency: None,
+            tags: None,
+            remaining_hours_override: Some(None),
+            estimated_hours_override: Some(None),
+        };
+        let cleared = update_task(&repo, created.id, update2, today()).await.unwrap();
+        assert!(cleared.remaining_hours_override.is_none());
+        assert!(cleared.estimated_hours_override.is_none());
     }
 
     #[tokio::test]

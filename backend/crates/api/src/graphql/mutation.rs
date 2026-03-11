@@ -619,5 +619,7 @@ fn convert_update_input(
         impact: input.impact.map(|i| i.into()),
         urgency: input.urgency.map(|u| u.into()),
         tags: tag_ids,
+        remaining_hours_override: None,
+        estimated_hours_override: None,
     })
 }
