@@ -169,6 +169,36 @@ pub async fn delete_task(
     Ok(())
 }
 
+/// Update the tracking state of a task (inbox → followed/dismissed).
+pub async fn set_tracking_state(
+    repo: &dyn TaskRepository,
+    task_id: TaskId,
+    state: TrackingState,
+) -> Result<Task, AppError> {
+    let mut task = repo
+        .find_by_id(task_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Task {} not found", task_id)))?;
+
+    task.tracking_state = state;
+    task.updated_at = chrono::Utc::now();
+    repo.save(&task).await?;
+    Ok(task)
+}
+
+/// Batch-update the tracking state for multiple tasks.
+pub async fn set_tracking_state_batch(
+    repo: &dyn TaskRepository,
+    task_ids: Vec<TaskId>,
+    state: TrackingState,
+) -> Result<Vec<Task>, AppError> {
+    let mut results = Vec::with_capacity(task_ids.len());
+    for id in task_ids {
+        results.push(set_tracking_state(repo, id, state).await?);
+    }
+    Ok(results)
+}
+
 /// Mark a task as completed.
 pub async fn complete_task(
     task_repo: &dyn TaskRepository,
@@ -240,6 +270,13 @@ mod tests {
                 .filter(|t| {
                     if let Some(ref pid) = filter.project_id {
                         t.project_id == Some(*pid)
+                    } else {
+                        true
+                    }
+                })
+                .filter(|t| {
+                    if let Some(ref states) = filter.tracking_state {
+                        states.contains(&t.tracking_state)
                     } else {
                         true
                     }
@@ -627,5 +664,32 @@ mod tests {
         let repo = InMemoryTaskRepository::new();
         let result = complete_task(&repo, Uuid::new_v4()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn set_tracking_state_updates_task() {
+        use domain::types::TrackingState;
+        let repo = InMemoryTaskRepository::new();
+        let user_id = Uuid::new_v4();
+        let today = chrono::Utc::now().date_naive();
+
+        let input = CreateTaskInput {
+            title: "Test task".to_string(),
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+
+        let task = create_personal_task(&repo, user_id, input, today).await.unwrap();
+        assert_eq!(task.tracking_state, TrackingState::Followed);
+
+        let updated = set_tracking_state(&repo, task.id, TrackingState::Dismissed).await.unwrap();
+        assert_eq!(updated.tracking_state, TrackingState::Dismissed);
     }
 }

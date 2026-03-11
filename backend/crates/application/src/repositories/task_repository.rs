@@ -13,6 +13,7 @@ pub struct TaskFilter {
     pub deadline_before: Option<NaiveDate>,
     pub deadline_after: Option<NaiveDate>,
     pub tag_ids: Option<Vec<TagId>>,
+    pub tracking_state: Option<Vec<TrackingState>>,
 }
 
 impl TaskFilter {
@@ -26,6 +27,7 @@ impl TaskFilter {
             deadline_before: None,
             deadline_after: None,
             tag_ids: None,
+            tracking_state: None,
         }
     }
 }
@@ -67,4 +69,13 @@ pub trait TaskRepository: Send + Sync {
 
     /// Delete a task by its identifier.
     async fn delete(&self, id: TaskId) -> Result<(), RepositoryError>;
+
+    /// Delete all tasks from a given source whose source_id is NOT in `keep_ids`.
+    /// Used after a sync to remove tasks that are no longer returned by the source.
+    async fn delete_stale_by_source(
+        &self,
+        user_id: UserId,
+        source: Source,
+        keep_ids: &[String],
+    ) -> Result<u64, RepositoryError>;
 }
