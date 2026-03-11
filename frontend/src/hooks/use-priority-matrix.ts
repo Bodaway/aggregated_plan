@@ -13,6 +13,12 @@ export interface MatrixTask {
   readonly deadline: string | null;
   readonly assignee: string | null;
   readonly project: MatrixProject | null;
+  readonly source: string;
+  readonly sourceId: string | null;
+  readonly jiraStatus: string | null;
+  readonly effectiveRemainingHours: number | null;
+  readonly effectiveEstimatedHours: number | null;
+  readonly jiraTimeSpentSeconds: number | null;
 }
 
 export interface PriorityMatrixData {
@@ -35,19 +41,23 @@ const PRIORITY_MATRIX_QUERY = `
   query PriorityMatrix {
     priorityMatrix {
       urgentImportant {
-        id title status urgency impact deadline assignee
+        id title status urgency impact deadline assignee source sourceId jiraStatus
+        effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         project { name }
       }
       important {
-        id title status urgency impact deadline assignee
+        id title status urgency impact deadline assignee source sourceId jiraStatus
+        effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         project { name }
       }
       urgent {
-        id title status urgency impact deadline assignee
+        id title status urgency impact deadline assignee source sourceId jiraStatus
+        effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         project { name }
       }
       neither {
-        id title status urgency impact deadline assignee
+        id title status urgency impact deadline assignee source sourceId jiraStatus
+        effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         project { name }
       }
     }
@@ -55,7 +65,7 @@ const PRIORITY_MATRIX_QUERY = `
 `;
 
 const UPDATE_PRIORITY_MUTATION = `
-  mutation UpdatePriority($taskId: ID!, $urgency: Int, $impact: Int) {
+  mutation UpdatePriority($taskId: ID!, $urgency: UrgencyLevelGql, $impact: ImpactLevelGql) {
     updatePriority(taskId: $taskId, urgency: $urgency, impact: $impact) {
       id urgency impact quadrant
     }
@@ -64,17 +74,18 @@ const UPDATE_PRIORITY_MUTATION = `
 
 export type QuadrantKey = 'urgentImportant' | 'important' | 'urgent' | 'neither';
 
-/** Maps quadrant keys to the urgency/impact values that define them. */
-const QUADRANT_VALUES: Record<QuadrantKey, { urgency: number; impact: number }> = {
-  urgentImportant: { urgency: 3, impact: 3 },
-  important: { urgency: 1, impact: 3 },
-  urgent: { urgency: 3, impact: 1 },
-  neither: { urgency: 1, impact: 1 },
+/** Maps quadrant keys to the urgency/impact enum values expected by the backend. */
+const QUADRANT_VALUES: Record<QuadrantKey, { urgency: string; impact: string }> = {
+  urgentImportant: { urgency: 'HIGH', impact: 'HIGH' },
+  important: { urgency: 'LOW', impact: 'HIGH' },
+  urgent: { urgency: 'HIGH', impact: 'LOW' },
+  neither: { urgency: 'LOW', impact: 'LOW' },
 };
 
 export function usePriorityMatrix() {
   const [result, reexecute] = useQuery<{ priorityMatrix: PriorityMatrixData }>({
     query: PRIORITY_MATRIX_QUERY,
+    requestPolicy: 'cache-and-network',
   });
 
   const [, executeMutation] = useMutation<UpdatePriorityResult>(UPDATE_PRIORITY_MUTATION);

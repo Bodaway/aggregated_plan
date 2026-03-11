@@ -12,6 +12,9 @@ export interface TriageTask {
   readonly deadline: string | null;
   readonly assignee: string | null;
   readonly project: { readonly name: string } | null;
+  readonly effectiveRemainingHours: number | null;
+  readonly effectiveEstimatedHours: number | null;
+  readonly jiraTimeSpentSeconds: number | null;
 }
 
 const TRIAGE_TASKS_QUERY = `
@@ -30,6 +33,9 @@ const TRIAGE_TASKS_QUERY = `
           deadline
           assignee
           project { name }
+          effectiveRemainingHours
+          effectiveEstimatedHours
+          jiraTimeSpentSeconds
         }
       }
       totalCount

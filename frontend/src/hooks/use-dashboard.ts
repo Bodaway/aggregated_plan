@@ -25,6 +25,9 @@ export interface DashboardTask {
   readonly assignee: string | null;
   readonly project: DashboardProject | null;
   readonly tags: readonly DashboardTag[];
+  readonly effectiveRemainingHours: number | null;
+  readonly effectiveEstimatedHours: number | null;
+  readonly jiraTimeSpentSeconds: number | null;
 }
 
 export interface DashboardMeeting {
@@ -108,6 +111,9 @@ const DASHBOARD_QUERY = `
         assignee
         project { name }
         tags { id name color }
+        effectiveRemainingHours
+        effectiveEstimatedHours
+        jiraTimeSpentSeconds
       }
       meetings {
         id
