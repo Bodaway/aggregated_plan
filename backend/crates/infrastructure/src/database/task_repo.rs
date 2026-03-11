@@ -330,8 +330,8 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
@@ -351,6 +351,11 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(if task.urgency_manual { 1i32 } else { 0i32 })
         .bind(impact_to_i32(task.impact))
         .bind(task.tracking_state.to_string())
+        .bind(task.jira_remaining_seconds)
+        .bind(task.jira_original_estimate_seconds)
+        .bind(task.jira_time_spent_seconds)
+        .bind(task.remaining_hours_override.map(|h| h as f64))
+        .bind(task.estimated_hours_override.map(|h| h as f64))
         .bind(task.created_at.to_rfc3339())
         .bind(task.updated_at.to_rfc3339())
         .execute(&self.pool)
@@ -815,5 +820,45 @@ mod tests {
         };
         let results = repo.find_by_user(user_id(), &filter).await.unwrap();
         assert!(results.is_empty()); // task is Inbox, not Followed
+    }
+
+    #[tokio::test]
+    async fn save_and_read_time_tracking_fields() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Time Tracked");
+        task.source = Source::Jira;
+        task.source_id = Some("PROJ-42".to_string());
+        task.jira_remaining_seconds = Some(7200);
+        task.jira_original_estimate_seconds = Some(14400);
+        task.jira_time_spent_seconds = Some(3600);
+        task.remaining_hours_override = Some(5.0);
+        task.estimated_hours_override = Some(10.0);
+
+        repo.save(&task).await.unwrap();
+
+        let loaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert_eq!(loaded.jira_remaining_seconds, Some(7200));
+        assert_eq!(loaded.jira_original_estimate_seconds, Some(14400));
+        assert_eq!(loaded.jira_time_spent_seconds, Some(3600));
+        assert_eq!(loaded.remaining_hours_override, Some(5.0));
+        assert_eq!(loaded.estimated_hours_override, Some(10.0));
+    }
+
+    #[tokio::test]
+    async fn save_and_read_time_tracking_nulls() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let task = make_task("No Time Data");
+        repo.save(&task).await.unwrap();
+
+        let loaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert!(loaded.jira_remaining_seconds.is_none());
+        assert!(loaded.jira_original_estimate_seconds.is_none());
+        assert!(loaded.jira_time_spent_seconds.is_none());
+        assert!(loaded.remaining_hours_override.is_none());
+        assert!(loaded.estimated_hours_override.is_none());
     }
 }
