@@ -26,7 +26,10 @@ pub async fn get_priority_matrix(
     user_id: UserId,
     _today: NaiveDate,
 ) -> Result<PriorityMatrixData, AppError> {
-    let filter = TaskFilter::empty();
+    let filter = TaskFilter {
+        tracking_state: Some(vec![TrackingState::Followed]),
+        ..TaskFilter::empty()
+    };
     let tasks = task_repo.find_by_user(user_id, &filter).await?;
 
     let mut urgent_important = Vec::new();
@@ -147,12 +150,19 @@ mod tests {
         async fn find_by_user(
             &self,
             user_id: UserId,
-            _filter: &TaskFilter,
+            filter: &TaskFilter,
         ) -> Result<Vec<Task>, RepositoryError> {
             let tasks = self.tasks.lock().unwrap();
             Ok(tasks
                 .values()
                 .filter(|t| t.user_id == user_id)
+                .filter(|t| {
+                    if let Some(ref states) = filter.tracking_state {
+                        states.contains(&t.tracking_state)
+                    } else {
+                        true
+                    }
+                })
                 .cloned()
                 .collect())
         }
@@ -228,7 +238,12 @@ mod tests {
             urgency_manual: false,
             impact,
             tags: vec![],
-            tracking_state: TrackingState::Inbox,
+            tracking_state: TrackingState::Followed,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -259,6 +274,31 @@ mod tests {
         assert_eq!(matrix.urgent[0].title, "U");
         assert_eq!(matrix.neither.len(), 1);
         assert_eq!(matrix.neither[0].title, "N");
+    }
+
+    #[tokio::test]
+    async fn priority_matrix_excludes_non_followed_tasks() {
+        let repo = InMemoryTaskRepository::new();
+
+        // Inbox task should be excluded
+        let mut inbox_task = make_task("Inbox", UrgencyLevel::High, ImpactLevel::High);
+        inbox_task.tracking_state = TrackingState::Inbox;
+        repo.insert(inbox_task);
+
+        // Dismissed task should be excluded
+        let mut dismissed_task = make_task("Dismissed", UrgencyLevel::High, ImpactLevel::High);
+        dismissed_task.tracking_state = TrackingState::Dismissed;
+        repo.insert(dismissed_task);
+
+        // Followed task should be included
+        repo.insert(make_task("Followed", UrgencyLevel::High, ImpactLevel::High));
+
+        let matrix = get_priority_matrix(&repo, test_user_id(), today())
+            .await
+            .unwrap();
+
+        assert_eq!(matrix.urgent_important.len(), 1);
+        assert_eq!(matrix.urgent_important[0].title, "Followed");
     }
 
     #[tokio::test]

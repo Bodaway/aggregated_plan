@@ -62,6 +62,11 @@ mod tests {
             impact,
             tags: vec![],
             tracking_state: TrackingState::Inbox,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

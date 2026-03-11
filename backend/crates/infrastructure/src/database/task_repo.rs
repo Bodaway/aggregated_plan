@@ -102,6 +102,17 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
         impact: impact_from_i32(impact_val),
         tags: Vec::new(), // Tags are loaded separately
         tracking_state,
+        jira_remaining_seconds: Row::try_get(row, "jira_remaining_seconds").ok().flatten(),
+        jira_original_estimate_seconds: Row::try_get(row, "jira_original_estimate_seconds").ok().flatten(),
+        jira_time_spent_seconds: Row::try_get(row, "jira_time_spent_seconds").ok().flatten(),
+        remaining_hours_override: {
+            let v: Option<f64> = Row::try_get(row, "remaining_hours_override").ok().flatten();
+            v.map(|x| x as f32)
+        },
+        estimated_hours_override: {
+            let v: Option<f64> = Row::try_get(row, "estimated_hours_override").ok().flatten();
+            v.map(|x| x as f32)
+        },
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
     })
@@ -457,6 +468,11 @@ mod tests {
             impact: ImpactLevel::High,
             tags: Vec::new(),
             tracking_state: TrackingState::Inbox,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -778,6 +794,11 @@ mod tests {
             impact: ImpactLevel::Low,
             tags: vec![],
             tracking_state: TrackingState::Inbox,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

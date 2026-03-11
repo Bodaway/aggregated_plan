@@ -71,6 +71,11 @@ pub async fn create_personal_task(
         impact,
         tags: input.tags,
         tracking_state: TrackingState::Followed,
+        jira_remaining_seconds: None,
+        jira_original_estimate_seconds: None,
+        jira_time_spent_seconds: None,
+        remaining_hours_override: None,
+        estimated_hours_override: None,
         created_at: now,
         updated_at: now,
     };

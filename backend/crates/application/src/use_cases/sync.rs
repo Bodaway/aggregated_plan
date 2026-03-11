@@ -136,6 +136,11 @@ pub async fn sync_jira(
                     impact: ImpactLevel::Medium,
                     tags: vec![],
                     tracking_state: TrackingState::Inbox,
+                    jira_remaining_seconds: None,
+                    jira_original_estimate_seconds: None,
+                    jira_time_spent_seconds: None,
+                    remaining_hours_override: None,
+                    estimated_hours_override: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -393,6 +398,11 @@ pub async fn sync_excel(
                     impact: ImpactLevel::Medium,
                     tags: vec![],
                     tracking_state: TrackingState::Inbox,
+                    jira_remaining_seconds: None,
+                    jira_original_estimate_seconds: None,
+                    jira_time_spent_seconds: None,
+                    remaining_hours_override: None,
+                    estimated_hours_override: None,
                     created_at: now,
                     updated_at: now,
                 };
