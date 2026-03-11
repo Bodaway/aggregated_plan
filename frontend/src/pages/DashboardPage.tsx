@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useDashboard } from '@/hooks/use-dashboard';
 import { TaskList } from '@/components/task/TaskList';
 import { MeetingList } from '@/components/meeting/MeetingList';
@@ -7,6 +7,7 @@ import { AlertPanel } from '@/components/alert/AlertPanel';
 import { SyncStatusBar } from '@/components/sync/SyncStatusBar';
 import { formatDate, formatDisplayDate, getNextDay, getPrevDay } from '@/lib/date-utils';
 import type { TaskCardProps } from '@/components/task/TaskCard';
+import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 
 /** Priority order for sorting tasks: urgentImportant first, neither last. */
 const QUADRANT_PRIORITY: Record<string, number> = {
@@ -21,6 +22,16 @@ function getQuadrantPriority(quadrant: string): number {
 }
 
 export function DashboardPage() {
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+
+  const handleTaskClick = useCallback((taskId: string) => {
+    setEditingTaskId(taskId);
+  }, []);
+
+  const handleSheetClose = useCallback(() => {
+    setEditingTaskId(null);
+  }, []);
+
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const dateStr = formatDate(currentDate);
   const { data, loading, error } = useDashboard(dateStr);
@@ -66,6 +77,10 @@ export function DashboardPage() {
           assignee: t.assignee,
           projectName: t.project?.name ?? null,
           tags: t.tags,
+          effectiveRemainingHours: t.effectiveRemainingHours ?? null,
+          effectiveEstimatedHours: t.effectiveEstimatedHours ?? null,
+          jiraTimeSpentSeconds: t.jiraTimeSpentSeconds ?? null,
+          onClick: () => handleTaskClick(t.id),
         }))
     : [];
 
@@ -209,6 +224,7 @@ export function DashboardPage() {
           </div>
         </>
       )}
+      <TaskEditSheet taskId={editingTaskId} onClose={handleSheetClose} />
     </div>
   );
 }
