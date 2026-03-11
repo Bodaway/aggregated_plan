@@ -421,6 +421,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::Medium,
             tags: vec![],
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -444,6 +445,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::Low,
             tags: vec![],
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -518,6 +520,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::High,
             tags: vec![],
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -581,6 +584,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::Low,
             tags: vec![],
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

@@ -61,6 +61,7 @@ mod tests {
             urgency_manual: false,
             impact,
             tags: vec![],
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

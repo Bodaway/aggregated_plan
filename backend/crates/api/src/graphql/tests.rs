@@ -109,6 +109,10 @@ impl TaskRepository for InMemoryTaskRepository {
         tasks.remove(&id);
         Ok(())
     }
+
+    async fn delete_stale_by_source(&self, _user_id: UserId, _source: Source, _keep_ids: &[String]) -> Result<u64, RepositoryError> {
+        Ok(0)
+    }
 }
 
 struct InMemoryProjectRepository {

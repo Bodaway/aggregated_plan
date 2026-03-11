@@ -75,6 +75,12 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
         _ => None,
     };
 
+    let tracking_state_str: Option<String> = Row::try_get(row, "tracking_state").ok();
+    let tracking_state = tracking_state_str
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+
     Ok(Task {
         id: Uuid::parse_str(&id_str).map_err(|e| RepositoryError::Database(e.to_string()))?,
         user_id: Uuid::parse_str(&user_id_str)
@@ -95,6 +101,7 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
         urgency_manual: urgency_manual_val != 0,
         impact: impact_from_i32(impact_val),
         tags: Vec::new(), // Tags are loaded separately
+        tracking_state,
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
     })
@@ -350,6 +357,43 @@ impl TaskRepository for SqliteTaskRepository {
 
         Ok(())
     }
+
+    async fn delete_stale_by_source(
+        &self,
+        user_id: UserId,
+        source: Source,
+        keep_ids: &[String],
+    ) -> Result<u64, RepositoryError> {
+        let source_str = source_to_str(source);
+        if keep_ids.is_empty() {
+            let result = sqlx::query(
+                "DELETE FROM tasks WHERE user_id = ? AND source = ?",
+            )
+            .bind(user_id.to_string())
+            .bind(source_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+            return Ok(result.rows_affected());
+        }
+
+        let placeholders = keep_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "DELETE FROM tasks WHERE user_id = ? AND source = ? AND source_id NOT IN ({})",
+            placeholders
+        );
+        let mut q = sqlx::query(&sql)
+            .bind(user_id.to_string())
+            .bind(source_str);
+        for id in keep_ids {
+            q = q.bind(id);
+        }
+        let result = q
+            .execute(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(result.rows_affected())
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +445,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::High,
             tags: Vec::new(),
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

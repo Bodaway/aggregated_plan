@@ -172,6 +172,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::Medium,
             tags: Vec::new(),
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

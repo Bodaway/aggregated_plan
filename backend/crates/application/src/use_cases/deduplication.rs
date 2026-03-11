@@ -297,6 +297,10 @@ mod tests {
             tasks.remove(&id);
             Ok(())
         }
+
+        async fn delete_stale_by_source(&self, _user_id: UserId, _source: Source, _keep_ids: &[String]) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
     }
 
     struct InMemoryTaskLinkRepository {
@@ -370,6 +374,7 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::Medium,
             tags: vec![],
+            tracking_state: TrackingState::Inbox,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

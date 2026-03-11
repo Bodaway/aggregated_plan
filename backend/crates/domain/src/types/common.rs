@@ -93,3 +93,64 @@ pub enum TaskLinkType {
     ManualMerged,
     Rejected,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackingState {
+    Inbox,
+    Followed,
+    Dismissed,
+}
+
+impl Default for TrackingState {
+    fn default() -> Self {
+        Self::Inbox
+    }
+}
+
+impl std::fmt::Display for TrackingState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inbox => write!(f, "inbox"),
+            Self::Followed => write!(f, "followed"),
+            Self::Dismissed => write!(f, "dismissed"),
+        }
+    }
+}
+
+impl std::str::FromStr for TrackingState {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "inbox" => Ok(Self::Inbox),
+            "followed" => Ok(Self::Followed),
+            "dismissed" => Ok(Self::Dismissed),
+            _ => Err(format!("Invalid tracking state: {}", s)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_state_display_roundtrip() {
+        let states = [TrackingState::Inbox, TrackingState::Followed, TrackingState::Dismissed];
+        for state in &states {
+            let s = state.to_string();
+            let parsed: TrackingState = s.parse().unwrap();
+            assert_eq!(&parsed, state);
+        }
+    }
+
+    #[test]
+    fn tracking_state_default_is_inbox() {
+        assert_eq!(TrackingState::default(), TrackingState::Inbox);
+    }
+
+    #[test]
+    fn tracking_state_invalid_string_errors() {
+        let result: Result<TrackingState, _> = "invalid".parse();
+        assert!(result.is_err());
+    }
+}

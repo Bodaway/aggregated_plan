@@ -21,6 +21,9 @@ pub struct SyncResult {
 pub struct JiraConfig {
     pub project_keys: Vec<String>,
     pub assignees: Option<Vec<String>>,
+    /// When true, restrict the JQL to issues assigned to or watched by the
+    /// authenticated API user (`currentUser()`).
+    pub my_tasks_only: bool,
 }
 
 /// Synchronize tasks from Jira.
@@ -46,18 +49,23 @@ pub async fn sync_jira(
         })
         .await?;
 
-    let jira_tasks = jira_client
+    let jira_tasks = match jira_client
         .fetch_tasks(
             &config.project_keys,
             config.assignees.as_deref(),
+            config.my_tasks_only,
         )
         .await
-        .map_err(|e| {
-            AppError::Connector {
+    {
+        Ok(tasks) => tasks,
+        Err(e) => {
+            update_sync_error(sync_repo, user_id, Source::Jira, &e.to_string()).await?;
+            return Err(AppError::Connector {
                 connector_source: Source::Jira,
                 message: e.to_string(),
-            }
-        })?;
+            });
+        }
+    };
 
     let mut created = 0usize;
     let mut updated = 0usize;
@@ -127,6 +135,7 @@ pub async fn sync_jira(
                     urgency_manual: false,
                     impact: ImpactLevel::Medium,
                     tags: vec![],
+                    tracking_state: TrackingState::Inbox,
                     created_at: now,
                     updated_at: now,
                 };
@@ -135,6 +144,14 @@ pub async fn sync_jira(
             }
         }
     }
+
+    // Remove tasks from a previous (broader) sync that are no longer in the
+    // current result set, keeping the local task list in sync with the filter.
+    let fetched_ids: Vec<String> = jira_tasks.iter().map(|t| t.key.clone()).collect();
+    let removed = task_repo
+        .delete_stale_by_source(user_id, Source::Jira, &fetched_ids)
+        .await
+        .unwrap_or(0);
 
     // Update sync status to success.
     sync_repo
@@ -155,7 +172,7 @@ pub async fn sync_jira(
         source: Source::Jira,
         tasks_created: created,
         tasks_updated: updated,
-        tasks_removed: 0,
+        tasks_removed: removed as usize,
         meetings_synced: 0,
         errors,
     })
@@ -375,6 +392,7 @@ pub async fn sync_excel(
                     urgency_manual: false,
                     impact: ImpactLevel::Medium,
                     tags: vec![],
+                    tracking_state: TrackingState::Inbox,
                     created_at: now,
                     updated_at: now,
                 };
@@ -438,10 +456,15 @@ pub async fn sync_all(
             let assignees = assignees_str.map(|s| {
                 s.split(',').map(|a| a.trim().to_string()).collect::<Vec<_>>()
             });
+            let my_tasks_only = config_repo
+                .get(user_id, "jira.my_tasks_only")
+                .await?
+                .as_deref() == Some("true");
 
             let config = JiraConfig {
                 project_keys,
                 assignees,
+                my_tasks_only,
             };
             match sync_jira(client, task_repo, project_repo, sync_repo, user_id, &config).await {
                 Ok(result) => results.push(result),
@@ -580,9 +603,14 @@ pub async fn sync_source(
                     let assignees = assignees_str.map(|s| {
                         s.split(',').map(|a| a.trim().to_string()).collect::<Vec<_>>()
                     });
+                    let my_tasks_only = config_repo
+                        .get(user_id, "jira.my_tasks_only")
+                        .await?
+                        .as_deref() == Some("true");
                     let config = JiraConfig {
                         project_keys,
                         assignees,
+                        my_tasks_only,
                     };
                     sync_jira(client, task_repo, project_repo, sync_repo, user_id, &config)
                         .await?;
@@ -696,13 +724,38 @@ async fn ensure_project(
 }
 
 /// Map a raw Jira status name to our internal TaskStatus.
+///
+/// Matching is substring-based and case-insensitive to handle statuses that
+/// include numeric prefixes or parenthetical suffixes (e.g. "14. Clos",
+/// "4. En cours (W)").
 fn map_jira_status(jira_status: &str) -> TaskStatus {
-    match jira_status.to_lowercase().as_str() {
-        "done" | "closed" | "resolved" | "complete" | "completed" => TaskStatus::Done,
-        "in progress" | "in review" | "review" | "active" => TaskStatus::InProgress,
-        "blocked" | "impediment" => TaskStatus::Blocked,
-        _ => TaskStatus::Todo,
+    let lower = jira_status.to_lowercase();
+    // Done — terminal states
+    if lower.contains("done")
+        || lower.contains("closed")
+        || lower.contains("resolved")
+        || lower.contains("complete")
+        || lower.contains("clos")
+        || lower.contains("en production")
+        || lower.contains("abandonné")
+        || lower.contains("abandonne")
+    {
+        return TaskStatus::Done;
     }
+    // In-progress states
+    if lower.contains("in progress")
+        || lower.contains("in review")
+        || lower.contains("review")
+        || lower.contains("active")
+        || lower.contains("en cours")
+    {
+        return TaskStatus::InProgress;
+    }
+    // Blocked states
+    if lower.contains("blocked") || lower.contains("impediment") {
+        return TaskStatus::Blocked;
+    }
+    TaskStatus::Todo
 }
 
 /// Map a raw Excel status string to our internal TaskStatus.
@@ -743,6 +796,9 @@ mod tests {
         assert_eq!(map_jira_status("Done"), TaskStatus::Done);
         assert_eq!(map_jira_status("Closed"), TaskStatus::Done);
         assert_eq!(map_jira_status("Resolved"), TaskStatus::Done);
+        assert_eq!(map_jira_status("Clos"), TaskStatus::Done);
+        assert_eq!(map_jira_status("En Production"), TaskStatus::Done);
+        assert_eq!(map_jira_status("Abandonné"), TaskStatus::Done);
         assert_eq!(map_jira_status("In Progress"), TaskStatus::InProgress);
         assert_eq!(map_jira_status("In Review"), TaskStatus::InProgress);
         assert_eq!(map_jira_status("Blocked"), TaskStatus::Blocked);

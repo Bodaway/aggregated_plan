@@ -23,6 +23,7 @@ pub struct Task {
     pub urgency_manual: bool,
     pub impact: ImpactLevel,
     pub tags: Vec<TagId>,
+    pub tracking_state: TrackingState,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
