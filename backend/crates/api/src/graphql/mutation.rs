@@ -619,7 +619,15 @@ fn convert_update_input(
         impact: input.impact.map(|i| i.into()),
         urgency: input.urgency.map(|u| u.into()),
         tags: tag_ids,
-        remaining_hours_override: None,
-        estimated_hours_override: None,
+        remaining_hours_override: match input.remaining_hours_override {
+            Some(Some(h)) => Some(Some(h as f32)),
+            Some(None) => Some(None),
+            None => None,
+        },
+        estimated_hours_override: match input.estimated_hours_override {
+            Some(Some(h)) => Some(Some(h as f32)),
+            Some(None) => Some(None),
+            None => None,
+        },
     })
 }

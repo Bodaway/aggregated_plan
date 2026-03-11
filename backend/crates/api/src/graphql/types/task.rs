@@ -117,6 +117,36 @@ impl TaskGql {
     async fn tracking_state(&self) -> TrackingStateGql {
         self.0.tracking_state.into()
     }
+
+    async fn jira_remaining_seconds(&self) -> Option<i32> {
+        self.0.jira_remaining_seconds
+    }
+
+    async fn jira_original_estimate_seconds(&self) -> Option<i32> {
+        self.0.jira_original_estimate_seconds
+    }
+
+    async fn jira_time_spent_seconds(&self) -> Option<i32> {
+        self.0.jira_time_spent_seconds
+    }
+
+    async fn remaining_hours_override(&self) -> Option<f64> {
+        self.0.remaining_hours_override.map(|h| h as f64)
+    }
+
+    async fn estimated_hours_override(&self) -> Option<f64> {
+        self.0.estimated_hours_override.map(|h| h as f64)
+    }
+
+    /// Computed: local override > Jira remaining > None
+    async fn effective_remaining_hours(&self) -> Option<f64> {
+        self.0.effective_remaining_hours().map(|h| h as f64)
+    }
+
+    /// Computed: local override > Jira estimate > estimated_hours
+    async fn effective_estimated_hours(&self) -> Option<f64> {
+        self.0.effective_estimated_hours().map(|h| h as f64)
+    }
 }
 
 /// Input for creating a new task.
@@ -148,6 +178,10 @@ pub struct UpdateTaskInput {
     pub impact: Option<ImpactLevelGql>,
     pub urgency: Option<UrgencyLevelGql>,
     pub tag_ids: Option<Vec<ID>>,
+    /// Set to Some(Some(val)) to override, Some(None) to clear, None to leave unchanged.
+    pub remaining_hours_override: Option<Option<f64>>,
+    /// Set to Some(Some(val)) to override, Some(None) to clear, None to leave unchanged.
+    pub estimated_hours_override: Option<Option<f64>>,
 }
 
 /// Filter input for querying tasks.
