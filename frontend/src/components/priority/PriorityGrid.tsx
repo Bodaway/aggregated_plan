@@ -16,6 +16,7 @@ interface PriorityGridProps {
   readonly data: PriorityMatrixData;
   readonly onMoveTask: (taskId: string, targetQuadrant: QuadrantKey) => void;
   readonly onEdit?: (taskId: string) => void;
+  readonly onDragStartExternal?: () => void;
 }
 
 interface QuadrantConfig {
@@ -80,7 +81,7 @@ function findTask(data: PriorityMatrixData, taskId: string): MatrixTask | null {
   return null;
 }
 
-export function PriorityGrid({ data, onMoveTask, onEdit }: PriorityGridProps) {
+export function PriorityGrid({ data, onMoveTask, onEdit, onDragStartExternal }: PriorityGridProps) {
   const [activeTask, setActiveTask] = useState<MatrixTask | null>(null);
 
   const sensors = useSensors(
@@ -90,6 +91,7 @@ export function PriorityGrid({ data, onMoveTask, onEdit }: PriorityGridProps) {
   );
 
   const handleDragStart = (event: DragStartEvent) => {
+    onDragStartExternal?.();
     const taskId = String(event.active.id);
     setActiveTask(findTask(data, taskId));
   };

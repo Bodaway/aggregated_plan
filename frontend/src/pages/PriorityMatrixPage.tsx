@@ -1,13 +1,20 @@
+import { useState, useCallback } from 'react';
 import { usePriorityMatrix } from '@/hooks/use-priority-matrix';
 import { PriorityGrid } from '@/components/priority/PriorityGrid';
+import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 import type { QuadrantKey } from '@/hooks/use-priority-matrix';
 
 export function PriorityMatrixPage() {
   const { data, loading, error, updatePriority } = usePriorityMatrix();
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   const handleMoveTask = (taskId: string, targetQuadrant: QuadrantKey) => {
     void updatePriority(taskId, targetQuadrant);
   };
+
+  const handleEdit = useCallback((taskId: string) => {
+    setEditingTaskId(taskId);
+  }, []);
 
   if (error) {
     return (
@@ -60,7 +67,9 @@ export function PriorityMatrixPage() {
       </div>
 
       {/* Priority grid */}
-      <PriorityGrid data={data} onMoveTask={handleMoveTask} />
+      <PriorityGrid data={data} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => setEditingTaskId(null)} />
+
+      <TaskEditSheet taskId={editingTaskId} onClose={() => setEditingTaskId(null)} />
     </div>
   );
 }
