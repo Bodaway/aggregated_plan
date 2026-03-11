@@ -1,12 +1,21 @@
-import { DndContext, closestCenter } from '@dnd-kit/core';
-import type { DragEndEvent } from '@dnd-kit/core';
-import { QuadrantColumn } from './QuadrantColumn';
+import { useState } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  pointerWithin,
+  useSensor,
+  useSensors,
+  PointerSensor,
+} from '@dnd-kit/core';
+import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core';
+import { QuadrantColumn, TaskCardOverlay } from './QuadrantColumn';
 import { QUADRANT_LABELS } from '@/lib/constants';
-import type { PriorityMatrixData, QuadrantKey } from '@/hooks/use-priority-matrix';
+import type { PriorityMatrixData, MatrixTask, QuadrantKey } from '@/hooks/use-priority-matrix';
 
 interface PriorityGridProps {
   readonly data: PriorityMatrixData;
   readonly onMoveTask: (taskId: string, targetQuadrant: QuadrantKey) => void;
+  readonly onEdit?: (taskId: string) => void;
 }
 
 interface QuadrantConfig {
@@ -62,8 +71,31 @@ function findTaskQuadrant(
   return null;
 }
 
-export function PriorityGrid({ data, onMoveTask }: PriorityGridProps) {
+function findTask(data: PriorityMatrixData, taskId: string): MatrixTask | null {
+  const quadrants: readonly QuadrantKey[] = ['urgentImportant', 'important', 'urgent', 'neither'];
+  for (const q of quadrants) {
+    const found = data[q].find(t => t.id === taskId);
+    if (found) return found;
+  }
+  return null;
+}
+
+export function PriorityGrid({ data, onMoveTask, onEdit }: PriorityGridProps) {
+  const [activeTask, setActiveTask] = useState<MatrixTask | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    })
+  );
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const taskId = String(event.active.id);
+    setActiveTask(findTask(data, taskId));
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
+    setActiveTask(null);
     const { active, over } = event;
     if (!over) return;
 
@@ -77,8 +109,18 @@ export function PriorityGrid({ data, onMoveTask }: PriorityGridProps) {
     }
   };
 
+  const handleDragCancel = () => {
+    setActiveTask(null);
+  };
+
   return (
-    <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={pointerWithin}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
       {/* Axis labels */}
       <div className="mb-2 flex items-center justify-center">
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -109,6 +151,7 @@ export function PriorityGrid({ data, onMoveTask }: PriorityGridProps) {
             bgColor={config.bgColor}
             borderColor={config.borderColor}
             tasks={data[config.key]}
+            onEdit={onEdit}
           />
         ))}
 
@@ -129,9 +172,14 @@ export function PriorityGrid({ data, onMoveTask }: PriorityGridProps) {
             bgColor={config.bgColor}
             borderColor={config.borderColor}
             tasks={data[config.key]}
+            onEdit={onEdit}
           />
         ))}
       </div>
+
+      <DragOverlay dropAnimation={null}>
+        {activeTask ? <TaskCardOverlay task={activeTask} /> : null}
+      </DragOverlay>
     </DndContext>
   );
 }
