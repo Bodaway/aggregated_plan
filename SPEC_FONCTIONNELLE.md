@@ -195,7 +195,23 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 3. L'utilisateur peut naviguer entre les semaines pour voir l'évolution
 4. Les alertes de surcharge sont mises en évidence visuellement
 
-### 5.5 Parcours « Gestion d'une tâche personnelle »
+### 5.5 Parcours « Triage des tâches »
+
+**Description** : À la réception de nouvelles tâches synchronisées depuis les sources externes, le Tech Lead décide lesquelles suivre activement dans l'outil.
+
+1. L'utilisateur accède à la vue Triage
+2. L'outil affiche deux colonnes :
+   - **Boîte de réception (Inbox)** : toutes les tâches nouvellement synchronisées, non encore triées
+   - **Suivies (Following)** : les tâches que l'utilisateur a choisi de suivre
+3. L'utilisateur peut :
+   - Glisser-déposer une tâche de la boîte de réception vers la colonne « Suivies » pour la suivre
+   - Cliquer sur le bouton « Rejeter » (×) pour écarter une tâche de la boîte de réception
+   - Utiliser le bouton « Tout suivre » pour suivre toutes les tâches de la boîte de réception d'un coup
+   - Glisser-déposer une tâche suivie vers la boîte de réception pour annuler le suivi
+4. Seules les tâches suivies apparaissent dans le dashboard quotidien et les vues de priorisation
+5. Les tâches créées manuellement sont automatiquement marquées comme « suivies »
+
+### 5.6 Parcours « Gestion d'une tâche personnelle »
 
 **Description** : Le Tech Lead crée une tâche qui n'existe dans aucune source externe.
 
@@ -210,7 +226,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 3. La tâche apparaît dans la vue quotidienne et dans la matrice de priorisation
 4. La tâche est persistée localement
 
-### 5.6 Parcours « Suivi d'équipe » (v2)
+### 5.7 Parcours « Suivi d'équipe » (v2)
 
 **Description** : Le Tech Lead veut savoir qui fait quoi et repérer les problèmes de staffing.
 
@@ -220,7 +236,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 4. Les surcharges et les indisponibilités sont signalées visuellement
 5. L'utilisateur peut cliquer sur un développeur pour voir le détail de ses tâches et sa charge
 
-### 5.7 Parcours « Rétrospective hebdomadaire » (v2)
+### 5.8 Parcours « Rétrospective hebdomadaire » (v2)
 
 **Description** : En fin de semaine, le Tech Lead consulte le bilan automatique.
 
@@ -463,6 +479,53 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+#### US-042 : Triage des tâches synchronisées
+
+> En tant que Tech Lead, je veux trier les tâches importées depuis les sources externes afin de ne suivre activement que celles qui me concernent.
+
+**Critères d'acceptation :**
+- Une page « Triage » affiche deux colonnes : Boîte de réception (Inbox) et Suivies (Following)
+- Les tâches nouvellement synchronisées arrivent en Boîte de réception par défaut
+- L'utilisateur peut glisser-déposer une tâche vers la colonne Suivies (drag & drop via @dnd-kit)
+- L'utilisateur peut rejeter une tâche de la boîte de réception (bouton ×, état « dismissed »)
+- L'utilisateur peut annuler le suivi d'une tâche suivie (retour en boîte de réception)
+- Un bouton « Tout suivre » permet de suivre toutes les tâches de la boîte de réception en une action
+- Le dashboard quotidien n'affiche que les tâches suivies (état « followed »)
+- Les tâches créées manuellement sont automatiquement en état « followed »
+- Chaque carte de tâche affiche : clé Jira, titre, statut, assigné, échéance (si présente)
+
+**Priorité** : Must (MVP v1)
+
+#### US-043 : Édition de tâche via panneau latéral
+
+> En tant que Tech Lead, je veux pouvoir éditer les champs locaux d'une tâche depuis n'importe quel écran afin de ne pas avoir à changer de contexte pour ajuster mes priorités.
+
+**Critères d'acceptation :**
+- Un clic sur n'importe quelle carte de tâche ouvre un panneau latéral (sheet) à droite
+- Le panneau affiche les informations synchonisées en lecture seule (titre, statut, assigné, échéance, statut Jira)
+- Les champs urgence, impact, description, heures estimées/restantes sont éditables
+- Pour les tâches Jira/Excel : les champs temps Jira sont affichés en lecture seule, l'utilisateur peut définir des surcharges locales (remaining override, estimated override)
+- Pour les tâches personnelles : le champ « heures estimées » est directement éditable
+- Le panneau se ferme via bouton ×, touche Escape ou clic sur le backdrop
+- Le glisser-déposer reste fonctionnel : un clic ouvre le panneau, un drag (>8px) initie le déplacement
+
+**Priorité** : Must (MVP v1)
+
+#### US-044 : Affichage du suivi temporel Jira avec surcharge locale
+
+> En tant que Tech Lead, je veux voir les heures estimées, restantes et consommées de Jira sur chaque carte de tâche afin de suivre l'avancement temporel.
+
+**Critères d'acceptation :**
+- Chaque carte de tâche affiche une ligne de suivi temporel (heures restantes / consommées / estimées) avec barre de progression
+- Les données proviennent des champs Jira `timeestimate`, `timespent`, `timeoriginalestimate`
+- L'utilisateur peut surcharger localement les heures restantes et estimées via le panneau d'édition
+- La surcharge locale prend priorité sur les valeurs Jira pour le calcul effectif
+- Les cartes en mode compact (matrice de priorité) affichent uniquement les heures restantes effectives
+
+**Priorité** : Must (MVP v1)
+
+---
+
 ### 6.6 Alertes et détection
 
 #### US-050 : Alertes de deadline
@@ -680,6 +743,12 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | urgenceManuelle | Booléen | Oui | Indique si l'urgence a été forcée manuellement |
 | impact | Entier (1-4) | Oui | Qualifié par l'utilisateur, défaut : 2 |
 | tags | Liste de textes | Non | Catégories transverses |
+| étatSuivi | Enum | Oui | `inbox` (non trié), `followed` (suivi actif), `dismissed` (écarté). Défaut : `inbox` pour les tâches synchronisées, `followed` pour les tâches créées manuellement |
+| tempsRestantJira | Entier | Non | Temps restant Jira en secondes (champ `timeestimate`) |
+| tempsOriginalEstiméJira | Entier | Non | Estimation originale Jira en secondes (champ `timeoriginalestimate`) |
+| tempsDépenséJira | Entier | Non | Temps déjà consommé Jira en secondes (champ `timespent`) |
+| surchargeHeuresRestantes | Décimal | Non | Surcharge locale des heures restantes (prioritaire sur la valeur Jira) |
+| surchargeHeuresEstimées | Décimal | Non | Surcharge locale des heures estimées (prioritaire sur la valeur Jira) |
 | créé_le | Date/heure | Oui | Date de création/import |
 | modifié_le | Date/heure | Oui | Date de dernière modification |
 

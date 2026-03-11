@@ -642,6 +642,13 @@ pub enum Quadrant {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackingState {
+    Inbox,      // Newly synced, not yet triaged
+    Followed,   // User chose to track this task
+    Dismissed,  // User chose to ignore this task
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskLinkType {
     AutoMerged,
     ManualMerged,
@@ -671,9 +678,30 @@ pub struct Task {
     pub urgency: UrgencyLevel,
     pub urgency_manual: bool,
     pub impact: ImpactLevel,
+    pub tracking_state: TrackingState,
+    pub jira_remaining_seconds: Option<i32>,        // From Jira timeestimate
+    pub jira_original_estimate_seconds: Option<i32>, // From Jira timeoriginalestimate
+    pub jira_time_spent_seconds: Option<i32>,       // From Jira timespent
+    pub remaining_hours_override: Option<f32>,       // Local override for remaining time
+    pub estimated_hours_override: Option<f32>,       // Local override for estimated time
     pub tags: Vec<TagId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Task {
+    /// Effective remaining hours: local override > Jira remaining > None
+    pub fn effective_remaining_hours(&self) -> Option<f32> {
+        self.remaining_hours_override
+            .or(self.jira_remaining_seconds.map(|s| s as f32 / 3600.0))
+    }
+
+    /// Effective estimated hours: local override > Jira estimate > estimated_hours
+    pub fn effective_estimated_hours(&self) -> Option<f32> {
+        self.estimated_hours_override
+            .or(self.jira_original_estimate_seconds.map(|s| s as f32 / 3600.0))
+            .or(self.estimated_hours)
+    }
 }
 ```
 
@@ -1808,6 +1836,7 @@ const router = createBrowserRouter([
     element: <PageLayout />,
     children: [
       { index: true, element: <DashboardPage /> },
+      { path: 'triage', element: <TriagePage /> },
       { path: 'priority', element: <PriorityMatrixPage /> },
       { path: 'workload', element: <WorkloadPage /> },
       { path: 'activity', element: <ActivityJournalPage /> },
@@ -1829,7 +1858,7 @@ The default view. Displays 4 zones as described in US-010:
 
 | Zone | Component | Data Source |
 |------|-----------|-------------|
-| Tasks of the day | `<TaskList>` | `dailyDashboard.tasks` (sorted by priority) |
+| Followed tasks | `<TaskList>` | `dailyDashboard.tasks` (filtered to `trackingState: FOLLOWED`, sorted by priority) |
 | Meetings | `<MeetingList>` | `dailyDashboard.meetings` (sorted by time) |
 | Weekly workload | `<WorkloadChart>` | `dailyDashboard.weeklyWorkload` (Recharts bar chart) |
 | Alerts | `<AlertPanel>` | `dailyDashboard.alerts` (grouped by severity) |
@@ -1839,6 +1868,17 @@ Additional elements:
 - `<DateNavigator>` -- Navigate between days (US-011)
 - `<ActivitySwitcher>` -- Quick task selection for activity tracking (floating or sidebar)
 - `<TaskQuickAdd>` -- Inline task creation
+
+#### TriagePage (`/triage`)
+
+Two-column drag-and-drop interface for task triage (US-042):
+- **Inbox column** (amber accent): Tasks with `trackingState: INBOX`, sorted by status then date
+- **Following column** (green accent): Tasks with `trackingState: FOLLOWED`
+- `@dnd-kit/core` for drag-and-drop between columns (`DndContext`, `useDraggable`, `useDroppable`, `DragOverlay`)
+- Each task card shows: Jira key (`sourceId`), title, status badge, assignee, deadline
+- Dismiss button (×) on each inbox card calls `setTrackingState(taskId, DISMISSED)`
+- "Follow All" button calls `setTrackingStateBatch` for all inbox tasks
+- Dashboard only shows tasks with `trackingState: FOLLOWED`
 
 #### PriorityMatrixPage (`/priority`)
 
@@ -1967,6 +2007,13 @@ CREATE TABLE tasks (
     urgency INTEGER NOT NULL DEFAULT 1 CHECK (urgency BETWEEN 1 AND 4),
     urgency_manual INTEGER NOT NULL DEFAULT 0,
     impact INTEGER NOT NULL DEFAULT 2 CHECK (impact BETWEEN 1 AND 4),
+    tracking_state TEXT NOT NULL DEFAULT 'inbox'
+        CHECK (tracking_state IN ('inbox', 'followed', 'dismissed')),
+    jira_remaining_seconds INTEGER,           -- Jira timeestimate (seconds)
+    jira_original_estimate_seconds INTEGER,   -- Jira timeoriginalestimate (seconds)
+    jira_time_spent_seconds INTEGER,          -- Jira timespent (seconds)
+    remaining_hours_override REAL,            -- Local override for remaining time (hours)
+    estimated_hours_override REAL,            -- Local override for estimated time (hours)
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -2141,6 +2188,12 @@ enum SyncSourceStatus {
   ERROR
 }
 
+enum TrackingState {
+  INBOX
+  FOLLOWED
+  DISMISSED
+}
+
 # --- Core Types ---
 
 type Task {
@@ -2160,6 +2213,14 @@ type Task {
   urgency: Int!
   urgencyManual: Boolean!
   impact: Int!
+  trackingState: TrackingState!
+  jiraRemainingSeconds: Int
+  jiraOriginalEstimateSeconds: Int
+  jiraTimeSpentSeconds: Int
+  remainingHoursOverride: Float
+  estimatedHoursOverride: Float
+  effectiveRemainingHours: Float       # Computed: override > Jira remaining > None
+  effectiveEstimatedHours: Float       # Computed: override > Jira estimate > estimatedHours
   tags: [Tag!]!
   quadrant: String!
   createdAt: DateTime!
@@ -2318,6 +2379,7 @@ type DailyBreakdown {
 input TaskFilter {
   status: [TaskStatus!]
   source: [Source!]
+  trackingState: [TrackingState!]
   projectId: ID
   assignee: String
   deadlineBefore: Date
@@ -2350,6 +2412,8 @@ input UpdateTaskInput {
   impact: Int
   urgency: Int
   tagIds: [ID!]
+  remainingHoursOverride: Float    # null = clear override, absent = don't change
+  estimatedHoursOverride: Float    # null = clear override, absent = don't change
 }
 
 input UpdateActivitySlotInput {
@@ -2422,6 +2486,10 @@ type Mutation {
   createTask(input: CreateTaskInput!): Task!
   updateTask(id: ID!, input: UpdateTaskInput!): Task!
   deleteTask(id: ID!): Boolean!
+
+  # Triage / Tracking state
+  setTrackingState(taskId: ID!, state: TrackingState!): Task!
+  setTrackingStateBatch(taskIds: [ID!]!, state: TrackingState!): [Task!]!
 
   # Priority
   updatePriority(taskId: ID!, urgency: Int, impact: Int): Task!
