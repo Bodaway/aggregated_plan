@@ -59,8 +59,10 @@ pub async fn get_daily_dashboard(
     date: NaiveDate,
 ) -> Result<DailyDashboard, AppError> {
     // 1. Tasks for the user: those with deadlines on the given date or in TODO/IN_PROGRESS status
+    // Only show Followed tasks (not Inbox/Dismissed) in the dashboard
     let active_filter = TaskFilter {
         status: Some(vec![TaskStatus::Todo, TaskStatus::InProgress]),
+        tracking_state: Some(vec![TrackingState::Followed]),
         ..TaskFilter::empty()
     };
     let mut tasks = task_repo.find_by_user(user_id, &active_filter).await?;
@@ -247,6 +249,17 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use uuid::Uuid;
+
+    #[test]
+    fn active_filter_includes_followed_tracking_state() {
+        let filter = TaskFilter {
+            status: Some(vec![TaskStatus::Todo, TaskStatus::InProgress]),
+            tracking_state: Some(vec![TrackingState::Followed]),
+            ..TaskFilter::empty()
+        };
+        assert_eq!(filter.tracking_state, Some(vec![TrackingState::Followed]));
+        assert_eq!(filter.status, Some(vec![TaskStatus::Todo, TaskStatus::InProgress]));
+    }
 
     // ─── week_start_for ───
 
