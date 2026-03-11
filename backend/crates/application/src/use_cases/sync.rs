@@ -107,6 +107,10 @@ pub async fn sync_jira(
                 task.assignee = jira_task.assignee.clone();
                 task.deadline = jira_task.deadline;
                 task.project_id = project_id;
+                task.jira_remaining_seconds = jira_task.time_estimate_seconds;
+                task.jira_original_estimate_seconds = jira_task.time_original_estimate_seconds;
+                task.jira_time_spent_seconds = jira_task.time_spent_seconds;
+                // Override fields are NOT touched by sync — user's local data preserved
                 if !task.urgency_manual {
                     task.urgency = calculate_urgency(task.deadline, today);
                 }
@@ -136,9 +140,9 @@ pub async fn sync_jira(
                     impact: ImpactLevel::Medium,
                     tags: vec![],
                     tracking_state: TrackingState::Inbox,
-                    jira_remaining_seconds: None,
-                    jira_original_estimate_seconds: None,
-                    jira_time_spent_seconds: None,
+                    jira_remaining_seconds: jira_task.time_estimate_seconds,
+                    jira_original_estimate_seconds: jira_task.time_original_estimate_seconds,
+                    jira_time_spent_seconds: jira_task.time_spent_seconds,
                     remaining_hours_override: None,
                     estimated_hours_override: None,
                     created_at: now,
