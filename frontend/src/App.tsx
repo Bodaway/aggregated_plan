@@ -7,6 +7,7 @@ import { ActivityJournalPage } from '@/pages/ActivityJournalPage';
 import { DeduplicationPage } from '@/pages/DeduplicationPage';
 import { AlertsPage } from '@/pages/AlertsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { TriagePage } from '@/pages/TriagePage';
 
 export function App() {
   return (
@@ -18,6 +19,14 @@ export function App() {
           element={
             <PageLayout title="Dashboard">
               <DashboardPage />
+            </PageLayout>
+          }
+        />
+        <Route
+          path="/triage"
+          element={
+            <PageLayout title="Triage">
+              <TriagePage />
             </PageLayout>
           }
         />

@@ -55,8 +55,10 @@ export function DashboardPage() {
         .map(t => ({
           id: t.id,
           title: t.title,
-          source: 'PERSONAL',
+          source: t.source ?? 'PERSONAL',
+          sourceId: t.sourceId ?? null,
           status: t.status,
+          jiraStatus: t.jiraStatus ?? null,
           urgency: t.urgency,
           impact: t.impact,
           quadrant: t.quadrant,
@@ -133,7 +135,7 @@ export function DashboardPage() {
               <div className="bg-white rounded-lg border border-gray-200 p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-                    Tasks of the Day
+                    Followed Tasks
                   </h3>
                   <span className="text-xs text-gray-400">
                     {taskCards.length} task{taskCards.length !== 1 ? 's' : ''}

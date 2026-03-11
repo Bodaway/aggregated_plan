@@ -14,6 +14,12 @@ const navItems: readonly NavItem[] = [
       'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1h-2z',
   },
   {
+    path: '/triage',
+    label: 'Triage',
+    iconPath:
+      'M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z',
+  },
+  {
     path: '/priority',
     label: 'Priority Matrix',
     iconPath:

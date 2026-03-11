@@ -13,7 +13,11 @@ interface DashboardProject {
 export interface DashboardTask {
   readonly id: string;
   readonly title: string;
+  readonly source: string;
+  readonly sourceId: string | null;
+  readonly trackingState: string;
   readonly status: string;
+  readonly jiraStatus: string | null;
   readonly urgency: number;
   readonly impact: number;
   readonly quadrant: string;
@@ -92,7 +96,11 @@ const DASHBOARD_QUERY = `
       tasks {
         id
         title
+        source
+        sourceId
+        trackingState
         status
+        jiraStatus
         urgency
         impact
         quadrant
