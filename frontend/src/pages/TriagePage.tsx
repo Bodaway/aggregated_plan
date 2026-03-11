@@ -12,23 +12,17 @@ import {
 import { useDroppable } from '@dnd-kit/core';
 import { useDraggable } from '@dnd-kit/core';
 import { useTriageTasks, type TriageTask } from '@/hooks/use-triage';
-
-function SourceDot({ source }: { readonly source: string }) {
-  const color =
-    source === 'JIRA'
-      ? 'bg-blue-500'
-      : source === 'EXCEL'
-        ? 'bg-green-500'
-        : 'bg-gray-400';
-  return <span className={`inline-block w-2 h-2 rounded-full ${color}`} />;
-}
+import { TaskCard } from '@/components/task/TaskCard';
+import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 
 function DraggableTaskCard({
   task,
   onDismiss,
+  onEdit,
 }: {
   readonly task: TriageTask;
   readonly onDismiss?: () => void;
+  readonly onEdit?: (taskId: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({ id: task.id });
@@ -44,57 +38,62 @@ function DraggableTaskCard({
       style={style}
       {...listeners}
       {...attributes}
-      className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm cursor-grab active:cursor-grabbing hover:border-blue-300 transition-colors"
+      className="relative cursor-grab active:cursor-grabbing"
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 mb-1">
-            <SourceDot source={task.source} />
-            {task.sourceId && (
-              <span className="text-xs text-gray-400 font-mono">{task.sourceId}</span>
-            )}
-          </div>
-          <p className="text-sm font-medium text-gray-800 truncate">{task.title}</p>
-          <div className="flex items-center gap-2 mt-1.5 text-xs text-gray-500">
-            <span className="px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
-              {task.status === 'IN_PROGRESS' ? 'In Progress' : 'Todo'}
-            </span>
-            {task.assignee && <span className="truncate">{task.assignee}</span>}
-            {task.deadline && <span>{task.deadline}</span>}
-          </div>
-          {task.project?.name && (
-            <p className="text-xs text-gray-400 mt-1 truncate">{task.project.name}</p>
-          )}
-        </div>
-        {onDismiss && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDismiss();
-            }}
-            className="p-1 text-gray-400 hover:text-red-500 transition-colors flex-shrink-0"
-            title="Dismiss task"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        )}
-      </div>
+      <TaskCard
+        id={task.id}
+        title={task.title}
+        source={task.source}
+        sourceId={task.sourceId}
+        status={task.status}
+        jiraStatus={task.jiraStatus ?? null}
+        urgency={task.urgency}
+        impact={task.impact}
+        quadrant=""
+        deadline={task.deadline}
+        assignee={task.assignee}
+        projectName={task.project?.name ?? null}
+        effectiveRemainingHours={task.effectiveRemainingHours ?? null}
+        effectiveEstimatedHours={task.effectiveEstimatedHours ?? null}
+        jiraTimeSpentSeconds={task.jiraTimeSpentSeconds ?? null}
+        onClick={onEdit ? () => onEdit(task.id) : undefined}
+      />
+      {onDismiss && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDismiss(); }}
+          className="absolute top-2 right-2 p-1 text-gray-400 hover:text-red-500 transition-colors"
+          title="Dismiss task"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
 
 function TaskCardOverlay({ task }: { readonly task: TriageTask }) {
   return (
-    <div className="bg-white border-2 border-blue-400 rounded-lg p-3 shadow-lg w-80">
-      <div className="flex items-center gap-1.5 mb-1">
-        <SourceDot source={task.source} />
-        {task.sourceId && (
-          <span className="text-xs text-gray-400 font-mono">{task.sourceId}</span>
-        )}
-      </div>
-      <p className="text-sm font-medium text-gray-800">{task.title}</p>
+    <div className="shadow-lg ring-2 ring-blue-400 rounded-lg w-80">
+      <TaskCard
+        id={task.id}
+        title={task.title}
+        source={task.source}
+        sourceId={task.sourceId}
+        status={task.status}
+        jiraStatus={task.jiraStatus ?? null}
+        urgency={task.urgency}
+        impact={task.impact}
+        quadrant=""
+        deadline={task.deadline}
+        assignee={task.assignee}
+        projectName={task.project?.name ?? null}
+        effectiveRemainingHours={task.effectiveRemainingHours ?? null}
+        effectiveEstimatedHours={task.effectiveEstimatedHours ?? null}
+        jiraTimeSpentSeconds={task.jiraTimeSpentSeconds ?? null}
+        compact
+      />
     </div>
   );
 }
@@ -156,14 +155,16 @@ export function TriagePage() {
   } = useTriageTasks();
 
   const [activeTask, setActiveTask] = useState<TriageTask | null>(null);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
 
   const allTasks = [...inboxTasks, ...followedTasks];
 
   const handleDragStart = (event: DragStartEvent) => {
+    setEditingTaskId(null); // Close sheet on drag start
     const task = allTasks.find(t => t.id === event.active.id);
     setActiveTask(task ?? null);
   };
@@ -209,65 +210,70 @@ export function TriagePage() {
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-    >
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
-        <DroppableColumn
-          id="inbox"
-          title="Inbox"
-          count={inboxCount}
-          accentColor="border-amber-300 bg-amber-50"
-          headerAction={
-            inboxTasks.length > 0 ? (
-              <button
-                onClick={() => followAll(inboxTasks.map(t => t.id))}
-                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-              >
-                Follow All
-              </button>
-            ) : undefined
-          }
-        >
-          {inboxTasks.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-8">
-              No new tasks to review
-            </p>
-          ) : (
-            inboxTasks.map(task => (
-              <DraggableTaskCard
-                key={task.id}
-                task={task}
-                onDismiss={() => dismissTask(task.id)}
-              />
-            ))
-          )}
-        </DroppableColumn>
+    <>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+      >
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
+          <DroppableColumn
+            id="inbox"
+            title="Inbox"
+            count={inboxCount}
+            accentColor="border-amber-300 bg-amber-50"
+            headerAction={
+              inboxTasks.length > 0 ? (
+                <button
+                  onClick={() => followAll(inboxTasks.map(t => t.id))}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  Follow All
+                </button>
+              ) : undefined
+            }
+          >
+            {inboxTasks.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-8">
+                No new tasks to review
+              </p>
+            ) : (
+              inboxTasks.map(task => (
+                <DraggableTaskCard
+                  key={task.id}
+                  task={task}
+                  onDismiss={() => dismissTask(task.id)}
+                  onEdit={(id) => setEditingTaskId(id)}
+                />
+              ))
+            )}
+          </DroppableColumn>
 
-        <DroppableColumn
-          id="followed"
-          title="Following"
-          count={followedCount}
-          accentColor="border-green-300 bg-green-50"
-        >
-          {followedTasks.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-8">
-              Drag tasks here to follow them
-            </p>
-          ) : (
-            followedTasks.map(task => (
-              <DraggableTaskCard key={task.id} task={task} />
-            ))
-          )}
-        </DroppableColumn>
-      </div>
+          <DroppableColumn
+            id="followed"
+            title="Following"
+            count={followedCount}
+            accentColor="border-green-300 bg-green-50"
+          >
+            {followedTasks.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-8">
+                Drag tasks here to follow them
+              </p>
+            ) : (
+              followedTasks.map(task => (
+                <DraggableTaskCard key={task.id} task={task} onEdit={(id) => setEditingTaskId(id)} />
+              ))
+            )}
+          </DroppableColumn>
+        </div>
 
-      <DragOverlay>
-        {activeTask ? <TaskCardOverlay task={activeTask} /> : null}
-      </DragOverlay>
-    </DndContext>
+        <DragOverlay>
+          {activeTask ? <TaskCardOverlay task={activeTask} /> : null}
+        </DragOverlay>
+      </DndContext>
+
+      <TaskEditSheet taskId={editingTaskId} onClose={() => setEditingTaskId(null)} />
+    </>
   );
 }

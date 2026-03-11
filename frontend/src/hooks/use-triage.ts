@@ -7,6 +7,8 @@ export interface TriageTask {
   readonly sourceId: string | null;
   readonly status: string;
   readonly jiraStatus: string | null;
+  readonly urgency: number;
+  readonly impact: number;
   readonly quadrant: string;
   readonly trackingState: string;
   readonly deadline: string | null;
@@ -28,6 +30,8 @@ const TRIAGE_TASKS_QUERY = `
           sourceId
           status
           jiraStatus
+          urgency
+          impact
           quadrant
           trackingState
           deadline
