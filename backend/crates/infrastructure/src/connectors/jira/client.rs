@@ -79,7 +79,7 @@ impl HttpJiraClient {
 
         let body = JiraSearchRequest {
             jql,
-            fields: &["summary", "status", "assignee", "priority", "duedate", "project"],
+            fields: &["summary", "status", "assignee", "priority", "duedate", "project", "timeestimate", "timespent", "timeoriginalestimate"],
             max_results: JIRA_PAGE_SIZE,
             next_page_token,
         };

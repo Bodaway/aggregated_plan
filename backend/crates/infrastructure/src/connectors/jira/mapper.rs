@@ -14,6 +14,9 @@ pub fn map_jira_issue(issue: JiraIssue) -> JiraTask {
         priority: issue.fields.priority.map(|p| p.name),
         project_key: issue.fields.project.key,
         project_name: issue.fields.project.name,
+        time_estimate_seconds: issue.fields.timeestimate,
+        time_spent_seconds: issue.fields.timespent,
+        time_original_estimate_seconds: issue.fields.timeoriginalestimate,
     }
 }
 
@@ -49,6 +52,9 @@ mod tests {
                     key: "PROJ".to_string(),
                     name: "My Project".to_string(),
                 },
+                timeestimate: None,
+                timespent: None,
+                timeoriginalestimate: None,
             },
         }
     }
@@ -88,5 +94,18 @@ mod tests {
         let task = map_jira_issue(issue);
 
         assert!(task.deadline.is_none());
+    }
+
+    #[test]
+    fn maps_time_tracking_fields() {
+        let mut issue = make_issue("PROJ-42", "Fix bug", "In Progress", None, None, None);
+        issue.fields.timeestimate = Some(7200);
+        issue.fields.timespent = Some(3600);
+        issue.fields.timeoriginalestimate = Some(14400);
+        let task = map_jira_issue(issue);
+
+        assert_eq!(task.time_estimate_seconds, Some(7200));
+        assert_eq!(task.time_spent_seconds, Some(3600));
+        assert_eq!(task.time_original_estimate_seconds, Some(14400));
     }
 }

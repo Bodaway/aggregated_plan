@@ -39,6 +39,9 @@ pub struct JiraIssueFields {
     pub priority: Option<JiraPriority>,
     pub duedate: Option<String>,
     pub project: JiraProject,
+    pub timeestimate: Option<i32>,
+    pub timespent: Option<i32>,
+    pub timeoriginalestimate: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
