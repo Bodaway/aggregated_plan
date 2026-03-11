@@ -7,6 +7,7 @@ use uuid::Uuid;
 use application::repositories::*;
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management};
+use infrastructure::connectors::jira::HttpJiraClient;
 
 use super::types::*;
 
@@ -88,6 +89,48 @@ impl MutationRoot {
         Ok(TaskGql(task))
     }
 
+    /// Set the tracking state of a task (inbox/followed/dismissed).
+    async fn set_tracking_state(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+        state: TrackingStateGql,
+    ) -> Result<TaskGql> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let id = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
+
+        let task = task_management::set_tracking_state(task_repo.as_ref(), id, state.into())
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(TaskGql(task))
+    }
+
+    /// Batch-set the tracking state for multiple tasks.
+    async fn set_tracking_state_batch(
+        &self,
+        ctx: &Context<'_>,
+        task_ids: Vec<ID>,
+        state: TrackingStateGql,
+    ) -> Result<Vec<TaskGql>> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let ids: Vec<Uuid> = task_ids
+            .into_iter()
+            .map(|id| {
+                Uuid::parse_str(&id)
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let tasks =
+            task_management::set_tracking_state_batch(task_repo.as_ref(), ids, state.into())
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(tasks.into_iter().map(TaskGql).collect())
+    }
+
     /// Override the urgency level of a task (manual override).
     async fn update_priority(
         &self,
@@ -154,16 +197,23 @@ impl MutationRoot {
         let sync_repo = ctx.data::<Arc<dyn SyncStatusRepository>>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
 
-        // Try to retrieve optional clients from context. If not available, use None.
-        let jira_client = ctx
-            .data::<Arc<dyn JiraClient>>()
-            .ok()
-            .map(|c| c.clone());
-        let outlook_client = ctx
+        // Build clients dynamically from stored configuration.
+        let jira_client: Option<Arc<dyn JiraClient>> = {
+            let base_url = config_repo.get(*user_id, "jira.base_url").await.ok().flatten();
+            let email = config_repo.get(*user_id, "jira.email").await.ok().flatten();
+            let token = config_repo.get(*user_id, "jira.token").await.ok().flatten();
+            match (base_url, email, token) {
+                (Some(url), Some(em), Some(tok)) if !url.is_empty() && !em.is_empty() && !tok.is_empty() => {
+                    Some(Arc::new(HttpJiraClient::new(url, em, tok)))
+                }
+                _ => None,
+            }
+        };
+        let outlook_client: Option<Arc<dyn OutlookClient>> = ctx
             .data::<Arc<dyn OutlookClient>>()
             .ok()
             .map(|c| c.clone());
-        let excel_client = ctx
+        let excel_client: Option<Arc<dyn ExcelClient>> = ctx
             .data::<Arc<dyn ExcelClient>>()
             .ok()
             .map(|c| c.clone());

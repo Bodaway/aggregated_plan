@@ -8,6 +8,12 @@ use super::enums::*;
 use super::pagination::PageInfo;
 use super::tag::TagGql;
 
+/// Lightweight project summary returned on tasks (stub until data loader is implemented).
+#[derive(SimpleObject)]
+pub struct ProjectSummaryGql {
+    pub name: String,
+}
+
 /// GraphQL wrapper for the domain Task entity.
 pub struct TaskGql(pub Task);
 
@@ -47,7 +53,7 @@ impl TaskGql {
 
     /// The associated project. Resolved via data loader in a later task.
     /// Returns None for now.
-    async fn project(&self) -> Option<String> {
+    async fn project(&self) -> Option<ProjectSummaryGql> {
         // Will be resolved via data loader or separate query
         None
     }
@@ -107,6 +113,10 @@ impl TaskGql {
     async fn tag_ids(&self) -> Vec<ID> {
         self.0.tags.iter().map(|t| ID(t.to_string())).collect()
     }
+
+    async fn tracking_state(&self) -> TrackingStateGql {
+        self.0.tracking_state.into()
+    }
 }
 
 /// Input for creating a new task.
@@ -150,6 +160,7 @@ pub struct TaskFilterInput {
     pub deadline_before: Option<NaiveDate>,
     pub deadline_after: Option<NaiveDate>,
     pub tag_ids: Option<Vec<ID>>,
+    pub tracking_state: Option<Vec<TrackingStateGql>>,
 }
 
 /// Relay-style edge for task pagination.

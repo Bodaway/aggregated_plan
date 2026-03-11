@@ -282,3 +282,31 @@ impl From<types::TaskLinkType> for TaskLinkTypeGql {
         }
     }
 }
+
+/// GraphQL enum for task tracking state (triage workflow).
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TrackingStateGql {
+    Inbox,
+    Followed,
+    Dismissed,
+}
+
+impl From<types::TrackingState> for TrackingStateGql {
+    fn from(t: types::TrackingState) -> Self {
+        match t {
+            types::TrackingState::Inbox => TrackingStateGql::Inbox,
+            types::TrackingState::Followed => TrackingStateGql::Followed,
+            types::TrackingState::Dismissed => TrackingStateGql::Dismissed,
+        }
+    }
+}
+
+impl From<TrackingStateGql> for types::TrackingState {
+    fn from(t: TrackingStateGql) -> Self {
+        match t {
+            TrackingStateGql::Inbox => types::TrackingState::Inbox,
+            TrackingStateGql::Followed => types::TrackingState::Followed,
+            TrackingStateGql::Dismissed => types::TrackingState::Dismissed,
+        }
+    }
+}

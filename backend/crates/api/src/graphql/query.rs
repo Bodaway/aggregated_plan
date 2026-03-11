@@ -369,6 +369,9 @@ fn convert_task_filter(input: Option<TaskFilterInput>) -> TaskFilter {
                     .filter_map(|id| Uuid::parse_str(&id).ok())
                     .collect()
             }),
+            tracking_state: f.tracking_state.map(|states| {
+                states.into_iter().map(|s| s.into()).collect()
+            }),
         },
     }
 }
