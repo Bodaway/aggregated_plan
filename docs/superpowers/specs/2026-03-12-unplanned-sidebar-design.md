@@ -56,8 +56,11 @@ Change the GraphQL input field to `MaybeUndefined<DateTime<Utc>>`:
 ```rust
 use async_graphql::MaybeUndefined;
 
+#[graphql(default)]
 pub planned_start: MaybeUndefined<DateTime<Utc>>,
 ```
+
+`#[graphql(default)]` is required so that omitting `plannedStart` from the input resolves to `MaybeUndefined::Undefined` instead of triggering a GraphQL validation error. All existing callers that omit the field (task edit sheet, etc.) continue to work unchanged.
 
 **`api/src/graphql/mutation.rs`** — `convert_update_input`:
 ```rust
@@ -173,21 +176,27 @@ const onDragEnd = useCallback(({ over }: DragEndEvent) => {
 
   // ── Case 1: dropped on unplanned sidebar ──
   if (overId === 'unplanned') {
-    // Reject if task has a deadline (it belongs on that date)
+    // Reject if task has a deadline (deadline is its date anchor)
     if (draggedTask.deadline) return;
     isMutatingRef.current = true;
-    setTasksByDate(prev => {
-      const fromDate = getTaskDate(draggedTask);
-      return {
-        ...prev,
-        [fromDate]: (prev[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
-      };
-    });
+    // Remove from the day column it came from
+    const fromDate = getTaskDate(draggedTask);
+    setTasksByDate(prev => ({
+      ...prev,
+      [fromDate]: (prev[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
+    }));
     setUnplannedTasks(prev => [...prev, { ...draggedTask, plannedStart: null }]);
     executeUpdate({ id: draggedTask.id, input: { plannedStart: null } })
-      .then(r => { if (r.error) { restore(); } })
+      .then(r => { if (r.error || !r.data) restore(); })
       .catch(restore)
-      .finally(() => { isMutatingRef.current = false; });
+      .finally(() => {
+        isMutatingRef.current = false;
+        // Update snapshots so the next rollback target is current
+        serverSnapshotRef.current = { ...serverSnapshotRef.current,
+          [fromDate]: (serverSnapshotRef.current[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
+        };
+        serverUnplannedRef.current = [...serverUnplannedRef.current, { ...draggedTask, plannedStart: null }];
+      });
     return;
   }
 
@@ -205,9 +214,17 @@ const onDragEnd = useCallback(({ over }: DragEndEvent) => {
       [newDate]: [...(prev[newDate] ?? []), scheduled],
     }));
     executeUpdate({ id: draggedTask.id, input: { plannedStart: `${newDate}T08:00:00Z` } })
-      .then(r => { if (r.error) { restore(); } })
+      .then(r => { if (r.error || !r.data) restore(); })
       .catch(restore)
-      .finally(() => { isMutatingRef.current = false; });
+      .finally(() => {
+        isMutatingRef.current = false;
+        // Advance snapshots so rapid successive drags roll back to current committed state
+        serverUnplannedRef.current = serverUnplannedRef.current.filter(t => t.id !== draggedTask.id);
+        serverSnapshotRef.current = {
+          ...serverSnapshotRef.current,
+          [newDate]: [...(serverSnapshotRef.current[newDate] ?? []), scheduled],
+        };
+      });
   } else {
     // ── Case 3: day-to-day move (existing logic) ──
     const currentDate = getTaskDate(draggedTask);
@@ -215,7 +232,7 @@ const onDragEnd = useCallback(({ over }: DragEndEvent) => {
     isMutatingRef.current = true;
     setTasksByDate(prev => moveBetweenDays(prev, draggedTask, currentDate, newDate));
     executeUpdate({ id: draggedTask.id, input: { plannedStart: `${newDate}T08:00:00Z` } })
-      .then(r => { if (r.error) setTasksByDate(serverSnapshotRef.current); })
+      .then(r => { if (r.error || !r.data) setTasksByDate(serverSnapshotRef.current); })
       .catch(() => setTasksByDate(serverSnapshotRef.current))
       .finally(() => { isMutatingRef.current = false; });
   }
@@ -295,6 +312,12 @@ function UnplannedSidebar({
 | `frontend/src/pages/DashboardPage.tsx` | Layout, state, DnD logic, `UnplannedSidebar` component |
 
 ---
+
+## Known Limitations
+
+- **Week total hours**: `weekTotalHours` is computed from `tasksByDate` which no longer includes unplanned tasks. This is intentional — unplanned tasks have no committed date so they should not count toward the week's planned load.
+- **Concurrent drag guard**: `fromUnplanned` detection uses `serverUnplannedRef.current`. If a task is dragged to the sidebar and immediately dragged back to a day before the first mutation settles, the second drag may misclassify the task as a day-to-day move. `isMutatingRef.current = true` does not block a second drag from starting, so this edge case is accepted as-is.
+- **DragOverlay**: Works correctly for sidebar tasks — `onDragStart` populates `draggingTaskRef.current` from either `tasksByDate` or `unplannedTasks`, and the existing `DragOverlay` renders from that ref regardless of source.
 
 ## Out of Scope
 
