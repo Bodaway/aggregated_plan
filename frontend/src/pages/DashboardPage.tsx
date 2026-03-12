@@ -343,7 +343,12 @@ export function DashboardPage() {
   const weekStart = getWeekStart(currentDate);
   const dateStr = formatDate(weekStart);
   const { data, loading, error, refetch } = useDashboard(dateStr);
-  const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart.getTime()]);
+  const workingDays = data?.workingDays ?? [1, 2, 3, 4, 5];
+  const weekDays = useMemo(
+    () => getWeekDays(weekStart, workingDays),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [weekStart.getTime(), JSON.stringify(workingDays)],
+  );
 
   // ── Mutation ──
   const [, executeUpdate] = useMutation(UPDATE_TASK_MUTATION);
@@ -519,7 +524,7 @@ export function DashboardPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
             </svg>
           </button>
-          <h2 className="text-lg font-semibold text-gray-800">{formatWeekRange(weekStart)}</h2>
+          <h2 className="text-lg font-semibold text-gray-800">{formatWeekRange(weekStart, workingDays)}</h2>
           <button
             onClick={() => setCurrentDate(prev => getNextWeek(prev))}
             className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-50 transition-colors"
@@ -546,7 +551,7 @@ export function DashboardPage() {
             <span>
               <span className="font-medium text-gray-700">{formatHoursCompact(weekTotalMeetingHours)}</span> meetings
             </span>
-            {weekTotalHours + weekTotalMeetingHours > (data.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK) * 5 && (
+            {weekTotalHours + weekTotalMeetingHours > (data.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK) * workingDays.length && (
               <span className="flex items-center gap-1 text-red-600 font-medium">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
@@ -581,7 +586,7 @@ export function DashboardPage() {
             <div className="flex gap-3">
               <UnplannedSidebar tasks={unplannedTasks} onTaskClick={setEditingTaskId} />
               <div className="flex-1 min-w-0">
-                <div className="grid grid-cols-5 gap-2">
+                <div style={{ display: 'grid', gridTemplateColumns: `repeat(${workingDays.length}, minmax(0, 1fr))`, gap: '0.5rem' }}>
                   {weekDays.map(day => {
                     const dayStr = formatDate(day);
                     return (

@@ -83,6 +83,7 @@ export interface WeeklyWorkloadData {
   readonly totalPlanned: number;
   readonly totalMeetings: number;
   readonly overload: boolean;
+  readonly workingDays: readonly number[];
   readonly halfDays: readonly WorkloadHalfDay[];
 }
 
@@ -101,6 +102,7 @@ export interface DailyDashboardData {
   readonly weeklyWorkload: WeeklyWorkloadData | null;
   readonly syncStatuses: readonly SyncStatus[];
   readonly workingHoursPerDay: number;
+  readonly workingDays: readonly number[];
 }
 
 const DASHBOARD_QUERY = `
@@ -137,6 +139,7 @@ const DASHBOARD_QUERY = `
         showAs
       }
       workingHoursPerDay
+      workingDays
       alerts {
         id
         alertType
@@ -151,6 +154,7 @@ const DASHBOARD_QUERY = `
         totalPlanned
         totalMeetings
         overload
+        workingDays
         halfDays {
           date
           halfDay
