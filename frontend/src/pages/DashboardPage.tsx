@@ -43,16 +43,6 @@ const UPDATE_TASK_MUTATION = `
 
 // ─── Helpers (module-level, no deps) ─────────────────────────────────────────
 
-const QUADRANT_PRIORITY: Record<string, number> = {
-  UrgentImportant: 0,
-  Important: 1,
-  Urgent: 2,
-  Neither: 3,
-};
-
-function getQuadrantPriority(q: string): number {
-  return QUADRANT_PRIORITY[q] ?? 4;
-}
 
 function getTaskHours(t: DashboardTask): number {
   return t.effectiveRemainingHours ?? t.effectiveEstimatedHours ?? 0;
@@ -174,9 +164,10 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask }
   const fillPct = Math.min((totalHours / DAILY_CAPACITY_HOURS) * 100, 100);
   const overloaded = totalHours > DAILY_CAPACITY_HOURS;
 
-  const sortedTasks = [...tasks].sort(
-    (a, b) => getQuadrantPriority(a.quadrant) - getQuadrantPriority(b.quadrant),
-  );
+  const sortedTasks = [...tasks].sort((a, b) => {
+    if (b.urgency !== a.urgency) return b.urgency - a.urgency; // urgency desc
+    return b.impact - a.impact;                                 // impact desc
+  });
 
   const sortedMeetings = [...meetings].sort(
     (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
