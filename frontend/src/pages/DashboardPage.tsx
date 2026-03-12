@@ -469,7 +469,7 @@ export function DashboardPage() {
       isMutatingRef.current = true;
       setTasksByDate(prev => moveBetweenDays(prev, draggedTask, currentDate, newDate));
       executeUpdate({ id: draggedTask.id, input: { plannedStart: `${newDate}T08:00:00Z` } })
-        .then(result => { if (result.error) setTasksByDate(serverSnapshotRef.current); })
+        .then(result => { if (result.error || !result.data) setTasksByDate(serverSnapshotRef.current); })
         .catch(() => { setTasksByDate(serverSnapshotRef.current); })
         .finally(() => { isMutatingRef.current = false; });
     }
