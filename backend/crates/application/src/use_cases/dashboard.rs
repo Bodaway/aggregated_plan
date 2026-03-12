@@ -676,4 +676,107 @@ mod tests {
         let result = compute_weekly_workload(monday, &[], &[task], &[1, 2, 3, 4, 5]);
         assert!((result.total_planned - 0.0).abs() < f64::EPSILON);
     }
+
+    // ─── parse_working_days ───
+
+    #[test]
+    fn parse_working_days_standard_week() {
+        let result = parse_working_days("1,2,3,4,5");
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn parse_working_days_with_whitespace() {
+        let result = parse_working_days(" 1 , 2 , 3 ");
+        assert_eq!(result, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn parse_working_days_deduplicates_and_sorts() {
+        let result = parse_working_days("5,3,1,3,5");
+        assert_eq!(result, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn parse_working_days_filters_out_of_range() {
+        let result = parse_working_days("0,1,7,8");
+        assert_eq!(result, vec![1, 7]);
+    }
+
+    #[test]
+    fn parse_working_days_filters_invalid_tokens() {
+        let result = parse_working_days("1,abc,3,xyz,5");
+        assert_eq!(result, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn parse_working_days_empty_string_returns_empty() {
+        let result = parse_working_days("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_working_days_all_invalid_returns_empty() {
+        let result = parse_working_days("0,8,abc");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_working_days_weekend_days() {
+        let result = parse_working_days("6,7");
+        assert_eq!(result, vec![6, 7]);
+    }
+
+    // ─── compute_weekly_workload with non-standard days ───
+
+    #[test]
+    fn four_day_week_has_eight_slots_and_correct_capacity() {
+        let monday = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let working_days = &[1i32, 2, 3, 4]; // Mon-Thu
+        let result = compute_weekly_workload(monday, &[], &[], working_days);
+
+        assert_eq!(result.capacity, 8); // 4 days × 2 half-days
+        assert_eq!(result.half_days.len(), 8);
+        assert_eq!(result.working_days, vec![1, 2, 3, 4]);
+
+        // Verify the last slot is Thursday afternoon
+        let last = result.half_days.last().unwrap();
+        let thursday = monday + Duration::days(3);
+        assert_eq!(last.date, thursday);
+        assert_eq!(last.half_day, HalfDay::Afternoon);
+    }
+
+    #[test]
+    fn three_day_week_has_six_slots() {
+        let monday = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let working_days = &[1i32, 3, 5]; // Mon, Wed, Fri
+        let result = compute_weekly_workload(monday, &[], &[], working_days);
+
+        assert_eq!(result.capacity, 6); // 3 days × 2 half-days
+        assert_eq!(result.half_days.len(), 6);
+
+        // Verify Mon, Wed, Fri slots
+        let monday_date = monday;
+        let wednesday_date = monday + Duration::days(2);
+        let friday_date = monday + Duration::days(4);
+
+        assert_eq!(result.half_days[0].date, monday_date);
+        assert_eq!(result.half_days[2].date, wednesday_date);
+        assert_eq!(result.half_days[4].date, friday_date);
+    }
+
+    #[test]
+    fn weekend_only_week_has_four_slots() {
+        let monday = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let working_days = &[6i32, 7]; // Sat, Sun
+        let result = compute_weekly_workload(monday, &[], &[], working_days);
+
+        assert_eq!(result.capacity, 4); // 2 days × 2 half-days
+        assert_eq!(result.half_days.len(), 4);
+
+        let saturday = monday + Duration::days(5);
+        let sunday = monday + Duration::days(6);
+        assert_eq!(result.half_days[0].date, saturday);
+        assert_eq!(result.half_days[2].date, sunday);
+    }
 }
