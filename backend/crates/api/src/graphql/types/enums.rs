@@ -8,6 +8,7 @@ pub enum SourceGql {
     Excel,
     Obsidian,
     Personal,
+    Outlook,
 }
 
 impl From<types::Source> for SourceGql {
@@ -17,6 +18,7 @@ impl From<types::Source> for SourceGql {
             types::Source::Excel => SourceGql::Excel,
             types::Source::Obsidian => SourceGql::Obsidian,
             types::Source::Personal => SourceGql::Personal,
+            types::Source::Outlook => SourceGql::Outlook,
         }
     }
 }
@@ -28,6 +30,7 @@ impl From<SourceGql> for types::Source {
             SourceGql::Excel => types::Source::Excel,
             SourceGql::Obsidian => types::Source::Obsidian,
             SourceGql::Personal => types::Source::Personal,
+            SourceGql::Outlook => types::Source::Outlook,
         }
     }
 }

@@ -16,6 +16,7 @@ pub enum Source {
     Excel,
     Obsidian,
     Personal,
+    Outlook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

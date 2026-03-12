@@ -200,7 +200,7 @@ pub async fn sync_outlook(
     // Mark sync as in progress.
     sync_repo
         .upsert(&SyncStatus {
-            source: Source::Obsidian, // We reuse Obsidian enum value for Outlook
+            source: Source::Outlook,
             user_id,
             last_sync_at: Some(now),
             status: SyncSourceStatus::Syncing,
@@ -212,7 +212,7 @@ pub async fn sync_outlook(
         .fetch_calendar(date_range.0, date_range.1)
         .await
         .map_err(|e| AppError::Connector {
-            connector_source: Source::Obsidian,
+            connector_source: Source::Outlook,
             message: e.to_string(),
         })?;
 
@@ -245,7 +245,7 @@ pub async fn sync_outlook(
     // Update sync status to success.
     sync_repo
         .upsert(&SyncStatus {
-            source: Source::Obsidian,
+            source: Source::Outlook,
             user_id,
             last_sync_at: Some(Utc::now()),
             status: SyncSourceStatus::Success,
@@ -254,7 +254,7 @@ pub async fn sync_outlook(
         .await?;
 
     Ok(SyncResult {
-        source: Source::Obsidian,
+        source: Source::Outlook,
         tasks_created: 0,
         tasks_updated: 0,
         tasks_removed: deleted as usize,
@@ -509,9 +509,9 @@ pub async fn sync_all(
         match sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end)).await {
             Ok(result) => results.push(result),
             Err(e) => {
-                update_sync_error(sync_repo, user_id, Source::Obsidian, &e.to_string()).await?;
+                update_sync_error(sync_repo, user_id, Source::Outlook, &e.to_string()).await?;
                 results.push(SyncResult {
-                    source: Source::Obsidian,
+                    source: Source::Outlook,
                     tasks_created: 0,
                     tasks_updated: 0,
                     tasks_removed: 0,
@@ -521,7 +521,7 @@ pub async fn sync_all(
             }
         }
     } else {
-        update_sync_error(sync_repo, user_id, Source::Obsidian, "Not configured").await?;
+        update_sync_error(sync_repo, user_id, Source::Outlook, "Not configured").await?;
     }
 
     // Excel sync.
@@ -635,14 +635,17 @@ pub async fn sync_source(
                 update_sync_error(sync_repo, user_id, Source::Jira, "Not configured").await?;
             }
         }
-        Source::Obsidian => {
+        Source::Outlook => {
             if let Some(client) = outlook_client {
                 let today = Utc::now().date_naive();
                 let end = today + chrono::Duration::days(30);
                 sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end)).await?;
             } else {
-                update_sync_error(sync_repo, user_id, Source::Obsidian, "Not configured").await?;
+                update_sync_error(sync_repo, user_id, Source::Outlook, "Not configured").await?;
             }
+        }
+        Source::Obsidian => {
+            // Obsidian is not a real sync source; nothing to do.
         }
         Source::Excel => {
             if let Some(client) = excel_client {

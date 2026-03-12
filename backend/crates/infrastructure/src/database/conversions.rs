@@ -8,6 +8,7 @@ pub fn source_to_str(s: Source) -> &'static str {
         Source::Excel => "excel",
         Source::Obsidian => "obsidian",
         Source::Personal => "personal",
+        Source::Outlook => "outlook",
     }
 }
 
@@ -17,6 +18,7 @@ pub fn source_from_str(s: &str) -> Source {
         "excel" => Source::Excel,
         "obsidian" => Source::Obsidian,
         "personal" => Source::Personal,
+        "outlook" => Source::Outlook,
         _ => Source::Personal,
     }
 }
