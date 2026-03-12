@@ -200,6 +200,23 @@ mod tests {
         assert!((score.overall - 0.4).abs() < f64::EPSILON);
     }
 
+    #[test]
+    fn jira_key_case_sensitive_no_match() {
+        // find_jira_key_in_text uses str::contains which is case-sensitive
+        assert!(!find_jira_key_in_text("PROJ-123", "proj-123 in progress"));
+    }
+
+    #[test]
+    fn jira_key_substring_false_positive() {
+        // "ABC-1" is a substring of "ABC-10", so this returns true (known limitation)
+        assert!(find_jira_key_in_text("ABC-1", "ABC-10 is the main ticket"));
+    }
+
+    #[test]
+    fn jira_key_not_in_empty_string() {
+        assert!(!find_jira_key_in_text("PROJ-1", ""));
+    }
+
     // ─── threshold constant ───
 
     #[test]

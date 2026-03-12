@@ -285,6 +285,112 @@ mod tests {
         assert!(alerts.is_empty());
     }
 
+    #[test]
+    fn task_task_conflict_produces_alert() {
+        let items = vec![
+            ScheduledItem::Task {
+                id: Uuid::new_v4(),
+                title: "Task A".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap(),
+            },
+            ScheduledItem::Task {
+                id: Uuid::new_v4(),
+                title: "Task B".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 12, 0, 0).unwrap(),
+            },
+        ];
+        let alerts = check_conflict_alerts(&items, date(2026, 3, 9));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert_type, AlertType::Conflict);
+        assert!(alerts[0].message.contains("Task A"));
+        assert!(alerts[0].message.contains("Task B"));
+    }
+
+    #[test]
+    fn meeting_meeting_conflict_produces_alert() {
+        let items = vec![
+            ScheduledItem::Meeting {
+                id: Uuid::new_v4(),
+                title: "Meeting A".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap(),
+            },
+            ScheduledItem::Meeting {
+                id: Uuid::new_v4(),
+                title: "Meeting B".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 12, 0, 0).unwrap(),
+            },
+        ];
+        let alerts = check_conflict_alerts(&items, date(2026, 3, 9));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert_type, AlertType::Conflict);
+        assert!(alerts[0].message.contains("Meeting A"));
+        assert!(alerts[0].message.contains("Meeting B"));
+    }
+
+    #[test]
+    fn contained_item_produces_conflict_alert() {
+        // A meeting fully contained within a task's time range still overlaps
+        let items = vec![
+            ScheduledItem::Task {
+                id: Uuid::new_v4(),
+                title: "Long Task".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 17, 0, 0).unwrap(),
+            },
+            ScheduledItem::Meeting {
+                id: Uuid::new_v4(),
+                title: "Short Meeting".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap(),
+            },
+        ];
+        let alerts = check_conflict_alerts(&items, date(2026, 3, 9));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].alert_type, AlertType::Conflict);
+    }
+
+    #[test]
+    fn three_overlapping_items_produce_three_alerts() {
+        // A(09-12), B(10-13), C(11-14): all three pairs overlap → 3 conflict alerts
+        let items = vec![
+            ScheduledItem::Task {
+                id: Uuid::new_v4(),
+                title: "A".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 12, 0, 0).unwrap(),
+            },
+            ScheduledItem::Meeting {
+                id: Uuid::new_v4(),
+                title: "B".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 13, 0, 0).unwrap(),
+            },
+            ScheduledItem::Task {
+                id: Uuid::new_v4(),
+                title: "C".to_string(),
+                start: Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap(),
+                end: Utc.with_ymd_and_hms(2026, 3, 9, 14, 0, 0).unwrap(),
+            },
+        ];
+        let alerts = check_conflict_alerts(&items, date(2026, 3, 9));
+        assert_eq!(alerts.len(), 3);
+    }
+
+    #[test]
+    fn deadline_exactly_at_threshold_produces_warning() {
+        // Mon 2026-03-09 → Thu 2026-03-12 = 3 business days = threshold → Warning
+        let today = date(2026, 3, 9);
+        let tasks = vec![make_task_with_deadline("Threshold task", Some(date(2026, 3, 12)))];
+        let alerts = check_deadline_alerts(&tasks, today, 3);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+        assert!(alerts[0].message.contains("due in"));
+    }
+
     // ─── check_overload_alerts ───
 
     #[test]
@@ -309,5 +415,16 @@ mod tests {
     fn no_overload_produces_no_alert() {
         let alert = check_overload_alerts(5.0, 3.0, 10.0, date(2026, 3, 9));
         assert!(alert.is_none());
+    }
+
+    #[test]
+    fn overload_excess_exactly_two_is_warning() {
+        // planned=6 + meetings=6 = 12 > capacity=10 → excess=2.0
+        // Severity condition is excess > 2.0, so exactly 2.0 stays Warning
+        let alert = check_overload_alerts(6.0, 6.0, 10.0, date(2026, 3, 9));
+        assert!(alert.is_some());
+        let alert = alert.unwrap();
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert!(alert.message.contains("2.0"));
     }
 }
