@@ -62,6 +62,7 @@ fn map_meeting_row(row: &SqliteRow) -> Result<Meeting, RepositoryError> {
         participants,
         project_id,
         outlook_id: Row::get(row, "outlook_id"),
+        show_as: Row::get(row, "show_as"),
         created_at: parse_datetime(&created_at_str)?,
     })
 }
@@ -148,8 +149,8 @@ impl MeetingRepository for SqliteMeetingRepository {
                 .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
 
             sqlx::query(
-                "INSERT OR REPLACE INTO meetings (id, user_id, title, start_time, end_time, location, participants, project_id, outlook_id, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO meetings (id, user_id, title, start_time, end_time, location, participants, project_id, outlook_id, show_as, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(meeting.id.to_string())
             .bind(meeting.user_id.to_string())
@@ -160,6 +161,7 @@ impl MeetingRepository for SqliteMeetingRepository {
             .bind(&participants_json)
             .bind(meeting.project_id.map(|id| id.to_string()))
             .bind(&meeting.outlook_id)
+            .bind(meeting.show_as.as_deref())
             .bind(meeting.created_at.to_rfc3339())
             .execute(&self.pool)
             .await
@@ -258,6 +260,7 @@ mod tests {
             participants: vec!["alice@test.com".to_string(), "bob@test.com".to_string()],
             project_id: None,
             outlook_id: outlook_id.to_string(),
+            show_as: None,
             created_at: Utc::now(),
         }
     }

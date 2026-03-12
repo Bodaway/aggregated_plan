@@ -56,6 +56,10 @@ impl MeetingGql {
         &self.0.outlook_id
     }
 
+    async fn show_as(&self) -> Option<&str> {
+        self.0.show_as.as_deref()
+    }
+
     async fn created_at(&self) -> DateTime<Utc> {
         self.0.created_at
     }

@@ -229,6 +229,7 @@ pub async fn sync_outlook(
             participants: event.participants,
             project_id: None,
             outlook_id: event.outlook_id,
+            show_as: event.show_as,
             created_at: now,
         })
         .collect();

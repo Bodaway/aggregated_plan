@@ -35,6 +35,7 @@ pub fn map_graph_event(event: GraphEvent) -> Option<OutlookEvent> {
             .map(|a| a.email_address.name)
             .collect(),
         is_cancelled: event.is_cancelled,
+        show_as: event.show_as,
     })
 }
 
@@ -76,6 +77,7 @@ mod tests {
                 })
                 .collect(),
             is_cancelled,
+            show_as: None,
         }
     }
 

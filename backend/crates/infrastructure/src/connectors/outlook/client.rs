@@ -46,7 +46,7 @@ impl OutlookClient for GraphOutlookClient {
                 ("endDateTime", end_dt.as_str()),
                 (
                     "$select",
-                    "id,subject,start,end,location,attendees,isCancelled",
+                    "id,subject,start,end,location,attendees,isCancelled,showAs",
                 ),
             ])
             .send()

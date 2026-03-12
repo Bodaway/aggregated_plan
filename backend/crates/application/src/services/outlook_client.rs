@@ -12,6 +12,7 @@ pub struct OutlookEvent {
     pub location: Option<String>,
     pub participants: Vec<String>,
     pub is_cancelled: bool,
+    pub show_as: Option<String>,
 }
 
 /// Client trait for fetching calendar events from Outlook.

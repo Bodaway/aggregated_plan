@@ -26,6 +26,7 @@ pub struct DailyDashboard {
     pub alerts: Vec<Alert>,
     pub weekly_workload: WeeklyWorkload,
     pub sync_statuses: Vec<SyncStatus>,
+    pub working_hours_per_day: i32,
 }
 
 /// Weekly workload summary.
@@ -55,31 +56,34 @@ pub async fn get_daily_dashboard(
     meeting_repo: &dyn MeetingRepository,
     alert_repo: &dyn AlertRepository,
     sync_repo: &dyn SyncStatusRepository,
+    config_repo: &dyn ConfigRepository,
     user_id: UserId,
     date: NaiveDate,
 ) -> Result<DailyDashboard, AppError> {
-    // 1. Tasks for the user: those with deadlines on the given date or in TODO/IN_PROGRESS status
-    // Only show Followed tasks (not Inbox/Dismissed) in the dashboard
+    // 1. Tasks for the whole week (Mon-Fri)
+    let week_start = week_start_for(date);
+    let week_end = week_start + Duration::days(4); // Friday
+    let mut tasks = task_repo.find_by_date_range(user_id, week_start, week_end).await?;
+
+    // Also include unplanned followed active tasks (no planned_start and no deadline)
+    // These will appear on "today" in the frontend
     let active_filter = TaskFilter {
         status: Some(vec![TaskStatus::Todo, TaskStatus::InProgress]),
         tracking_state: Some(vec![TrackingState::Followed]),
         ..TaskFilter::empty()
     };
-    let mut tasks = task_repo.find_by_user(user_id, &active_filter).await?;
-
-    // Also include tasks with deadline on this exact date that may be in other statuses
-    let deadline_tasks = task_repo
-        .find_by_date_range(user_id, date, date)
-        .await?;
-    for dt in deadline_tasks {
-        if !tasks.iter().any(|t| t.id == dt.id) {
-            tasks.push(dt);
+    let active_tasks = task_repo.find_by_user(user_id, &active_filter).await?;
+    for t in active_tasks {
+        if t.planned_start.is_none() && t.deadline.is_none()
+            && !tasks.iter().any(|existing| existing.id == t.id)
+        {
+            tasks.push(t);
         }
     }
 
-    // 2. Meetings for the user on the given date
+    // 2. Meetings for the whole week
     let meetings = meeting_repo
-        .find_by_user_and_date(user_id, date)
+        .find_by_user_and_range(user_id, week_start, week_end)
         .await?;
 
     // 3. Unresolved alerts
@@ -88,17 +92,17 @@ pub async fn get_daily_dashboard(
     // 4. Sync statuses
     let sync_statuses = sync_repo.find_by_user(user_id).await?;
 
-    // 5. Weekly workload
-    let week_start = week_start_for(date);
-    let week_end = week_start + Duration::days(4); // Friday
-    let week_meetings = meeting_repo
-        .find_by_user_and_range(user_id, week_start, week_end)
-        .await?;
-    let week_tasks = task_repo
-        .find_by_date_range(user_id, week_start, week_end)
-        .await?;
+    // 5. Working hours per day from config (fallback to 8)
+    let working_hours_per_day = config_repo
+        .get(user_id, "general.working_hours")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(8);
 
-    let weekly_workload = compute_weekly_workload(week_start, &week_meetings, &week_tasks);
+    // 6. Weekly workload (reuse tasks/meetings already fetched for the week)
+    let weekly_workload = compute_weekly_workload(week_start, &meetings, &tasks);
 
     Ok(DailyDashboard {
         date,
@@ -107,6 +111,7 @@ pub async fn get_daily_dashboard(
         alerts,
         weekly_workload,
         sync_statuses,
+        working_hours_per_day,
     })
 }
 
@@ -221,10 +226,14 @@ fn compute_weekly_workload(
         }
     }
 
-    // total_planned = sum of estimated_hours from tasks with planned dates in the week
+    // total_planned = sum of (effective_remaining or effective_estimated) for tasks in the week
     let total_planned: f64 = tasks
         .iter()
-        .filter_map(|t| t.estimated_hours.map(|h| h as f64))
+        .filter_map(|t| {
+            t.effective_remaining_hours()
+                .or_else(|| t.effective_estimated_hours())
+                .map(|h| h as f64)
+        })
         .sum();
 
     let capacity_hours = capacity as f64 * HALF_DAY_HOURS;
@@ -328,6 +337,7 @@ mod tests {
             participants: vec![],
             project_id: None,
             outlook_id: "outlook-1".to_string(),
+            show_as: None,
             created_at: Utc::now(),
         };
 
@@ -360,6 +370,7 @@ mod tests {
             participants: vec![],
             project_id: None,
             outlook_id: "outlook-2".to_string(),
+            show_as: None,
             created_at: Utc::now(),
         };
 
@@ -391,6 +402,7 @@ mod tests {
             participants: vec![],
             project_id: None,
             outlook_id: "outlook-3".to_string(),
+            show_as: None,
             created_at: Utc::now(),
         };
 
@@ -502,6 +514,7 @@ mod tests {
                 participants: vec![],
                 project_id: None,
                 outlook_id: format!("outlook-m-{}", day_offset),
+                show_as: None,
                 created_at: Utc::now(),
             });
             // Full afternoon meetings (4 hours each = 20 hours)
@@ -519,6 +532,7 @@ mod tests {
                 participants: vec![],
                 project_id: None,
                 outlook_id: format!("outlook-a-{}", day_offset),
+                show_as: None,
                 created_at: Utc::now(),
             });
         }

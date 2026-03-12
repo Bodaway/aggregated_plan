@@ -17,6 +17,7 @@ pub struct DailyDashboardGql {
     pub alerts: Vec<AlertGql>,
     pub weekly_workload: WeeklyWorkloadGql,
     pub sync_statuses: Vec<SyncStatusGql>,
+    pub working_hours_per_day: i32,
 }
 
 impl From<DailyDashboard> for DailyDashboardGql {
@@ -28,6 +29,7 @@ impl From<DailyDashboard> for DailyDashboardGql {
             alerts: data.alerts.into_iter().map(AlertGql).collect(),
             weekly_workload: WeeklyWorkloadGql::from(data.weekly_workload),
             sync_statuses: data.sync_statuses.into_iter().map(SyncStatusGql).collect(),
+            working_hours_per_day: data.working_hours_per_day,
         }
     }
 }
@@ -56,6 +58,11 @@ impl DailyDashboardGql {
 
     async fn sync_statuses(&self) -> &[SyncStatusGql] {
         &self.sync_statuses
+    }
+
+    /// Number of working hours per day from user configuration (default 8).
+    async fn working_hours_per_day(&self) -> i32 {
+        self.working_hours_per_day
     }
 }
 
@@ -94,11 +101,13 @@ impl WeeklyWorkloadGql {
         self.capacity
     }
 
-    async fn total_task_hours(&self) -> f64 {
+    /// Total planned task hours for the week.
+    async fn total_planned(&self) -> f64 {
         self.total_task_hours
     }
 
-    async fn total_meeting_hours(&self) -> f64 {
+    /// Total meeting hours for the week.
+    async fn total_meetings(&self) -> f64 {
         self.total_meeting_hours
     }
 
@@ -107,7 +116,7 @@ impl WeeklyWorkloadGql {
     }
 
     /// Whether the weekly workload exceeds capacity.
-    async fn is_overloaded(&self) -> bool {
+    async fn overload(&self) -> bool {
         (self.total_task_hours + self.total_meeting_hours) > self.capacity_hours
     }
 
@@ -121,7 +130,7 @@ impl WeeklyWorkloadGql {
         }
     }
 
-    async fn slots(&self) -> &[HalfDaySlotGql] {
+    async fn half_days(&self) -> &[HalfDaySlotGql] {
         &self.slots
     }
 }

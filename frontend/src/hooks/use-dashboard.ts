@@ -46,6 +46,7 @@ export interface DashboardMeeting {
   readonly endTime: string;
   readonly location: string | null;
   readonly durationHours: number;
+  readonly showAs: string | null;
 }
 
 export interface DashboardAlert {
@@ -99,6 +100,7 @@ export interface DailyDashboardData {
   readonly alerts: readonly DashboardAlert[];
   readonly weeklyWorkload: WeeklyWorkloadData | null;
   readonly syncStatuses: readonly SyncStatus[];
+  readonly workingHoursPerDay: number;
 }
 
 const DASHBOARD_QUERY = `
@@ -132,7 +134,9 @@ const DASHBOARD_QUERY = `
         endTime
         location
         durationHours
+        showAs
       }
+      workingHoursPerDay
       alerts {
         id
         alertType

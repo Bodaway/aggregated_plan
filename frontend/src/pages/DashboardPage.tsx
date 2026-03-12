@@ -30,7 +30,7 @@ import { TaskCreateSheet } from '@/components/task/TaskCreateSheet';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DAILY_CAPACITY_HOURS = 8;
+const DAILY_CAPACITY_HOURS_FALLBACK = 8;
 
 const UPDATE_TASK_MUTATION = `
   mutation RescheduleDashboardTask($id: ID!, $input: UpdateTaskInput!) {
@@ -69,6 +69,12 @@ function formatTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function countsMeetingAgainstCapacity(m: DashboardMeeting): boolean {
+  if (m.title.toLowerCase() === 'pause midi') return false;
+  if (m.showAs === 'free' || m.showAs === 'oof' || m.showAs === 'workingElsewhere') return false;
+  return true;
 }
 
 function formatHoursCompact(hours: number): string {
@@ -209,9 +215,10 @@ interface DayColumnProps {
   readonly onTaskClick: (id: string) => void;
   readonly isDragging: boolean;
   readonly onAddTask: () => void;
+  readonly workingHoursPerDay: number;
 }
 
-function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask }: DayColumnProps) {
+function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, workingHoursPerDay }: DayColumnProps) {
   const dayStr = formatDate(date);
   const { setNodeRef, isOver } = useDroppable({ id: `day-${dayStr}` });
 
@@ -226,8 +233,10 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask }
     (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
   );
 
-  const meetingHours = sortedMeetings.reduce((sum, m) => sum + m.durationHours, 0);
-  const availableHours = Math.max(DAILY_CAPACITY_HOURS - meetingHours, 0);
+  const meetingHours = sortedMeetings
+    .filter(countsMeetingAgainstCapacity)
+    .reduce((sum, m) => sum + m.durationHours, 0);
+  const availableHours = Math.max(workingHoursPerDay - meetingHours, 0);
   const totalHours = tasks.reduce((sum, t) => sum + getTaskHours(t), 0);
   const fillPct = availableHours > 0 ? Math.min((totalHours / availableHours) * 100, 100) : 100;
   const overloaded = totalHours > availableHours;
@@ -385,7 +394,9 @@ export function DashboardPage() {
 
   const weekTotalMeetingHours = useMemo(() => {
     if (!data) return 0;
-    return data.meetings.reduce((sum, m) => sum + m.durationHours, 0);
+    return data.meetings
+      .filter(countsMeetingAgainstCapacity)
+      .reduce((sum, m) => sum + m.durationHours, 0);
   }, [data]);
 
   // ── Drag handlers ──
@@ -535,7 +546,7 @@ export function DashboardPage() {
             <span>
               <span className="font-medium text-gray-700">{formatHoursCompact(weekTotalMeetingHours)}</span> meetings
             </span>
-            {weekTotalHours + weekTotalMeetingHours > 40 && (
+            {weekTotalHours + weekTotalMeetingHours > (data.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK) * 5 && (
               <span className="flex items-center gap-1 text-red-600 font-medium">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
@@ -582,6 +593,7 @@ export function DashboardPage() {
                         onTaskClick={setEditingTaskId}
                         isDragging={activeTaskId !== null}
                         onAddTask={() => setCreatingForDate(dayStr)}
+                        workingHoursPerDay={data?.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK}
                       />
                     );
                   })}

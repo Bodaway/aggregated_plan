@@ -143,12 +143,14 @@ impl QueryRoot {
         let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
         let alert_repo = ctx.data::<Arc<dyn AlertRepository>>()?;
         let sync_repo = ctx.data::<Arc<dyn SyncStatusRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
 
         let data = dashboard::get_daily_dashboard(
             task_repo.as_ref(),
             meeting_repo.as_ref(),
             alert_repo.as_ref(),
             sync_repo.as_ref(),
+            config_repo.as_ref(),
             *user_id,
             date,
         )

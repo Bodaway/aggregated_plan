@@ -17,6 +17,7 @@ pub struct GraphEvent {
     pub location: Option<GraphLocation>,
     pub attendees: Vec<GraphAttendee>,
     pub is_cancelled: bool,
+    pub show_as: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

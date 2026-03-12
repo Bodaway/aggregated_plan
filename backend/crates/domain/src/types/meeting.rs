@@ -14,5 +14,6 @@ pub struct Meeting {
     pub participants: Vec<String>,
     pub project_id: Option<ProjectId>,
     pub outlook_id: String,
+    pub show_as: Option<String>,
     pub created_at: DateTime<Utc>,
 }
