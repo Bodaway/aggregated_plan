@@ -1,0 +1,71 @@
+query DailyDashboard($date: NaiveDate!) {
+  dailyDashboard(date: $date) {
+    date
+    tasks {
+      id
+      title
+      source
+      sourceId
+      status
+      jiraStatus
+      urgency
+      impact
+      quadrant
+      deadline
+      assignee
+      project {
+        name
+      }
+      tags {
+        id
+        name
+        color
+      }
+    }
+    meetings {
+      id
+      title
+      startTime
+      endTime
+      location
+      durationHours
+    }
+    alerts {
+      id
+      alertType
+      severity
+      message
+      resolved
+      createdAt
+    }
+    weeklyWorkload {
+      weekStart
+      capacity
+      totalPlanned
+      totalMeetings
+      overload
+      workingDays
+      halfDays {
+        date
+        halfDay
+        consumption
+        isFree
+        meetings {
+          title
+          startTime
+          endTime
+        }
+        tasks {
+          title
+        }
+      }
+    }
+    syncStatuses {
+      source
+      status
+      lastSyncAt
+      errorMessage
+    }
+    workingDays
+  }
+}

@@ -1,0 +1,8 @@
+mutation UpdatePriority($taskId: ID!, $urgency: Int, $impact: Int) {
+  updatePriority(taskId: $taskId, urgency: $urgency, impact: $impact) {
+    id
+    urgency
+    impact
+    quadrant
+  }
+}
