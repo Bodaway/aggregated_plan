@@ -5,6 +5,14 @@ import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 import { TaskCard } from '@/components/task/TaskCard';
 import type { QuadrantKey, PriorityMatrixData } from '@/hooks/use-priority-matrix';
 
+// urgency arrives as a string enum ("LOW"|"MEDIUM"|"HIGH"|"CRITICAL") from the
+// priority-matrix GraphQL resolver (TaskGql returns UrgencyLevelGql, not Int).
+const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+function toUrgencyNum(u: unknown): number {
+  if (typeof u === 'number') return u;
+  return URGENCY_NUM[u as string] ?? 1;
+}
+
 export function PriorityMatrixPage() {
   const { data, loading, error, updatePriority } = usePriorityMatrix();
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -15,15 +23,15 @@ export function PriorityMatrixPage() {
         ...data.important,
         ...data.urgent,
         ...data.neither,
-      ].filter(t => t.urgency >= 4)
+      ].filter(t => toUrgencyNum(t.urgency) >= 4)
     : [];
 
   const filteredData: PriorityMatrixData | null = data
     ? {
-        urgentImportant: data.urgentImportant.filter(t => t.urgency < 4),
-        important: data.important.filter(t => t.urgency < 4),
-        urgent: data.urgent.filter(t => t.urgency < 4),
-        neither: data.neither.filter(t => t.urgency < 4),
+        urgentImportant: data.urgentImportant.filter(t => toUrgencyNum(t.urgency) < 4),
+        important: data.important.filter(t => toUrgencyNum(t.urgency) < 4),
+        urgent: data.urgent.filter(t => toUrgencyNum(t.urgency) < 4),
+        neither: data.neither.filter(t => toUrgencyNum(t.urgency) < 4),
       }
     : null;
 
@@ -105,8 +113,8 @@ export function PriorityMatrixPage() {
                   sourceId={task.sourceId}
                   status={task.status}
                   jiraStatus={task.jiraStatus}
-                  urgency={task.urgency}
-                  impact={task.impact}
+                  urgency={toUrgencyNum(task.urgency)}
+                  impact={toUrgencyNum(task.impact)}
                   quadrant=""
                   deadline={task.deadline}
                   assignee={task.assignee}
