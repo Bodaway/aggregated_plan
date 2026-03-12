@@ -1,5 +1,13 @@
 import { useQuery } from 'urql';
 
+const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+const IMPACT_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+
+function toNum(map: Record<string, number>, v: unknown): number {
+  if (typeof v === 'number') return v;
+  return map[v as string] ?? 1;
+}
+
 interface DashboardTag {
   readonly id: string;
   readonly name: string;
@@ -165,8 +173,20 @@ export function useDashboard(date: string) {
     requestPolicy: 'cache-and-network',
   });
 
+  const raw = result.data?.dailyDashboard ?? null;
+  const data = raw
+    ? {
+        ...raw,
+        tasks: raw.tasks.map(t => ({
+          ...t,
+          urgency: toNum(URGENCY_NUM, t.urgency),
+          impact: toNum(IMPACT_NUM, t.impact),
+        })),
+      }
+    : null;
+
   return {
-    data: result.data?.dailyDashboard ?? null,
+    data,
     loading: result.fetching,
     error: result.error ?? null,
     refetch: () => reexecute({ requestPolicy: 'network-only' }),
