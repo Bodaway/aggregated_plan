@@ -18,6 +18,7 @@ pub struct DailyDashboardGql {
     pub weekly_workload: WeeklyWorkloadGql,
     pub sync_statuses: Vec<SyncStatusGql>,
     pub working_hours_per_day: i32,
+    pub working_days: Vec<i32>,
 }
 
 impl From<DailyDashboard> for DailyDashboardGql {
@@ -30,6 +31,7 @@ impl From<DailyDashboard> for DailyDashboardGql {
             weekly_workload: WeeklyWorkloadGql::from(data.weekly_workload),
             sync_statuses: data.sync_statuses.into_iter().map(SyncStatusGql).collect(),
             working_hours_per_day: data.working_hours_per_day,
+            working_days: data.working_days,
         }
     }
 }
@@ -64,6 +66,11 @@ impl DailyDashboardGql {
     async fn working_hours_per_day(&self) -> i32 {
         self.working_hours_per_day
     }
+
+    /// ISO weekday numbers for working days (1=Mon … 7=Sun).
+    async fn working_days(&self) -> &[i32] {
+        &self.working_days
+    }
 }
 
 /// Weekly workload summary.
@@ -74,6 +81,7 @@ pub struct WeeklyWorkloadGql {
     pub total_meeting_hours: f64,
     pub capacity_hours: f64,
     pub slots: Vec<HalfDaySlotGql>,
+    pub working_days: Vec<i32>,
 }
 
 impl From<WeeklyWorkload> for WeeklyWorkloadGql {
@@ -86,6 +94,7 @@ impl From<WeeklyWorkload> for WeeklyWorkloadGql {
             total_meeting_hours: data.total_meetings,
             capacity_hours,
             slots: data.half_days.into_iter().map(HalfDaySlotGql::from).collect(),
+            working_days: data.working_days,
         }
     }
 }
@@ -132,6 +141,11 @@ impl WeeklyWorkloadGql {
 
     async fn half_days(&self) -> &[HalfDaySlotGql] {
         &self.slots
+    }
+
+    /// ISO weekday numbers for working days (1=Mon … 7=Sun).
+    async fn working_days(&self) -> &[i32] {
+        &self.working_days
     }
 }
 
