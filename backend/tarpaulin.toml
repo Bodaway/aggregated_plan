@@ -1,0 +1,14 @@
+[report]
+out = ["Lcov", "Html"]
+
+[coverage]
+# Minimum coverage percentage required; CI fails if coverage drops below this.
+fail-under = 80
+# Include all workspace crates
+workspace = true
+# Exclude test helper / generated code
+exclude-files = [
+    "crates/api/src/graphql/tests.rs",
+]
+# Output directory for HTML report
+output-dir = "coverage"
