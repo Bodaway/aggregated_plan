@@ -930,12 +930,12 @@ async fn daily_dashboard_returns_structure() {
                     weeklyWorkload {
                         weekStart
                         capacity
-                        totalTaskHours
-                        totalMeetingHours
+                        totalPlanned
+                        totalMeetings
                         capacityHours
-                        isOverloaded
+                        overload
                         excessHours
-                        slots {
+                        halfDays {
                             date
                             halfDay
                             consumption
@@ -969,10 +969,10 @@ async fn daily_dashboard_returns_structure() {
     assert_eq!(workload["weekStart"], "2026-03-09");
     assert_eq!(workload["capacity"], 10);
     assert_eq!(workload["capacityHours"], 40.0);
-    assert_eq!(workload["isOverloaded"], false);
+    assert_eq!(workload["overload"], false);
     assert_eq!(workload["excessHours"], 0.0);
 
-    let slots = workload["slots"].as_array().unwrap();
+    let slots = workload["halfDays"].as_array().unwrap();
     assert_eq!(slots.len(), 10);
 
     // First slot should be Monday Morning
@@ -1329,12 +1329,12 @@ async fn weekly_workload_returns_structure() {
                 weeklyWorkload(weekStart: "2026-03-09") {
                     weekStart
                     capacity
-                    totalTaskHours
-                    totalMeetingHours
+                    totalPlanned
+                    totalMeetings
                     capacityHours
-                    isOverloaded
+                    overload
                     excessHours
-                    slots {
+                    halfDays {
                         date
                         halfDay
                         consumption
@@ -1353,12 +1353,12 @@ async fn weekly_workload_returns_structure() {
     assert_eq!(workload["weekStart"], "2026-03-09");
     assert_eq!(workload["capacity"], 10);
     assert_eq!(workload["capacityHours"], 40.0);
-    assert_eq!(workload["totalTaskHours"], 0.0);
-    assert_eq!(workload["totalMeetingHours"], 0.0);
-    assert_eq!(workload["isOverloaded"], false);
+    assert_eq!(workload["totalPlanned"], 0.0);
+    assert_eq!(workload["totalMeetings"], 0.0);
+    assert_eq!(workload["overload"], false);
     assert_eq!(workload["excessHours"], 0.0);
 
-    let slots = workload["slots"].as_array().unwrap();
+    let slots = workload["halfDays"].as_array().unwrap();
     assert_eq!(slots.len(), 10);
 
     // All slots should be free with no meetings or tasks

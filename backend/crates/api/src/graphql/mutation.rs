@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, Object, Result, ID};
+use async_graphql::{Context, MaybeUndefined, Object, Result, ID};
 use domain::types::UserId;
 use uuid::Uuid;
 
@@ -612,7 +612,11 @@ fn convert_update_input(
         description: input.description.map(Some),
         project_id,
         deadline: input.deadline.map(Some),
-        planned_start: input.planned_start.map(Some),
+        planned_start: match input.planned_start {
+            MaybeUndefined::Value(dt) => Some(Some(dt)),
+            MaybeUndefined::Null      => Some(None),
+            MaybeUndefined::Undefined => None,
+        },
         planned_end: input.planned_end.map(Some),
         estimated_hours: input.estimated_hours.map(|h| Some(h as f32)),
         status: input.status.map(|s| s.into()),

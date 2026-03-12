@@ -1,4 +1,4 @@
-use async_graphql::{InputObject, Object, SimpleObject, ID};
+use async_graphql::{InputObject, MaybeUndefined, Object, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
 use domain::rules::priority::determine_quadrant;
@@ -171,7 +171,8 @@ pub struct UpdateTaskInput {
     pub description: Option<String>,
     pub project_id: Option<ID>,
     pub deadline: Option<NaiveDate>,
-    pub planned_start: Option<DateTime<Utc>>,
+    #[graphql(default)]
+    pub planned_start: MaybeUndefined<DateTime<Utc>>,
     pub planned_end: Option<DateTime<Utc>>,
     pub estimated_hours: Option<f64>,
     pub status: Option<TaskStatusGql>,
