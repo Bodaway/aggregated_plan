@@ -105,6 +105,12 @@ cd frontend && pnpm build                    # Production build
 - Tailwind CSS for styling
 - `const` over `let`, never `var`
 
+### Spec Maintenance
+
+Whenever code changes affect documented behaviour (API endpoints, domain rules, UI features, data
+model, config keys), update **SPEC_FONCTIONNELLE.md** and/or **SPEC_TECHNIQUE.md** in the same
+commit. Specifications are written in French.
+
 ### Test-Driven Development
 
 Write tests BEFORE production code. Follow Red → Green → Refactor cycle.
