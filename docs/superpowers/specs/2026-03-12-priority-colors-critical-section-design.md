@@ -44,12 +44,14 @@ Add a `urgencyBorderClass` helper derived from the `urgency: number` prop:
 
 ```ts
 function urgencyBorderClass(urgency: number): string {
-  if (urgency >= 4) return 'border-l-red-600';
-  if (urgency === 3) return 'border-l-orange-600';
-  if (urgency === 2) return 'border-l-yellow-600';
-  return 'border-l-gray-400';
+  if (urgency >= 4) return 'border-l-red-600';   // Critical (4) and any future higher values
+  if (urgency === 3) return 'border-l-orange-600'; // High
+  if (urgency === 2) return 'border-l-yellow-600'; // Medium
+  return 'border-l-gray-400';                      // Low (1) and fallback for unknown values
 }
 ```
+
+The expected range from the backend is 1–4. Values outside this range fall through to gray (defensive).
 
 **Important:** `urgency` is declared in `TaskCardProps` but is not currently destructured in the component function body. Add it to the destructuring:
 ```ts
@@ -102,7 +104,17 @@ const filteredData: PriorityMatrixData = {
     <div className="flex flex-wrap gap-3 p-4">
       {criticalTasks.map(task => (
         <div key={task.id} className="w-64">
-          <TaskCard ... compact onClick={() => setEditingTaskId(task.id)} />
+          <TaskCard
+            id={task.id} title={task.title} source={task.source}
+            sourceId={task.sourceId} status={task.status} jiraStatus={task.jiraStatus}
+            urgency={task.urgency} impact={task.impact} quadrant=""
+            deadline={task.deadline} assignee={task.assignee}
+            projectName={task.project?.name ?? null}
+            effectiveRemainingHours={task.effectiveRemainingHours}
+            effectiveEstimatedHours={task.effectiveEstimatedHours}
+            jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
+            compact onClick={() => setEditingTaskId(task.id)}
+          />
         </div>
       ))}
     </div>
@@ -111,7 +123,7 @@ const filteredData: PriorityMatrixData = {
 <PriorityGrid data={filteredData} ... />
 ```
 
-`filteredData` has the same shape as `data` but with critical tasks removed from `urgentImportant` and `urgent`.
+`filteredData` has the same shape as `data` but with critical tasks removed from all four quadrant arrays.
 
 ---
 
