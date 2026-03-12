@@ -51,6 +51,15 @@ function urgencyBorderClass(urgency: number): string {
 }
 ```
 
+**Important:** `urgency` is declared in `TaskCardProps` but is not currently destructured in the component function body. Add it to the destructuring:
+```ts
+// Before (line ~95):
+function TaskCard({ title, source, sourceId, status, ... }: TaskCardProps) {
+
+// After — add urgency:
+function TaskCard({ title, source, sourceId, status, urgency, ... }: TaskCardProps) {
+```
+
 Apply to the outermost `div` in **both compact and full modes** by adding `border-l-4 ${urgencyBorderClass(urgency)}` to the existing class string.
 
 - Compact outermost div currently: `bg-white rounded-md border border-gray-200 p-2.5 hover:shadow-sm transition-shadow`
@@ -65,9 +74,19 @@ Same pattern for full mode outermost div.
 Add a **Critical section** above `<PriorityGrid>`.
 
 **Logic:**
-1. Collect critical tasks: union of `data.urgentImportant` and `data.urgent` where `task.urgency >= 4`.
-2. Build a filtered data object for the grid: remove those tasks from their respective quadrant arrays.
+1. Collect critical tasks: tasks with `urgency >= 4` across **all four** quadrant arrays (`urgentImportant`, `important`, `urgent`, `neither`). Filtering all four is defensive — by the Eisenhower rules urgency=4 tasks are always in `urgentImportant` or `urgent`, but filtering all four guards against future edge cases.
+2. Build a filtered data object for the grid: remove critical tasks from all four quadrant arrays.
 3. Render Critical section only when there is at least one critical task.
+
+**TypeScript note:** `Array.filter` returns `MatrixTask[]` (mutable), but `PriorityMatrixData` declares arrays as `readonly MatrixTask[]`. Mutable is assignable to readonly in TypeScript, so no cast is needed. Annotate the `filteredData` variable as `PriorityMatrixData` explicitly to catch any shape mismatch at compile time:
+```ts
+const filteredData: PriorityMatrixData = {
+  urgentImportant: data.urgentImportant.filter(t => t.urgency < 4),
+  important: data.important.filter(t => t.urgency < 4),
+  urgent: data.urgent.filter(t => t.urgency < 4),
+  neither: data.neither.filter(t => t.urgency < 4),
+};
+```
 
 **Critical section structure:**
 ```tsx
