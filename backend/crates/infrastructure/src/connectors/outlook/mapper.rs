@@ -1,11 +1,27 @@
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+
 use application::services::outlook_client::OutlookEvent;
 
 use super::types::GraphEvent;
 
+/// Parse a Microsoft Graph datetime string to `DateTime<Utc>`.
+/// Graph returns datetimes without timezone suffix (e.g. "2026-03-12T10:00:00.0000000")
+/// with a separate `timeZone` field. We treat the value as UTC (Graph sets timeZone="UTC"
+/// when the calendar timezone is UTC; for other timezones the offset is not embedded).
+fn parse_graph_dt(s: &str) -> Option<DateTime<Utc>> {
+    // Try RFC3339 first (has timezone suffix).
+    if let Ok(dt) = s.parse::<DateTime<Utc>>() {
+        return Some(dt);
+    }
+    // Fall back: naive datetime without timezone (Graph format with fractional seconds).
+    let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+    Some(Utc.from_utc_datetime(&naive))
+}
+
 /// Map a Microsoft Graph calendar event to the application-layer OutlookEvent DTO.
 pub fn map_graph_event(event: GraphEvent) -> Option<OutlookEvent> {
-    let start_time = event.start.date_time.parse().ok()?;
-    let end_time = event.end.date_time.parse().ok()?;
+    let start_time = parse_graph_dt(&event.start.date_time)?;
+    let end_time = parse_graph_dt(&event.end.date_time)?;
 
     Some(OutlookEvent {
         outlook_id: event.id,
