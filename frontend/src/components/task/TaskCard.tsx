@@ -92,12 +92,20 @@ function TimeTrackingRow({
   );
 }
 
+function urgencyBorderClass(urgency: number): string {
+  if (urgency >= 4) return 'border-l-red-600';   // Critical
+  if (urgency === 3) return 'border-l-orange-600'; // High
+  if (urgency === 2) return 'border-l-yellow-600'; // Medium
+  return 'border-l-gray-400';                      // Low (1) and fallback
+}
+
 export function TaskCard({
   title,
   source,
   sourceId,
   status,
   jiraStatus,
+  urgency,
   quadrant,
   deadline,
   assignee,
@@ -115,7 +123,7 @@ export function TaskCard({
   if (compact) {
     return (
       <div
-        className={`bg-white rounded-md border border-gray-200 p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+        className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
         onClick={onClick}
       >
         {/* Top row: source ID + remaining hours */}
@@ -154,7 +162,7 @@ export function TaskCard({
 
   return (
     <div
-      className={`bg-white rounded-lg border border-gray-200 p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+      className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
       onClick={onClick}
     >
       <div className="flex items-start justify-between gap-2">
