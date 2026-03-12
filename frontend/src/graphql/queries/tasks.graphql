@@ -6,7 +6,9 @@ query Tasks($filter: TaskFilter, $first: Int, $after: String) {
         title
         description
         source
+        sourceId
         status
+        jiraStatus
         deadline
         urgency
         urgencyManual

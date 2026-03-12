@@ -24,7 +24,7 @@ export interface CurrentActivity {
 }
 
 const ACTIVITY_JOURNAL_QUERY = `
-  query ActivityJournal($date: Date!) {
+  query ActivityJournal($date: NaiveDate!) {
     activityJournal(date: $date) {
       id
       task { id title }

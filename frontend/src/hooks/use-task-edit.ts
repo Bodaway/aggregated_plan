@@ -12,6 +12,7 @@ export interface FullTask {
   readonly impact: string;    // GraphQL enum: LOW, MEDIUM, HIGH, CRITICAL
   readonly quadrant: string;
   readonly deadline: string | null;
+  readonly plannedStart: string | null;
   readonly assignee: string | null;
   readonly estimatedHours: number | null;
   readonly trackingState: string;
@@ -40,6 +41,7 @@ const TASK_QUERY = `
       impact
       quadrant
       deadline
+      plannedStart
       assignee
       estimatedHours
       trackingState
@@ -66,6 +68,7 @@ const UPDATE_TASK_MUTATION = `
       impact
       quadrant
       estimatedHours
+      plannedStart
       remainingHoursOverride
       estimatedHoursOverride
       effectiveRemainingHours

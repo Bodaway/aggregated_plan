@@ -47,6 +47,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const [estimatedOverride, setEstimatedOverride] = useState('');
   const [urgency, setUrgency] = useState('MEDIUM');
   const [impact, setImpact] = useState('MEDIUM');
+  const [plannedDate, setPlannedDate] = useState('');
 
   // Sync form state when task loads
   useEffect(() => {
@@ -57,6 +58,8 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
       setEstimatedOverride(task.estimatedHoursOverride?.toString() ?? '');
       setUrgency(normalizeEnum(task.urgency));
       setImpact(normalizeEnum(task.impact));
+      // Extract date portion from ISO datetime
+      setPlannedDate(task.plannedStart ? task.plannedStart.slice(0, 10) : '');
     }
   }, [task]);
 
@@ -96,13 +99,24 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
       }
     }
 
+    // Planned date
+    const currentPlannedDate = task.plannedStart ? task.plannedStart.slice(0, 10) : '';
+    if (plannedDate !== currentPlannedDate) {
+      if (plannedDate) {
+        // Convert date string to ISO datetime (start of day UTC)
+        input.plannedStart = `${plannedDate}T08:00:00Z`;
+      } else {
+        input.plannedStart = null;
+      }
+    }
+
     if (Object.keys(input).length > 0) {
       await updateTask(input);
     }
 
     onUpdated?.();
     onClose();
-  }, [task, description, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, isJira, updateTask, updatePriority, onUpdated, onClose]);
+  }, [task, description, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, updateTask, updatePriority, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
@@ -219,6 +233,25 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
                   {/* Editable fields */}
                   <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Planned Date</label>
+                      <input
+                        type="date"
+                        value={plannedDate}
+                        onChange={(e) => setPlannedDate(e.target.value)}
+                        className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      {plannedDate && (
+                        <button
+                          type="button"
+                          onClick={() => setPlannedDate('')}
+                          className="mt-1 text-xs text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                          Clear planned date
+                        </button>
+                      )}
+                    </div>
+
                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Priority</h4>
 
                     <div className="grid grid-cols-2 gap-3">

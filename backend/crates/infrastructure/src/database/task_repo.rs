@@ -312,12 +312,19 @@ impl TaskRepository for SqliteTaskRepository {
         start: NaiveDate,
         end: NaiveDate,
     ) -> Result<Vec<Task>, RepositoryError> {
+        let start_str = start.format("%Y-%m-%d").to_string();
+        let end_str = end.format("%Y-%m-%d").to_string();
         let rows = sqlx::query(
-            "SELECT * FROM tasks WHERE user_id = ? AND deadline IS NOT NULL AND deadline >= ? AND deadline <= ? ORDER BY deadline",
+            "SELECT * FROM tasks WHERE user_id = ? AND (
+                (deadline IS NOT NULL AND deadline >= ? AND deadline <= ?)
+                OR (planned_start IS NOT NULL AND date(planned_start) >= ? AND date(planned_start) <= ?)
+            ) ORDER BY COALESCE(date(planned_start), deadline)",
         )
         .bind(user_id.to_string())
-        .bind(start.format("%Y-%m-%d").to_string())
-        .bind(end.format("%Y-%m-%d").to_string())
+        .bind(&start_str)
+        .bind(&end_str)
+        .bind(&start_str)
+        .bind(&end_str)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;

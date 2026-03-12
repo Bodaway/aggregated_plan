@@ -32,7 +32,7 @@ const UPDATE_CONFIGURATION_MUTATION = `
 `;
 
 const FORCE_SYNC_MUTATION = `
-  mutation ForceSync($source: String) {
+  mutation ForceSync($source: SourceGql) {
     forceSync(source: $source) {
       source
       status
@@ -43,7 +43,7 @@ const FORCE_SYNC_MUTATION = `
 `;
 
 interface ForceSyncResult {
-  readonly forceSync: SyncStatusData;
+  readonly forceSync: readonly SyncStatusData[];
 }
 
 export function useSettings() {
