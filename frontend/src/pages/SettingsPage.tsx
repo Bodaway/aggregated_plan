@@ -8,6 +8,7 @@ const CONFIG_KEYS = {
   JIRA_EMAIL: 'jira.email',
   JIRA_TOKEN: 'jira.token',
   JIRA_PROJECT_KEYS: 'jira.project_keys',
+  JIRA_MY_TASKS_ONLY: 'jira.my_tasks_only',
   OUTLOOK_ACCESS_TOKEN: 'outlook.access_token',
   OUTLOOK_CALENDAR_DAYS: 'outlook.calendar_days',
   EXCEL_SHAREPOINT_PATH: 'excel.sharepoint_path',
@@ -18,6 +19,7 @@ const CONFIG_KEYS = {
   EXCEL_DATE_COLUMN: 'excel.date_column',
   EXCEL_JIRA_KEY_COLUMN: 'excel.jira_key_column',
   GENERAL_WORKING_HOURS: 'general.working_hours',
+  GENERAL_WORKING_DAYS: 'general.working_days',
   GENERAL_CAPACITY: 'general.capacity',
 } as const;
 
@@ -291,6 +293,58 @@ function SyncStatusRow({
   );
 }
 
+const DAY_OPTIONS = [
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+  { value: 7, label: 'Sun' },
+] as const;
+
+function WorkingDaysSelector({
+  value,
+  onChange,
+}: {
+  readonly value: string;
+  readonly onChange: (v: string) => void;
+}) {
+  const selectedDays = new Set(
+    value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
+  );
+
+  const toggle = (day: number) => {
+    const next = new Set(selectedDays);
+    if (next.has(day)) {
+      next.delete(day);
+    } else {
+      next.add(day);
+    }
+    if (next.size === 0) return; // Prevent deselecting all days
+    onChange([...next].sort((a, b) => a - b).join(','));
+  };
+
+  return (
+    <div className="flex gap-1.5 flex-wrap">
+      {DAY_OPTIONS.map(({ value: day, label }) => (
+        <button
+          key={day}
+          type="button"
+          onClick={() => toggle(day)}
+          className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors ${
+            selectedDays.has(day)
+              ? 'bg-blue-600 text-white border-blue-600'
+              : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { configuration, syncStatuses, loading, error, syncing, updateConfig, forceSync } =
     useSettings();
@@ -300,6 +354,7 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [syncingSource, setSyncingSource] = useState<string | null>(null);
+  const [syncMessage, setSyncMessage] = useState<{ source: string; text: string; ok: boolean } | null>(null);
 
   // Merge fetched config with local overrides
   const getConfigValue = useCallback(
@@ -347,8 +402,25 @@ export function SettingsPage() {
   const handleForceSync = useCallback(
     async (source: string) => {
       setSyncingSource(source);
+      setSyncMessage(null);
       try {
-        await forceSync(source);
+        const res = await forceSync(source);
+        if (res.error) {
+          setSyncMessage({ source, text: res.error.message, ok: false });
+        } else {
+          // Check the actual sync result status from the backend
+          const statuses = res.data?.forceSync ?? [];
+          const relevant = statuses.find(s => s.source.toUpperCase() === source.toUpperCase()) ?? statuses[0];
+          if (relevant?.errorMessage) {
+            setSyncMessage({ source, text: relevant.errorMessage, ok: false });
+          } else if (relevant?.status === 'SUCCESS' || relevant?.status === 'success') {
+            setSyncMessage({ source, text: 'Connection successful', ok: true });
+          } else if (relevant) {
+            setSyncMessage({ source, text: `Sync status: ${relevant.status}`, ok: false });
+          } else {
+            setSyncMessage({ source, text: 'No response from server', ok: false });
+          }
+        }
       } finally {
         setSyncingSource(null);
       }
@@ -426,29 +498,78 @@ export function SettingsPage() {
             description="Comma-separated list of Jira project keys to sync"
           />
 
-          <div className="flex items-center gap-3 pt-2">
-            <SaveButton
-              onClick={() =>
-                saveConfigKeys([
-                  CONFIG_KEYS.JIRA_BASE_URL,
-                  CONFIG_KEYS.JIRA_EMAIL,
-                  CONFIG_KEYS.JIRA_TOKEN,
-                  CONFIG_KEYS.JIRA_PROJECT_KEYS,
-                ])
-              }
-              saving={saving}
-            />
+          {/* My tasks only toggle */}
+          <div className="flex items-center justify-between py-2">
+            <div>
+              <p className="text-sm font-medium text-gray-700">My tasks only</p>
+              <p className="text-xs text-gray-400">
+                Only sync issues assigned to you or where you are a watcher
+              </p>
+            </div>
             <button
               type="button"
-              onClick={() => handleForceSync('JIRA')}
-              disabled={syncing || syncingSource === 'JIRA'}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-indigo-600 border border-indigo-300 rounded-md hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              role="switch"
+              aria-checked={getConfigValue(CONFIG_KEYS.JIRA_MY_TASKS_ONLY, 'true') === 'true'}
+              onClick={() => {
+                const current = getConfigValue(CONFIG_KEYS.JIRA_MY_TASKS_ONLY, 'true');
+                setConfigValue(CONFIG_KEYS.JIRA_MY_TASKS_ONLY, current === 'true' ? 'false' : 'true');
+              }}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                getConfigValue(CONFIG_KEYS.JIRA_MY_TASKS_ONLY, 'true') === 'true'
+                  ? 'bg-blue-600'
+                  : 'bg-gray-200'
+              }`}
             >
-              {syncingSource === 'JIRA' && (
-                <div className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-              )}
-              Test Connection
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  getConfigValue(CONFIG_KEYS.JIRA_MY_TASKS_ONLY, 'true') === 'true'
+                    ? 'translate-x-6'
+                    : 'translate-x-1'
+                }`}
+              />
             </button>
+          </div>
+
+          <div className="flex flex-col gap-2 pt-2">
+            <div className="flex items-center gap-3">
+              <SaveButton
+                onClick={() =>
+                  saveConfigKeys([
+                    CONFIG_KEYS.JIRA_BASE_URL,
+                    CONFIG_KEYS.JIRA_EMAIL,
+                    CONFIG_KEYS.JIRA_TOKEN,
+                    CONFIG_KEYS.JIRA_PROJECT_KEYS,
+                    CONFIG_KEYS.JIRA_MY_TASKS_ONLY,
+                  ])
+                }
+                saving={saving}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  await saveConfigKeys([
+                    CONFIG_KEYS.JIRA_BASE_URL,
+                    CONFIG_KEYS.JIRA_EMAIL,
+                    CONFIG_KEYS.JIRA_TOKEN,
+                    CONFIG_KEYS.JIRA_PROJECT_KEYS,
+                    CONFIG_KEYS.JIRA_MY_TASKS_ONLY,
+                  ]);
+                  await handleForceSync('JIRA');
+                }}
+                disabled={syncing || syncingSource === 'JIRA' || saving}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-indigo-600 border border-indigo-300 rounded-md hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {syncingSource === 'JIRA' ? (
+                  <div className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                ) : null}
+                Test Connection
+              </button>
+            </div>
+            {syncMessage?.source === 'JIRA' && (
+              <p className={`text-xs ${syncMessage.ok ? 'text-green-600' : 'text-red-500'}`}>
+                {syncMessage.text}
+              </p>
+            )}
           </div>
         </div>
       </SettingsSection>
@@ -612,6 +733,14 @@ export function SettingsPage() {
             placeholder="8"
             description="Standard number of working hours in a day"
           />
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-gray-700">Working Days</label>
+            <WorkingDaysSelector
+              value={getConfigValue(CONFIG_KEYS.GENERAL_WORKING_DAYS, '1,2,3,4,5')}
+              onChange={v => setConfigValue(CONFIG_KEYS.GENERAL_WORKING_DAYS, v)}
+            />
+            <p className="text-xs text-gray-500">Days of the week included in capacity and scheduling</p>
+          </div>
           <SettingsInput
             label="Default Capacity (half-days per week)"
             value={getConfigValue(CONFIG_KEYS.GENERAL_CAPACITY, '10')}
@@ -626,6 +755,7 @@ export function SettingsPage() {
               onClick={() =>
                 saveConfigKeys([
                   CONFIG_KEYS.GENERAL_WORKING_HOURS,
+                  CONFIG_KEYS.GENERAL_WORKING_DAYS,
                   CONFIG_KEYS.GENERAL_CAPACITY,
                 ])
               }
