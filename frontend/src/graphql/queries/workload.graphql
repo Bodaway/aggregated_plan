@@ -1,10 +1,11 @@
-query WeeklyWorkload($weekStart: Date!) {
+query WeeklyWorkload($weekStart: NaiveDate!) {
   weeklyWorkload(weekStart: $weekStart) {
     weekStart
     capacity
     totalPlanned
     totalMeetings
     overload
+    workingDays
     halfDays {
       date
       halfDay

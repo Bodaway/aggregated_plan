@@ -6,8 +6,6 @@ import { addDays, format } from 'date-fns';
 import { HALF_DAY_HOURS } from '@/lib/constants';
 import type { WorkloadHalfDay } from '@/hooks/use-workload';
 
-const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const;
-
 /** Groups half-day slots by date for the grid display. */
 function groupByDate(
   halfDays: readonly WorkloadHalfDay[]
@@ -39,9 +37,13 @@ export function WorkloadPage() {
   const baseWeekStart = getWeekStart(new Date());
   const currentWeekStart = addDays(baseWeekStart, weekOffset * 7);
   const weekStartStr = formatDate(currentWeekStart);
-  const weekEndDate = addDays(currentWeekStart, 4); // Friday
 
   const { data, loading, error } = useWorkload(weekStartStr);
+
+  const lastOffset = data
+    ? Math.max(...(data.workingDays ?? [1, 2, 3, 4, 5]).map(d => d - 1))
+    : 4;
+  const weekEndDate = addDays(currentWeekStart, lastOffset);
 
   const goToPreviousWeek = () => setWeekOffset(prev => prev - 1);
   const goToNextWeek = () => setWeekOffset(prev => prev + 1);
@@ -179,17 +181,23 @@ export function WorkloadPage() {
             </h3>
 
             {data && data.halfDays.length > 0 ? (
-              <div className="grid grid-cols-5 gap-3">
-                {WEEKDAYS.map((dayName, index) => {
-                  const dayDate = formatDate(addDays(currentWeekStart, index));
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: `repeat(${(data?.workingDays ?? [1,2,3,4,5]).length}, minmax(0, 1fr))`,
+                gap: '0.75rem',
+              }}>
+                {(data?.workingDays ?? [1, 2, 3, 4, 5]).map((weekday) => {
+                  const dayOffset = weekday - 1;
+                  const dayDate = formatDate(addDays(currentWeekStart, dayOffset));
+                  const dayName = format(addDays(currentWeekStart, dayOffset), 'EEEE');
                   const slots = grouped.get(dayDate);
 
                   return (
-                    <div key={dayName}>
+                    <div key={weekday}>
                       <h4 className="text-xs font-medium text-gray-600 mb-2 text-center">
                         {dayName}
                         <br />
-                        <span className="text-gray-400">{format(addDays(currentWeekStart, index), 'MMM d')}</span>
+                        <span className="text-gray-400">{format(addDays(currentWeekStart, dayOffset), 'MMM d')}</span>
                       </h4>
 
                       {/* AM slot */}

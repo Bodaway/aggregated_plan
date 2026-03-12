@@ -27,6 +27,7 @@ export interface WeeklyWorkloadData {
   readonly totalPlanned: number;
   readonly totalMeetings: number;
   readonly overload: boolean;
+  readonly workingDays: readonly number[];
   readonly halfDays: readonly WorkloadHalfDay[];
 }
 
@@ -38,6 +39,7 @@ const WORKLOAD_QUERY = `
       totalPlanned
       totalMeetings
       overload
+      workingDays
       halfDays {
         date
         halfDay
