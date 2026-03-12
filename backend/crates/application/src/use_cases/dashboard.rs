@@ -4,9 +4,6 @@ use domain::types::*;
 use crate::errors::AppError;
 use crate::repositories::*;
 
-/// Default weekly capacity in half-day slots (Mon-Fri x Morning/Afternoon = 10).
-const DEFAULT_WEEKLY_CAPACITY_SLOTS: i32 = 10;
-
 /// Each half-day slot spans 4 hours.
 const HALF_DAY_HOURS: f64 = 4.0;
 
@@ -18,6 +15,17 @@ const MORNING_END_HOUR: u32 = 12;
 const AFTERNOON_START_HOUR: u32 = 13;
 const AFTERNOON_END_HOUR: u32 = 17;
 
+fn parse_working_days(value: &str) -> Vec<i32> {
+    let mut days: Vec<i32> = value
+        .split(',')
+        .filter_map(|s| s.trim().parse::<i32>().ok())
+        .filter(|&d| (1..=7).contains(&d))
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    days
+}
+
 /// Aggregated data for the daily dashboard view.
 pub struct DailyDashboard {
     pub date: NaiveDate,
@@ -27,6 +35,7 @@ pub struct DailyDashboard {
     pub weekly_workload: WeeklyWorkload,
     pub sync_statuses: Vec<SyncStatus>,
     pub working_hours_per_day: i32,
+    pub working_days: Vec<i32>, // ISO weekday numbers 1=Mon … 7=Sun
 }
 
 /// Weekly workload summary.
@@ -37,6 +46,7 @@ pub struct WeeklyWorkload {
     pub total_planned: f64,
     pub total_meetings: f64,
     pub overload: Option<f64>,
+    pub working_days: Vec<i32>,
 }
 
 /// A single half-day slot in the workload view.
@@ -62,7 +72,28 @@ pub async fn get_daily_dashboard(
 ) -> Result<DailyDashboard, AppError> {
     // 1. Tasks for the whole week (Mon-Fri)
     let week_start = week_start_for(date);
-    let week_end = week_start + Duration::days(4); // Friday
+
+    // 5. Working hours per day from config (fallback to 8)
+    let working_hours_per_day = config_repo
+        .get(user_id, "general.working_hours")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(8);
+
+    // 6. Working days from config (fallback to Mon-Fri)
+    let working_days: Vec<i32> = config_repo
+        .get(user_id, "general.working_days")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| parse_working_days(&v))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![1, 2, 3, 4, 5]);
+
+    let max_offset = working_days.iter().map(|&d| (d - 1) as i64).max().unwrap_or(4);
+    let week_end = week_start + Duration::days(max_offset);
     let mut tasks = task_repo.find_by_date_range(user_id, week_start, week_end).await?;
 
     // Also include unplanned followed active tasks (no planned_start and no deadline)
@@ -92,17 +123,8 @@ pub async fn get_daily_dashboard(
     // 4. Sync statuses
     let sync_statuses = sync_repo.find_by_user(user_id).await?;
 
-    // 5. Working hours per day from config (fallback to 8)
-    let working_hours_per_day = config_repo
-        .get(user_id, "general.working_hours")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(8);
-
-    // 6. Weekly workload (reuse tasks/meetings already fetched for the week)
-    let weekly_workload = compute_weekly_workload(week_start, &meetings, &tasks);
+    // 7. Weekly workload (reuse tasks/meetings already fetched for the week)
+    let weekly_workload = compute_weekly_workload(week_start, &meetings, &tasks, &working_days);
 
     Ok(DailyDashboard {
         date,
@@ -112,6 +134,7 @@ pub async fn get_daily_dashboard(
         weekly_workload,
         sync_statuses,
         working_hours_per_day,
+        working_days: working_days.clone(),
     })
 }
 
@@ -119,10 +142,21 @@ pub async fn get_daily_dashboard(
 pub async fn get_weekly_workload(
     task_repo: &dyn TaskRepository,
     meeting_repo: &dyn MeetingRepository,
+    config_repo: &dyn ConfigRepository,
     user_id: UserId,
     week_start: NaiveDate,
 ) -> Result<WeeklyWorkload, AppError> {
-    let week_end = week_start + Duration::days(4); // Friday
+    let working_days: Vec<i32> = config_repo
+        .get(user_id, "general.working_days")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| parse_working_days(&v))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![1, 2, 3, 4, 5]);
+
+    let max_offset = working_days.iter().map(|&d| (d - 1) as i64).max().unwrap_or(4);
+    let week_end = week_start + Duration::days(max_offset);
     let week_meetings = meeting_repo
         .find_by_user_and_range(user_id, week_start, week_end)
         .await?;
@@ -130,7 +164,7 @@ pub async fn get_weekly_workload(
         .find_by_date_range(user_id, week_start, week_end)
         .await?;
 
-    Ok(compute_weekly_workload(week_start, &week_meetings, &week_tasks))
+    Ok(compute_weekly_workload(week_start, &week_meetings, &week_tasks, &working_days))
 }
 
 /// Compute the Monday of the week containing the given date.
@@ -145,13 +179,15 @@ fn compute_weekly_workload(
     week_start: NaiveDate,
     meetings: &[Meeting],
     tasks: &[Task],
+    working_days: &[i32],
 ) -> WeeklyWorkload {
-    let capacity = DEFAULT_WEEKLY_CAPACITY_SLOTS;
-    let mut half_days = Vec::with_capacity(10);
+    let capacity = (working_days.len() * 2) as i32;
+    let mut half_days = Vec::with_capacity(capacity as usize);
     let mut total_meeting_hours = 0.0_f64;
 
-    // For each weekday Mon-Fri, create Morning and Afternoon slots
-    for day_offset in 0..5 {
+    // For each working day, create Morning and Afternoon slots
+    for &weekday in working_days {
+        let day_offset = (weekday - 1) as i64; // Mon=1→0, Fri=5→4
         let slot_date = week_start + Duration::days(day_offset);
 
         for &half_day in &[HalfDay::Morning, HalfDay::Afternoon] {
@@ -250,6 +286,7 @@ fn compute_weekly_workload(
         total_planned,
         total_meetings: total_meeting_hours,
         overload,
+        working_days: working_days.to_vec(),
     }
 }
 
@@ -304,7 +341,7 @@ mod tests {
     #[test]
     fn empty_week_has_zero_workload() {
         let monday = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
-        let result = compute_weekly_workload(monday, &[], &[]);
+        let result = compute_weekly_workload(monday, &[], &[], &[1, 2, 3, 4, 5]);
 
         assert_eq!(result.week_start, monday);
         assert_eq!(result.capacity, 10);
@@ -341,7 +378,7 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        let result = compute_weekly_workload(monday, &[meeting], &[]);
+        let result = compute_weekly_workload(monday, &[meeting], &[], &[1, 2, 3, 4, 5]);
 
         // Monday morning slot should have consumption = 2.0 / 4.0 = 0.5
         let monday_morning = &result.half_days[0];
@@ -374,7 +411,7 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        let result = compute_weekly_workload(monday, &[meeting], &[]);
+        let result = compute_weekly_workload(monday, &[meeting], &[], &[1, 2, 3, 4, 5]);
 
         let monday_morning = &result.half_days[0];
         assert!((monday_morning.consumption - 1.0).abs() < f64::EPSILON);
@@ -406,7 +443,7 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        let result = compute_weekly_workload(monday, &[meeting], &[]);
+        let result = compute_weekly_workload(monday, &[meeting], &[], &[1, 2, 3, 4, 5]);
 
         // Morning overlap: 11:00-12:00 = 1 hour => consumption = 0.25
         let morning = &result.half_days[0];
@@ -485,7 +522,7 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let result = compute_weekly_workload(monday, &[], &[task1, task2]);
+        let result = compute_weekly_workload(monday, &[], &[task1, task2], &[1, 2, 3, 4, 5]);
 
         assert!((result.total_planned - 12.0).abs() < f64::EPSILON);
         assert!(result.overload.is_none()); // 12.0 + 0.0 <= 40.0
@@ -567,7 +604,7 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let result = compute_weekly_workload(monday, &meetings, &[task]);
+        let result = compute_weekly_workload(monday, &meetings, &[task], &[1, 2, 3, 4, 5]);
 
         // total_meetings = 40.0 hours (all slots full)
         assert!((result.total_meetings - 40.0).abs() < f64::EPSILON);
@@ -581,7 +618,7 @@ mod tests {
     #[test]
     fn slot_structure_covers_full_week() {
         let monday = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
-        let result = compute_weekly_workload(monday, &[], &[]);
+        let result = compute_weekly_workload(monday, &[], &[], &[1, 2, 3, 4, 5]);
 
         assert_eq!(result.half_days.len(), 10);
 
@@ -636,7 +673,7 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let result = compute_weekly_workload(monday, &[], &[task]);
+        let result = compute_weekly_workload(monday, &[], &[task], &[1, 2, 3, 4, 5]);
         assert!((result.total_planned - 0.0).abs() < f64::EPSILON);
     }
 }

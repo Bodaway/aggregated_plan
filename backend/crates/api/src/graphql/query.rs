@@ -169,10 +169,12 @@ impl QueryRoot {
         let user_id = ctx.data::<UserId>()?;
         let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
         let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
 
         let data = dashboard::get_weekly_workload(
             task_repo.as_ref(),
             meeting_repo.as_ref(),
+            config_repo.as_ref(),
             *user_id,
             week_start,
         )
