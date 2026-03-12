@@ -55,6 +55,10 @@ function getTaskDate(t: DashboardTask): string {
   return formatDate(new Date());
 }
 
+function isUnplanned(t: DashboardTask): boolean {
+  return !t.plannedStart && !t.deadline;
+}
+
 function getMeetingDate(m: DashboardMeeting): string {
   return m.startTime.slice(0, 10);
 }
@@ -77,6 +81,7 @@ function formatHoursCompact(hours: number): string {
 function buildTasksByDate(tasks: readonly DashboardTask[]): Record<string, DashboardTask[]> {
   const map: Record<string, DashboardTask[]> = {};
   for (const t of tasks) {
+    if (isUnplanned(t)) continue;
     const d = getTaskDate(t);
     (map[d] ??= []).push(t);
   }
@@ -140,6 +145,57 @@ function DraggableTaskCard({
         compact
         onClick={disabled ? undefined : () => onTaskClick(task.id)}
       />
+    </div>
+  );
+}
+
+// ─── UnplannedSidebar ─────────────────────────────────────────────────────
+
+function UnplannedSidebar({
+  tasks,
+  onTaskClick,
+}: {
+  readonly tasks: DashboardTask[];
+  readonly onTaskClick: (id: string) => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: 'unplanned' });
+  const sortedTasks = [...tasks].sort((a, b) => {
+    if (b.urgency !== a.urgency) return b.urgency - a.urgency;
+    return b.impact - a.impact;
+  });
+
+  return (
+    <div className="flex flex-col w-52 flex-shrink-0">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-1 mb-2">
+        <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+          Unplanned
+        </span>
+        <span className="text-xs font-medium text-gray-500 bg-gray-100 rounded-full px-1.5 py-0.5">
+          {tasks.length}
+        </span>
+      </div>
+
+      {/* Drop zone */}
+      <div
+        ref={setNodeRef}
+        className={`flex-1 rounded-lg border-2 border-dashed transition-colors p-2 space-y-1.5 overflow-y-auto
+          ${isOver ? 'border-blue-400 bg-blue-50/40' : 'border-gray-200 bg-gray-50/50'}`}
+        style={{ minHeight: 120, maxHeight: 'calc(100vh - 200px)' }}
+      >
+        {sortedTasks.length === 0 ? (
+          <p className="text-xs text-gray-400 text-center py-6">No unplanned tasks</p>
+        ) : (
+          sortedTasks.map(t => (
+            <DraggableTaskCard key={t.id} task={t} onTaskClick={onTaskClick} />
+          ))
+        )}
+      </div>
+
+      {/* Hint */}
+      <p className="text-xs text-gray-400 text-center mt-1.5">
+        Drag to a day to schedule
+      </p>
     </div>
   );
 }
@@ -286,6 +342,8 @@ export function DashboardPage() {
   const [tasksByDate, setTasksByDate] = useState<Record<string, DashboardTask[]>>({});
   const serverSnapshotRef = useRef<Record<string, DashboardTask[]>>({});
   const isMutatingRef = useRef(false);
+  const [unplannedTasks, setUnplannedTasks] = useState<DashboardTask[]>([]);
+  const serverUnplannedRef = useRef<DashboardTask[]>([]);
 
   // ── Drag state ──
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -298,9 +356,13 @@ export function DashboardPage() {
   // ── Seed tasksByDate from server data (guarded) ──
   useEffect(() => {
     if (activeTaskId !== null || isMutatingRef.current) return;
-    const fresh = buildTasksByDate(data?.tasks ?? []);
+    const allTasks = data?.tasks ?? [];
+    const fresh = buildTasksByDate(allTasks);
+    const freshUnplanned = allTasks.filter(isUnplanned);
     setTasksByDate(fresh);
+    setUnplannedTasks(freshUnplanned);
     serverSnapshotRef.current = fresh;
+    serverUnplannedRef.current = freshUnplanned;
   }, [data, activeTaskId]);
 
   // ── Meetings by date (server data — no optimistic needed) ──
@@ -329,13 +391,14 @@ export function DashboardPage() {
   const onDragStart = useCallback(({ active }: DragStartEvent) => {
     const id = active.id as string;
     setActiveTaskId(id);
-    setEditingTaskId(null);   // close edit sheet on drag start
-    setCreatingForDate(null); // close create sheet on drag start
-
-    // Freeze the task from current optimistic state — immune to refetches mid-drag
-    const allTasks = Object.values(tasksByDate).flat();
-    draggingTaskRef.current = allTasks.find(t => t.id === id) ?? null;
-  }, [tasksByDate]);
+    setEditingTaskId(null);
+    setCreatingForDate(null);
+    const allDayTasks = Object.values(tasksByDate).flat();
+    draggingTaskRef.current =
+      allDayTasks.find(t => t.id === id) ??
+      unplannedTasks.find(t => t.id === id) ??
+      null;
+  }, [tasksByDate, unplannedTasks]);
 
   const onDragCancel = useCallback(() => {
     setActiveTaskId(null);
@@ -343,32 +406,78 @@ export function DashboardPage() {
   }, []);
 
   const onDragEnd = useCallback(({ over }: DragEndEvent) => {
-    const draggedTask = draggingTaskRef.current; // captured before clearing
+    const draggedTask = draggingTaskRef.current;
     setActiveTaskId(null);
     draggingTaskRef.current = null;
-
     if (!draggedTask || !over) return;
 
-    const newDate = (over.id as string).replace('day-', '');
-    const currentDate = getTaskDate(draggedTask);
-    if (newDate === currentDate) return; // same column — no-op
+    const overId = over.id as string;
 
-    // Optimistic move
-    isMutatingRef.current = true;
-    setTasksByDate(prev => moveBetweenDays(prev, draggedTask, currentDate, newDate));
+    // ── Case 1: dropped on unplanned sidebar ──
+    if (overId === 'unplanned') {
+      if (draggedTask.deadline) return;
+      isMutatingRef.current = true;
+      const fromDate = getTaskDate(draggedTask);
+      setTasksByDate(prev => ({
+        ...prev,
+        [fromDate]: (prev[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
+      }));
+      setUnplannedTasks(prev => [...prev, { ...draggedTask, plannedStart: null }]);
+      executeUpdate({ id: draggedTask.id, input: { plannedStart: null } })
+        .then(r => { if (r.error || !r.data) restore(); })
+        .catch(restore)
+        .finally(() => {
+          isMutatingRef.current = false;
+          serverSnapshotRef.current = {
+            ...serverSnapshotRef.current,
+            [fromDate]: (serverSnapshotRef.current[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
+          };
+          serverUnplannedRef.current = [...serverUnplannedRef.current, { ...draggedTask, plannedStart: null }];
+        });
+      return;
+    }
 
-    executeUpdate({ id: draggedTask.id, input: { plannedStart: `${newDate}T08:00:00Z` } })
-      .then(result => {
-        if (result.error) {
-          setTasksByDate(serverSnapshotRef.current);
-        }
-      })
-      .catch(() => {
-        setTasksByDate(serverSnapshotRef.current);
-      })
-      .finally(() => {
-        isMutatingRef.current = false;
-      });
+    // ── Case 2 / 3: dropped on a day column ──
+    if (!overId.startsWith('day-')) return;
+    const newDate = overId.replace('day-', '');
+    const fromUnplanned = serverUnplannedRef.current.some(t => t.id === draggedTask.id);
+
+    if (fromUnplanned) {
+      // Case 2: unplanned → day
+      isMutatingRef.current = true;
+      setUnplannedTasks(prev => prev.filter(t => t.id !== draggedTask.id));
+      const scheduled = { ...draggedTask, plannedStart: `${newDate}T08:00:00Z` };
+      setTasksByDate(prev => ({
+        ...prev,
+        [newDate]: [...(prev[newDate] ?? []), scheduled],
+      }));
+      executeUpdate({ id: draggedTask.id, input: { plannedStart: `${newDate}T08:00:00Z` } })
+        .then(r => { if (r.error || !r.data) restore(); })
+        .catch(restore)
+        .finally(() => {
+          isMutatingRef.current = false;
+          serverUnplannedRef.current = serverUnplannedRef.current.filter(t => t.id !== draggedTask.id);
+          serverSnapshotRef.current = {
+            ...serverSnapshotRef.current,
+            [newDate]: [...(serverSnapshotRef.current[newDate] ?? []), scheduled],
+          };
+        });
+    } else {
+      // Case 3: day → day
+      const currentDate = getTaskDate(draggedTask);
+      if (newDate === currentDate) return;
+      isMutatingRef.current = true;
+      setTasksByDate(prev => moveBetweenDays(prev, draggedTask, currentDate, newDate));
+      executeUpdate({ id: draggedTask.id, input: { plannedStart: `${newDate}T08:00:00Z` } })
+        .then(result => { if (result.error) setTasksByDate(serverSnapshotRef.current); })
+        .catch(() => { setTasksByDate(serverSnapshotRef.current); })
+        .finally(() => { isMutatingRef.current = false; });
+    }
+
+    function restore() {
+      setTasksByDate(serverSnapshotRef.current);
+      setUnplannedTasks(serverUnplannedRef.current);
+    }
   }, [executeUpdate]);
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -457,21 +566,26 @@ export function DashboardPage() {
             onDragEnd={onDragEnd}
             onDragCancel={onDragCancel}
           >
-            <div className="grid grid-cols-5 gap-2">
-              {weekDays.map(day => {
-                const dayStr = formatDate(day);
-                return (
-                  <DayColumn
-                    key={dayStr}
-                    date={day}
-                    tasks={tasksByDate[dayStr] ?? []}
-                    meetings={meetingsByDate[dayStr] ?? []}
-                    onTaskClick={setEditingTaskId}
-                    isDragging={activeTaskId !== null}
-                    onAddTask={() => setCreatingForDate(dayStr)}
-                  />
-                );
-              })}
+            <div className="flex gap-3">
+              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={setEditingTaskId} />
+              <div className="flex-1 min-w-0">
+                <div className="grid grid-cols-5 gap-2">
+                  {weekDays.map(day => {
+                    const dayStr = formatDate(day);
+                    return (
+                      <DayColumn
+                        key={dayStr}
+                        date={day}
+                        tasks={tasksByDate[dayStr] ?? []}
+                        meetings={meetingsByDate[dayStr] ?? []}
+                        onTaskClick={setEditingTaskId}
+                        isDragging={activeTaskId !== null}
+                        onAddTask={() => setCreatingForDate(dayStr)}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             <DragOverlay dropAnimation={null}>
