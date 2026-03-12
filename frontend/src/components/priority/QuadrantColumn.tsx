@@ -56,7 +56,7 @@ export function TaskCardOverlay({ task }: { readonly task: QuadrantTask }) {
   );
 }
 
-function DraggableTask({ task, onEdit }: { readonly task: QuadrantTask; readonly onEdit?: (taskId: string) => void }) {
+export function DraggableTask({ task, onEdit }: { readonly task: QuadrantTask; readonly onEdit?: (taskId: string) => void }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
   });
