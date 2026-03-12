@@ -22,6 +22,7 @@ export interface DashboardTask {
   readonly impact: number;
   readonly quadrant: string;
   readonly deadline: string | null;
+  readonly plannedStart: string | null;
   readonly assignee: string | null;
   readonly project: DashboardProject | null;
   readonly tags: readonly DashboardTag[];
@@ -108,6 +109,7 @@ const DASHBOARD_QUERY = `
         impact
         quadrant
         deadline
+        plannedStart
         assignee
         project { name }
         tags { id name color }
@@ -157,14 +159,16 @@ const DASHBOARD_QUERY = `
 `;
 
 export function useDashboard(date: string) {
-  const [result] = useQuery<{ dailyDashboard: DailyDashboardData }>({
+  const [result, reexecute] = useQuery<{ dailyDashboard: DailyDashboardData }>({
     query: DASHBOARD_QUERY,
     variables: { date },
+    requestPolicy: 'cache-and-network',
   });
 
   return {
     data: result.data?.dailyDashboard ?? null,
     loading: result.fetching,
     error: result.error ?? null,
+    refetch: () => reexecute({ requestPolicy: 'network-only' }),
   };
 }
