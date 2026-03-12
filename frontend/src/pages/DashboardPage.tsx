@@ -216,9 +216,6 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask }
   const { setNodeRef, isOver } = useDroppable({ id: `day-${dayStr}` });
 
   const today = isToday(date);
-  const totalHours = tasks.reduce((sum, t) => sum + getTaskHours(t), 0);
-  const fillPct = Math.min((totalHours / DAILY_CAPACITY_HOURS) * 100, 100);
-  const overloaded = totalHours > DAILY_CAPACITY_HOURS;
 
   const sortedTasks = [...tasks].sort((a, b) => {
     if (b.urgency !== a.urgency) return b.urgency - a.urgency; // urgency desc
@@ -230,6 +227,10 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask }
   );
 
   const meetingHours = sortedMeetings.reduce((sum, m) => sum + m.durationHours, 0);
+  const availableHours = Math.max(DAILY_CAPACITY_HOURS - meetingHours, 0);
+  const totalHours = tasks.reduce((sum, t) => sum + getTaskHours(t), 0);
+  const fillPct = availableHours > 0 ? Math.min((totalHours / availableHours) * 100, 100) : 100;
+  const overloaded = totalHours > availableHours;
 
   const dropHighlight = isDragging && isOver;
 
@@ -252,7 +253,7 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask }
           </span>
           <div className="flex items-center gap-1.5">
             <span className={`text-xs font-medium ${overloaded ? 'text-red-600' : 'text-gray-500'}`}>
-              {formatHoursCompact(totalHours)}/{DAILY_CAPACITY_HOURS}h
+              {formatHoursCompact(totalHours)}/{formatHoursCompact(availableHours)}
             </span>
             <button
               onClick={e => { e.stopPropagation(); onAddTask(); }}
