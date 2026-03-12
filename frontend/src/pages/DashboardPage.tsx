@@ -338,7 +338,8 @@ export function DashboardPage() {
   const onDragStart = useCallback(({ active }: DragStartEvent) => {
     const id = active.id as string;
     setActiveTaskId(id);
-    setEditingTaskId(null); // close sheet on drag start
+    setEditingTaskId(null);   // close edit sheet on drag start
+    setCreatingForDate(null); // close create sheet on drag start
 
     // Freeze the task from current optimistic state — immune to refetches mid-drag
     const allTasks = Object.values(tasksByDate).flat();
