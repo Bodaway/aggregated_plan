@@ -2,11 +2,30 @@ import { useState, useCallback } from 'react';
 import { usePriorityMatrix } from '@/hooks/use-priority-matrix';
 import { PriorityGrid } from '@/components/priority/PriorityGrid';
 import { TaskEditSheet } from '@/components/task/TaskEditSheet';
-import type { QuadrantKey } from '@/hooks/use-priority-matrix';
+import { TaskCard } from '@/components/task/TaskCard';
+import type { QuadrantKey, PriorityMatrixData } from '@/hooks/use-priority-matrix';
 
 export function PriorityMatrixPage() {
   const { data, loading, error, updatePriority } = usePriorityMatrix();
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+
+  const criticalTasks = data
+    ? [
+        ...data.urgentImportant,
+        ...data.important,
+        ...data.urgent,
+        ...data.neither,
+      ].filter(t => t.urgency >= 4)
+    : [];
+
+  const filteredData: PriorityMatrixData | null = data
+    ? {
+        urgentImportant: data.urgentImportant.filter(t => t.urgency < 4),
+        important: data.important.filter(t => t.urgency < 4),
+        urgent: data.urgent.filter(t => t.urgency < 4),
+        neither: data.neither.filter(t => t.urgency < 4),
+      }
+    : null;
 
   const handleMoveTask = (taskId: string, targetQuadrant: QuadrantKey) => {
     void updatePriority(taskId, targetQuadrant);
@@ -66,8 +85,46 @@ export function PriorityMatrixPage() {
         </span>
       </div>
 
+      {/* Critical section */}
+      {criticalTasks.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 overflow-hidden mb-4">
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-red-200">
+            <span className="text-xs font-bold tracking-widest text-red-700 uppercase">● Critical</span>
+            <span className="text-xs font-semibold text-red-600 bg-red-100 rounded-full px-2 py-0.5">
+              {criticalTasks.length}
+            </span>
+            <span className="ml-auto text-xs text-red-400">Requires immediate attention</span>
+          </div>
+          <div className="flex flex-wrap gap-3 p-4">
+            {criticalTasks.map(task => (
+              <div key={task.id} className="w-64">
+                <TaskCard
+                  id={task.id}
+                  title={task.title}
+                  source={task.source}
+                  sourceId={task.sourceId}
+                  status={task.status}
+                  jiraStatus={task.jiraStatus}
+                  urgency={task.urgency}
+                  impact={task.impact}
+                  quadrant=""
+                  deadline={task.deadline}
+                  assignee={task.assignee}
+                  projectName={task.project?.name ?? null}
+                  effectiveRemainingHours={task.effectiveRemainingHours}
+                  effectiveEstimatedHours={task.effectiveEstimatedHours}
+                  jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
+                  compact
+                  onClick={() => setEditingTaskId(task.id)}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Priority grid */}
-      <PriorityGrid data={data} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => setEditingTaskId(null)} />
+      <PriorityGrid data={filteredData!} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => setEditingTaskId(null)} />
 
       <TaskEditSheet taskId={editingTaskId} onClose={() => setEditingTaskId(null)} />
     </div>
