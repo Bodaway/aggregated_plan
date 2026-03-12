@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from 'urql';
 
 const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
@@ -182,16 +183,20 @@ export function useDashboard(date: string) {
   });
 
   const raw = result.data?.dailyDashboard ?? null;
-  const data = raw
-    ? {
-        ...raw,
-        tasks: raw.tasks.map(t => ({
-          ...t,
-          urgency: toNum(URGENCY_NUM, t.urgency),
-          impact: toNum(IMPACT_NUM, t.impact),
-        })),
-      }
-    : null;
+  const data = useMemo(
+    () =>
+      raw
+        ? {
+            ...raw,
+            tasks: raw.tasks.map(t => ({
+              ...t,
+              urgency: toNum(URGENCY_NUM, t.urgency),
+              impact: toNum(IMPACT_NUM, t.impact),
+            })),
+          }
+        : null,
+    [raw],
+  );
 
   return {
     data,
