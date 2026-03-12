@@ -8,6 +8,7 @@ use application::repositories::*;
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management};
 use infrastructure::connectors::jira::HttpJiraClient;
+use infrastructure::connectors::outlook::client::GraphOutlookClient;
 
 use super::types::*;
 
@@ -209,10 +210,13 @@ impl MutationRoot {
                 _ => None,
             }
         };
-        let outlook_client: Option<Arc<dyn OutlookClient>> = ctx
-            .data::<Arc<dyn OutlookClient>>()
-            .ok()
-            .map(|c| c.clone());
+        let outlook_client: Option<Arc<dyn OutlookClient>> = {
+            let token = config_repo.get(*user_id, "outlook.access_token").await.ok().flatten();
+            match token {
+                Some(tok) if !tok.is_empty() => Some(Arc::new(GraphOutlookClient::new(tok))),
+                _ => None,
+            }
+        };
         let excel_client: Option<Arc<dyn ExcelClient>> = ctx
             .data::<Arc<dyn ExcelClient>>()
             .ok()
