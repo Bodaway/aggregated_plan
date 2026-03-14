@@ -2,6 +2,8 @@ import { useState, useCallback } from 'react';
 import { usePriorityMatrix } from '@/hooks/use-priority-matrix';
 import { PriorityGrid } from '@/components/priority/PriorityGrid';
 import { TaskEditSheet } from '@/components/task/TaskEditSheet';
+import { TaskSearchInput } from '@/components/search/TaskSearchInput';
+import { useTaskSearch } from '@/hooks/use-task-search';
 import type { QuadrantKey, PriorityMatrixData } from '@/hooks/use-priority-matrix';
 
 // urgency arrives as a string enum ("LOW"|"MEDIUM"|"HIGH"|"CRITICAL") from the
@@ -13,6 +15,7 @@ function toUrgencyNum(u: unknown): number {
 }
 
 export function PriorityMatrixPage() {
+  const { searchQuery, setSearchQuery, results: searchResults, matchingIds, isSearchActive, isSearching, clearSearch } = useTaskSearch();
   const { data, loading, error, updatePriority } = usePriorityMatrix();
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
@@ -84,10 +87,18 @@ export function PriorityMatrixPage() {
     <div className="space-y-4">
       {/* Header with summary */}
       <div className="flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-4">
           <p className="text-sm text-gray-500">
             Drag tasks between quadrants to update their priority.
           </p>
+          <TaskSearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            onClear={clearSearch}
+            results={searchResults}
+            isSearching={isSearching}
+            matchCount={matchingIds.size}
+          />
         </div>
         <span className="text-xs text-gray-400">
           {totalTasks} task{totalTasks !== 1 ? 's' : ''} total
@@ -95,7 +106,7 @@ export function PriorityMatrixPage() {
       </div>
 
       {/* Priority grid (critical section rendered inside DndContext for drag support) */}
-      <PriorityGrid data={filteredData!} criticalTasks={criticalTasks} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => setEditingTaskId(null)} />
+      <PriorityGrid data={filteredData!} criticalTasks={criticalTasks} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => setEditingTaskId(null)} matchingIds={matchingIds} isSearchActive={isSearchActive} />
 
       <TaskEditSheet taskId={editingTaskId} onClose={() => setEditingTaskId(null)} />
     </div>

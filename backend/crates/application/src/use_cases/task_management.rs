@@ -212,6 +212,20 @@ pub async fn set_tracking_state_batch(
     Ok(results)
 }
 
+/// Search tasks by free-text query. Returns matching task IDs with context about which field matched.
+pub async fn search_tasks(
+    task_repo: &dyn TaskRepository,
+    user_id: UserId,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<TaskSearchResult>, AppError> {
+    if query.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let results = task_repo.search(user_id, query, limit).await?;
+    Ok(results)
+}
+
 /// Mark a task as completed.
 pub async fn complete_task(
     task_repo: &dyn TaskRepository,
@@ -355,6 +369,44 @@ mod tests {
 
         async fn delete_stale_by_source(&self, _user_id: UserId, _source: Source, _keep_ids: &[String]) -> Result<u64, RepositoryError> {
             Ok(0)
+        }
+
+        async fn search(
+            &self,
+            user_id: UserId,
+            query: &str,
+            limit: usize,
+        ) -> Result<Vec<TaskSearchResult>, RepositoryError> {
+            let tasks = self.tasks.lock().unwrap();
+            let lower_query = query.to_lowercase();
+            let results: Vec<TaskSearchResult> = tasks
+                .values()
+                .filter(|t| t.user_id == user_id)
+                .filter_map(|t| {
+                    let title_lower = t.title.to_lowercase();
+                    if title_lower.contains(&lower_query) {
+                        Some(TaskSearchResult {
+                            task_id: t.id,
+                            matched_field: "title".to_string(),
+                            matched_snippet: t.title.clone(),
+                        })
+                    } else if let Some(ref desc) = t.description {
+                        if desc.to_lowercase().contains(&lower_query) {
+                            Some(TaskSearchResult {
+                                task_id: t.id,
+                                matched_field: "description".to_string(),
+                                matched_snippet: desc.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .take(limit)
+                .collect();
+            Ok(results)
         }
     }
 
@@ -817,5 +869,127 @@ mod tests {
 
         let updated = set_tracking_state(&repo, task.id, TrackingState::Dismissed).await.unwrap();
         assert_eq!(updated.tracking_state, TrackingState::Dismissed);
+    }
+
+    #[tokio::test]
+    async fn search_tasks_empty_query_returns_empty() {
+        let repo = InMemoryTaskRepository::new();
+        let results = search_tasks(&repo, test_user_id(), "", 50).await.unwrap();
+        assert!(results.is_empty());
+
+        let results = search_tasks(&repo, test_user_id(), "   ", 50).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_tasks_matches_title() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Fix login bug".to_string(),
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let task = create_personal_task(&repo, test_user_id(), input, today()).await.unwrap();
+
+        let results = search_tasks(&repo, test_user_id(), "login", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, task.id);
+        assert_eq!(results[0].matched_field, "title");
+    }
+
+    #[tokio::test]
+    async fn search_tasks_matches_description() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Task A".to_string(),
+            description: Some("Users cannot authenticate with OAuth".to_string()),
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let task = create_personal_task(&repo, test_user_id(), input, today()).await.unwrap();
+
+        let results = search_tasks(&repo, test_user_id(), "OAuth", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, task.id);
+        assert_eq!(results[0].matched_field, "description");
+    }
+
+    #[tokio::test]
+    async fn search_tasks_no_match_returns_empty() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Some task".to_string(),
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        create_personal_task(&repo, test_user_id(), input, today()).await.unwrap();
+
+        let results = search_tasks(&repo, test_user_id(), "nonexistent", 50).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_tasks_respects_user_isolation() {
+        let repo = InMemoryTaskRepository::new();
+        let other_user = Uuid::parse_str("00000000-0000-0000-0000-000000000099").unwrap();
+        let input = CreateTaskInput {
+            title: "Secret task".to_string(),
+            description: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        create_personal_task(&repo, other_user, input, today()).await.unwrap();
+
+        let results = search_tasks(&repo, test_user_id(), "Secret", 50).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_tasks_respects_limit() {
+        let repo = InMemoryTaskRepository::new();
+        for i in 0..5 {
+            let input = CreateTaskInput {
+                title: format!("Bug fix {}", i),
+                description: None,
+                project_id: None,
+                deadline: None,
+                planned_start: None,
+                planned_end: None,
+                estimated_hours: None,
+                impact: None,
+                urgency: None,
+                tags: vec![],
+            };
+            create_personal_task(&repo, test_user_id(), input, today()).await.unwrap();
+        }
+
+        let results = search_tasks(&repo, test_user_id(), "Bug", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
     }
 }

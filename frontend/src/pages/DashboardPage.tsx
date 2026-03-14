@@ -27,6 +27,8 @@ import {
 } from '@/lib/date-utils';
 import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 import { TaskCreateSheet } from '@/components/task/TaskCreateSheet';
+import { TaskSearchInput } from '@/components/search/TaskSearchInput';
+import { useTaskSearch } from '@/hooks/use-task-search';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -118,9 +120,13 @@ function moveBetweenDays(
 function DraggableTaskCard({
   task,
   onTaskClick,
+  highlighted,
+  dimmed,
 }: {
   readonly task: DashboardTask;
   readonly onTaskClick: (id: string) => void;
+  readonly highlighted?: boolean;
+  readonly dimmed?: boolean;
 }) {
   const disabled = task.status === 'DONE' || task.status === 'CANCELLED';
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
@@ -149,6 +155,8 @@ function DraggableTaskCard({
         effectiveEstimatedHours={task.effectiveEstimatedHours}
         jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
         compact
+        highlighted={highlighted}
+        dimmed={dimmed}
         onClick={disabled ? undefined : () => onTaskClick(task.id)}
       />
     </div>
@@ -160,9 +168,13 @@ function DraggableTaskCard({
 function UnplannedSidebar({
   tasks,
   onTaskClick,
+  matchingIds,
+  isSearchActive,
 }: {
   readonly tasks: DashboardTask[];
   readonly onTaskClick: (id: string) => void;
+  readonly matchingIds?: Set<string>;
+  readonly isSearchActive?: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: 'unplanned' });
   const sortedTasks = [...tasks].sort((a, b) => {
@@ -193,7 +205,13 @@ function UnplannedSidebar({
           <p className="text-xs text-gray-400 text-center py-6">No unplanned tasks</p>
         ) : (
           sortedTasks.map(t => (
-            <DraggableTaskCard key={t.id} task={t} onTaskClick={onTaskClick} />
+            <DraggableTaskCard
+              key={t.id}
+              task={t}
+              onTaskClick={onTaskClick}
+              highlighted={isSearchActive && matchingIds?.has(t.id)}
+              dimmed={isSearchActive && !matchingIds?.has(t.id)}
+            />
           ))
         )}
       </div>
@@ -216,9 +234,11 @@ interface DayColumnProps {
   readonly isDragging: boolean;
   readonly onAddTask: () => void;
   readonly workingHoursPerDay: number;
+  readonly matchingIds?: Set<string>;
+  readonly isSearchActive?: boolean;
 }
 
-function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, workingHoursPerDay }: DayColumnProps) {
+function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, workingHoursPerDay, matchingIds, isSearchActive }: DayColumnProps) {
   const dayStr = formatDate(date);
   const { setNodeRef, isOver } = useDroppable({ id: `day-${dayStr}` });
 
@@ -308,7 +328,13 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, 
 
         {/* Tasks */}
         {sortedTasks.map(t => (
-          <DraggableTaskCard key={t.id} task={t} onTaskClick={onTaskClick} />
+          <DraggableTaskCard
+            key={t.id}
+            task={t}
+            onTaskClick={onTaskClick}
+            highlighted={isSearchActive && matchingIds?.has(t.id)}
+            dimmed={isSearchActive && !matchingIds?.has(t.id)}
+          />
         ))}
 
         {sortedTasks.length === 0 && sortedMeetings.length === 0 && (
@@ -333,6 +359,9 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, 
 // ─── DashboardPage ────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
+  // ── Search ──
+  const { searchQuery, setSearchQuery, results: searchResults, matchingIds, isSearchActive, isSearching, clearSearch } = useTaskSearch();
+
   // ── Edit sheet ──
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [creatingForDate, setCreatingForDate] = useState<string | null>(null);
@@ -542,6 +571,16 @@ export function DashboardPage() {
           </button>
         </div>
 
+        {/* Search */}
+        <TaskSearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          onClear={clearSearch}
+          results={searchResults}
+          isSearching={isSearching}
+          matchCount={matchingIds.size}
+        />
+
         {/* Week summary */}
         {data && (
           <div className="flex items-center gap-4 text-xs text-gray-500">
@@ -584,7 +623,7 @@ export function DashboardPage() {
             onDragCancel={onDragCancel}
           >
             <div className="flex gap-3">
-              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={setEditingTaskId} />
+              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={setEditingTaskId} matchingIds={matchingIds} isSearchActive={isSearchActive} />
               <div className="flex-1 min-w-0">
                 <div style={{ display: 'grid', gridTemplateColumns: `repeat(${workingDays.length}, minmax(0, 1fr))`, gap: '0.5rem' }}>
                   {weekDays.map(day => {
@@ -599,6 +638,8 @@ export function DashboardPage() {
                         isDragging={activeTaskId !== null}
                         onAddTask={() => setCreatingForDate(dayStr)}
                         workingHoursPerDay={data?.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK}
+                        matchingIds={matchingIds}
+                        isSearchActive={isSearchActive}
                       />
                     );
                   })}

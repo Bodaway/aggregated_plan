@@ -28,6 +28,8 @@ interface QuadrantColumnProps {
   readonly borderColor: string;
   readonly tasks: readonly QuadrantTask[];
   readonly onEdit?: (taskId: string) => void;
+  readonly matchingIds?: Set<string>;
+  readonly isSearchActive?: boolean;
 }
 
 /** Overlay shown while dragging a task card. */
@@ -56,7 +58,7 @@ export function TaskCardOverlay({ task }: { readonly task: QuadrantTask }) {
   );
 }
 
-export function DraggableTask({ task, onEdit }: { readonly task: QuadrantTask; readonly onEdit?: (taskId: string) => void }) {
+export function DraggableTask({ task, onEdit, highlighted, dimmed }: { readonly task: QuadrantTask; readonly onEdit?: (taskId: string) => void; readonly highlighted?: boolean; readonly dimmed?: boolean }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
   });
@@ -85,6 +87,8 @@ export function DraggableTask({ task, onEdit }: { readonly task: QuadrantTask; r
         effectiveEstimatedHours={task.effectiveEstimatedHours}
         jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
         compact
+        highlighted={highlighted}
+        dimmed={dimmed}
         onClick={onEdit ? () => onEdit(task.id) : undefined}
       />
     </div>
@@ -99,6 +103,8 @@ export function QuadrantColumn({
   borderColor,
   tasks,
   onEdit,
+  matchingIds,
+  isSearchActive,
 }: QuadrantColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: quadrantKey,
@@ -129,7 +135,15 @@ export function QuadrantColumn({
         {tasks.length === 0 ? (
           <p className="text-xs text-gray-400 text-center py-4">Drop tasks here</p>
         ) : (
-          tasks.map(task => <DraggableTask key={task.id} task={task} onEdit={onEdit} />)
+          tasks.map(task => (
+            <DraggableTask
+              key={task.id}
+              task={task}
+              onEdit={onEdit}
+              highlighted={isSearchActive && matchingIds?.has(task.id)}
+              dimmed={isSearchActive && !matchingIds?.has(task.id)}
+            />
+          ))
         )}
       </div>
     </div>

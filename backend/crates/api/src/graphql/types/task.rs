@@ -198,6 +198,14 @@ pub struct TaskFilterInput {
     pub tracking_state: Option<Vec<TrackingStateGql>>,
 }
 
+/// Search result with context about which field matched.
+#[derive(SimpleObject)]
+pub struct TaskSearchResultGql {
+    pub task_id: ID,
+    pub matched_field: String,
+    pub matched_snippet: String,
+}
+
 /// Relay-style edge for task pagination.
 pub struct TaskEdge {
     pub node: TaskGql,

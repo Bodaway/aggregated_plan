@@ -172,6 +172,27 @@ async fn save_task_tags(
     Ok(())
 }
 
+/// Sanitize user input for FTS5 queries: strip special operators, wrap tokens in quotes,
+/// and add prefix matching with `*`.
+fn sanitize_fts_query(input: &str) -> String {
+    let cleaned: String = input
+        .chars()
+        .filter(|c| !matches!(c, '"' | '*' | '^' | '{' | '}' | '(' | ')' | ':'))
+        .collect();
+
+    let tokens: Vec<String> = cleaned
+        .split_whitespace()
+        .filter(|t| {
+            let upper = t.to_uppercase();
+            !matches!(upper.as_str(), "AND" | "OR" | "NOT" | "NEAR")
+        })
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"*", t))
+        .collect();
+
+    tokens.join(" ")
+}
+
 #[async_trait]
 impl TaskRepository for SqliteTaskRepository {
     async fn find_by_id(&self, id: TaskId) -> Result<Option<Task>, RepositoryError> {
@@ -427,6 +448,89 @@ impl TaskRepository for SqliteTaskRepository {
             .await
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
         Ok(result.rows_affected())
+    }
+
+    async fn search(
+        &self,
+        user_id: UserId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<TaskSearchResult>, RepositoryError> {
+        let sanitized = sanitize_fts_query(query);
+        if sanitized.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // FTS5 column names in order (matching the CREATE VIRTUAL TABLE definition).
+        // task_id and user_id are UNINDEXED so not part of FTS column numbering.
+        let fts_columns = [
+            "title",
+            "description",
+            "assignee",
+            "source_id",
+            "jira_status",
+            "status",
+            "source",
+            "urgency_text",
+            "impact_text",
+            "project_name",
+            "tag_names",
+        ];
+
+        let rows = sqlx::query(
+            "SELECT task_id, title, description, assignee, source_id, jira_status, status, source, urgency_text, impact_text, project_name, tag_names
+             FROM tasks_fts
+             WHERE user_id = ? AND tasks_fts MATCH ?
+             ORDER BY rank
+             LIMIT ?",
+        )
+        .bind(user_id.to_string())
+        .bind(&sanitized)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        // Extract the search tokens (lowercased) for matching detection
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .collect();
+
+        let mut results = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let task_id_str: String = Row::get(row, "task_id");
+            let task_id = Uuid::parse_str(&task_id_str)
+                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+            // Determine which field matched by checking each column
+            let mut matched_field = "title".to_string();
+            let mut matched_snippet = String::new();
+
+            for col_name in &fts_columns {
+                let val: String = Row::get(row, *col_name);
+                let val_lower = val.to_lowercase();
+                if tokens.iter().any(|t| val_lower.contains(t)) {
+                    matched_field = col_name.to_string();
+                    matched_snippet = val;
+                    break;
+                }
+            }
+
+            // Fallback: use title if no specific match found
+            if matched_snippet.is_empty() {
+                let title: String = Row::get(row, "title");
+                matched_snippet = title;
+            }
+
+            results.push(TaskSearchResult {
+                task_id,
+                matched_field,
+                matched_snippet,
+            });
+        }
+
+        Ok(results)
     }
 }
 
@@ -867,5 +971,184 @@ mod tests {
         assert!(loaded.jira_time_spent_seconds.is_none());
         assert!(loaded.remaining_hours_override.is_none());
         assert!(loaded.estimated_hours_override.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_by_title() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Fix login authentication bug");
+        task.description = None;
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "login", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, task.id);
+        assert_eq!(results[0].matched_field, "title");
+    }
+
+    #[tokio::test]
+    async fn search_by_description() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Task Alpha");
+        task.description = Some("Users cannot authenticate with OAuth provider".to_string());
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "OAuth", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, task.id);
+        assert_eq!(results[0].matched_field, "description");
+    }
+
+    #[tokio::test]
+    async fn search_by_assignee() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Some task");
+        task.description = None;
+        task.assignee = Some("john.smith".to_string());
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "john", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matched_field, "assignee");
+    }
+
+    #[tokio::test]
+    async fn search_by_source_id() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Jira ticket");
+        task.description = None;
+        task.assignee = None;
+        task.source = Source::Jira;
+        task.source_id = Some("PROJ-456".to_string());
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "PROJ-456", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matched_field, "source_id");
+    }
+
+    #[tokio::test]
+    async fn search_by_status() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Blocked work");
+        task.status = TaskStatus::Blocked;
+        task.description = None;
+        task.assignee = None;
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "blocked", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, task.id);
+    }
+
+    #[tokio::test]
+    async fn search_no_match_returns_empty() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        repo.save(&make_task("Something")).await.unwrap();
+
+        let results = repo.search(user_id(), "nonexistent", 50).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_respects_user_isolation() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let other_user = Uuid::parse_str("00000000-0000-0000-0000-000000000099").unwrap();
+        sqlx::query("INSERT OR IGNORE INTO users (id, name, email, created_at) VALUES (?, ?, ?, ?)")
+            .bind(other_user.to_string())
+            .bind("Other User")
+            .bind("other@example.com")
+            .bind("2024-01-01T00:00:00+00:00")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut task = make_task("Secret task");
+        task.user_id = other_user;
+        task.description = None;
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "Secret", 50).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_respects_limit() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        for i in 0..5 {
+            let mut task = make_task(&format!("Bug fix {}", i));
+            task.description = None;
+            repo.save(&task).await.unwrap();
+        }
+
+        let results = repo.search(user_id(), "Bug", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_prefix_matching() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Authentication system");
+        task.description = None;
+        task.assignee = None;
+        repo.save(&task).await.unwrap();
+
+        let results = repo.search(user_id(), "Auth", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_special_characters_sanitized() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Test task");
+        task.description = None;
+        repo.save(&task).await.unwrap();
+
+        // Should not crash with special FTS characters
+        let results = repo.search(user_id(), "\"test\" OR *", 50).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn sanitize_fts_query_basic() {
+        assert_eq!(sanitize_fts_query("fix login"), "\"fix\"* \"login\"*");
+    }
+
+    #[test]
+    fn sanitize_fts_query_strips_operators() {
+        assert_eq!(sanitize_fts_query("fix AND login"), "\"fix\"* \"login\"*");
+        assert_eq!(sanitize_fts_query("NOT blocked"), "\"blocked\"*");
+    }
+
+    #[test]
+    fn sanitize_fts_query_strips_special_chars() {
+        assert_eq!(sanitize_fts_query("\"hello\" (world)"), "\"hello\"* \"world\"*");
+    }
+
+    #[test]
+    fn sanitize_fts_query_empty() {
+        assert_eq!(sanitize_fts_query(""), "");
+        assert_eq!(sanitize_fts_query("   "), "");
+        assert_eq!(sanitize_fts_query("AND OR NOT"), "");
     }
 }

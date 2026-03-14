@@ -715,6 +715,16 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 | **R25** | La colonne contenant le numéro de ticket Jira est configurable (si elle existe). |
 | **R26** | Le mapping entre les colonnes Excel et les champs de l'outil est configurable. |
 
+### 7.8 Recherche
+
+| Règle | Description |
+|-------|-------------|
+| **R27** | L'application propose une recherche plein texte sur les champs suivants : titre, description, assigné, clé source (source_id), nom du projet, tags, statut, statut Jira, source, urgence, impact. |
+| **R28** | Lorsqu'une recherche est active, les tâches correspondantes sont mises en surbrillance (anneau bleu) et les tâches non correspondantes sont atténuées (opacité 40 %). Toutes les tâches restent visibles. |
+| **R29** | La recherche est disponible sur les pages Tableau de bord, Triage et Matrice de priorité. La barre de recherche est contextuelle, placée dans l'en-tête de chaque page. |
+| **R30** | Un menu d'autocomplétion affiche les résultats enrichis avec le contexte du champ correspondant (ex. « [Clé Jira] PROJ-123 — Corriger le bug de login »). |
+| **R31** | La saisie est temporisée (debounce 300 ms) avant d'envoyer la requête de recherche au serveur. |
+
 ---
 
 ## 8. Données et informations manipulées

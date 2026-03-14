@@ -21,6 +21,7 @@
 17. [Deployment](#17-deployment)
 18. [MVP Scope](#18-mvp-scope)
 19. [Coding Conventions](#19-coding-conventions)
+20. [Search Engine](#20-search-engine)
 
 ---
 
@@ -2123,7 +2124,30 @@ CREATE INDEX idx_alerts_user_resolved ON alerts(user_id, resolved);
 CREATE INDEX idx_projects_user ON projects(user_id);
 ```
 
-### 7.2 Notes
+### 7.2 Full-Text Search (FTS5)
+
+```sql
+CREATE VIRTUAL TABLE tasks_fts USING fts5(
+    task_id UNINDEXED,
+    user_id UNINDEXED,
+    title,
+    description,
+    assignee,
+    source_id,
+    status,
+    source,
+    jira_status,
+    urgency_text,
+    impact_text,
+    project_name,
+    tag_names,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+```
+
+A helper view `task_fts_data` denormalizes project names and tag names for indexing. Seven SQL triggers keep the FTS index synchronized with changes to `tasks`, `task_tags`, `projects`, and `tags` tables. See migration `005_add_fts_search.sql`.
+
+### 7.3 Notes
 
 - All IDs are UUIDs stored as TEXT (both SQLite and Postgres support this).
 - All datetimes are stored as ISO 8601 TEXT in SQLite. For the PostgreSQL migration, these become `TIMESTAMPTZ` columns.
@@ -2282,6 +2306,12 @@ type SyncStatus {
   lastSyncAt: DateTime
   status: SyncSourceStatus!
   errorMessage: String
+}
+
+type TaskSearchResult {
+  taskId: ID!
+  matchedField: String!
+  matchedSnippet: String!
 }
 
 # --- Composite Types ---
@@ -2473,6 +2503,7 @@ type Query {
   tags: [Tag!]!
   syncStatuses: [SyncStatus!]!
   deduplicationSuggestions: [DeduplicationSuggestion!]!
+  searchTasks(query: String!, limit: Int = 50): [TaskSearchResult!]!
   configuration: JSON!
   # v2
   teamView(filter: TeamFilter): [TeamMemberView!]!
@@ -3138,3 +3169,60 @@ The MVP should be built in this order, with each phase being independently testa
 - **Explicit over implicit**: Prefer verbose clarity over clever brevity.
 - **Tests first**: Write tests before implementation. Red -> Green -> Refactor.
 - **Domain purity**: Domain logic must be testable without any I/O, database, or HTTP setup.
+
+---
+
+## 20. Search Engine
+
+### 20.1 Overview
+
+Full-text search across tasks using SQLite FTS5. Provides autocomplete with matched-field context and visual highlighting of matching tasks on task-list pages (Dashboard, Triage, Priority Matrix).
+
+### 20.2 Backend Architecture
+
+#### FTS5 Virtual Table
+
+The `tasks_fts` table indexes 11 searchable columns from tasks and related tables (projects, tags). A helper view `task_fts_data` assembles denormalized data (project name via JOIN, tag names via subquery, urgency/impact converted from integers to text labels). Seven triggers keep the index in sync on INSERT/UPDATE/DELETE of tasks, task_tags, projects, and tags.
+
+#### Query Sanitization
+
+User input is sanitized before FTS5 MATCH: FTS5 operators (`AND`, `OR`, `NOT`, `NEAR`) and special characters (`"`, `*`, `^`, `{`, `}`, `(`, `)`) are stripped. Each token is wrapped in double quotes with a `*` suffix for prefix matching. Example: `fix log` → `"fix"* "log"*`.
+
+#### Match Detection
+
+After FTS5 returns matching task IDs, each indexed column is checked against the search tokens to determine `matched_field` (e.g., "title", "assignee", "source_id"). The first matching column's content is returned as `matched_snippet`.
+
+#### Domain Type
+
+```rust
+pub struct TaskSearchResult {
+    pub task_id: TaskId,
+    pub matched_field: String,
+    pub matched_snippet: String,
+}
+```
+
+#### GraphQL Endpoint
+
+```graphql
+searchTasks(query: String!, limit: Int = 50): [TaskSearchResult!]!
+```
+
+### 20.3 Frontend Architecture
+
+#### Hook: `useTaskSearch`
+
+- 300ms debounced input before firing GraphQL query
+- Pauses query when debounced value is empty
+- Returns `matchingIds: Set<string>` for O(1) lookup
+- Returns `results: TaskSearchResult[]` for autocomplete dropdown
+
+#### Component: `TaskSearchInput`
+
+- Magnifying glass icon + text input + clear button
+- Autocomplete dropdown with rich results: field label badge + task snippet
+- Match count badge when results are available
+
+#### Page Integration
+
+Each task-list page (Dashboard, Triage, Priority Matrix) renders `TaskSearchInput` in its header and passes `matchingIds`/`isSearchActive` to task cards. Matching tasks receive `ring-2 ring-blue-400 bg-blue-50/30`; non-matching tasks receive `opacity-40`.

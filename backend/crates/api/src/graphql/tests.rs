@@ -113,6 +113,10 @@ impl TaskRepository for InMemoryTaskRepository {
     async fn delete_stale_by_source(&self, _user_id: UserId, _source: Source, _keep_ids: &[String]) -> Result<u64, RepositoryError> {
         Ok(0)
     }
+
+    async fn search(&self, _user_id: UserId, _query: &str, _limit: usize) -> Result<Vec<TaskSearchResult>, RepositoryError> {
+        Ok(vec![])
+    }
 }
 
 struct InMemoryProjectRepository {

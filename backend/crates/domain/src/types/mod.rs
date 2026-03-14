@@ -7,6 +7,7 @@ pub mod alert;
 pub mod tag;
 pub mod user;
 pub mod task_link;
+pub mod search;
 
 pub use common::*;
 pub use task::*;
@@ -17,3 +18,4 @@ pub use alert::*;
 pub use tag::*;
 pub use user::*;
 pub use task_link::*;
+pub use search::*;

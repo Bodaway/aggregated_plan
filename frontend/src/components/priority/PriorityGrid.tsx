@@ -18,6 +18,8 @@ interface PriorityGridProps {
   readonly onMoveTask: (taskId: string, targetQuadrant: QuadrantKey) => void;
   readonly onEdit?: (taskId: string) => void;
   readonly onDragStartExternal?: () => void;
+  readonly matchingIds?: Set<string>;
+  readonly isSearchActive?: boolean;
 }
 
 interface QuadrantConfig {
@@ -82,7 +84,7 @@ function findTask(data: PriorityMatrixData, taskId: string): MatrixTask | null {
   return null;
 }
 
-export function PriorityGrid({ data, criticalTasks, onMoveTask, onEdit, onDragStartExternal }: PriorityGridProps) {
+export function PriorityGrid({ data, criticalTasks, onMoveTask, onEdit, onDragStartExternal, matchingIds, isSearchActive }: PriorityGridProps) {
   const [activeTask, setActiveTask] = useState<MatrixTask | null>(null);
 
   const sensors = useSensors(
@@ -143,7 +145,12 @@ export function PriorityGrid({ data, criticalTasks, onMoveTask, onEdit, onDragSt
           <div className="flex flex-wrap gap-3 p-4">
             {criticalTasks.map(task => (
               <div key={task.id} className="w-64">
-                <DraggableTask task={task} onEdit={onEdit} />
+                <DraggableTask
+                  task={task}
+                  onEdit={onEdit}
+                  highlighted={isSearchActive && matchingIds?.has(task.id)}
+                  dimmed={isSearchActive && !matchingIds?.has(task.id)}
+                />
               </div>
             ))}
           </div>
@@ -181,6 +188,8 @@ export function PriorityGrid({ data, criticalTasks, onMoveTask, onEdit, onDragSt
             borderColor={config.borderColor}
             tasks={data[config.key]}
             onEdit={onEdit}
+            matchingIds={matchingIds}
+            isSearchActive={isSearchActive}
           />
         ))}
 
@@ -202,6 +211,8 @@ export function PriorityGrid({ data, criticalTasks, onMoveTask, onEdit, onDragSt
             borderColor={config.borderColor}
             tasks={data[config.key]}
             onEdit={onEdit}
+            matchingIds={matchingIds}
+            isSearchActive={isSearchActive}
           />
         ))}
       </div>

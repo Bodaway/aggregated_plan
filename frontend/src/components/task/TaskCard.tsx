@@ -24,6 +24,8 @@ export interface TaskCardProps {
   readonly effectiveEstimatedHours?: number | null;
   readonly jiraTimeSpentSeconds?: number | null;
   readonly compact?: boolean;
+  readonly highlighted?: boolean;
+  readonly dimmed?: boolean;
   readonly onClick?: () => void;
 }
 
@@ -115,6 +117,8 @@ export function TaskCard({
   effectiveEstimatedHours,
   jiraTimeSpentSeconds,
   compact = false,
+  highlighted = false,
+  dimmed = false,
   onClick,
 }: TaskCardProps) {
   const sourceColor = getSourceColor(source);
@@ -123,7 +127,7 @@ export function TaskCard({
   if (compact) {
     return (
       <div
-        className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+        className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-all ${onClick ? 'cursor-pointer' : ''} ${highlighted ? 'ring-2 ring-blue-400 bg-blue-50/30' : ''} ${dimmed ? 'opacity-40' : ''}`}
         onClick={onClick}
       >
         {/* Top row: source ID + remaining hours */}
@@ -162,7 +166,7 @@ export function TaskCard({
 
   return (
     <div
-      className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+      className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-all ${onClick ? 'cursor-pointer' : ''} ${highlighted ? 'ring-2 ring-blue-400 bg-blue-50/30' : ''} ${dimmed ? 'opacity-40' : ''}`}
       onClick={onClick}
     >
       <div className="flex items-start justify-between gap-2">

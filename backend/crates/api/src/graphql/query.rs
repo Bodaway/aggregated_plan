@@ -335,6 +335,35 @@ impl QueryRoot {
         Ok(slot.map(ActivitySlotGql))
     }
 
+    /// Full-text search across task fields. Returns matching task IDs with context.
+    async fn search_tasks(
+        &self,
+        ctx: &Context<'_>,
+        query: String,
+        #[graphql(default = 50)] limit: i32,
+    ) -> Result<Vec<TaskSearchResultGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+
+        let results = task_management::search_tasks(
+            task_repo.as_ref(),
+            *user_id,
+            &query,
+            limit.max(0) as usize,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(results
+            .into_iter()
+            .map(|r| TaskSearchResultGql {
+                task_id: ID(r.task_id.to_string()),
+                matched_field: r.matched_field,
+                matched_snippet: r.matched_snippet,
+            })
+            .collect())
+    }
+
     /// Get user configuration as a JSON-like list of key-value pairs.
     async fn configuration(&self, ctx: &Context<'_>) -> Result<serde_json::Value> {
         let user_id = ctx.data::<UserId>()?;

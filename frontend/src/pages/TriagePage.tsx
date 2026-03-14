@@ -14,15 +14,21 @@ import { useDraggable } from '@dnd-kit/core';
 import { useTriageTasks, type TriageTask } from '@/hooks/use-triage';
 import { TaskCard } from '@/components/task/TaskCard';
 import { TaskEditSheet } from '@/components/task/TaskEditSheet';
+import { TaskSearchInput } from '@/components/search/TaskSearchInput';
+import { useTaskSearch } from '@/hooks/use-task-search';
 
 function DraggableTaskCard({
   task,
   onDismiss,
   onEdit,
+  highlighted,
+  dimmed,
 }: {
   readonly task: TriageTask;
   readonly onDismiss?: () => void;
   readonly onEdit?: (taskId: string) => void;
+  readonly highlighted?: boolean;
+  readonly dimmed?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({ id: task.id });
@@ -56,6 +62,8 @@ function DraggableTaskCard({
         effectiveRemainingHours={task.effectiveRemainingHours ?? null}
         effectiveEstimatedHours={task.effectiveEstimatedHours ?? null}
         jiraTimeSpentSeconds={task.jiraTimeSpentSeconds ?? null}
+        highlighted={highlighted}
+        dimmed={dimmed}
         onClick={onEdit ? () => onEdit(task.id) : undefined}
       />
       {onDismiss && (
@@ -141,6 +149,8 @@ function DroppableColumn({
 }
 
 export function TriagePage() {
+  const { searchQuery, setSearchQuery, results: searchResults, matchingIds, isSearchActive, isSearching, clearSearch } = useTaskSearch();
+
   const {
     inboxTasks,
     followedTasks,
@@ -211,6 +221,18 @@ export function TriagePage() {
 
   return (
     <>
+      {/* Search bar */}
+      <div className="mb-4">
+        <TaskSearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          onClear={clearSearch}
+          results={searchResults}
+          isSearching={isSearching}
+          matchCount={matchingIds.size}
+        />
+      </div>
+
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -245,6 +267,8 @@ export function TriagePage() {
                   task={task}
                   onDismiss={() => dismissTask(task.id)}
                   onEdit={(id) => setEditingTaskId(id)}
+                  highlighted={isSearchActive && matchingIds.has(task.id)}
+                  dimmed={isSearchActive && !matchingIds.has(task.id)}
                 />
               ))
             )}
@@ -262,7 +286,13 @@ export function TriagePage() {
               </p>
             ) : (
               followedTasks.map(task => (
-                <DraggableTaskCard key={task.id} task={task} onEdit={(id) => setEditingTaskId(id)} />
+                <DraggableTaskCard
+                  key={task.id}
+                  task={task}
+                  onEdit={(id) => setEditingTaskId(id)}
+                  highlighted={isSearchActive && matchingIds.has(task.id)}
+                  dimmed={isSearchActive && !matchingIds.has(task.id)}
+                />
               ))
             )}
           </DroppableColumn>

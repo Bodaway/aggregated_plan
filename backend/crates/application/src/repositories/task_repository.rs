@@ -4,6 +4,12 @@ use domain::types::*;
 
 use crate::errors::RepositoryError;
 
+/// Parameters for full-text search across task fields.
+pub struct TaskSearchParams {
+    pub query: String,
+    pub limit: usize,
+}
+
 /// Filter criteria for querying tasks.
 pub struct TaskFilter {
     pub status: Option<Vec<TaskStatus>>,
@@ -78,4 +84,12 @@ pub trait TaskRepository: Send + Sync {
         source: Source,
         keep_ids: &[String],
     ) -> Result<u64, RepositoryError>;
+
+    /// Full-text search across task fields. Returns matching task IDs with context.
+    async fn search(
+        &self,
+        user_id: UserId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<TaskSearchResult>, RepositoryError>;
 }
