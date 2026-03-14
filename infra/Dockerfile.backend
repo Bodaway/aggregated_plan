@@ -1,0 +1,55 @@
+# ── Stage 1: Build ──────────────────────────────────────────────
+FROM rust:1.83-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Cache dependencies
+COPY backend/Cargo.toml backend/Cargo.toml
+COPY backend/crates/domain/Cargo.toml backend/crates/domain/Cargo.toml
+COPY backend/crates/application/Cargo.toml backend/crates/application/Cargo.toml
+COPY backend/crates/infrastructure/Cargo.toml backend/crates/infrastructure/Cargo.toml
+COPY backend/crates/api/Cargo.toml backend/crates/api/Cargo.toml
+
+# Create dummy sources to cache dependency compilation
+RUN mkdir -p backend/crates/domain/src backend/crates/application/src \
+             backend/crates/infrastructure/src backend/crates/api/src && \
+    echo "fn main() {}" > backend/crates/api/src/main.rs && \
+    touch backend/crates/domain/src/lib.rs && \
+    touch backend/crates/application/src/lib.rs && \
+    touch backend/crates/infrastructure/src/lib.rs
+
+RUN cd backend && cargo build --release -p api 2>/dev/null || true
+
+# Copy real source code
+COPY backend/crates/ backend/crates/
+COPY migrations/ migrations/
+
+# Force rebuild with real sources
+RUN touch backend/crates/*/src/*.rs && \
+    cd backend && cargo build --release -p api
+
+# ── Stage 2: Runtime ───────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -r -s /bin/false appuser
+
+WORKDIR /app
+
+COPY --from=builder /app/backend/target/release/api /app/api
+COPY migrations/ /app/migrations/
+
+RUN mkdir -p /data && chown appuser:appuser /data
+
+USER appuser
+
+ENV DATABASE_URL=sqlite:/data/aggregated_plan.db?mode=rwc
+ENV RUST_LOG=info
+ENV PORT=3001
+
+EXPOSE 3001
+
+CMD ["/app/api"]

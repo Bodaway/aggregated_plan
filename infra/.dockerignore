@@ -1,0 +1,11 @@
+target/
+node_modules/
+dist/
+.git/
+.env
+*.db
+*.db-journal
+.tmp/
+infra/
+docs/
+frontend/

@@ -2985,7 +2985,71 @@ pnpm build
 # The Axum server can serve the frontend dist/ as static files
 ```
 
-### 17.3 Teams Deployment (Future)
+### 17.3 Azure Deployment (MVP — Coût minimum)
+
+Infrastructure as Code avec Bicep + Azure CLI. Coût estimé : ~5 €/mois.
+
+```
++─────────────────────────────────────────────+
+│              Azure Cloud                     │
+│                                              │
+│  +─────────────────+  +──────────────────+  │
+│  │ Container Apps   │  │ Azure Container  │  │
+│  │ (Consumption)    │  │ Registry (Basic) │  │
+│  │ Backend Rust API │◄─│ ~5€/mois         │  │
+│  │ scale-to-zero    │  +──────────────────+  │
+│  +────────┬─────────+                        │
+│           │ mount                             │
+│  +────────▼─────────+  +──────────────────+  │
+│  │ Azure File Share │  │ Static Web App   │  │
+│  │ SQLite DB        │  │ (Free tier)      │  │
+│  │ ~0.01€/mois      │  │ Frontend React   │  │
+│  +──────────────────+  +──────────────────+  │
++──────────────────────────────────────────────+
+```
+
+| Ressource | Service Azure | SKU | Coût estimé |
+|-----------|--------------|-----|-------------|
+| Backend API | Container Apps | Consumption (scale-to-0) | ~0 € au repos |
+| Frontend | Static Web Apps | Free | 0 € |
+| Container Registry | ACR | Basic | ~5 €/mois |
+| Base de données | Azure File Share + SQLite | Standard_LRS | ~0.01 €/mois |
+
+#### Structure IaC
+
+```
+infra/
+├── main.bicep                  # Orchestrateur principal
+├── modules/
+│   ├── container-registry.bicep   # ACR Basic
+│   ├── container-apps.bicep       # Container Apps Environment + backend app
+│   ├── static-web-app.bicep       # SWA Free tier
+│   └── storage.bicep              # Storage Account + File Share
+├── parameters/
+│   └── dev.bicepparam             # Paramètres environnement dev
+├── Dockerfile.backend             # Multi-stage build Rust
+├── .dockerignore
+├── deploy.sh                      # Script déploiement complet
+└── build-and-push.sh              # Build & push image Docker
+```
+
+#### Déploiement
+
+```bash
+# Prérequis : az cli connecté (az login), Docker, jq
+./infra/deploy.sh dev          # Déploie l'environnement dev
+./infra/deploy.sh prod         # Déploie l'environnement prod
+IMAGE_TAG=v1.0.0 ./infra/deploy.sh dev  # Tag spécifique
+```
+
+#### Points clés
+
+- **Scale-to-zero** : le backend ne consomme rien quand il n'y a pas de requêtes
+- **SQLite persisté** : la base est montée via Azure File Share dans `/data`
+- **maxReplicas: 1** : SQLite ne supporte pas les écritures concurrentes multi-instances
+- **ACR admin auth** : authentification simplifiée pour MVP (migrer vers managed identity en prod)
+
+### 17.4 Teams Deployment (Future)
 
 ```
 +---------------------------------------+

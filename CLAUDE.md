@@ -22,6 +22,13 @@ aggregated_plan/
 ├── migrations/
 │   └── sqlite/                   # SQLite migration files
 │       └── 001_initial.sql
+├── infra/                        # Azure IaC (Bicep + scripts)
+│   ├── main.bicep                # Main orchestrator
+│   ├── modules/                  # Bicep modules (ACR, Container Apps, SWA, Storage)
+│   ├── parameters/               # Environment parameters
+│   ├── Dockerfile.backend        # Multi-stage Rust build
+│   ├── deploy.sh                 # Full deployment script
+│   └── build-and-push.sh         # Docker build & push to ACR
 ├── docs/
 │   └── plans/                    # Implementation plans
 ├── SPEC_FONCTIONNELLE.md         # Functional specification (French)
@@ -56,6 +63,11 @@ cd frontend && pnpm install                  # Install dependencies
 cd frontend && pnpm dev                      # Start dev server (port 3000)
 cd frontend && pnpm test                     # Run tests
 cd frontend && pnpm build                    # Production build
+
+# Azure Deployment (IaC)
+./infra/deploy.sh dev                        # Deploy full stack to Azure (dev)
+./infra/deploy.sh prod                       # Deploy full stack to Azure (prod)
+./infra/build-and-push.sh <acr-server> v1.0  # Build & push Docker image only
 ```
 
 ## Tech Stack
