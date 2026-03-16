@@ -21,6 +21,20 @@ const IMPACT_OPTIONS = [
   { value: 'CRITICAL', label: 'Critical' },
 ] as const;
 
+const STATUS_OPTIONS = [
+  { value: 'TODO', label: 'To Do' },
+  { value: 'IN_PROGRESS', label: 'In Progress' },
+  { value: 'DONE', label: 'Done' },
+  { value: 'BLOCKED', label: 'Blocked' },
+] as const;
+
+const STATUS_STYLES: Record<string, string> = {
+  TODO: 'bg-gray-100 text-gray-700 border-gray-300',
+  IN_PROGRESS: 'bg-blue-50 text-blue-700 border-blue-300',
+  DONE: 'bg-green-50 text-green-700 border-green-300',
+  BLOCKED: 'bg-red-50 text-red-700 border-red-300',
+};
+
 /** GraphQL returns urgency/impact as enum strings (LOW, MEDIUM, HIGH, CRITICAL). */
 function normalizeEnum(val: string): string {
   const upper = String(val).toUpperCase();
@@ -47,6 +61,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const [estimatedOverride, setEstimatedOverride] = useState('');
   const [urgency, setUrgency] = useState('MEDIUM');
   const [impact, setImpact] = useState('MEDIUM');
+  const [status, setStatus] = useState('TODO');
   const [plannedDate, setPlannedDate] = useState('');
 
   // Sync form state when task loads
@@ -58,6 +73,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
       setEstimatedOverride(task.estimatedHoursOverride?.toString() ?? '');
       setUrgency(normalizeEnum(task.urgency));
       setImpact(normalizeEnum(task.impact));
+      setStatus(task.status ?? 'TODO');
       // Extract date portion from ISO datetime
       setPlannedDate(task.plannedStart ? task.plannedStart.slice(0, 10) : '');
     }
@@ -75,6 +91,10 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
     // Build update input for other fields
     const input: Record<string, unknown> = {};
+
+    if (status !== task.status) {
+      input.status = status;
+    }
 
     const newDesc = description || null;
     if (newDesc !== (task.description ?? null)) {
@@ -116,7 +136,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
     onUpdated?.();
     onClose();
-  }, [task, description, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, updateTask, updatePriority, onUpdated, onClose]);
+  }, [task, status, description, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, updateTask, updatePriority, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
@@ -177,13 +197,19 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                 </div>
               ) : task ? (
                 <>
-                  {/* Read-only info section */}
+                  {/* Info section */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm text-gray-600">
                       <span className="font-medium w-20">Status:</span>
-                      <span className="px-2 py-0.5 bg-gray-100 rounded text-xs font-medium">
-                        {task.status.replace('_', ' ')}
-                      </span>
+                      <select
+                        value={status}
+                        onChange={(e) => setStatus(e.target.value)}
+                        className={`rounded-md border px-2 py-0.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-700 border-gray-300'}`}
+                      >
+                        {STATUS_OPTIONS.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
                       {task.jiraStatus && (
                         <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs font-medium border border-blue-200">
                           {task.jiraStatus}

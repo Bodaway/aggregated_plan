@@ -64,6 +64,7 @@ const UPDATE_TASK_MUTATION = `
       id
       title
       description
+      status
       urgency
       impact
       quadrant
