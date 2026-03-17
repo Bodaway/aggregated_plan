@@ -168,6 +168,20 @@ mod tests {
                 .cloned())
         }
 
+        async fn find_by_user_and_date_range(
+            &self,
+            user_id: UserId,
+            start_date: NaiveDate,
+            end_date: NaiveDate,
+        ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+            let slots = self.slots.lock().unwrap();
+            Ok(slots
+                .values()
+                .filter(|s| s.user_id == user_id && s.date >= start_date && s.date <= end_date && s.end_time.is_some())
+                .cloned()
+                .collect())
+        }
+
         async fn save(&self, slot: &ActivitySlot) -> Result<(), RepositoryError> {
             let mut slots = self.slots.lock().unwrap();
             slots.insert(slot.id, slot.clone());

@@ -3,13 +3,14 @@ import { useActivity } from '@/hooks/use-activity';
 import { ActivityTimer } from '@/components/activity/ActivityTimer';
 import { ActivityTimeline } from '@/components/activity/ActivityTimeline';
 import { SlotCard } from '@/components/activity/SlotCard';
+import { WeeklyActivityReport } from '@/components/activity/WeeklyActivityReport';
 import { formatDate, formatDisplayDate, getNextDay, getPrevDay } from '@/lib/date-utils';
 
 export function ActivityJournalPage() {
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const dateStr = formatDate(currentDate);
 
-  const { slots, currentActivity, loading, error, startActivity, stopActivity, deleteSlot } =
+  const { slots, currentActivity, availableTasks, loading, error, startActivity, stopActivity, deleteSlot } =
     useActivity(dateStr);
 
   const goToPreviousDay = useCallback(() => {
@@ -69,6 +70,7 @@ export function ActivityJournalPage() {
       {/* Timer section */}
       <ActivityTimer
         currentActivity={currentActivity}
+        tasks={availableTasks}
         onStart={handleStart}
         onStop={handleStop}
       />
@@ -143,6 +145,9 @@ export function ActivityJournalPage() {
         <>
           {/* Timeline visualization */}
           <ActivityTimeline slots={slots} />
+
+          {/* Weekly summary */}
+          <WeeklyActivityReport currentDate={currentDate} />
 
           {/* Completed slots list */}
           <div className="bg-white rounded-lg border border-gray-200 p-4">

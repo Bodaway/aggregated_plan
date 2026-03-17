@@ -29,6 +29,14 @@ pub trait ActivitySlotRepository: Send + Sync {
     /// Update an existing activity slot.
     async fn update(&self, slot: &ActivitySlot) -> Result<(), RepositoryError>;
 
+    /// Find all completed activity slots for a user within a date range (inclusive).
+    async fn find_by_user_and_date_range(
+        &self,
+        user_id: UserId,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Result<Vec<ActivitySlot>, RepositoryError>;
+
     /// Delete an activity slot by its identifier.
     async fn delete(&self, id: ActivitySlotId) -> Result<(), RepositoryError>;
 }

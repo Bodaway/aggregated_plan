@@ -6,7 +6,7 @@ use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
-use application::use_cases::{activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management};
+use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management};
 
 use super::types::*;
 
@@ -333,6 +333,28 @@ impl QueryRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(slot.map(ActivitySlotGql))
+    }
+
+    /// Get a weekly activity summary with daily totals and per-task breakdown.
+    async fn weekly_activity_summary(
+        &self,
+        ctx: &Context<'_>,
+        week_start: NaiveDate,
+    ) -> Result<WeeklyActivitySummaryGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+
+        let summary = activity_reporting::get_weekly_activity_summary(
+            activity_repo.as_ref(),
+            task_repo.as_ref(),
+            *user_id,
+            week_start,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(WeeklyActivitySummaryGql(summary))
     }
 
     /// Get user configuration as a JSON-like list of key-value pairs.

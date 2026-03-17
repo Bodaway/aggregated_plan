@@ -1,6 +1,9 @@
-use async_graphql::{InputObject, Object, SimpleObject, ID};
+use std::sync::Arc;
+
+use async_graphql::{Context, InputObject, Object, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
+use application::repositories::TaskRepository;
 use domain::types::ActivitySlot;
 
 use super::enums::HalfDayGql;
@@ -25,10 +28,15 @@ impl ActivitySlotGql {
         self.0.task_id.map(|tid| ID(tid.to_string()))
     }
 
-    /// The associated task. Resolved via data loader in a later task.
-    /// Returns None for now.
-    async fn task(&self) -> Option<ActivityTaskSummaryGql> {
-        None
+    /// The associated task, resolved by looking up the task_id.
+    async fn task(&self, ctx: &Context<'_>) -> Option<ActivityTaskSummaryGql> {
+        let task_id = self.0.task_id?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>().ok()?;
+        let task = task_repo.find_by_id(task_id).await.ok()??;
+        Some(ActivityTaskSummaryGql {
+            id: ID(task.id.to_string()),
+            title: task.title,
+        })
     }
 
     async fn start_time(&self) -> DateTime<Utc> {

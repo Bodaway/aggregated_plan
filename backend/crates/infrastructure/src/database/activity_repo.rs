@@ -158,6 +158,25 @@ impl ActivitySlotRepository for SqliteActivitySlotRepository {
         Ok(())
     }
 
+    async fn find_by_user_and_date_range(
+        &self,
+        user_id: UserId,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT * FROM activity_slots WHERE user_id = ? AND date >= ? AND date <= ? AND end_time IS NOT NULL ORDER BY date, start_time",
+        )
+        .bind(user_id.to_string())
+        .bind(start_date.format("%Y-%m-%d").to_string())
+        .bind(end_date.format("%Y-%m-%d").to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        rows.iter().map(map_activity_slot_row).collect()
+    }
+
     async fn delete(&self, id: ActivitySlotId) -> Result<(), RepositoryError> {
         sqlx::query("DELETE FROM activity_slots WHERE id = ?")
             .bind(id.to_string())
