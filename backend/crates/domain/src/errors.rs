@@ -14,4 +14,6 @@ pub enum DomainError {
     ActivitySlotOverlap,
     #[error("Invalid date range: start {start} is after end {end}")]
     InvalidDateRange { start: String, end: String },
+    #[error("Validation error: {0}")]
+    ValidationError(String),
 }
