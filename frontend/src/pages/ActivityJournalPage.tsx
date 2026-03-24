@@ -4,14 +4,19 @@ import { ActivityTimer } from '@/components/activity/ActivityTimer';
 import { ActivityTimeline } from '@/components/activity/ActivityTimeline';
 import { SlotCard } from '@/components/activity/SlotCard';
 import { WeeklyActivityReport } from '@/components/activity/WeeklyActivityReport';
+import { ActivitySlotSheet } from '@/components/activity/ActivitySlotSheet';
 import { formatDate, formatDisplayDate, getNextDay, getPrevDay } from '@/lib/date-utils';
 
 export function ActivityJournalPage() {
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const dateStr = formatDate(currentDate);
 
-  const { slots, currentActivity, availableTasks, loading, error, startActivity, stopActivity, deleteSlot } =
+  const { slots, currentActivity, availableTasks, loading, error, startActivity, stopActivity, deleteSlot, updateSlot, createSlot } =
     useActivity(dateStr);
+
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetMode, setSheetMode] = useState<'create' | 'edit'>('create');
+  const [editingSlot, setEditingSlot] = useState<typeof slots[number] | undefined>(undefined);
 
   const goToPreviousDay = useCallback(() => {
     setCurrentDate(prev => getPrevDay(prev));
@@ -41,6 +46,43 @@ export function ActivityJournalPage() {
       deleteSlot(id);
     },
     [deleteSlot]
+  );
+
+  const handleEdit = useCallback(
+    (id: string) => {
+      const slot = slots.find(s => s.id === id);
+      if (slot) {
+        setEditingSlot(slot);
+        setSheetMode('edit');
+        setSheetOpen(true);
+      }
+    },
+    [slots]
+  );
+
+  const handleCreate = useCallback(() => {
+    setEditingSlot(undefined);
+    setSheetMode('create');
+    setSheetOpen(true);
+  }, []);
+
+  const handleSheetSave = useCallback(
+    async (data: { taskId?: string | null; startTime: string; endTime: string }) => {
+      if (sheetMode === 'edit' && editingSlot) {
+        await updateSlot(editingSlot.id, {
+          taskId: data.taskId,
+          startTime: data.startTime,
+          endTime: data.endTime,
+        });
+      } else {
+        await createSlot({
+          startTime: data.startTime,
+          endTime: data.endTime,
+          taskId: data.taskId,
+        });
+      }
+    },
+    [sheetMode, editingSlot, updateSlot, createSlot]
   );
 
   // Separate completed slots (with endTime) from in-progress
@@ -155,9 +197,20 @@ export function ActivityJournalPage() {
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
                 Activity Log
               </h3>
-              <span className="text-xs text-gray-400">
-                {completedSlots.length} entr{completedSlots.length !== 1 ? 'ies' : 'y'}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400">
+                  {completedSlots.length} entr{completedSlots.length !== 1 ? 'ies' : 'y'}
+                </span>
+                <button
+                  onClick={handleCreate}
+                  className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded-md hover:bg-blue-50 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                  </svg>
+                  Add Activity
+                </button>
+              </div>
             </div>
 
             {completedSlots.length === 0 ? (
@@ -192,6 +245,7 @@ export function ActivityJournalPage() {
                     halfDay={slot.halfDay}
                     durationMinutes={slot.durationMinutes}
                     onDelete={handleDelete}
+                    onEdit={handleEdit}
                   />
                 ))}
               </div>
@@ -199,6 +253,15 @@ export function ActivityJournalPage() {
           </div>
         </>
       )}
+
+      <ActivitySlotSheet
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        mode={sheetMode}
+        slot={editingSlot}
+        tasks={availableTasks}
+        onSave={handleSheetSave}
+      />
     </div>
   );
 }
