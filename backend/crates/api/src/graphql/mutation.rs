@@ -391,24 +391,24 @@ impl MutationRoot {
         let slot_id = Uuid::parse_str(&id)
             .map_err(|e| async_graphql::Error::new(format!("Invalid slot ID: {}", e)))?;
 
-        // Convert task_id: if provided, parse UUID; if explicitly set to empty, clear it
+        // Convert MaybeUndefined task_id:
+        // Undefined => None (don't change), Null => Some(None) (clear), Value => Some(Some(id))
         let task_id = match input.task_id {
-            Some(tid) => {
+            MaybeUndefined::Value(tid) => {
                 let parsed = Uuid::parse_str(&tid)
-                    .map_err(|e| {
-                        async_graphql::Error::new(format!("Invalid task ID: {}", e))
-                    })?;
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
                 Some(Some(parsed))
             }
-            None => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Undefined => None,
         };
 
         let slot = activity_tracking::update_activity_slot(
             activity_repo.as_ref(),
             slot_id,
             task_id,
-            None,
-            None,
+            input.start_time,
+            input.end_time,
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
@@ -427,6 +427,36 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(true)
+    }
+
+    /// Create a manual activity slot with explicit start and end times.
+    async fn create_activity_slot(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateActivitySlotInput,
+    ) -> Result<ActivitySlotGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+
+        let task_id = match input.task_id {
+            Some(id) => Some(
+                Uuid::parse_str(&id)
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?,
+            ),
+            None => None,
+        };
+
+        let slot = activity_tracking::create_manual_activity_slot(
+            activity_repo.as_ref(),
+            *user_id,
+            input.start_time,
+            input.end_time,
+            task_id,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(ActivitySlotGql(slot))
     }
 
     // ─── Meeting-project association (Task 38) ───

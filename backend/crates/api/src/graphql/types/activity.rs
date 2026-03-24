@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, InputObject, Object, SimpleObject, ID};
+use async_graphql::{Context, InputObject, MaybeUndefined, Object, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::TaskRepository;
@@ -75,6 +75,21 @@ impl ActivitySlotGql {
 /// Input for updating an existing activity slot.
 #[derive(InputObject, Debug)]
 pub struct UpdateActivitySlotInput {
-    /// Change the associated task.
+    /// Change the associated task. Null clears it, undefined leaves unchanged.
+    pub task_id: MaybeUndefined<ID>,
+    /// Update the start time.
+    pub start_time: Option<DateTime<Utc>>,
+    /// Update the end time.
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+/// Input for creating a manual (completed) activity slot.
+#[derive(InputObject, Debug)]
+pub struct CreateActivitySlotInput {
+    /// Start time (also determines date and half-day).
+    pub start_time: DateTime<Utc>,
+    /// End time (must be after start_time).
+    pub end_time: DateTime<Utc>,
+    /// Optional task to associate with.
     pub task_id: Option<ID>,
 }
