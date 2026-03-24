@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use domain::rules::workload::half_day_of;
 use domain::types::*;
 use uuid::Uuid;
@@ -94,9 +94,22 @@ pub async fn update_activity_slot(
     }
     if let Some(st) = start_time {
         slot.start_time = st;
+        // Recompute half_day from new start time
+        slot.half_day = half_day_of(st.hour());
     }
     if let Some(et) = end_time {
         slot.end_time = Some(et);
+    }
+
+    // Validate: end_time must be after start_time (if both are set)
+    if let Some(et) = slot.end_time {
+        if et <= slot.start_time {
+            return Err(AppError::Domain(
+                domain::errors::DomainError::ValidationError(
+                    "End time must be after start time".to_string(),
+                ),
+            ));
+        }
     }
 
     activity_repo.update(&slot).await?;
@@ -413,6 +426,66 @@ mod tests {
         let repo = InMemoryActivitySlotRepository::new();
         let result = update_activity_slot(&repo, Uuid::new_v4(), None, None, None).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_activity_slot_recomputes_half_day_on_start_time_change() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let morning = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let slot = start_activity(&repo, test_user_id(), None, morning).await.unwrap();
+        assert_eq!(slot.half_day, HalfDay::Morning);
+
+        let afternoon = Utc.with_ymd_and_hms(2026, 3, 9, 15, 0, 0).unwrap();
+        let updated = update_activity_slot(&repo, slot.id, None, Some(afternoon), None)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.half_day, HalfDay::Afternoon);
+        assert_eq!(updated.start_time, afternoon);
+    }
+
+    #[tokio::test]
+    async fn update_activity_slot_rejects_end_before_start() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 14, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 16, 0, 0).unwrap();
+
+        let slot = start_activity(&repo, test_user_id(), None, start).await.unwrap();
+        stop_activity(&repo, test_user_id(), end).await.unwrap();
+
+        let bad_end = Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap();
+        let result = update_activity_slot(&repo, slot.id, None, None, Some(bad_end)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_activity_slot_rejects_start_after_end() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
+
+        let slot = start_activity(&repo, test_user_id(), None, start).await.unwrap();
+        stop_activity(&repo, test_user_id(), end).await.unwrap();
+
+        let bad_start = Utc.with_ymd_and_hms(2026, 3, 9, 12, 0, 0).unwrap();
+        let result = update_activity_slot(&repo, slot.id, None, Some(bad_start), None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_activity_slot_clears_task_id() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let now = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let task_id = Some(Uuid::new_v4());
+
+        let slot = start_activity(&repo, test_user_id(), task_id, now).await.unwrap();
+        assert!(slot.task_id.is_some());
+
+        let updated = update_activity_slot(&repo, slot.id, Some(None), None, None)
+            .await
+            .unwrap();
+
+        assert!(updated.task_id.is_none());
     }
 
     #[tokio::test]
