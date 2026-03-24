@@ -116,6 +116,41 @@ pub async fn update_activity_slot(
     Ok(slot)
 }
 
+/// Create a manual (completed) activity slot with explicit start and end times.
+pub async fn create_manual_activity_slot(
+    activity_repo: &dyn ActivitySlotRepository,
+    user_id: UserId,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    task_id: Option<TaskId>,
+) -> Result<ActivitySlot, AppError> {
+    // Validate: end_time must be after start_time
+    if end_time <= start_time {
+        return Err(AppError::Domain(
+            domain::errors::DomainError::ValidationError(
+                "End time must be after start time".to_string(),
+            ),
+        ));
+    }
+
+    let half_day = half_day_of(start_time.hour());
+    let date = start_time.date_naive();
+
+    let slot = ActivitySlot {
+        id: Uuid::new_v4(),
+        user_id,
+        task_id,
+        start_time,
+        end_time: Some(end_time),
+        half_day,
+        date,
+        created_at: Utc::now(),
+    };
+
+    activity_repo.save(&slot).await?;
+    Ok(slot)
+}
+
 /// Delete an activity slot.
 pub async fn delete_activity_slot(
     activity_repo: &dyn ActivitySlotRepository,
@@ -486,6 +521,49 @@ mod tests {
             .unwrap();
 
         assert!(updated.task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_manual_activity_slot_success() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 11, 30, 0).unwrap();
+        let task_id = Some(Uuid::new_v4());
+
+        let slot = create_manual_activity_slot(&repo, test_user_id(), start, end, task_id)
+            .await
+            .unwrap();
+
+        assert_eq!(slot.user_id, test_user_id());
+        assert_eq!(slot.task_id, task_id);
+        assert_eq!(slot.start_time, start);
+        assert_eq!(slot.end_time, Some(end));
+        assert_eq!(slot.half_day, HalfDay::Morning);
+        assert_eq!(slot.date, start.date_naive());
+    }
+
+    #[tokio::test]
+    async fn create_manual_activity_slot_afternoon() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 14, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 16, 0, 0).unwrap();
+
+        let slot = create_manual_activity_slot(&repo, test_user_id(), start, end, None)
+            .await
+            .unwrap();
+
+        assert_eq!(slot.half_day, HalfDay::Afternoon);
+        assert!(slot.task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_manual_activity_slot_rejects_end_before_start() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 14, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap();
+
+        let result = create_manual_activity_slot(&repo, test_user_id(), start, end, None).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
