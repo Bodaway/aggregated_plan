@@ -65,6 +65,46 @@ const DELETE_ACTIVITY_SLOT_MUTATION = `
   }
 `;
 
+const UPDATE_ACTIVITY_SLOT_MUTATION = `
+  mutation UpdateActivitySlot($id: ID!, $input: UpdateActivitySlotInput!) {
+    updateActivitySlot(id: $id, input: $input) {
+      id startTime endTime halfDay date durationMinutes task { id title }
+    }
+  }
+`;
+
+const CREATE_ACTIVITY_SLOT_MUTATION = `
+  mutation CreateActivitySlot($input: CreateActivitySlotInput!) {
+    createActivitySlot(input: $input) {
+      id startTime endTime halfDay date durationMinutes task { id title }
+    }
+  }
+`;
+
+const ACTIVE_TASKS_QUERY = `
+  query ActiveTasksForPicker {
+    tasks(filter: { status: [TODO, IN_PROGRESS] }) {
+      edges {
+        node {
+          id
+          title
+        }
+      }
+    }
+  }
+`;
+
+export interface TaskPickerItem {
+  readonly id: string;
+  readonly title: string;
+}
+
+interface ActiveTasksData {
+  readonly tasks: {
+    readonly edges: readonly { readonly node: TaskPickerItem }[];
+  };
+}
+
 interface ActivityJournalData {
   readonly activityJournal: readonly ActivitySlot[];
   readonly currentActivity: CurrentActivity | null;
@@ -76,9 +116,15 @@ export function useActivity(date: string) {
     variables: { date },
   });
 
+  const [tasksResult] = useQuery<ActiveTasksData>({
+    query: ACTIVE_TASKS_QUERY,
+  });
+
   const [, executeStart] = useMutation(START_ACTIVITY_MUTATION);
   const [, executeStop] = useMutation(STOP_ACTIVITY_MUTATION);
   const [, executeDelete] = useMutation(DELETE_ACTIVITY_SLOT_MUTATION);
+  const [, executeUpdate] = useMutation(UPDATE_ACTIVITY_SLOT_MUTATION);
+  const [, executeCreate] = useMutation(CREATE_ACTIVITY_SLOT_MUTATION);
 
   const startActivity = useCallback(
     async (taskId?: string) => {
@@ -110,14 +156,42 @@ export function useActivity(date: string) {
     [executeDelete, reexecute]
   );
 
+  const updateSlot = useCallback(
+    async (id: string, input: { taskId?: string | null; startTime?: string; endTime?: string }) => {
+      const res = await executeUpdate({ id, input });
+      if (!res.error) {
+        reexecute({ requestPolicy: 'network-only' });
+      }
+      return res;
+    },
+    [executeUpdate, reexecute]
+  );
+
+  const createSlot = useCallback(
+    async (input: { startTime: string; endTime: string; taskId?: string | null }) => {
+      const res = await executeCreate({ input });
+      if (!res.error) {
+        reexecute({ requestPolicy: 'network-only' });
+      }
+      return res;
+    },
+    [executeCreate, reexecute]
+  );
+
+  const availableTasks: TaskPickerItem[] =
+    tasksResult.data?.tasks.edges.map(e => e.node) ?? [];
+
   return {
     slots: result.data?.activityJournal ?? [],
     currentActivity: result.data?.currentActivity ?? null,
+    availableTasks,
     loading: result.fetching,
     error: result.error ?? null,
     startActivity,
     stopActivity,
     deleteSlot,
+    updateSlot,
+    createSlot,
     refetch: () => reexecute({ requestPolicy: 'network-only' }),
   };
 }
