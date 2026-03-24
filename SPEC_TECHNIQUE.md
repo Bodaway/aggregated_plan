@@ -2416,8 +2416,14 @@ input UpdateTaskInput {
   estimatedHoursOverride: Float    # null = clear override, absent = don't change
 }
 
+input CreateActivitySlotInput {
+  startTime: DateTime!
+  endTime: DateTime!
+  taskId: ID           # optional task association
+}
+
 input UpdateActivitySlotInput {
-  taskId: ID
+  taskId: MaybeUndefined<ID>  # null = clear task association, absent = no change
   startTime: DateTime
   endTime: DateTime
 }
@@ -2498,6 +2504,7 @@ type Mutation {
   # Activity tracking
   startActivity(taskId: ID): ActivitySlot!
   stopActivity: ActivitySlot
+  createActivitySlot(input: CreateActivitySlotInput!): ActivitySlot!
   updateActivitySlot(id: ID!, input: UpdateActivitySlotInput!): ActivitySlot!
   deleteActivitySlot(id: ID!): Boolean!
 
@@ -2821,6 +2828,10 @@ Activity tracking uses three trigger types (US-031):
 | **R21** | `start_activity` use case: closes active slot (sets `end_time = now`), opens new slot |
 | **R22** | Gaps between slots are "untracked". The frontend displays them as gray blocks on the timeline. |
 | **R23** | `update_activity_slot` and `delete_activity_slot` mutations allow corrections |
+| **R24** | `createActivitySlot` mutation allows manual creation of a slot with explicit `startTime`, `endTime`, and optional `taskId`. The `date` and `half_day` fields are derived from `startTime`. |
+| **R25** | Validation: `endTime > startTime` is enforced in the use case on both `createActivitySlot` and `updateActivitySlot`. A `ValidationError` is returned if violated. |
+| **R26** | When `updateActivitySlot` changes `startTime`, `half_day` is recomputed from the new `startTime`. The `date` field is not modified (read-only after creation). |
+| **R27** | In `UpdateActivitySlotInput`, `taskId` uses a `MaybeUndefined` wrapper: `null` clears the task association, absent field leaves it unchanged. |
 
 ### 13.3 Reminder Suppression
 

@@ -443,6 +443,40 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+#### US-033 : Création manuelle d'un créneau d'activité
+
+> En tant que Tech Lead, je veux créer manuellement un créneau d'activité afin de rattraper un oubli ou de saisir une activité passée.
+
+**Critères d'acceptation :**
+- L'utilisateur peut créer un créneau en saisissant :
+  - Date (obligatoire)
+  - Heure de début (obligatoire)
+  - Heure de fin (obligatoire)
+  - Tâche associée (optionnel, sélectionnée dans la liste des tâches connues)
+- L'heure de fin doit être postérieure à l'heure de début (validation bloquante)
+- Le créneau créé apparaît immédiatement dans le journal d'activité
+
+**Priorité** : Must (MVP v1)
+
+---
+
+#### US-034 : Modification d'un créneau d'activité existant
+
+> En tant que Tech Lead, je veux modifier un créneau d'activité existant afin de corriger une erreur ou d'affiner les données saisies.
+
+**Critères d'acceptation :**
+- L'utilisateur peut modifier :
+  - La tâche associée (peut être effacée pour dissocier la tâche)
+  - L'heure de début
+  - L'heure de fin
+- La date est en lecture seule lors de la modification d'un créneau existant
+- L'heure de fin doit être postérieure à l'heure de début (validation bloquante)
+- Les modifications sont persistées et immédiatement visibles dans le journal
+
+**Priorité** : Must (MVP v1)
+
+---
+
 ### 6.5 Tâches personnelles
 
 #### US-040 : Créer une tâche personnelle
