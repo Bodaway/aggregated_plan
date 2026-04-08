@@ -122,7 +122,7 @@ A single function `resolve_task(token: Option<&str>, client: &Client) -> Result<
 
 1. **Empty / `@` / `current`** → fetch `currentActivity`. Exit 4 (`PreconditionFailed`) if nothing's running, **or** if the running slot has no `taskId` (started without a task). Otherwise use that task.
 2. **UUID** (parses via `Uuid::parse_str`) → use directly.
-3. **External-key shape** (`^[A-Z][A-Z0-9]*-\d+$`, e.g. `AP-123`, `INFRA-42`) → look up by `externalKey`. This is a heuristic: it matches Jira-style keys and any other source that adopts the same convention. Sources whose `external_key` doesn't follow this shape (e.g. some Personal/Obsidian items) will fall through to step 4, which is the desired behaviour.
+3. **Source-id shape** (`^[A-Z][A-Z0-9]*-\d+$`, e.g. `AP-123`, `INFRA-42`) → look up by `sourceId`. This is a heuristic: it matches Jira-style keys and any other source that adopts the same convention. Sources whose `source_id` doesn't follow this shape (e.g. some Personal/Obsidian items) will fall through to step 4, which is the desired behaviour.
 4. **Anything else** → fuzzy match against task titles via `titleContains`.
    - 1 hit → use it.
    - 0 hits → exit 2 (`NotFound`).
@@ -132,21 +132,21 @@ Step 3 and 4 require server-side filtering. The current `tasks(filter:)` GraphQL
 
 ### Backend change required
 
-Extend `TaskFilter` (in `application/repositories/task_repository.rs` and the GraphQL `TaskFilterInput`) with:
+Extend `TaskFilter` (in `application/repositories/task_repository.rs`) and the GraphQL `TaskFilterInput` (in `api/graphql/types/task.rs`) with two new fields:
 
 ```graphql
 input TaskFilterInput {
   # ...existing fields...
-  externalKey: String        # exact match on tasks.external_key
+  sourceId: String           # exact match on tasks.source_id
   titleContains: String      # case-insensitive substring on tasks.title
 }
 ```
 
-Resolver, repository SQL, and unit tests get one new branch each. Both filters are also useful for the frontend search bar and the MCP server, so the cost is amortised.
+`source_id` is the existing column on the `tasks` table that stores Jira keys, Excel row identifiers, etc. (see `migrations/sqlite/001_initial.sql`). Resolver, repository SQL, and unit tests get one new branch each. Both filters are also useful for the frontend search bar and the MCP server, so the cost is amortised.
 
 The CLI uses these filters to:
 
-- `externalKey: "AP-123"` → exact lookup for the Jira-key path.
+- `sourceId: "AP-123"` → exact lookup for the Jira-key path.
 - `titleContains: "auth migra"` → fuzzy candidates for the title path. The CLI then ranks candidates client-side (e.g. by token-set similarity) to pick "1 hit" vs "many hits".
 
 ## Output, errors, exit codes
