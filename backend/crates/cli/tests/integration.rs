@@ -356,6 +356,53 @@ async fn stop_with_no_running_activity() {
 }
 
 #[tokio::test]
+async fn ls_prints_a_table_of_tasks() {
+    let server = mock_graphql(json!({
+        "data": {
+            "tasks": {
+                "totalCount": 2,
+                "edges": [
+                    {
+                        "node": {
+                            "id": "00000000-0000-0000-0000-000000000001",
+                            "title": "Auth migration",
+                            "sourceId": "AP-1234",
+                            "status": "IN_PROGRESS",
+                            "urgency": "HIGH",
+                            "impact": "HIGH",
+                            "trackingState": "FOLLOWED",
+                            "deadline": "2026-04-15"
+                        }
+                    },
+                    {
+                        "node": {
+                            "id": "00000000-0000-0000-0000-000000000002",
+                            "title": "DB backup",
+                            "sourceId": null,
+                            "status": "TODO",
+                            "urgency": "LOW",
+                            "impact": "MEDIUM",
+                            "trackingState": "FOLLOWED",
+                            "deadline": null
+                        }
+                    }
+                ]
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "ls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("DB backup"))
+        .stdout(predicate::str::contains("2 task"));
+}
+
+#[tokio::test]
 async fn start_with_uuid_token_starts_activity() {
     let server = mock_graphql(json!({
         "data": {

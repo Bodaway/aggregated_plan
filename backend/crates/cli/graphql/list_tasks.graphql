@@ -1,0 +1,17 @@
+query ListTasks($filter: TaskFilterInput) {
+  tasks(filter: $filter, first: 100) {
+    totalCount
+    edges {
+      node {
+        id
+        title
+        sourceId
+        status
+        urgency
+        impact
+        trackingState
+        deadline
+      }
+    }
+  }
+}

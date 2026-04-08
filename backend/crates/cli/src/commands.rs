@@ -6,9 +6,9 @@ use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    append_task_notes, complete_task, current_activity, set_tracking_state, start_activity,
-    stop_activity, update_task_status, AppendTaskNotes, CompleteTask, CurrentActivity,
-    SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
+    append_task_notes, complete_task, current_activity, list_tasks, set_tracking_state,
+    start_activity, stop_activity, update_task_status, AppendTaskNotes, CompleteTask,
+    CurrentActivity, ListTasks, SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -281,6 +281,103 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
                     println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
                 }
             }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn ls(api_url: &str, json: bool, status: &[StatusArg], triage: &[TriageArg]) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+
+    // Build filter. If user passed nothing, apply the default: followed only,
+    // status not done. If they passed any explicit filter, respect it verbatim.
+    let filter = if status.is_empty() && triage.is_empty() {
+        list_tasks::TaskFilterInput {
+            status: Some(vec![
+                list_tasks::TaskStatusGql::TODO,
+                list_tasks::TaskStatusGql::IN_PROGRESS,
+                list_tasks::TaskStatusGql::BLOCKED,
+            ]),
+            source: None,
+            project_id: None,
+            assignee: None,
+            deadline_before: None,
+            deadline_after: None,
+            tag_ids: None,
+            tracking_state: Some(vec![list_tasks::TrackingStateGql::FOLLOWED]),
+            source_id: None,
+            title_contains: None,
+        }
+    } else {
+        list_tasks::TaskFilterInput {
+            status: if status.is_empty() {
+                None
+            } else {
+                Some(
+                    status
+                        .iter()
+                        .map(|s| match s {
+                            StatusArg::Todo => list_tasks::TaskStatusGql::TODO,
+                            StatusArg::InProgress => list_tasks::TaskStatusGql::IN_PROGRESS,
+                            StatusArg::Done => list_tasks::TaskStatusGql::DONE,
+                            StatusArg::Blocked => list_tasks::TaskStatusGql::BLOCKED,
+                        })
+                        .collect(),
+                )
+            },
+            source: None,
+            project_id: None,
+            assignee: None,
+            deadline_before: None,
+            deadline_after: None,
+            tag_ids: None,
+            tracking_state: if triage.is_empty() {
+                None
+            } else {
+                Some(
+                    triage
+                        .iter()
+                        .map(|t| match t {
+                            TriageArg::Inbox => list_tasks::TrackingStateGql::INBOX,
+                            TriageArg::Followed => list_tasks::TrackingStateGql::FOLLOWED,
+                            TriageArg::Dismissed => list_tasks::TrackingStateGql::DISMISSED,
+                        })
+                        .collect(),
+                )
+            },
+            source_id: None,
+            title_contains: None,
+        }
+    };
+
+    let result = client.run::<ListTasks>(list_tasks::Variables {
+        filter: Some(filter),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            for edge in &r.data.tasks.edges {
+                let n = &edge.node;
+                let key = n.source_id.as_deref().unwrap_or("—");
+                println!(
+                    "{:10} {:14} {:8} {}",
+                    key,
+                    format!("{:?}", n.status),
+                    format!("{:?}", n.urgency),
+                    n.title
+                );
+            }
+            println!("({} task(s))", r.data.tasks.total_count);
             ExitCode::Success
         }
         Err(e) => {

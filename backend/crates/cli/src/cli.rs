@@ -105,4 +105,13 @@ pub enum Commands {
         #[arg(long)]
         keep_running: bool,
     },
+    /// List tasks. Default filter: tracking_state=followed, status≠done.
+    Ls {
+        /// Filter by status. Repeat to allow multiple.
+        #[arg(long, value_enum)]
+        status: Vec<StatusArg>,
+        /// Filter by tracking state. Repeat to allow multiple.
+        #[arg(long, value_enum)]
+        triage: Vec<TriageArg>,
+    },
 }
