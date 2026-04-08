@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
+use clap::{Parser, Subcommand};
+use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tokio::net::TcpListener;
 
 mod context;
 mod graphql;
@@ -14,12 +15,27 @@ mod state;
 
 use infrastructure::database::*;
 
+#[derive(Parser)]
+#[command(name = "api", about = "Aggregated Plan API server")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Print the GraphQL SDL to stdout and exit (used by the CLI codegen).
+    ExportSchema,
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    let cli = Cli::parse();
 
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite:aggregated_plan.db?mode=rwc".to_string());
@@ -56,6 +72,11 @@ async fn main() {
         sync_repo,
         config_repo,
     );
+
+    if let Some(Command::ExportSchema) = cli.command {
+        println!("{}", schema.sdl());
+        return;
+    }
 
     let app = Router::new()
         .route("/graphql", post(graphql::schema::graphql_handler))
