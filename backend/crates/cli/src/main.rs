@@ -20,6 +20,9 @@ fn main() -> ExitCode {
         cli::Commands::Current => commands::current(&args.api_url, args.json),
         cli::Commands::Start { task } => commands::start(&args.api_url, args.json, &task),
         cli::Commands::Stop => commands::stop(&args.api_url, args.json),
+        cli::Commands::Note { text, task } => {
+            commands::note(&args.api_url, args.json, &text, task.as_deref())
+        }
     };
     code.into()
 }

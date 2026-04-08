@@ -1,0 +1,8 @@
+mutation AppendTaskNotes($taskId: ID!, $text: String!) {
+  appendTaskNotes(taskId: $taskId, text: $text) {
+    id
+    title
+    sourceId
+    notes
+  }
+}

@@ -37,4 +37,13 @@ pub enum Commands {
     },
     /// Stop the currently running worklog. Prints duration.
     Stop,
+    /// Append a markdown note to the currently-tracked task (or --task TARGET).
+    Note {
+        /// Note text. Variadic — multiple words are joined with spaces.
+        #[arg(required = true)]
+        text: Vec<String>,
+        /// Override the implicit current-activity target.
+        #[arg(long)]
+        task: Option<String>,
+    },
 }
