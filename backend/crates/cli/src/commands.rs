@@ -1,17 +1,19 @@
 //! Subcommand implementations. Each function takes the parsed `Cli` for global
 //! flags (api_url, json) and returns an exit code.
 
-use crate::cli::{ImpactArg, StatusArg, TriageArg, UrgencyArg};
+use crate::cli::{ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg};
 use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, append_task_notes, complete_task, create_task, current_activity,
-    daily_dashboard, delete_task, get_task, list_alerts, list_tasks, priority_matrix,
-    reset_urgency, set_tracking_state, start_activity, stop_activity, update_priority,
-    update_task_status, ActivityJournal, AppendTaskNotes, CompleteTask, CreateTask,
-    CurrentActivity, DailyDashboard, DeleteTask, GetTask, ListAlerts, ListTasks, PriorityMatrix,
-    ResetUrgency, SetTrackingState, StartActivity, StopActivity, UpdatePriority, UpdateTaskStatus,
+    daily_dashboard, delete_task, force_sync, get_configuration, get_task, list_alerts, list_tasks,
+    priority_matrix, reset_urgency, resolve_alert, set_tracking_state, start_activity,
+    stop_activity, update_configuration, update_priority, update_task_status, ActivityJournal,
+    AppendTaskNotes, CompleteTask, CreateTask, CurrentActivity, DailyDashboard, DeleteTask,
+    ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks, PriorityMatrix, ResetUrgency,
+    ResolveAlert, SetTrackingState, StartActivity, StopActivity, UpdateConfiguration,
+    UpdatePriority, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -831,6 +833,137 @@ pub fn new(
         Err(e) => {
             eprintln!("error: {}", e);
             ExitCode::Generic
+        }
+    }
+}
+
+pub fn sync(api_url: &str, json: bool, source: Option<&SourceArg>) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let result = client.run::<ForceSync>(force_sync::Variables {
+        source: source.map(|s| match s {
+            SourceArg::Jira => force_sync::SourceGql::JIRA,
+            SourceArg::Excel => force_sync::SourceGql::EXCEL,
+            SourceArg::Outlook => force_sync::SourceGql::OUTLOOK,
+            SourceArg::Obsidian => force_sync::SourceGql::OBSIDIAN,
+            SourceArg::Personal => force_sync::SourceGql::PERSONAL,
+        }),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            for s in &r.data.force_sync {
+                println!(
+                    "{:?}: {:?}  (last: {})",
+                    s.source,
+                    s.status,
+                    s.last_sync_at.as_deref().unwrap_or("never")
+                );
+                if let Some(err) = s.error_message.as_deref() {
+                    println!("  error: {}", err);
+                }
+            }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn resolve(api_url: &str, json: bool, alert: &str) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let result = client.run::<ResolveAlert>(resolve_alert::Variables {
+        id: alert.to_string(),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            println!("✓ resolved alert {}", r.data.resolve_alert.id);
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn config(api_url: &str, json: bool, cmd: &ConfigCmd) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    match cmd {
+        ConfigCmd::Get { key } => {
+            let result = client.run::<GetConfiguration>(get_configuration::Variables {});
+            match result {
+                Ok(r) => {
+                    if json {
+                        if let Err(e) = print_json(&r.raw) {
+                            eprintln!("error writing output: {}", e);
+                            return ExitCode::Generic;
+                        }
+                        return ExitCode::Success;
+                    }
+                    let cfg = &r.data.configuration;
+                    match key {
+                        Some(k) => {
+                            if let Some(v) = cfg.get(k.as_str()) {
+                                println!("{} = {}", k, v);
+                            } else {
+                                eprintln!("error: no such config key `{}`", k);
+                                return ExitCode::NotFound;
+                            }
+                        }
+                        None => {
+                            if let Some(map) = cfg.as_object() {
+                                for (k, v) in map {
+                                    println!("{} = {}", k, v);
+                                }
+                            }
+                        }
+                    }
+                    ExitCode::Success
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    ExitCode::Generic
+                }
+            }
+        }
+        ConfigCmd::Set { key, value } => {
+            let result = client.run::<UpdateConfiguration>(update_configuration::Variables {
+                key: key.clone(),
+                value: value.clone(),
+            });
+            match result {
+                Ok(r) => {
+                    if json {
+                        if let Err(e) = print_json(&r.raw) {
+                            eprintln!("error writing output: {}", e);
+                            return ExitCode::Generic;
+                        }
+                        return ExitCode::Success;
+                    }
+                    let _ = r.data.update_configuration;
+                    println!("✓ {} = {}", key, value);
+                    ExitCode::Success
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    ExitCode::Generic
+                }
+            }
         }
     }
 }

@@ -1,0 +1,8 @@
+mutation ForceSync($source: SourceGql) {
+  forceSync(source: $source) {
+    source
+    status
+    lastSyncAt
+    errorMessage
+  }
+}

@@ -71,6 +71,9 @@ fn main() -> ExitCode {
             impact.as_ref(),
             hours,
         ),
+        cli::Commands::Sync { source } => commands::sync(&args.api_url, args.json, source.as_ref()),
+        cli::Commands::Resolve { alert } => commands::resolve(&args.api_url, args.json, &alert),
+        cli::Commands::Config { cmd } => commands::config(&args.api_url, args.json, &cmd),
     };
     code.into()
 }

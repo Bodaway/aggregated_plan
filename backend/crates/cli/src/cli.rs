@@ -176,4 +176,34 @@ pub enum Commands {
         #[arg(long)]
         hours: Option<f64>,
     },
+    /// Trigger a sync. With no --source, syncs all configured sources.
+    Sync {
+        #[arg(long, value_enum)]
+        source: Option<SourceArg>,
+    },
+    /// Resolve an alert by ID.
+    Resolve { alert: String },
+    /// Read or write configuration entries.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+#[value(rename_all = "snake_case")]
+pub enum SourceArg {
+    Jira,
+    Excel,
+    Outlook,
+    Obsidian,
+    Personal,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigCmd {
+    /// Print all config (or just one key if KEY is given).
+    Get { key: Option<String> },
+    /// Set KEY to VALUE.
+    Set { key: String, value: String },
 }

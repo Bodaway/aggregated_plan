@@ -1,0 +1,3 @@
+mutation UpdateConfiguration($key: String!, $value: String!) {
+  updateConfiguration(key: $key, value: $value)
+}

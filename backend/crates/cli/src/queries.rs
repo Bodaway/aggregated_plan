@@ -174,3 +174,35 @@ pub struct UpdatePriority;
     response_derives = "Debug, Clone"
 )]
 pub struct ResetUrgency;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/force_sync.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ForceSync;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/resolve_alert.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ResolveAlert;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/get_configuration.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct GetConfiguration;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/update_configuration.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct UpdateConfiguration;

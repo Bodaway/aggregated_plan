@@ -625,6 +625,99 @@ async fn start_with_uuid_token_starts_activity() {
 }
 
 #[tokio::test]
+async fn sync_prints_source_statuses() {
+    let server = mock_graphql(json!({
+        "data": {
+            "forceSync": [
+                {
+                    "source": "JIRA",
+                    "status": "SUCCESS",
+                    "lastSyncAt": "2026-04-08T09:00:00Z",
+                    "errorMessage": null
+                }
+            ]
+        }
+    }))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "sync", "--source", "jira"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("JIRA"))
+        .stdout(predicate::str::contains("SUCCESS"));
+}
+
+#[tokio::test]
+async fn resolve_marks_alert_resolved() {
+    let server = mock_graphql(json!({
+        "data": {
+            "resolveAlert": {
+                "id": "00000000-0000-0000-0000-000000000030",
+                "alertType": "DEADLINE",
+                "severity": "WARNING",
+                "message": "AP-1234 due in 3 days",
+                "resolved": true
+            }
+        }
+    }))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args([
+            "--api-url",
+            &url,
+            "resolve",
+            "00000000-0000-0000-0000-000000000030",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("resolved"));
+}
+
+#[tokio::test]
+async fn config_get_prints_all_keys() {
+    let server = mock_graphql(json!({
+        "data": {
+            "configuration": {
+                "general.working_hours": "8",
+                "jira.url": "https://example.atlassian.net"
+            }
+        }
+    }))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "config", "get"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("general.working_hours"))
+        .stdout(predicate::str::contains("jira.url"));
+}
+
+#[tokio::test]
+async fn config_set_sets_a_key() {
+    let server = mock_graphql(json!({ "data": { "updateConfiguration": true } })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args([
+            "--api-url",
+            &url,
+            "config",
+            "set",
+            "general.working_hours",
+            "7",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("general.working_hours = 7"));
+}
+
+#[tokio::test]
 async fn priority_sets_urgency_and_impact() {
     let server = mock_graphql(json!({
         "data": {
