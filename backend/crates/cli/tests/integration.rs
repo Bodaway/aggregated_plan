@@ -550,6 +550,30 @@ async fn ls_prints_a_table_of_tasks() {
 }
 
 #[tokio::test]
+async fn new_creates_personal_task() {
+    let server = mock_graphql(json!({
+        "data": {
+            "createTask": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": "Write postmortem",
+                "sourceId": null,
+                "status": "TODO",
+                "urgency": "MEDIUM",
+                "impact": "MEDIUM"
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "new", "Write postmortem"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created"))
+        .stdout(predicate::str::contains("Write postmortem"));
+}
+
+#[tokio::test]
 async fn start_with_uuid_token_starts_activity() {
     let server = mock_graphql(json!({
         "data": {

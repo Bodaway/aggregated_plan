@@ -1,16 +1,16 @@
 //! Subcommand implementations. Each function takes the parsed `Cli` for global
 //! flags (api_url, json) and returns an exit code.
 
-use crate::cli::{StatusArg, TriageArg};
+use crate::cli::{ImpactArg, StatusArg, TriageArg, UrgencyArg};
 use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    activity_journal, append_task_notes, complete_task, current_activity, daily_dashboard,
-    get_task, list_alerts, list_tasks, priority_matrix, set_tracking_state, start_activity,
-    stop_activity, update_task_status, ActivityJournal, AppendTaskNotes, CompleteTask,
-    CurrentActivity, DailyDashboard, GetTask, ListAlerts, ListTasks, PriorityMatrix,
-    SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
+    activity_journal, append_task_notes, complete_task, create_task, current_activity,
+    daily_dashboard, get_task, list_alerts, list_tasks, priority_matrix, set_tracking_state,
+    start_activity, stop_activity, update_task_status, ActivityJournal, AppendTaskNotes,
+    CompleteTask, CreateTask, CurrentActivity, DailyDashboard, GetTask, ListAlerts, ListTasks,
+    PriorityMatrix, SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -638,6 +638,60 @@ pub fn current(api_url: &str, json: bool) -> ExitCode {
                     );
                 }
             }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn new(
+    api_url: &str,
+    json: bool,
+    title: &str,
+    deadline: Option<&str>,
+    urgency: Option<&UrgencyArg>,
+    impact: Option<&ImpactArg>,
+    hours: Option<f64>,
+) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let input = create_task::CreateTaskInput {
+        title: title.to_string(),
+        description: None,
+        notes: None,
+        project_id: None,
+        deadline: deadline.map(|s| s.to_string()),
+        planned_start: None,
+        planned_end: None,
+        estimated_hours: hours,
+        impact: impact.map(|i| match i {
+            ImpactArg::Low => create_task::ImpactLevelGql::LOW,
+            ImpactArg::Medium => create_task::ImpactLevelGql::MEDIUM,
+            ImpactArg::High => create_task::ImpactLevelGql::HIGH,
+            ImpactArg::Critical => create_task::ImpactLevelGql::CRITICAL,
+        }),
+        urgency: urgency.map(|u| match u {
+            UrgencyArg::Low => create_task::UrgencyLevelGql::LOW,
+            UrgencyArg::Medium => create_task::UrgencyLevelGql::MEDIUM,
+            UrgencyArg::High => create_task::UrgencyLevelGql::HIGH,
+            UrgencyArg::Critical => create_task::UrgencyLevelGql::CRITICAL,
+        }),
+        tag_ids: None,
+    };
+
+    let result = client.run::<CreateTask>(create_task::Variables { input });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            println!("＋ created: {}", r.data.create_task.title);
             ExitCode::Success
         }
         Err(e) => {

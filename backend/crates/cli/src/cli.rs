@@ -23,6 +23,24 @@ impl StatusArg {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 #[value(rename_all = "snake_case")]
+pub enum UrgencyArg {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+#[value(rename_all = "snake_case")]
+pub enum ImpactArg {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+#[value(rename_all = "snake_case")]
 pub enum TriageArg {
     Inbox,
     Followed,
@@ -133,5 +151,17 @@ pub enum Commands {
         /// Filter by tracking state. Repeat to allow multiple.
         #[arg(long, value_enum)]
         triage: Vec<TriageArg>,
+    },
+    /// Create a new personal task.
+    New {
+        title: String,
+        #[arg(long)]
+        deadline: Option<String>,
+        #[arg(long, value_enum)]
+        urgency: Option<UrgencyArg>,
+        #[arg(long, value_enum)]
+        impact: Option<ImpactArg>,
+        #[arg(long)]
+        hours: Option<f64>,
     },
 }

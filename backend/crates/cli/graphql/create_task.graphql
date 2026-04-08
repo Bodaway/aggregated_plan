@@ -1,0 +1,10 @@
+mutation CreateTask($input: CreateTaskInput!) {
+  createTask(input: $input) {
+    id
+    title
+    sourceId
+    status
+    urgency
+    impact
+  }
+}
