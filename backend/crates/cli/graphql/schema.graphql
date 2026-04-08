@@ -1,0 +1,775 @@
+type ActivitySlotGql {
+	id: ID!
+	taskId: ID
+	"""
+	The associated task, resolved by looking up the task_id.
+	"""
+	task: ActivityTaskSummaryGql
+	startTime: DateTime!
+	endTime: DateTime
+	halfDay: HalfDayGql!
+	date: NaiveDate!
+	"""
+	Computed duration in hours (None if still active).
+	"""
+	durationHours: Float
+	"""
+	Computed duration in minutes (None if still active).
+	"""
+	durationMinutes: Int
+	createdAt: DateTime!
+}
+
+"""
+Lightweight task summary returned on activity slots (stub until data loader is implemented).
+"""
+type ActivityTaskSummaryGql {
+	id: ID!
+	title: String!
+}
+
+"""
+Relay-style connection for paginated alert results.
+"""
+type AlertConnection {
+	edges: [AlertEdge!]!
+	pageInfo: PageInfo!
+	totalCount: Int!
+}
+
+type AlertEdge {
+	node: AlertGql!
+	cursor: String!
+}
+
+type AlertGql {
+	id: ID!
+	alertType: AlertTypeGql!
+	severity: AlertSeverityGql!
+	message: String!
+	relatedItems: [RelatedItemGql!]!
+	date: NaiveDate!
+	resolved: Boolean!
+	createdAt: DateTime!
+}
+
+"""
+GraphQL enum for alert severity.
+"""
+enum AlertSeverityGql {
+	INFORMATION
+	WARNING
+	CRITICAL
+}
+
+"""
+GraphQL enum for alert type.
+"""
+enum AlertTypeGql {
+	DEADLINE
+	OVERLOAD
+	CONFLICT
+}
+
+"""
+Combined mutation root that merges the base MutationRoot with future module roots.
+"""
+type CombinedMutation {
+	"""
+	No-op mutation placeholder. Returns true.
+	"""
+	noop: Boolean!
+	"""
+	Create a new personal task.
+	"""
+	createTask(input: CreateTaskInput!): TaskGql!
+	"""
+	Update an existing task.
+	"""
+	updateTask(id: ID!, input: UpdateTaskInput!): TaskGql!
+	"""
+	Delete a task by ID. Returns true on success.
+	"""
+	deleteTask(id: ID!): Boolean!
+	"""
+	Mark a task as completed.
+	"""
+	completeTask(id: ID!): TaskGql!
+	"""
+	Append a line of text to a task's user-owned `notes` field. Backs the
+	activity-timer "quick note" feature: existing content is preserved and
+	the new text is added on a new paragraph.
+	"""
+	appendTaskNotes(taskId: ID!, text: String!): TaskGql!
+	"""
+	Set the tracking state of a task (inbox/followed/dismissed).
+	"""
+	setTrackingState(taskId: ID!, state: TrackingStateGql!): TaskGql!
+	"""
+	Batch-set the tracking state for multiple tasks.
+	"""
+	setTrackingStateBatch(taskIds: [ID!]!, state: TrackingStateGql!): [TaskGql!]!
+	"""
+	Override the urgency level of a task (manual override).
+	"""
+	updatePriority(taskId: ID!, urgency: UrgencyLevelGql, impact: ImpactLevelGql): TaskGql!
+	"""
+	Reset urgency to auto-calculated based on deadline.
+	"""
+	resetUrgency(taskId: ID!): TaskGql!
+	"""
+	Trigger a sync for a specific source (or all sources if not specified).
+	Returns updated sync statuses.
+	"""
+	forceSync(source: SourceGql): [SyncStatusGql!]!
+	"""
+	Manually link two tasks.
+	"""
+	linkTasks(taskIdPrimary: ID!, taskIdSecondary: ID!): Boolean!
+	"""
+	Unlink two tasks by removing their link.
+	"""
+	unlinkTasks(linkId: ID!): Boolean!
+	"""
+	Confirm or reject a deduplication suggestion.
+	"""
+	confirmDeduplication(taskIdPrimary: ID!, taskIdSecondary: ID!, accept: Boolean!): Boolean!
+	"""
+	Resolve an alert by ID.
+	"""
+	resolveAlert(id: ID!): AlertGql!
+	"""
+	Start tracking a new activity. Stops the previous active slot (if any).
+	"""
+	startActivity(taskId: ID): ActivitySlotGql!
+	"""
+	Stop the currently active activity tracking.
+	"""
+	stopActivity: ActivitySlotGql
+	"""
+	Update an existing activity slot.
+	"""
+	updateActivitySlot(id: ID!, input: UpdateActivitySlotInput!): ActivitySlotGql!
+	"""
+	Delete an activity slot by ID.
+	"""
+	deleteActivitySlot(id: ID!): Boolean!
+	"""
+	Create a manual activity slot with explicit start and end times.
+	"""
+	createActivitySlot(input: CreateActivitySlotInput!): ActivitySlotGql!
+	"""
+	Update the project association of a meeting.
+	"""
+	updateMeetingProject(meetingId: ID!, projectId: ID): MeetingGql!
+	"""
+	Create a new tag.
+	"""
+	createTag(name: String!, color: String): TagGql!
+	"""
+	Update an existing tag.
+	"""
+	updateTag(id: ID!, name: String, color: String): TagGql!
+	"""
+	Delete a tag by ID. Returns true on success.
+	"""
+	deleteTag(id: ID!): Boolean!
+	"""
+	Update a configuration key-value pair.
+	"""
+	updateConfiguration(key: String!, value: String!): Boolean!
+}
+
+"""
+Combined query root that merges the base QueryRoot with future module roots.
+"""
+type CombinedQuery {
+	"""
+	Health check query. Returns true if the server is running.
+	"""
+	health: Boolean!
+	"""
+	Fetch a single task by its ID.
+	"""
+	task(id: ID!): TaskGql
+	"""
+	Fetch tasks with optional filtering and cursor-based pagination.
+	"""
+	tasks(filter: TaskFilterInput, first: Int! = 50, after: String): TaskConnection!
+	"""
+	Fetch all projects for the current user.
+	"""
+	projects: [ProjectGql!]!
+	"""
+	Fetch all tags for the current user.
+	"""
+	tags: [TagGql!]!
+	"""
+	Fetch the daily dashboard for a given date, including tasks, meetings, alerts,
+	sync statuses, and the weekly workload for the containing week.
+	"""
+	dailyDashboard(date: NaiveDate!): DailyDashboardGql!
+	"""
+	Fetch the weekly workload for a given week (identified by the Monday date).
+	"""
+	weeklyWorkload(weekStart: NaiveDate!): WeeklyWorkloadGql!
+	"""
+	Get the Eisenhower priority matrix for the current user.
+	"""
+	priorityMatrix: PriorityMatrixGql!
+	"""
+	Fetch all sync statuses for the current user.
+	"""
+	syncStatuses: [SyncStatusGql!]!
+	"""
+	Get deduplication suggestions for the current user.
+	"""
+	deduplicationSuggestions: [DeduplicationSuggestionGql!]!
+	"""
+	Get alerts for the current user with optional filtering and cursor-based pagination.
+	"""
+	alerts(resolved: Boolean, first: Int! = 50, after: String): AlertConnection!
+	"""
+	Get the activity journal for a given date.
+	"""
+	activityJournal(date: NaiveDate!): [ActivitySlotGql!]!
+	"""
+	Get the currently active activity slot.
+	"""
+	currentActivity: ActivitySlotGql
+	"""
+	Get a weekly activity summary with daily totals and per-task breakdown.
+	"""
+	weeklyActivitySummary(weekStart: NaiveDate!): WeeklyActivitySummaryGql!
+	"""
+	Get user configuration as a JSON-like list of key-value pairs.
+	"""
+	configuration: JSON!
+}
+
+"""
+Input for creating a manual (completed) activity slot.
+"""
+input CreateActivitySlotInput {
+	"""
+	Start time (also determines date and half-day).
+	"""
+	startTime: DateTime!
+	"""
+	End time (must be after start_time).
+	"""
+	endTime: DateTime!
+	"""
+	Optional task to associate with.
+	"""
+	taskId: ID
+}
+
+"""
+Input for creating a new task.
+"""
+input CreateTaskInput {
+	title: String!
+	description: String
+	notes: String
+	projectId: ID
+	deadline: NaiveDate
+	plannedStart: DateTime
+	plannedEnd: DateTime
+	estimatedHours: Float
+	impact: ImpactLevelGql
+	urgency: UrgencyLevelGql
+	tagIds: [ID!]
+}
+
+"""
+Daily total tracked hours.
+"""
+type DailyActivityTotalGql {
+	date: NaiveDate!
+	totalHours: Float!
+}
+
+type DailyDashboardGql {
+	date: NaiveDate!
+	tasks: [TaskGql!]!
+	meetings: [MeetingGql!]!
+	alerts: [AlertGql!]!
+	weeklyWorkload: WeeklyWorkloadGql!
+	syncStatuses: [SyncStatusGql!]!
+	"""
+	Number of working hours per day from user configuration (default 8).
+	"""
+	workingHoursPerDay: Int!
+	"""
+	ISO weekday numbers for working days (1=Mon … 7=Sun).
+	"""
+	workingDays: [Int!]!
+}
+
+"""
+Implement the DateTime<Utc> scalar
+
+The input/output is a string in RFC3339 format.
+"""
+scalar DateTime
+
+type DeduplicationSuggestionGql {
+	"""
+	Unique suggestion identifier.
+	"""
+	id: ID!
+	"""
+	The first task in the potential duplicate pair.
+	"""
+	taskA: TaskGql!
+	"""
+	The second task in the potential duplicate pair.
+	"""
+	taskB: TaskGql!
+	"""
+	Overall similarity score between 0.0 and 1.0.
+	"""
+	confidenceScore: Float!
+	"""
+	Title similarity score between 0.0 and 1.0.
+	"""
+	titleSimilarity: Float!
+	"""
+	Whether the assignees match.
+	"""
+	assigneeMatch: Boolean!
+	"""
+	Whether the projects match.
+	"""
+	projectMatch: Boolean!
+}
+
+"""
+GraphQL enum for half-day.
+"""
+enum HalfDayGql {
+	MORNING
+	AFTERNOON
+}
+
+type HalfDaySlotGql {
+	date: NaiveDate!
+	halfDay: HalfDayGql!
+	meetings: [MeetingGql!]!
+	tasks: [TaskGql!]!
+	"""
+	Fraction of the half-day consumed (0.0 to 1.0+).
+	"""
+	consumption: Float!
+	"""
+	Whether this slot is considered free (consumption < 0.5).
+	"""
+	isFree: Boolean!
+}
+
+"""
+GraphQL enum for impact level.
+"""
+enum ImpactLevelGql {
+	LOW
+	MEDIUM
+	HIGH
+	CRITICAL
+}
+
+"""
+A scalar that can represent any JSON value.
+"""
+scalar JSON
+
+type MeetingGql {
+	id: ID!
+	title: String!
+	startTime: DateTime!
+	endTime: DateTime!
+	"""
+	Computed duration in hours.
+	"""
+	durationHours: Float!
+	"""
+	Computed half-day consumption (0.5 or 1.0 depending on duration and time span).
+	"""
+	halfDayConsumption: Float!
+	location: String
+	participants: [String!]!
+	projectId: ID
+	outlookId: String!
+	showAs: String
+	createdAt: DateTime!
+}
+
+"""
+ISO 8601 calendar date without timezone.
+Format: %Y-%m-%d
+
+# Examples
+
+* `1994-11-13`
+* `2000-02-24`
+"""
+scalar NaiveDate
+
+"""
+Relay-style pagination info.
+"""
+type PageInfo {
+	"""
+	Whether there are more items after the last edge.
+	"""
+	hasNextPage: Boolean!
+	"""
+	Whether there are items before the first edge.
+	"""
+	hasPreviousPage: Boolean!
+	"""
+	Cursor of the last edge in the current page.
+	"""
+	endCursor: String
+	"""
+	Cursor of the first edge in the current page.
+	"""
+	startCursor: String
+}
+
+type PriorityMatrixGql {
+	"""
+	Tasks in the Urgent + Important quadrant (Do First).
+	"""
+	urgentImportant: [TaskGql!]!
+	"""
+	Tasks in the Important (but not urgent) quadrant (Schedule).
+	"""
+	important: [TaskGql!]!
+	"""
+	Tasks in the Urgent (but not important) quadrant (Delegate).
+	"""
+	urgent: [TaskGql!]!
+	"""
+	Tasks in the Neither urgent nor important quadrant (Eliminate/Defer).
+	"""
+	neither: [TaskGql!]!
+}
+
+type ProjectGql {
+	id: ID!
+	name: String!
+	source: SourceGql!
+	sourceId: String
+	status: ProjectStatusGql!
+	"""
+	Total number of tasks in this project. Stub: returns 0 for now.
+	"""
+	taskCount: Int!
+	"""
+	Number of open (non-done) tasks in this project. Stub: returns 0 for now.
+	"""
+	openTaskCount: Int!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+"""
+GraphQL enum for project status.
+"""
+enum ProjectStatusGql {
+	ACTIVE
+	PAUSED
+	COMPLETED
+}
+
+"""
+Lightweight project summary returned on tasks (stub until data loader is implemented).
+"""
+type ProjectSummaryGql {
+	name: String!
+}
+
+"""
+GraphQL enum for Eisenhower quadrant.
+"""
+enum QuadrantGql {
+	URGENT_IMPORTANT
+	IMPORTANT
+	URGENT
+	NEITHER
+}
+
+type RelatedItemGql {
+	"""
+	The type of the related item: "TASK" or "MEETING".
+	"""
+	itemType: String!
+	"""
+	The ID of the related item.
+	"""
+	itemId: ID!
+}
+
+"""
+GraphQL enum for task source.
+"""
+enum SourceGql {
+	JIRA
+	EXCEL
+	OBSIDIAN
+	PERSONAL
+	OUTLOOK
+}
+
+"""
+GraphQL enum for sync source status.
+"""
+enum SyncSourceStatusGql {
+	IDLE
+	SYNCING
+	SUCCESS
+	ERROR
+}
+
+type SyncStatusGql {
+	source: SourceGql!
+	lastSyncAt: DateTime
+	status: SyncSourceStatusGql!
+	errorMessage: String
+}
+
+type TagGql {
+	id: ID!
+	name: String!
+	color: String
+}
+
+type TaskActivitySummaryGql {
+	taskId: ID
+	taskTitle: String
+	sourceId: String
+	totalHours: Float!
+	dailyHours: [Float!]!
+}
+
+"""
+Relay-style connection for paginated task results.
+"""
+type TaskConnection {
+	edges: [TaskEdge!]!
+	pageInfo: PageInfo!
+	totalCount: Int!
+}
+
+type TaskEdge {
+	node: TaskGql!
+	cursor: String!
+}
+
+"""
+Filter input for querying tasks.
+"""
+input TaskFilterInput {
+	status: [TaskStatusGql!]
+	source: [SourceGql!]
+	projectId: ID
+	assignee: String
+	deadlineBefore: NaiveDate
+	deadlineAfter: NaiveDate
+	tagIds: [ID!]
+	trackingState: [TrackingStateGql!]
+	"""
+	Exact match on `tasks.source_id` (e.g. a Jira key).
+	"""
+	sourceId: String
+	"""
+	Case-insensitive substring match on `tasks.title`.
+	"""
+	titleContains: String
+}
+
+type TaskGql {
+	id: ID!
+	title: String!
+	description: String
+	"""
+	User-owned markdown notes — preserved across Jira syncs.
+	"""
+	notes: String
+	source: SourceGql!
+	sourceId: String
+	jiraStatus: String
+	status: TaskStatusGql!
+	projectId: ID
+	"""
+	The associated project. Resolved via data loader in a later task.
+	Returns None for now.
+	"""
+	project: ProjectSummaryGql
+	assignee: String
+	deadline: NaiveDate
+	plannedStart: DateTime
+	plannedEnd: DateTime
+	estimatedHours: Float
+	urgency: UrgencyLevelGql!
+	urgencyManual: Boolean!
+	impact: ImpactLevelGql!
+	"""
+	Computed Eisenhower quadrant based on urgency and impact.
+	"""
+	quadrant: QuadrantGql!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+	"""
+	Tags associated with this task. Stub: returns empty vec for now.
+	"""
+	tags: [TagGql!]!
+	"""
+	Tag IDs associated with this task.
+	"""
+	tagIds: [ID!]!
+	trackingState: TrackingStateGql!
+	jiraRemainingSeconds: Int
+	jiraOriginalEstimateSeconds: Int
+	jiraTimeSpentSeconds: Int
+	remainingHoursOverride: Float
+	estimatedHoursOverride: Float
+	"""
+	Computed: local override > Jira remaining > None
+	"""
+	effectiveRemainingHours: Float
+	"""
+	Computed: local override > Jira estimate > estimated_hours
+	"""
+	effectiveEstimatedHours: Float
+}
+
+"""
+GraphQL enum for task status.
+"""
+enum TaskStatusGql {
+	TODO
+	IN_PROGRESS
+	DONE
+	BLOCKED
+}
+
+"""
+GraphQL enum for task tracking state (triage workflow).
+"""
+enum TrackingStateGql {
+	INBOX
+	FOLLOWED
+	DISMISSED
+}
+
+"""
+Input for updating an existing activity slot.
+"""
+input UpdateActivitySlotInput {
+	"""
+	Change the associated task. Null clears it, undefined leaves unchanged.
+	"""
+	taskId: ID
+	"""
+	Update the start time.
+	"""
+	startTime: DateTime
+	"""
+	Update the end time.
+	"""
+	endTime: DateTime
+}
+
+"""
+Input for updating an existing task.
+"""
+input UpdateTaskInput {
+	title: String
+	description: String
+	notes: String
+	projectId: ID
+	deadline: NaiveDate
+	plannedStart: DateTime = null
+	plannedEnd: DateTime
+	estimatedHours: Float
+	status: TaskStatusGql
+	impact: ImpactLevelGql
+	urgency: UrgencyLevelGql
+	tagIds: [ID!]
+	"""
+	Set to Some(Some(val)) to override, Some(None) to clear, None to leave unchanged.
+	"""
+	remainingHoursOverride: Float
+	"""
+	Set to Some(Some(val)) to override, Some(None) to clear, None to leave unchanged.
+	"""
+	estimatedHoursOverride: Float
+}
+
+"""
+GraphQL enum for urgency level.
+"""
+enum UrgencyLevelGql {
+	LOW
+	MEDIUM
+	HIGH
+	CRITICAL
+}
+
+type WeeklyActivitySummaryGql {
+	weekStart: NaiveDate!
+	weekEnd: NaiveDate!
+	totalHours: Float!
+	dailyTotals: [DailyActivityTotalGql!]!
+	taskBreakdown: [TaskActivitySummaryGql!]!
+}
+
+type WeeklyWorkloadGql {
+	weekStart: NaiveDate!
+	"""
+	Number of half-day slots available in the week (default 10).
+	"""
+	capacity: Int!
+	"""
+	Total planned task hours for the week.
+	"""
+	totalPlanned: Float!
+	"""
+	Total meeting hours for the week.
+	"""
+	totalMeetings: Float!
+	capacityHours: Float!
+	"""
+	Whether the weekly workload exceeds capacity.
+	"""
+	overload: Boolean!
+	"""
+	Excess hours over capacity (0.0 if not overloaded).
+	"""
+	excessHours: Float!
+	halfDays: [HalfDaySlotGql!]!
+	"""
+	ISO weekday numbers for working days (1=Mon … 7=Sun).
+	"""
+	workingDays: [Int!]!
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Provides a scalar specification URL for specifying the behavior of custom scalar types.
+"""
+directive @specifiedBy(url: String!) on SCALAR
+schema {
+	query: CombinedQuery
+	mutation: CombinedMutation
+}
+

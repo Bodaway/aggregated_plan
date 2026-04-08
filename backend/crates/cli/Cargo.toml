@@ -1,0 +1,27 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aplan"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["blocking", "json"], default-features = false, optional = false }
+graphql_client = { version = "0.14", features = ["reqwest-blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+thiserror = { workspace = true }
+owo-colors = { version = "4", features = ["supports-colors"] }
+dotenvy = "0.15"
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+wiremock = "0.6"
+tokio = { workspace = true }
