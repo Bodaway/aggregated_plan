@@ -356,6 +356,30 @@ async fn stop_with_no_running_activity() {
 }
 
 #[tokio::test]
+async fn matrix_prints_four_quadrants() {
+    let server = mock_graphql(json!({
+        "data": {
+            "priorityMatrix": {
+                "urgentImportant": [
+                    { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration", "sourceId": "AP-1234", "urgency": "HIGH", "impact": "HIGH" }
+                ],
+                "important": [],
+                "urgent":    [],
+                "neither":   []
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "matrix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("URGENT + IMPORTANT"))
+        .stdout(predicate::str::contains("Auth migration"));
+}
+
+#[tokio::test]
 async fn dash_prints_summary_sections() {
     let server = mock_graphql(json!({
         "data": {

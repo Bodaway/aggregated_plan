@@ -7,9 +7,9 @@ use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     append_task_notes, complete_task, current_activity, daily_dashboard, get_task, list_tasks,
-    set_tracking_state, start_activity, stop_activity, update_task_status, AppendTaskNotes,
-    CompleteTask, CurrentActivity, DailyDashboard, GetTask, ListTasks, SetTrackingState,
-    StartActivity, StopActivity, UpdateTaskStatus,
+    priority_matrix, set_tracking_state, start_activity, stop_activity, update_task_status,
+    AppendTaskNotes, CompleteTask, CurrentActivity, DailyDashboard, GetTask, ListTasks,
+    PriorityMatrix, SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -281,6 +281,48 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
                     let m = mins % 60;
                     println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
                 }
+            }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn matrix(api_url: &str, json: bool) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let result = client.run::<PriorityMatrix>(priority_matrix::Variables {});
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            let m = r.data.priority_matrix;
+            println!("\n[URGENT + IMPORTANT] ({})", m.urgent_important.len());
+            for t in &m.urgent_important {
+                let key = t.source_id.as_deref().unwrap_or("—");
+                println!("  {:10} {}", key, t.title);
+            }
+            println!("\n[IMPORTANT] ({})", m.important.len());
+            for t in &m.important {
+                let key = t.source_id.as_deref().unwrap_or("—");
+                println!("  {:10} {}", key, t.title);
+            }
+            println!("\n[URGENT] ({})", m.urgent.len());
+            for t in &m.urgent {
+                let key = t.source_id.as_deref().unwrap_or("—");
+                println!("  {:10} {}", key, t.title);
+            }
+            println!("\n[NEITHER] ({})", m.neither.len());
+            for t in &m.neither {
+                let key = t.source_id.as_deref().unwrap_or("—");
+                println!("  {:10} {}", key, t.title);
             }
             ExitCode::Success
         }

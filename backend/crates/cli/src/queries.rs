@@ -118,3 +118,11 @@ pub struct GetTask;
     response_derives = "Debug, Clone"
 )]
 pub struct DailyDashboard;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/priority_matrix.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct PriorityMatrix;

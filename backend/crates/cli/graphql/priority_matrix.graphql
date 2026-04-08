@@ -1,0 +1,8 @@
+query PriorityMatrix {
+  priorityMatrix {
+    urgentImportant { id title sourceId urgency impact }
+    important       { id title sourceId urgency impact }
+    urgent          { id title sourceId urgency impact }
+    neither         { id title sourceId urgency impact }
+  }
+}

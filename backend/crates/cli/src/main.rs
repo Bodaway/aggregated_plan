@@ -37,6 +37,7 @@ fn main() -> ExitCode {
         }
         cli::Commands::Show { task } => commands::show(&args.api_url, args.json, &task),
         cli::Commands::Dash { date } => commands::dash(&args.api_url, args.json, date.as_deref()),
+        cli::Commands::Matrix => commands::matrix(&args.api_url, args.json),
     };
     code.into()
 }

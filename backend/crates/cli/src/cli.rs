@@ -113,6 +113,8 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Print the Eisenhower priority matrix grouped by quadrant.
+    Matrix,
     /// List tasks. Default filter: tracking_state=followed, status≠done.
     Ls {
         /// Filter by status. Repeat to allow multiple.
