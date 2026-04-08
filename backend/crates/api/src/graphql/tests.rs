@@ -66,6 +66,15 @@ impl TaskRepository for InMemoryTaskRepository {
                     true
                 }
             })
+            .filter(|t| match (&filter.source_id, &t.source_id) {
+                (Some(needle), Some(actual)) => actual == needle,
+                (Some(_), None) => false,
+                (None, _) => true,
+            })
+            .filter(|t| match &filter.title_contains {
+                Some(needle) => t.title.to_lowercase().contains(&needle.to_lowercase()),
+                None => true,
+            })
             .cloned()
             .collect();
         result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -1376,4 +1385,56 @@ async fn weekly_workload_returns_structure() {
         assert_eq!(slot["meetings"].as_array().unwrap().len(), 0);
         assert_eq!(slot["tasks"].as_array().unwrap().len(), 0);
     }
+}
+
+#[tokio::test]
+async fn tasks_query_filters_by_source_id() {
+    let schema = build_test_schema();
+
+    let _ = schema
+        .execute(r#"mutation { createTask(input: { title: "Auth migration" }) { id } }"#)
+        .await;
+
+    // No-match: filter for a sourceId that none of the seeded tasks have.
+    let no_match = schema
+        .execute(r#"{ tasks(filter: { sourceId: "DOES-NOT-EXIST" }) { totalCount } }"#)
+        .await;
+    assert!(no_match.errors.is_empty(), "Errors: {:?}", no_match.errors);
+    let no_match_data = no_match.data.into_json().unwrap();
+    assert_eq!(no_match_data["tasks"]["totalCount"], 0);
+}
+
+#[tokio::test]
+async fn tasks_query_filters_by_title_contains() {
+    let schema = build_test_schema();
+
+    let _ = schema
+        .execute(r#"mutation { createTask(input: { title: "Auth migration" }) { id } }"#)
+        .await;
+    let _ = schema
+        .execute(r#"mutation { createTask(input: { title: "Database backup" }) { id } }"#)
+        .await;
+
+    // Substring match (case-insensitive)
+    let match_result = schema
+        .execute(
+            r#"{ tasks(filter: { titleContains: "AUTH" }) { totalCount edges { node { title } } } }"#,
+        )
+        .await;
+    assert!(
+        match_result.errors.is_empty(),
+        "Errors: {:?}",
+        match_result.errors
+    );
+    let data = match_result.data.into_json().unwrap();
+    assert_eq!(data["tasks"]["totalCount"], 1);
+    assert_eq!(data["tasks"]["edges"][0]["node"]["title"], "Auth migration");
+
+    // No match
+    let no_match = schema
+        .execute(r#"{ tasks(filter: { titleContains: "xyzzy" }) { totalCount } }"#)
+        .await;
+    assert!(no_match.errors.is_empty(), "Errors: {:?}", no_match.errors);
+    let no_match_data = no_match.data.into_json().unwrap();
+    assert_eq!(no_match_data["tasks"]["totalCount"], 0);
 }

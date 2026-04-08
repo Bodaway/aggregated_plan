@@ -398,6 +398,8 @@ fn convert_task_filter(input: Option<TaskFilterInput>) -> TaskFilter {
             tracking_state: f.tracking_state.map(|states| {
                 states.into_iter().map(|s| s.into()).collect()
             }),
+            source_id: f.source_id,
+            title_contains: f.title_contains,
         },
     }
 }

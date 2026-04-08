@@ -263,6 +263,16 @@ impl TaskRepository for SqliteTaskRepository {
             }
         }
 
+        if let Some(ref sid) = filter.source_id {
+            sql.push_str(" AND source_id = ?");
+            bind_values.push(sid.clone());
+        }
+
+        if let Some(ref needle) = filter.title_contains {
+            sql.push_str(" AND LOWER(title) LIKE ?");
+            bind_values.push(format!("%{}%", needle.to_lowercase()));
+        }
+
         sql.push_str(" ORDER BY created_at DESC");
 
         let mut query = sqlx::query(&sql);
@@ -581,6 +591,51 @@ mod tests {
         let tasks = repo.find_by_user(user_id(), &filter).await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "Jira Task");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_user_with_source_id_filter() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut t1 = make_task("Auth migration");
+        t1.source = Source::Jira;
+        t1.source_id = Some("AP-123".to_string());
+
+        let mut t2 = make_task("Database backup");
+        t2.source = Source::Jira;
+        t2.source_id = Some("AP-456".to_string());
+
+        repo.save(&t1).await.unwrap();
+        repo.save(&t2).await.unwrap();
+
+        let filter = TaskFilter {
+            source_id: Some("AP-123".to_string()),
+            ..TaskFilter::empty()
+        };
+        let tasks = repo.find_by_user(user_id(), &filter).await.unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Auth migration");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_user_with_title_contains_filter() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        repo.save(&make_task("Auth migration")).await.unwrap();
+        repo.save(&make_task("Authorize users")).await.unwrap();
+        repo.save(&make_task("Database backup")).await.unwrap();
+
+        let filter = TaskFilter {
+            title_contains: Some("auth".to_string()),
+            ..TaskFilter::empty()
+        };
+        let tasks = repo.find_by_user(user_id(), &filter).await.unwrap();
+        assert_eq!(tasks.len(), 2);
+        let titles: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
+        assert!(titles.contains(&"Auth migration"));
+        assert!(titles.contains(&"Authorize users"));
     }
 
     #[tokio::test]

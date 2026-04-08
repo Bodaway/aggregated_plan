@@ -203,6 +203,10 @@ pub struct TaskFilterInput {
     pub deadline_after: Option<NaiveDate>,
     pub tag_ids: Option<Vec<ID>>,
     pub tracking_state: Option<Vec<TrackingStateGql>>,
+    /// Exact match on `tasks.source_id` (e.g. a Jira key).
+    pub source_id: Option<String>,
+    /// Case-insensitive substring match on `tasks.title`.
+    pub title_contains: Option<String>,
 }
 
 /// Relay-style edge for task pagination.

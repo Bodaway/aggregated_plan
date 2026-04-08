@@ -14,6 +14,10 @@ pub struct TaskFilter {
     pub deadline_after: Option<NaiveDate>,
     pub tag_ids: Option<Vec<TagId>>,
     pub tracking_state: Option<Vec<TrackingState>>,
+    /// Exact match against `tasks.source_id` (e.g. a Jira key like "AP-123").
+    pub source_id: Option<String>,
+    /// Case-insensitive substring match against `tasks.title`.
+    pub title_contains: Option<String>,
 }
 
 impl TaskFilter {
@@ -28,6 +32,8 @@ impl TaskFilter {
             deadline_after: None,
             tag_ids: None,
             tracking_state: None,
+            source_id: None,
+            title_contains: None,
         }
     }
 }
