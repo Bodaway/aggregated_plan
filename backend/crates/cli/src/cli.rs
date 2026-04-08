@@ -28,4 +28,6 @@ pub struct Cli {
 pub enum Commands {
     /// Print the CLI version (smoke test for the scaffold).
     Version,
+    /// Show the currently running activity slot, if any.
+    Current,
 }
