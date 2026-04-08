@@ -82,6 +82,28 @@ async fn current_with_json_flag_emits_raw_data_block() {
 }
 
 #[tokio::test]
+async fn triage_sets_tracking_state() {
+    let server = mock_graphql(json!({
+        "data": {
+            "setTrackingState": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": "Auth migration",
+                "sourceId": "AP-1234",
+                "trackingState": "FOLLOWED"
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "triage", "followed", "00000000-0000-0000-0000-000000000001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("FOLLOWED"));
+}
+
+#[tokio::test]
 async fn status_updates_currently_tracked_task() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

@@ -1,0 +1,8 @@
+mutation SetTrackingState($taskId: ID!, $state: TrackingStateGql!) {
+  setTrackingState(taskId: $taskId, state: $state) {
+    id
+    title
+    sourceId
+    trackingState
+  }
+}

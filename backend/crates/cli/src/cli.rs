@@ -21,6 +21,25 @@ impl StatusArg {
     }
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+#[value(rename_all = "snake_case")]
+pub enum TriageArg {
+    Inbox,
+    Followed,
+    Dismissed,
+}
+
+impl TriageArg {
+    pub fn as_graphql(&self) -> crate::queries::set_tracking_state::TrackingStateGql {
+        use crate::queries::set_tracking_state::TrackingStateGql;
+        match self {
+            TriageArg::Inbox => TrackingStateGql::INBOX,
+            TriageArg::Followed => TrackingStateGql::FOLLOWED,
+            TriageArg::Dismissed => TrackingStateGql::DISMISSED,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "aplan", version, about = "Aggregated Plan command-line cockpit")]
 pub struct Cli {
@@ -72,5 +91,10 @@ pub enum Commands {
         state: StatusArg,
         #[arg(long)]
         task: Option<String>,
+    },
+    /// Set tracking state on a task. TASK is required.
+    Triage {
+        state: TriageArg,
+        task: String,
     },
 }
