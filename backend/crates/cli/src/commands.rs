@@ -6,10 +6,10 @@ use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    append_task_notes, complete_task, current_activity, get_task, list_tasks, set_tracking_state,
-    start_activity, stop_activity, update_task_status, AppendTaskNotes, CompleteTask,
-    CurrentActivity, GetTask, ListTasks, SetTrackingState, StartActivity, StopActivity,
-    UpdateTaskStatus,
+    append_task_notes, complete_task, current_activity, daily_dashboard, get_task, list_tasks,
+    set_tracking_state, start_activity, stop_activity, update_task_status, AppendTaskNotes,
+    CompleteTask, CurrentActivity, DailyDashboard, GetTask, ListTasks, SetTrackingState,
+    StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -281,6 +281,46 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
                     let m = mins % 60;
                     println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
                 }
+            }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn dash(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let date_str = match date {
+        Some(s) => s.to_string(),
+        None => chrono::Utc::now().date_naive().to_string(),
+    };
+    let result = client.run::<DailyDashboard>(daily_dashboard::Variables { date: date_str });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            let d = r.data.daily_dashboard;
+            println!("== {} ==", d.date);
+            println!("\ntasks ({}):", d.tasks.len());
+            for t in &d.tasks {
+                let key = t.source_id.as_deref().unwrap_or("—");
+                println!("  {:10} {:?}  {}", key, t.status, t.title);
+            }
+            println!("\nmeetings ({}):", d.meetings.len());
+            for m in &d.meetings {
+                println!("  {} → {}  {}", m.start_time, m.end_time, m.title);
+            }
+            println!("\nalerts ({}):", d.alerts.len());
+            for a in &d.alerts {
+                println!("  [{:?}] {:?}: {}", a.severity, a.alert_type, a.message);
             }
             ExitCode::Success
         }

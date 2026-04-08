@@ -36,6 +36,7 @@ fn main() -> ExitCode {
             commands::ls(&args.api_url, args.json, &status, &triage)
         }
         cli::Commands::Show { task } => commands::show(&args.api_url, args.json, &task),
+        cli::Commands::Dash { date } => commands::dash(&args.api_url, args.json, date.as_deref()),
     };
     code.into()
 }

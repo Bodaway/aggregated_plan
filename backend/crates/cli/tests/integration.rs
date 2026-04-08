@@ -356,6 +356,35 @@ async fn stop_with_no_running_activity() {
 }
 
 #[tokio::test]
+async fn dash_prints_summary_sections() {
+    let server = mock_graphql(json!({
+        "data": {
+            "dailyDashboard": {
+                "date": "2026-04-08",
+                "tasks": [
+                    { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration", "sourceId": "AP-1234", "status": "IN_PROGRESS", "urgency": "HIGH", "impact": "HIGH" }
+                ],
+                "meetings": [
+                    { "id": "00000000-0000-0000-0000-000000000020", "title": "Standup", "startTime": "2026-04-08T09:30:00Z", "endTime": "2026-04-08T09:45:00Z" }
+                ],
+                "alerts": [
+                    { "id": "00000000-0000-0000-0000-000000000030", "alertType": "DEADLINE", "severity": "WARNING", "message": "AP-1234 due in 3 days" }
+                ]
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "dash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("Standup"))
+        .stdout(predicate::str::contains("due in 3 days"));
+}
+
+#[tokio::test]
 async fn show_prints_task_detail() {
     let server = mock_graphql(json!({
         "data": {

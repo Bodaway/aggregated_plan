@@ -107,6 +107,12 @@ pub enum Commands {
     },
     /// Show full detail for TASK (UUID, key, fuzzy, or @current).
     Show { task: String },
+    /// Daily dashboard summary (tasks, meetings, alerts).
+    Dash {
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// List tasks. Default filter: tracking_state=followed, status≠done.
     Ls {
         /// Filter by status. Repeat to allow multiple.

@@ -1,0 +1,25 @@
+query DailyDashboard($date: NaiveDate!) {
+  dailyDashboard(date: $date) {
+    date
+    tasks {
+      id
+      title
+      sourceId
+      status
+      urgency
+      impact
+    }
+    meetings {
+      id
+      title
+      startTime
+      endTime
+    }
+    alerts {
+      id
+      alertType
+      severity
+      message
+    }
+  }
+}
