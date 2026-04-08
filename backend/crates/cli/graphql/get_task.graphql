@@ -1,0 +1,18 @@
+query GetTask($id: ID!) {
+  task(id: $id) {
+    id
+    title
+    description
+    notes
+    sourceId
+    status
+    urgency
+    impact
+    quadrant
+    trackingState
+    deadline
+    plannedStart
+    plannedEnd
+    estimatedHours
+  }
+}

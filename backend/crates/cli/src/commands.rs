@@ -6,9 +6,10 @@ use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    append_task_notes, complete_task, current_activity, list_tasks, set_tracking_state,
+    append_task_notes, complete_task, current_activity, get_task, list_tasks, set_tracking_state,
     start_activity, stop_activity, update_task_status, AppendTaskNotes, CompleteTask,
-    CurrentActivity, ListTasks, SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
+    CurrentActivity, GetTask, ListTasks, SetTrackingState, StartActivity, StopActivity,
+    UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -279,6 +280,65 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
                     let h = mins / 60;
                     let m = mins % 60;
                     println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
+                }
+            }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn show(api_url: &str, json: bool, task: &str) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let target = match resolve_task(&client, Some(task)) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return e.exit_code();
+        }
+    };
+
+    let result = client.run::<GetTask>(get_task::Variables {
+        id: target.id.clone(),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            match r.data.task {
+                None => {
+                    eprintln!("error: task {} not found", target.id);
+                    return ExitCode::NotFound;
+                }
+                Some(t) => {
+                    let key = t.source_id.as_deref().unwrap_or("—");
+                    println!("{} — {}", key, t.title);
+                    println!("status:   {:?}", t.status);
+                    println!(
+                        "urgency:  {:?}  impact: {:?}  quadrant: {:?}",
+                        t.urgency, t.impact, t.quadrant
+                    );
+                    println!("triage:   {:?}", t.tracking_state);
+                    if let Some(d) = t.deadline {
+                        println!("deadline: {}", d);
+                    }
+                    if let Some(h) = t.estimated_hours {
+                        println!("estimate: {}h", h);
+                    }
+                    if let Some(desc) = t.description.as_deref() {
+                        println!("\ndescription:\n{}", desc);
+                    }
+                    if let Some(notes) = t.notes.as_deref() {
+                        println!("\nnotes:\n{}", notes);
+                    }
                 }
             }
             ExitCode::Success

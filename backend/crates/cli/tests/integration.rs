@@ -356,6 +356,40 @@ async fn stop_with_no_running_activity() {
 }
 
 #[tokio::test]
+async fn show_prints_task_detail() {
+    let server = mock_graphql(json!({
+        "data": {
+            "task": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": "Auth migration",
+                "description": "Migrate auth middleware to new compliance model.",
+                "notes": "Saw lock contention at 30s.",
+                "sourceId": "AP-1234",
+                "status": "IN_PROGRESS",
+                "urgency": "HIGH",
+                "impact": "HIGH",
+                "quadrant": "URGENT_IMPORTANT",
+                "trackingState": "FOLLOWED",
+                "deadline": "2026-04-15",
+                "plannedStart": null,
+                "plannedEnd": null,
+                "estimatedHours": 8.0
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "show", "00000000-0000-0000-0000-000000000001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("URGENT_IMPORTANT"))
+        .stdout(predicate::str::contains("Saw lock contention"));
+}
+
+#[tokio::test]
 async fn ls_prints_a_table_of_tasks() {
     let server = mock_graphql(json!({
         "data": {

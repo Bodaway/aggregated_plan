@@ -105,6 +105,8 @@ pub enum Commands {
         #[arg(long)]
         keep_running: bool,
     },
+    /// Show full detail for TASK (UUID, key, fuzzy, or @current).
+    Show { task: String },
     /// List tasks. Default filter: tracking_state=followed, status≠done.
     Ls {
         /// Filter by status. Repeat to allow multiple.

@@ -35,6 +35,7 @@ fn main() -> ExitCode {
         cli::Commands::Ls { status, triage } => {
             commands::ls(&args.api_url, args.json, &status, &triage)
         }
+        cli::Commands::Show { task } => commands::show(&args.api_url, args.json, &task),
     };
     code.into()
 }
