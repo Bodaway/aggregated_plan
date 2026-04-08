@@ -550,6 +550,23 @@ async fn ls_prints_a_table_of_tasks() {
 }
 
 #[tokio::test]
+async fn rm_deletes_a_task_by_uuid() {
+    let server = mock_graphql(json!({ "data": { "deleteTask": true } })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args([
+            "--api-url",
+            &url,
+            "rm",
+            "00000000-0000-0000-0000-000000000001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deleted"));
+}
+
+#[tokio::test]
 async fn new_creates_personal_task() {
     let server = mock_graphql(json!({
         "data": {

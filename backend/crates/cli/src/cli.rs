@@ -152,6 +152,8 @@ pub enum Commands {
         #[arg(long, value_enum)]
         triage: Vec<TriageArg>,
     },
+    /// Delete a task.
+    Rm { task: String },
     /// Create a new personal task.
     New {
         title: String,

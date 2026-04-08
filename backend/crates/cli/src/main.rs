@@ -42,6 +42,7 @@ fn main() -> ExitCode {
             commands::journal(&args.api_url, args.json, date.as_deref())
         }
         cli::Commands::Alerts { all } => commands::alerts(&args.api_url, args.json, all),
+        cli::Commands::Rm { task } => commands::rm(&args.api_url, args.json, &task),
         cli::Commands::New {
             title,
             deadline,

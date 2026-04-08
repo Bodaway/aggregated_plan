@@ -7,10 +7,11 @@ use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, append_task_notes, complete_task, create_task, current_activity,
-    daily_dashboard, get_task, list_alerts, list_tasks, priority_matrix, set_tracking_state,
-    start_activity, stop_activity, update_task_status, ActivityJournal, AppendTaskNotes,
-    CompleteTask, CreateTask, CurrentActivity, DailyDashboard, GetTask, ListAlerts, ListTasks,
-    PriorityMatrix, SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
+    daily_dashboard, delete_task, get_task, list_alerts, list_tasks, priority_matrix,
+    set_tracking_state, start_activity, stop_activity, update_task_status, ActivityJournal,
+    AppendTaskNotes, CompleteTask, CreateTask, CurrentActivity, DailyDashboard, DeleteTask,
+    GetTask, ListAlerts, ListTasks, PriorityMatrix, SetTrackingState, StartActivity, StopActivity,
+    UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -637,6 +638,42 @@ pub fn current(api_url: &str, json: bool) -> ExitCode {
                         title, slot.start_time, half_day
                     );
                 }
+            }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn rm(api_url: &str, json: bool, task: &str) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let target = match resolve_task(&client, Some(task)) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return e.exit_code();
+        }
+    };
+    let result = client.run::<DeleteTask>(delete_task::Variables {
+        id: target.id.clone(),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            if r.data.delete_task {
+                println!("✗ deleted {}", target.id);
+            } else {
+                eprintln!("error: delete returned false");
+                return ExitCode::Generic;
             }
             ExitCode::Success
         }

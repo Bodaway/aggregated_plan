@@ -150,3 +150,11 @@ pub struct ListAlerts;
     response_derives = "Debug, Clone"
 )]
 pub struct CreateTask;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/delete_task.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct DeleteTask;
