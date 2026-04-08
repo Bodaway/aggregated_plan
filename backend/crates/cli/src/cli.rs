@@ -35,4 +35,6 @@ pub enum Commands {
         /// Task to track: UUID, Jira-style key (AP-123), or fuzzy title match.
         task: String,
     },
+    /// Stop the currently running worklog. Prints duration.
+    Stop,
 }

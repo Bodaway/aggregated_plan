@@ -54,3 +54,11 @@ pub struct CurrentActivity;
     response_derives = "Debug, Clone"
 )]
 pub struct StartActivity;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/stop_activity.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct StopActivity;

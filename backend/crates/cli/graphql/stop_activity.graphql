@@ -1,0 +1,15 @@
+mutation StopActivity {
+  stopActivity {
+    id
+    taskId
+    startTime
+    endTime
+    halfDay
+    date
+    durationMinutes
+    task {
+      id
+      title
+    }
+  }
+}

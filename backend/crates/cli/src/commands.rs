@@ -5,7 +5,7 @@ use crate::client::Client;
 use crate::lookup::resolve_task;
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    current_activity, start_activity, CurrentActivity, StartActivity,
+    current_activity, start_activity, stop_activity, CurrentActivity, StartActivity, StopActivity,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -38,6 +38,40 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
                 .map(|t| t.title.as_str())
                 .unwrap_or(target.title.as_str());
             println!("▶ started: {} ({} slot)", title, half_day);
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn stop(api_url: &str, json: bool) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    match client.run::<StopActivity>(stop_activity::Variables {}) {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            match r.data.stop_activity {
+                None => println!("(no activity was running)"),
+                Some(slot) => {
+                    let title = slot
+                        .task
+                        .as_ref()
+                        .map(|t| t.title.as_str())
+                        .unwrap_or("(no task)");
+                    let mins = slot.duration_minutes.unwrap_or(0);
+                    let h = mins / 60;
+                    let m = mins % 60;
+                    println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
+                }
+            }
             ExitCode::Success
         }
         Err(e) => {

@@ -82,6 +82,43 @@ async fn current_with_json_flag_emits_raw_data_block() {
 }
 
 #[tokio::test]
+async fn stop_prints_duration() {
+    let server = mock_graphql(json!({
+        "data": {
+            "stopActivity": {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "taskId": "00000000-0000-0000-0000-000000000001",
+                "startTime": "2026-04-08T09:00:00Z",
+                "endTime": "2026-04-08T10:47:00Z",
+                "halfDay": "MORNING",
+                "date": "2026-04-08",
+                "durationMinutes": 107,
+                "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("1h 47m"));
+}
+
+#[tokio::test]
+async fn stop_with_no_running_activity() {
+    let server = mock_graphql(json!({ "data": { "stopActivity": null } })).await;
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no activity"));
+}
+
+#[tokio::test]
 async fn start_with_uuid_token_starts_activity() {
     let server = mock_graphql(json!({
         "data": {
