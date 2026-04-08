@@ -1,6 +1,7 @@
 // frontend/src/components/task/TaskCreateSheet.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { useCreateTask } from '@/hooks/use-create-task';
+import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
 
 export interface TaskCreateSheetProps {
   plannedDate: string | null; // "YYYY-MM-DD"; null = closed
@@ -31,6 +32,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
   const [urgency, setUrgency] = useState('MEDIUM');
   const [impact, setImpact] = useState('MEDIUM');
   const [description, setDescription] = useState('');
+  const [notes, setNotes] = useState('');
 
   // Reset form when sheet opens
   useEffect(() => {
@@ -40,6 +42,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
       setUrgency('MEDIUM');
       setImpact('MEDIUM');
       setDescription('');
+      setNotes('');
     }
   }, [isOpen]);
 
@@ -64,13 +67,14 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
       urgency,
       impact,
       description: description.trim() || undefined,
+      notes: notes.trim() || undefined,
     });
 
     if (!result.error) {
       onCreated();
       onClose();
     }
-  }, [title, estimatedHours, urgency, impact, description, plannedDate, loading, createTask, onCreated, onClose]);
+  }, [title, estimatedHours, urgency, impact, description, notes, plannedDate, loading, createTask, onCreated, onClose]);
 
   return (
     <>
@@ -84,7 +88,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
 
       {/* Sheet panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-xl z-50 transform transition-transform duration-200 ease-in-out ${
+        className={`fixed top-0 right-0 h-full w-full max-w-2xl bg-white shadow-xl z-50 transform transition-transform duration-200 ease-in-out ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
@@ -178,9 +182,21 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
                 <textarea
                   value={description}
                   onChange={e => setDescription(e.target.value)}
-                  rows={3}
+                  rows={6}
                   placeholder="Optional description..."
-                  className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                  className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              {/* Notes (markdown) */}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Notes <span className="text-gray-400">(markdown · local only)</span>
+                </label>
+                <MarkdownEditor
+                  value={notes}
+                  onChange={setNotes}
+                  placeholder="Working notes, links, decisions…"
                 />
               </div>
 

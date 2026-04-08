@@ -90,6 +90,26 @@ impl MutationRoot {
         Ok(TaskGql(task))
     }
 
+    /// Append a line of text to a task's user-owned `notes` field. Backs the
+    /// activity-timer "quick note" feature: existing content is preserved and
+    /// the new text is added on a new paragraph.
+    async fn append_task_notes(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+        text: String,
+    ) -> Result<TaskGql> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let id = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
+
+        let task = task_management::append_to_task_notes(task_repo.as_ref(), id, &text)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(TaskGql(task))
+    }
+
     /// Set the tracking state of a task (inbox/followed/dismissed).
     async fn set_tracking_state(
         &self,
@@ -606,6 +626,7 @@ fn convert_create_input(
     Ok(task_management::CreateTaskInput {
         title: input.title,
         description: input.description,
+        notes: input.notes,
         project_id,
         deadline: input.deadline,
         planned_start: input.planned_start,
@@ -644,6 +665,7 @@ fn convert_update_input(
     Ok(task_management::UpdateTaskInput {
         title: input.title,
         description: input.description.map(Some),
+        notes: input.notes.map(Some),
         project_id,
         deadline: input.deadline.map(Some),
         planned_start: match input.planned_start {

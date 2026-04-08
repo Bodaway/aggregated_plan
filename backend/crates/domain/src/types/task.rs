@@ -9,6 +9,9 @@ pub struct Task {
     pub user_id: UserId,
     pub title: String,
     pub description: Option<String>,
+    /// User-owned markdown notes. Never overwritten by Jira sync — distinct from `description`,
+    /// which mirrors the Jira ticket body.
+    pub notes: Option<String>,
     pub source: Source,
     pub source_id: Option<String>,
     pub jira_status: Option<String>,
@@ -60,6 +63,7 @@ mod tests {
             user_id: Uuid::new_v4(),
             title: "Test".to_string(),
             description: None,
+            notes: None,
             source: Source::Jira,
             source_id: Some("PROJ-1".to_string()),
             jira_status: Some("In Progress".to_string()),

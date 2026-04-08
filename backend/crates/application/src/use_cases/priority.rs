@@ -13,6 +13,7 @@ pub struct TaskWithQuadrant {
 }
 
 /// Data for the full Eisenhower priority matrix, grouped by quadrant.
+#[derive(serde::Serialize)]
 pub struct PriorityMatrixData {
     pub urgent_important: Vec<Task>,
     pub important: Vec<Task>,
@@ -224,6 +225,7 @@ mod tests {
             user_id: test_user_id(),
             title: title.to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,

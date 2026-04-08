@@ -66,7 +66,7 @@ async fn main() {
             schema: schema.clone(),
         });
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
     tracing::info!("Server running on http://{}", addr);
     let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

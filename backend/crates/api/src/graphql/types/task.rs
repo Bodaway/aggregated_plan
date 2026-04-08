@@ -31,6 +31,11 @@ impl TaskGql {
         self.0.description.as_deref()
     }
 
+    /// User-owned markdown notes — preserved across Jira syncs.
+    async fn notes(&self) -> Option<&str> {
+        self.0.notes.as_deref()
+    }
+
     async fn source(&self) -> SourceGql {
         self.0.source.into()
     }
@@ -154,6 +159,7 @@ impl TaskGql {
 pub struct CreateTaskInput {
     pub title: String,
     pub description: Option<String>,
+    pub notes: Option<String>,
     pub project_id: Option<ID>,
     pub deadline: Option<NaiveDate>,
     pub planned_start: Option<DateTime<Utc>>,
@@ -169,6 +175,7 @@ pub struct CreateTaskInput {
 pub struct UpdateTaskInput {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub notes: Option<String>,
     pub project_id: Option<ID>,
     pub deadline: Option<NaiveDate>,
     #[graphql(default)]

@@ -47,6 +47,7 @@ mod tests {
             user_id: Uuid::new_v4(),
             title: title.to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,

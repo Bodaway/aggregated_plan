@@ -22,6 +22,7 @@ export interface NewTaskInput {
   urgency?: string;        // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
   impact?: string;
   description?: string;
+  notes?: string;
 }
 
 export function useCreateTask() {

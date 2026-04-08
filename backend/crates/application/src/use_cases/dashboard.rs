@@ -27,6 +27,7 @@ fn parse_working_days(value: &str) -> Vec<i32> {
 }
 
 /// Aggregated data for the daily dashboard view.
+#[derive(serde::Serialize)]
 pub struct DailyDashboard {
     pub date: NaiveDate,
     pub tasks: Vec<Task>,
@@ -39,6 +40,7 @@ pub struct DailyDashboard {
 }
 
 /// Weekly workload summary.
+#[derive(serde::Serialize)]
 pub struct WeeklyWorkload {
     pub week_start: NaiveDate,
     pub capacity: i32,
@@ -50,6 +52,7 @@ pub struct WeeklyWorkload {
 }
 
 /// A single half-day slot in the workload view.
+#[derive(serde::Serialize)]
 pub struct HalfDaySlotData {
     pub date: NaiveDate,
     pub half_day: HalfDay,
@@ -469,6 +472,7 @@ mod tests {
             user_id,
             title: "Task 1".to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,
@@ -498,6 +502,7 @@ mod tests {
             user_id,
             title: "Task 2".to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,
@@ -580,6 +585,7 @@ mod tests {
             user_id,
             title: "Big task".to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,
@@ -649,6 +655,7 @@ mod tests {
             user_id,
             title: "No estimate".to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,

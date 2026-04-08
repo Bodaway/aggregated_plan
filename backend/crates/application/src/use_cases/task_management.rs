@@ -10,6 +10,7 @@ use crate::repositories::*;
 pub struct CreateTaskInput {
     pub title: String,
     pub description: Option<String>,
+    pub notes: Option<String>,
     pub project_id: Option<ProjectId>,
     pub deadline: Option<NaiveDate>,
     pub planned_start: Option<DateTime<Utc>>,
@@ -24,6 +25,7 @@ pub struct CreateTaskInput {
 pub struct UpdateTaskInput {
     pub title: Option<String>,
     pub description: Option<Option<String>>,
+    pub notes: Option<Option<String>>,
     pub project_id: Option<Option<ProjectId>>,
     pub deadline: Option<Option<NaiveDate>>,
     pub planned_start: Option<Option<DateTime<Utc>>>,
@@ -58,6 +60,7 @@ pub async fn create_personal_task(
         user_id,
         title: input.title,
         description: input.description,
+        notes: input.notes,
         source: Source::Personal,
         source_id: None,
         jira_status: None,
@@ -123,6 +126,9 @@ pub async fn update_task(
     if let Some(description) = input.description {
         task.description = description;
     }
+    if let Some(notes) = input.notes {
+        task.notes = notes;
+    }
     if let Some(project_id) = input.project_id {
         task.project_id = project_id;
     }
@@ -162,6 +168,30 @@ pub async fn update_task(
         task.estimated_hours_override = estimated;
     }
 
+    task.updated_at = Utc::now();
+    task_repo.save(&task).await?;
+    Ok(task)
+}
+
+/// Append a block of text to the task's `notes` field, creating it if absent.
+///
+/// Existing content is preserved and the new text is added after a blank line so
+/// that successive entries form a readable journal. This is the backing operation
+/// for the activity timer "quick note" feature.
+pub async fn append_to_task_notes(
+    task_repo: &dyn TaskRepository,
+    task_id: TaskId,
+    text: &str,
+) -> Result<Task, AppError> {
+    let mut task = task_repo
+        .find_by_id(task_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Task {}", task_id)))?;
+
+    task.notes = Some(match task.notes.take() {
+        Some(existing) if !existing.is_empty() => format!("{existing}\n\n{text}"),
+        _ => text.to_string(),
+    });
     task.updated_at = Utc::now();
     task_repo.save(&task).await?;
     Ok(task)
@@ -372,6 +402,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "My Task".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -400,6 +431,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Urgent Task".to_string(),
             description: Some("desc".to_string()),
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -427,6 +459,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Due Today".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: Some(today()),
             planned_start: None,
@@ -451,6 +484,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Find Me".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -510,6 +544,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Original".to_string(),
             description: Some("old desc".to_string()),
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -527,6 +562,7 @@ mod tests {
         let update = UpdateTaskInput {
             title: Some("Updated".to_string()),
             description: Some(Some("new desc".to_string())),
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -558,6 +594,7 @@ mod tests {
         let update = UpdateTaskInput {
             title: Some("Nope".to_string()),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -581,6 +618,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Task".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -599,6 +637,7 @@ mod tests {
         let update = UpdateTaskInput {
             title: None,
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -626,6 +665,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Doomed".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -659,6 +699,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Complete Me".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -691,6 +732,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Jira Task".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -711,6 +753,7 @@ mod tests {
         let update = UpdateTaskInput {
             title: None,
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -738,6 +781,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Task".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -756,6 +800,7 @@ mod tests {
         let update1 = UpdateTaskInput {
             title: None,
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -775,6 +820,7 @@ mod tests {
         let update2 = UpdateTaskInput {
             title: None,
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -802,6 +848,7 @@ mod tests {
         let input = CreateTaskInput {
             title: "Test task".to_string(),
             description: None,
+            notes: None,
             project_id: None,
             deadline: None,
             planned_start: None,
@@ -817,5 +864,77 @@ mod tests {
 
         let updated = set_tracking_state(&repo, task.id, TrackingState::Dismissed).await.unwrap();
         assert_eq!(updated.tracking_state, TrackingState::Dismissed);
+    }
+
+    #[tokio::test]
+    async fn append_to_task_notes_creates_when_empty() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Task".to_string(),
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let created = create_personal_task(&repo, test_user_id(), input, today())
+            .await
+            .unwrap();
+        assert!(created.notes.is_none());
+
+        let updated = append_to_task_notes(&repo, created.id, "[09:00] first note")
+            .await
+            .unwrap();
+        assert_eq!(updated.notes.as_deref(), Some("[09:00] first note"));
+    }
+
+    #[tokio::test]
+    async fn append_to_task_notes_appends_to_existing() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Task".to_string(),
+            description: None,
+            notes: Some("# Plan\n- step 1".to_string()),
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let created = create_personal_task(&repo, test_user_id(), input, today())
+            .await
+            .unwrap();
+
+        let updated = append_to_task_notes(&repo, created.id, "[09:30] step 1 done")
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.notes.as_deref(),
+            Some("# Plan\n- step 1\n\n[09:30] step 1 done")
+        );
+
+        // Append a second time
+        let updated2 = append_to_task_notes(&repo, updated.id, "[10:00] starting step 2")
+            .await
+            .unwrap();
+        assert_eq!(
+            updated2.notes.as_deref(),
+            Some("# Plan\n- step 1\n\n[09:30] step 1 done\n\n[10:00] starting step 2")
+        );
+    }
+
+    #[tokio::test]
+    async fn append_to_task_notes_not_found() {
+        let repo = InMemoryTaskRepository::new();
+        let result = append_to_task_notes(&repo, Uuid::new_v4(), "anything").await;
+        assert!(result.is_err());
     }
 }

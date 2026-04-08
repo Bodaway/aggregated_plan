@@ -102,6 +102,9 @@ pub async fn sync_jira(
                 // Update existing task fields from Jira.
                 task.title = jira_task.title.clone();
                 task.description = jira_task.description.clone();
+                // NOTE: `task.notes` is intentionally NOT touched here — it is the user's
+                // local markdown journal and must survive every Jira resync. Same for
+                // `urgency_manual`, `remaining_hours_override`, `estimated_hours_override`.
                 task.jira_status = Some(jira_task.status.clone());
                 task.status = map_jira_status(&jira_task.status);
                 task.assignee = jira_task.assignee.clone();
@@ -125,6 +128,7 @@ pub async fn sync_jira(
                     user_id,
                     title: jira_task.title.clone(),
                     description: jira_task.description.clone(),
+                    notes: None,
                     source: Source::Jira,
                     source_id: Some(jira_task.key.clone()),
                     jira_status: Some(jira_task.status.clone()),
@@ -388,6 +392,7 @@ pub async fn sync_excel(
                     user_id,
                     title,
                     description: None,
+                    notes: None,
                     source: Source::Excel,
                     source_id: Some(source_id),
                     jira_status: None,

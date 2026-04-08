@@ -2,6 +2,7 @@ mutation CreateTask($input: CreateTaskInput!) {
   createTask(input: $input) {
     id
     title
+    notes
     status
     urgency
     impact
@@ -13,6 +14,7 @@ mutation UpdateTask($id: ID!, $input: UpdateTaskInput!) {
   updateTask(id: $id, input: $input) {
     id
     title
+    notes
     status
     urgency
     impact
@@ -22,4 +24,11 @@ mutation UpdateTask($id: ID!, $input: UpdateTaskInput!) {
 
 mutation DeleteTask($id: ID!) {
   deleteTask(id: $id)
+}
+
+mutation AppendTaskNotes($taskId: ID!, $text: String!) {
+  appendTaskNotes(taskId: $taskId, text: $text) {
+    id
+    notes
+  }
 }

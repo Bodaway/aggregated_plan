@@ -11,7 +11,7 @@ export function ActivityJournalPage() {
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const dateStr = formatDate(currentDate);
 
-  const { slots, currentActivity, availableTasks, loading, error, startActivity, stopActivity, deleteSlot, updateSlot, createSlot } =
+  const { slots, currentActivity, availableTasks, loading, error, startActivity, stopActivity, deleteSlot, updateSlot, createSlot, appendTaskNote } =
     useActivity(dateStr);
 
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -115,6 +115,7 @@ export function ActivityJournalPage() {
         tasks={availableTasks}
         onStart={handleStart}
         onStop={handleStop}
+        onAppendNote={appendTaskNote}
       />
 
       {/* Date navigation */}

@@ -1,7 +1,7 @@
 import { Client, cacheExchange, fetchExchange, subscriptionExchange } from 'urql';
 import { createClient as createSSEClient } from 'graphql-sse';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
 
 const sseClient = createSSEClient({
   url: `${API_URL}/graphql/sse`,

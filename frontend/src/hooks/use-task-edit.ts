@@ -4,6 +4,7 @@ export interface FullTask {
   readonly id: string;
   readonly title: string;
   readonly description: string | null;
+  readonly notes: string | null;
   readonly source: string;
   readonly sourceId: string | null;
   readonly status: string;
@@ -33,6 +34,7 @@ const TASK_QUERY = `
       id
       title
       description
+      notes
       source
       sourceId
       status
@@ -64,6 +66,7 @@ const UPDATE_TASK_MUTATION = `
       id
       title
       description
+      notes
       status
       urgency
       impact

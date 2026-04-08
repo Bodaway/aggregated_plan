@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTaskEdit } from '@/hooks/use-task-edit';
+import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
 
 interface TaskEditSheetProps {
   readonly taskId: string | null;
@@ -56,6 +57,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
   // Local form state
   const [description, setDescription] = useState('');
+  const [notes, setNotes] = useState('');
   const [estimatedHours, setEstimatedHours] = useState('');
   const [remainingOverride, setRemainingOverride] = useState('');
   const [estimatedOverride, setEstimatedOverride] = useState('');
@@ -68,6 +70,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   useEffect(() => {
     if (task) {
       setDescription(task.description ?? '');
+      setNotes(task.notes ?? '');
       setEstimatedHours(task.estimatedHours?.toString() ?? '');
       setRemainingOverride(task.remainingHoursOverride?.toString() ?? '');
       setEstimatedOverride(task.estimatedHoursOverride?.toString() ?? '');
@@ -99,6 +102,11 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
     const newDesc = description || null;
     if (newDesc !== (task.description ?? null)) {
       input.description = newDesc;
+    }
+
+    const newNotes = notes || null;
+    if (newNotes !== (task.notes ?? null)) {
+      input.notes = newNotes;
     }
 
     if (isJira) {
@@ -136,7 +144,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
     onUpdated?.();
     onClose();
-  }, [task, status, description, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, updateTask, updatePriority, onUpdated, onClose]);
+  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, updateTask, updatePriority, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
@@ -161,7 +169,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
       {/* Sheet panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-xl z-50 transform transition-transform duration-200 ease-in-out ${
+        className={`fixed top-0 right-0 h-full w-full max-w-2xl bg-white shadow-xl z-50 transform transition-transform duration-200 ease-in-out ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
@@ -356,13 +364,31 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                     )}
 
                     <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-gray-700">Description</label>
+                        {isJira && (
+                          <span className="text-[10px] text-amber-600">
+                            synced from Jira — local edits will be overwritten
+                          </span>
+                        )}
+                      </div>
                       <textarea
                         value={description}
                         onChange={(e) => setDescription(e.target.value)}
-                        rows={4}
-                        className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                        rows={8}
+                        className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         placeholder="Add a description..."
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Notes <span className="text-gray-400">(markdown · local only)</span>
+                      </label>
+                      <MarkdownEditor
+                        value={notes}
+                        onChange={setNotes}
+                        placeholder="Working notes, decisions, links… (preserved across Jira syncs)"
                       />
                     </div>
                   </div>

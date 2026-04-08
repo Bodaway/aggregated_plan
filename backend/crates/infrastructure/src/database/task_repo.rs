@@ -87,6 +87,7 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
             .map_err(|e| RepositoryError::Database(e.to_string()))?,
         title: Row::get(row, "title"),
         description: Row::get(row, "description"),
+        notes: Row::try_get(row, "notes").ok().flatten(),
         source: source_from_str(&source_str),
         source_id: Row::get(row, "source_id"),
         jira_status: Row::get(row, "jira_status"),
@@ -337,13 +338,14 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
         .bind(&task.title)
         .bind(&task.description)
+        .bind(&task.notes)
         .bind(source_to_str(task.source))
         .bind(&task.source_id)
         .bind(&task.jira_status)
@@ -465,6 +467,7 @@ mod tests {
             user_id: user_id(),
             title: title.to_string(),
             description: Some("A test task".to_string()),
+            notes: None,
             source: Source::Personal,
             source_id: None,
             jira_status: None,
@@ -813,6 +816,7 @@ mod tests {
             estimated_hours_override: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            notes: None,
         };
 
         repo.save(&task).await.unwrap();
@@ -851,6 +855,26 @@ mod tests {
         assert_eq!(loaded.jira_time_spent_seconds, Some(3600));
         assert_eq!(loaded.remaining_hours_override, Some(5.0));
         assert_eq!(loaded.estimated_hours_override, Some(10.0));
+    }
+
+    #[tokio::test]
+    async fn save_and_read_notes() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("With Notes");
+        task.notes = Some("# Plan\n- step 1\n- step 2".to_string());
+        repo.save(&task).await.unwrap();
+
+        let loaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert_eq!(loaded.notes.as_deref(), Some("# Plan\n- step 1\n- step 2"));
+
+        // Round-trip a None value
+        let mut empty = make_task("No Notes");
+        empty.notes = None;
+        repo.save(&empty).await.unwrap();
+        let loaded_empty = repo.find_by_id(empty.id).await.unwrap().unwrap();
+        assert!(loaded_empty.notes.is_none());
     }
 
     #[tokio::test]

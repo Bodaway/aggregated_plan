@@ -94,9 +94,11 @@ Au quotidien, le Tech Lead utilise 5 outils différents pour gérer son activit�
 | Vue quotidienne | Dashboard du matin : tâches du jour, réunions, charge semaine, alertes |
 | Priorisation hybride | Matrice impact/urgence avec calcul auto + ajustement manuel |
 | Tâches personnelles | Création et gestion de tâches propres (actions, rappels, follow-ups, technique hors Jira) |
+| Notes markdown locales | Champ `notes` markdown attaché à chaque tâche, indépendant de la description Jira et **préservé à chaque synchronisation** |
 | Alertes intelligentes | Détection de deadlines proches, surcharge, conflits de planning, retards |
 | Dédoublonnage | Réconciliation des tâches présentes dans Jira ET Excel |
 | Suivi d'activité | Journal d'activité par micro-interactions (sélection de la tâche en cours) |
+| Note rapide depuis le timer | Quand une activité est en cours et liée à une tâche, un champ de saisie sous le timer permet d'ajouter en un Entrée une ligne horodatée aux `notes` de la tâche |
 | Persistance hybride | Données propres en base locale + cache synchronisé pour les données agrégées |
 
 ### 3.2 Dans le périmètre — v2
@@ -763,7 +765,8 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 |----------|------|-------------|-------------|
 | id | Identifiant unique | Oui | Généré par l'outil |
 | titre | Texte | Oui | Titre de la tâche |
-| description | Texte | Non | Description détaillée |
+| description | Texte | Non | Description détaillée. Pour les tâches Jira, **synchronisée et écrasée à chaque sync**. |
+| notes | Markdown | Non | Notes utilisateur en markdown, **toujours préservées** par les synchronisations. C'est le champ recommandé pour stocker des observations, plans, journal de bord, etc. |
 | source | Enum | Oui | `jira`, `excel`, `obsidian`, `personnel` |
 | sourceId | Texte | Non | Identifiant dans la source d'origine (ex : numéro Jira) |
 | statut | Enum | Oui | `à_faire`, `en_cours`, `terminée`, `bloquée` |

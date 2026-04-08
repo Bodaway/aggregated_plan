@@ -165,6 +165,7 @@ mod tests {
             user_id: user_id(),
             title: title.to_string(),
             description: None,
+            notes: None,
             source: Source::Personal,
             source_id: source_id.map(|s| s.to_string()),
             status: TaskStatus::InProgress,

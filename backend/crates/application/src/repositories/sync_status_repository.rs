@@ -5,6 +5,7 @@ use domain::types::*;
 use crate::errors::RepositoryError;
 
 /// Represents the synchronization status of an external source for a user.
+#[derive(serde::Serialize)]
 pub struct SyncStatus {
     pub source: Source,
     pub user_id: UserId,

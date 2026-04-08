@@ -39,6 +39,7 @@ query Task($id: ID!) {
     id
     title
     description
+    notes
     source
     sourceId
     jiraStatus

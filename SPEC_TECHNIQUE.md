@@ -665,6 +665,9 @@ pub struct Task {
     pub user_id: UserId,
     pub title: String,
     pub description: Option<String>,
+    /// User-owned markdown notes. Never overwritten by Jira sync —
+    /// distinct from `description` which mirrors the Jira ticket body.
+    pub notes: Option<String>,
     pub source: Source,
     pub source_id: Option<String>,
     pub jira_status: Option<String>,
@@ -1283,6 +1286,7 @@ pub async fn get_daily_dashboard(
 pub struct CreateTaskInput {
     pub title: String,
     pub description: Option<String>,
+    pub notes: Option<String>,
     pub project_id: Option<ProjectId>,
     pub deadline: Option<NaiveDate>,
     pub planned_start: Option<DateTime<Utc>>,
@@ -1395,6 +1399,10 @@ pub async fn sync_jira(
     user_id: UserId,
     config: &JiraConfig,
 ) -> Result<SyncResult, AppError> { /* ... */ }
+// NOTE: champs jamais touchés par le sync Jira (préservés à chaque synchro) :
+//   - notes (markdown utilisateur)
+//   - urgency_manual (override de priorité)
+//   - remaining_hours_override / estimated_hours_override (overrides de temps)
 
 pub async fn sync_outlook(
     outlook_client: &dyn OutlookClient,
@@ -1993,6 +2001,7 @@ CREATE TABLE tasks (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT,
+    notes TEXT,                              -- markdown, user-owned, jamais écrasé par la sync Jira
     source TEXT NOT NULL CHECK (source IN ('jira', 'excel', 'obsidian', 'personal')),
     source_id TEXT,
     jira_status TEXT,
@@ -2200,6 +2209,7 @@ type Task {
   id: ID!
   title: String!
   description: String
+  notes: String                        # Markdown user-owned, preserved across Jira syncs
   source: Source!
   sourceId: String
   jiraStatus: String
@@ -2390,6 +2400,7 @@ input TaskFilter {
 input CreateTaskInput {
   title: String!
   description: String
+  notes: String                    # Markdown notes locales (préservées des syncs)
   projectId: ID
   deadline: Date
   plannedStart: DateTime
@@ -2403,6 +2414,7 @@ input CreateTaskInput {
 input UpdateTaskInput {
   title: String
   description: String
+  notes: String                    # null = clear, absent = don't change
   projectId: ID
   deadline: Date
   plannedStart: DateTime
@@ -2492,6 +2504,8 @@ type Mutation {
   createTask(input: CreateTaskInput!): Task!
   updateTask(id: ID!, input: UpdateTaskInput!): Task!
   deleteTask(id: ID!): Boolean!
+  # Append text to a task's user-owned `notes` field (used by the activity quick-note input)
+  appendTaskNotes(taskId: ID!, text: String!): Task!
 
   # Triage / Tracking state
   setTrackingState(taskId: ID!, state: TrackingState!): Task!
@@ -2752,6 +2766,7 @@ When two tasks are merged (R08 auto-merge or R09 user-confirmed merge):
 | `assignee` | Jira | Excel |
 | `deadline` | Jira | Excel |
 | `description` | Jira | Excel |
+| `notes` | Local (préservé) | Local (préservé) |
 | `project_id` | Jira | Excel |
 | Planning dates (from Excel) | Excel | -- |
 | Tags/categories | Merge both | -- |
