@@ -1,0 +1,13 @@
+mutation StartActivity($taskId: ID) {
+  startActivity(taskId: $taskId) {
+    id
+    taskId
+    startTime
+    halfDay
+    date
+    task {
+      id
+      title
+    }
+  }
+}

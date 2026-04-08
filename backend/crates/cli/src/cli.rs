@@ -30,4 +30,9 @@ pub enum Commands {
     Version,
     /// Show the currently running activity slot, if any.
     Current,
+    /// Start a worklog on TASK. Auto-stops any running activity first.
+    Start {
+        /// Task to track: UUID, Jira-style key (AP-123), or fuzzy title match.
+        task: String,
+    },
 }

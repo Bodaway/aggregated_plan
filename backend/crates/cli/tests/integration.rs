@@ -80,3 +80,37 @@ async fn current_with_json_flag_emits_raw_data_block() {
         .success()
         .stdout(predicate::str::contains("\"currentActivity\":null"));
 }
+
+#[tokio::test]
+async fn start_with_uuid_token_starts_activity() {
+    let server = mock_graphql(json!({
+        "data": {
+            "startActivity": {
+                "id": "00000000-0000-0000-0000-000000000010",
+                "taskId": "00000000-0000-0000-0000-000000000001",
+                "startTime": "2026-04-08T09:00:00Z",
+                "halfDay": "MORNING",
+                "date": "2026-04-08",
+                "task": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "Auth migration"
+                }
+            }
+        }
+    }))
+    .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args([
+            "--api-url",
+            &url,
+            "start",
+            "00000000-0000-0000-0000-000000000001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("started"))
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("morning"));
+}

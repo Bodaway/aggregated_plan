@@ -18,6 +18,7 @@ fn main() -> ExitCode {
             output::ExitCode::Success
         }
         cli::Commands::Current => commands::current(&args.api_url, args.json),
+        cli::Commands::Start { task } => commands::start(&args.api_url, args.json, &task),
     };
     code.into()
 }
