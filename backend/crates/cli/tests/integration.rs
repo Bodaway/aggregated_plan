@@ -82,6 +82,117 @@ async fn current_with_json_flag_emits_raw_data_block() {
 }
 
 #[tokio::test]
+async fn done_completes_current_task_and_stops_timer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CurrentActivity"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "currentActivity": {
+                    "id": "00000000-0000-0000-0000-000000000010",
+                    "taskId": "00000000-0000-0000-0000-000000000001",
+                    "startTime": "2026-04-08T09:00:00Z",
+                    "halfDay": "MORNING",
+                    "date": "2026-04-08",
+                    "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "completeTask": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "Auth migration",
+                    "sourceId": "AP-1234",
+                    "status": "DONE"
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("StopActivity"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "stopActivity": {
+                    "id": "00000000-0000-0000-0000-000000000010",
+                    "taskId": "00000000-0000-0000-0000-000000000001",
+                    "startTime": "2026-04-08T09:00:00Z",
+                    "endTime": "2026-04-08T10:47:00Z",
+                    "halfDay": "MORNING",
+                    "date": "2026-04-08",
+                    "durationMinutes": 107,
+                    "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "done"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("done"))
+        .stdout(predicate::str::contains("1h 47m"));
+}
+
+#[tokio::test]
+async fn done_with_keep_running_does_not_stop_timer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CurrentActivity"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "currentActivity": {
+                    "id": "00000000-0000-0000-0000-000000000010",
+                    "taskId": "00000000-0000-0000-0000-000000000001",
+                    "startTime": "2026-04-08T09:00:00Z",
+                    "halfDay": "MORNING",
+                    "date": "2026-04-08",
+                    "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "completeTask": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "Auth migration",
+                    "sourceId": "AP-1234",
+                    "status": "DONE"
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "done", "--keep-running"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("done"))
+        .stdout(predicate::str::contains("1h 47m").not());
+}
+
+#[tokio::test]
 async fn triage_sets_tracking_state() {
     let server = mock_graphql(json!({
         "data": {

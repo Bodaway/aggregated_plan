@@ -86,3 +86,11 @@ pub struct UpdateTaskStatus;
     response_derives = "Debug, Clone"
 )]
 pub struct SetTrackingState;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/complete_task.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct CompleteTask;

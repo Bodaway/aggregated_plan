@@ -29,6 +29,9 @@ fn main() -> ExitCode {
         cli::Commands::Triage { state, task } => {
             commands::triage(&args.api_url, args.json, &state, &task)
         }
+        cli::Commands::Done { task, keep_running } => {
+            commands::done(&args.api_url, args.json, task.as_deref(), keep_running)
+        }
     };
     code.into()
 }

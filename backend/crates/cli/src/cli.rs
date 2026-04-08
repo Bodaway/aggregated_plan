@@ -97,4 +97,12 @@ pub enum Commands {
         state: TriageArg,
         task: String,
     },
+    /// Mark TASK done (defaults to currently-tracked) and stop the timer if it
+    /// was tracking the same task. Use --keep-running to skip the stop.
+    Done {
+        /// Optional explicit target.
+        task: Option<String>,
+        #[arg(long)]
+        keep_running: bool,
+    },
 }

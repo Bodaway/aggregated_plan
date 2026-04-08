@@ -3,12 +3,12 @@
 
 use crate::cli::{StatusArg, TriageArg};
 use crate::client::Client;
-use crate::lookup::resolve_task;
+use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    append_task_notes, current_activity, set_tracking_state, start_activity, stop_activity,
-    update_task_status, AppendTaskNotes, CurrentActivity, SetTrackingState, StartActivity,
-    StopActivity, UpdateTaskStatus,
+    append_task_notes, complete_task, current_activity, set_tracking_state, start_activity,
+    stop_activity, update_task_status, AppendTaskNotes, CompleteTask, CurrentActivity,
+    SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -48,6 +48,94 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
             ExitCode::Generic
         }
     }
+}
+
+pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+
+    // We need to know whether the running activity matches the target so we can
+    // stop the timer iff applicable. Fetch current activity once up front.
+    let current = match client.run::<CurrentActivity>(current_activity::Variables {}) {
+        Ok(r) => r.data.current_activity,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::Generic;
+        }
+    };
+
+    let target_id = if let Some(token) = task {
+        match resolve_task(&client, Some(token)) {
+            Ok(t) => t.id,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                return e.exit_code();
+            }
+        }
+    } else {
+        match current.as_ref().and_then(|c| c.task_id.clone()) {
+            Some(id) => id,
+            None => {
+                eprintln!("error: {}", LookupError::NoCurrentActivity);
+                return ExitCode::PreconditionFailed;
+            }
+        }
+    };
+
+    // Complete the task
+    let (completed, completed_raw) = match client.run::<CompleteTask>(complete_task::Variables {
+        id: target_id.clone(),
+    }) {
+        Ok(r) => (r.data.complete_task, r.raw),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::Generic;
+        }
+    };
+
+    // Stop the timer iff it was tracking this task and --keep-running not set
+    let mut stopped_minutes: Option<i64> = None;
+    let should_stop = !keep_running
+        && current
+            .as_ref()
+            .and_then(|c| c.task_id.as_ref())
+            .map(|tid| tid == &target_id)
+            .unwrap_or(false);
+
+    if should_stop {
+        match client.run::<StopActivity>(stop_activity::Variables {}) {
+            Ok(r) => stopped_minutes = r.data.stop_activity.and_then(|s| s.duration_minutes),
+            Err(e) => {
+                eprintln!("warning: failed to stop activity after completing: {}", e);
+            }
+        }
+    }
+
+    if json {
+        let completed_json = completed_raw
+            .get("completeTask")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let payload = serde_json::json!({
+            "completed": completed_json,
+            "stoppedMinutes": stopped_minutes,
+        });
+        if let Err(e) = print_json(&payload) {
+            eprintln!("error writing output: {}", e);
+            return ExitCode::Generic;
+        }
+        return ExitCode::Success;
+    }
+
+    let label = completed.source_id.as_deref().unwrap_or(&completed.title);
+    match stopped_minutes {
+        Some(m) => {
+            let h = m / 60;
+            let mm = m % 60;
+            println!("✓ {} done — timer stopped ({}h {}m logged)", label, h, mm);
+        }
+        None => println!("✓ {} done", label),
+    }
+    ExitCode::Success
 }
 
 pub fn triage(api_url: &str, json: bool, state: &TriageArg, task: &str) -> ExitCode {
