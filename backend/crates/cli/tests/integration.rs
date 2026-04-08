@@ -356,6 +356,34 @@ async fn stop_with_no_running_activity() {
 }
 
 #[tokio::test]
+async fn journal_prints_slots_and_total() {
+    let server = mock_graphql(json!({
+        "data": {
+            "activityJournal": [
+                {
+                    "id": "00000000-0000-0000-0000-000000000010",
+                    "taskId": "00000000-0000-0000-0000-000000000001",
+                    "startTime": "2026-04-08T09:00:00Z",
+                    "endTime": "2026-04-08T10:30:00Z",
+                    "halfDay": "MORNING",
+                    "durationMinutes": 90,
+                    "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+                }
+            ]
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "journal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("1h 30m"))
+        .stdout(predicate::str::contains("total"));
+}
+
+#[tokio::test]
 async fn matrix_prints_four_quadrants() {
     let server = mock_graphql(json!({
         "data": {

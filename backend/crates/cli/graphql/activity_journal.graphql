@@ -1,0 +1,11 @@
+query ActivityJournal($date: NaiveDate!) {
+  activityJournal(date: $date) {
+    id
+    taskId
+    startTime
+    endTime
+    halfDay
+    durationMinutes
+    task { id title }
+  }
+}

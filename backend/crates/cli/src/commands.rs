@@ -6,10 +6,11 @@ use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    append_task_notes, complete_task, current_activity, daily_dashboard, get_task, list_tasks,
-    priority_matrix, set_tracking_state, start_activity, stop_activity, update_task_status,
-    AppendTaskNotes, CompleteTask, CurrentActivity, DailyDashboard, GetTask, ListTasks,
-    PriorityMatrix, SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
+    activity_journal, append_task_notes, complete_task, current_activity, daily_dashboard,
+    get_task, list_tasks, priority_matrix, set_tracking_state, start_activity, stop_activity,
+    update_task_status, ActivityJournal, AppendTaskNotes, CompleteTask, CurrentActivity,
+    DailyDashboard, GetTask, ListTasks, PriorityMatrix, SetTrackingState, StartActivity,
+    StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -282,6 +283,56 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
                     println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
                 }
             }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn journal(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let date_str = match date {
+        Some(s) => s.to_string(),
+        None => chrono::Utc::now().date_naive().to_string(),
+    };
+    let result = client.run::<ActivityJournal>(activity_journal::Variables { date: date_str });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            let total: i64 = r
+                .data
+                .activity_journal
+                .iter()
+                .filter_map(|s| s.duration_minutes)
+                .sum();
+            for slot in &r.data.activity_journal {
+                let title = slot
+                    .task
+                    .as_ref()
+                    .map(|t| t.title.as_str())
+                    .unwrap_or("(no task)");
+                let mins = slot.duration_minutes.unwrap_or(0);
+                let h = mins / 60;
+                let m = mins % 60;
+                println!(
+                    "{}  {}  {}h {}m  {}",
+                    slot.start_time,
+                    slot.end_time.as_deref().unwrap_or("running"),
+                    h,
+                    m,
+                    title
+                );
+            }
+            println!("\ntotal: {}h {}m", total / 60, total % 60);
             ExitCode::Success
         }
         Err(e) => {

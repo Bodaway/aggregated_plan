@@ -115,6 +115,11 @@ pub enum Commands {
     },
     /// Print the Eisenhower priority matrix grouped by quadrant.
     Matrix,
+    /// Print the activity journal for a date (defaults to today).
+    Journal {
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// List tasks. Default filter: tracking_state=followed, status≠done.
     Ls {
         /// Filter by status. Repeat to allow multiple.
