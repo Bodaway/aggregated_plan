@@ -134,3 +134,11 @@ pub struct PriorityMatrix;
     response_derives = "Debug, Clone"
 )]
 pub struct ActivityJournal;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/list_alerts.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ListAlerts;

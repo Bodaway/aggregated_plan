@@ -7,10 +7,10 @@ use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, append_task_notes, complete_task, current_activity, daily_dashboard,
-    get_task, list_tasks, priority_matrix, set_tracking_state, start_activity, stop_activity,
-    update_task_status, ActivityJournal, AppendTaskNotes, CompleteTask, CurrentActivity,
-    DailyDashboard, GetTask, ListTasks, PriorityMatrix, SetTrackingState, StartActivity,
-    StopActivity, UpdateTaskStatus,
+    get_task, list_alerts, list_tasks, priority_matrix, set_tracking_state, start_activity,
+    stop_activity, update_task_status, ActivityJournal, AppendTaskNotes, CompleteTask,
+    CurrentActivity, DailyDashboard, GetTask, ListAlerts, ListTasks, PriorityMatrix,
+    SetTrackingState, StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -283,6 +283,38 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
                     println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
                 }
             }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn alerts(api_url: &str, json: bool, all: bool) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let resolved_filter: Option<bool> = if all { None } else { Some(false) };
+    let result = client.run::<ListAlerts>(list_alerts::Variables {
+        resolved: resolved_filter,
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            for edge in &r.data.alerts.edges {
+                let a = &edge.node;
+                println!(
+                    "[{:?}] {:?}: {}  ({})",
+                    a.severity, a.alert_type, a.message, a.id
+                );
+            }
+            println!("({} alerts)", r.data.alerts.total_count);
             ExitCode::Success
         }
         Err(e) => {

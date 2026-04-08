@@ -1,0 +1,16 @@
+query ListAlerts($resolved: Boolean) {
+  alerts(resolved: $resolved) {
+    totalCount
+    edges {
+      node {
+        id
+        alertType
+        severity
+        message
+        date
+        resolved
+        createdAt
+      }
+    }
+  }
+}

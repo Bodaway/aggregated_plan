@@ -120,6 +120,11 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// List alerts. Defaults to unresolved only; pass --all for everything.
+    Alerts {
+        #[arg(long)]
+        all: bool,
+    },
     /// List tasks. Default filter: tracking_state=followed, status≠done.
     Ls {
         /// Filter by status. Repeat to allow multiple.

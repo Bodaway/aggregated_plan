@@ -356,6 +356,38 @@ async fn stop_with_no_running_activity() {
 }
 
 #[tokio::test]
+async fn alerts_prints_unresolved_by_default() {
+    let server = mock_graphql(json!({
+        "data": {
+            "alerts": {
+                "totalCount": 1,
+                "edges": [
+                    {
+                        "node": {
+                            "id": "00000000-0000-0000-0000-000000000030",
+                            "alertType": "DEADLINE",
+                            "severity": "WARNING",
+                            "message": "AP-1234 due in 3 days",
+                            "date": "2026-04-08",
+                            "resolved": false,
+                            "createdAt": "2026-04-08T08:00:00Z"
+                        }
+                    }
+                ]
+            }
+        }
+    })).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "alerts"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("1 alerts"));
+}
+
+#[tokio::test]
 async fn journal_prints_slots_and_total() {
     let server = mock_graphql(json!({
         "data": {
