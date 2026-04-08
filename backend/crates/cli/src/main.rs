@@ -1,6 +1,9 @@
 use clap::Parser;
 
 mod cli;
+mod client;
+mod lookup;
+mod output;
 mod queries;
 
 fn main() {

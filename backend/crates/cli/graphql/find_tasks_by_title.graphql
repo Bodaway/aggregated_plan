@@ -1,0 +1,13 @@
+query FindTasksByTitle($needle: String!) {
+  tasks(filter: { titleContains: $needle }, first: 10) {
+    edges {
+      node {
+        id
+        title
+        sourceId
+        status
+        trackingState
+      }
+    }
+  }
+}

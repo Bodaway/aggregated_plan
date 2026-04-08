@@ -19,6 +19,30 @@ type JSON = serde_json::Value;
 #[graphql(
     schema_path = "graphql/schema.graphql",
     query_path = "graphql/health.graphql",
-    response_derives = "Debug, Clone, serde::Serialize"
+    response_derives = "Debug, Clone"
 )]
 pub struct Health;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/find_task_by_source_id.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct FindTaskBySourceId;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/find_tasks_by_title.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct FindTasksByTitle;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/current_activity.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct CurrentActivity;

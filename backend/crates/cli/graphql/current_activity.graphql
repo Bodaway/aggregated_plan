@@ -1,0 +1,13 @@
+query CurrentActivity {
+  currentActivity {
+    id
+    taskId
+    startTime
+    halfDay
+    date
+    task {
+      id
+      title
+    }
+  }
+}
