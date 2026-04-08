@@ -99,6 +99,7 @@ Au quotidien, le Tech Lead utilise 5 outils différents pour gérer son activit�
 | Dédoublonnage | Réconciliation des tâches présentes dans Jira ET Excel |
 | Suivi d'activité | Journal d'activité par micro-interactions (sélection de la tâche en cours) |
 | Note rapide depuis le timer | Quand une activité est en cours et liée à une tâche, un champ de saisie sous le timer permet d'ajouter en un Entrée une ligne horodatée aux `notes` de la tâche |
+| Interface ligne de commande | Binaire `aplan` (clavier-first) qui s'adresse à l'API GraphQL locale et expose toutes les actions du cockpit, avec un accent particulier sur le parcours rapide : `aplan start <tâche>`, `aplan note "..."`, `aplan status in_progress`, `aplan done`, `aplan stop`, `aplan current`. Une *skill* Claude Code dédiée (`.claude/skills/aplan/SKILL.md`) permet à un assistant Claude de piloter le cockpit via cette CLI plutôt qu'en formulant des requêtes GraphQL. |
 | Persistance hybride | Données propres en base locale + cache synchronisé pour les données agrégées |
 
 ### 3.2 Dans le périmètre — v2

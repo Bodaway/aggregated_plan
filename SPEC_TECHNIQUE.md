@@ -144,9 +144,26 @@ domain       ->  (no internal dependencies)
 application  ->  domain
 infrastructure -> domain, application
 api          ->  domain, application, infrastructure
+cli          ->  (no internal dependencies — talks to api over HTTP)
 ```
 
 The **domain** crate has zero dependencies on other internal crates and zero external I/O dependencies. It contains only pure types and pure functions.
+
+The **cli** crate is structurally independent of the domain/application/infrastructure layers — it only depends on `graphql_client` + `reqwest::blocking` and a committed `schema.graphql` exported from the api crate. This keeps it loosely coupled to the backend, lets it be installed standalone via `cargo install --path crates/cli`, and means a backend rename of any field surfaces as a `cargo build` failure on the CLI side rather than a runtime error.
+
+### 2.5 CLI client (`aplan`)
+
+In addition to the React frontend, the system exposes an `aplan` command-line client built as a separate crate. It is keyboard-first, optimized for the tech-lead hot path (start a worklog, change task status, take a fast note), and addresses the same GraphQL API as the frontend on `http://127.0.0.1:3001/graphql`.
+
+- **Topology:** loopback only. The default `--api-url` points to `127.0.0.1:3001/graphql`; an `APLAN_API_URL` env var or `--api-url` flag can override it.
+- **Auth:** none. The auth middleware injects the same default user as the frontend.
+- **Codegen:** every operation is a `.graphql` file under `crates/cli/graphql/` checked at compile time against a committed `schema.graphql`. Refresh the schema after backend changes via `cargo run -p api -- export-schema > crates/cli/graphql/schema.graphql`.
+- **Identifier resolution:** wherever a command takes a TASK argument, the same resolver runs (`@`/`current` → currently-tracked task, UUID → direct, Jira-style key → exact match on `tasks.source_id` via the new `sourceId` filter, anything else → fuzzy match via the new `titleContains` filter).
+- **Output:** terse one-line human format by default; `--json` emits the raw GraphQL `data.*` payload for parsing by Claude or shell scripts.
+- **Exit codes:** `0` success, `1` generic, `2` not found, `3` ambiguous lookup, `4` precondition failed.
+- **Claude integration:** a `.claude/skills/aplan/SKILL.md` ships in-repo so Claude Code uses the CLI instead of crafting GraphQL queries by hand.
+
+The CLI is a third client alongside the React frontend and the existing `aggregated-plan-mcp` MCP server. The MCP server talks directly to SQLite via the application/infrastructure crates; the CLI deliberately goes over HTTP so it can never race on the database file and shares one source of truth with the frontend.
 
 ---
 
@@ -307,31 +324,46 @@ aggregated-plan/
 |       |           +-- engine.rs
 |       |
 |       +-- api/                      # HTTP + GraphQL server
+|       |   +-- Cargo.toml
+|       |   +-- src/
+|       |       +-- main.rs           # Entry point: Axum server + `export-schema` subcommand
+|       |       +-- graphql/
+|       |       |   +-- mod.rs
+|       |       |   +-- schema.rs     # Schema construction
+|       |       |   +-- query.rs      # Root query resolvers
+|       |       |   +-- mutation.rs   # Root mutation resolvers
+|       |       |   +-- subscription.rs # Root subscription resolvers
+|       |       |   +-- types/        # GraphQL type definitions
+|       |       |       +-- mod.rs
+|       |       |       +-- task.rs
+|       |       |       +-- meeting.rs
+|       |       |       +-- project.rs
+|       |       |       +-- dashboard.rs
+|       |       |       +-- activity.rs
+|       |       |       +-- alert.rs
+|       |       |       +-- workload.rs
+|       |       |       +-- priority.rs
+|       |       |       +-- sync.rs
+|       |       +-- middleware/
+|       |       |   +-- mod.rs
+|       |       |   +-- auth.rs       # Auth middleware (no-op locally)
+|       |       +-- context.rs        # Request context (user_id extraction)
+|       |       +-- state.rs          # Application state (repos, services)
+|       |
+|       +-- cli/                      # `aplan` CLI binary (HTTP/GraphQL client)
 |           +-- Cargo.toml
+|           +-- build.rs              # graphql-client codegen against schema.graphql
+|           +-- graphql/
+|           |   +-- schema.graphql    # Exported via `cargo run -p api -- export-schema`
+|           |   +-- *.graphql         # One operation file per query/mutation
 |           +-- src/
-|               +-- main.rs           # Entry point: Axum server setup
-|               +-- graphql/
-|               |   +-- mod.rs
-|               |   +-- schema.rs     # Schema construction
-|               |   +-- query.rs      # Root query resolvers
-|               |   +-- mutation.rs   # Root mutation resolvers
-|               |   +-- subscription.rs # Root subscription resolvers
-|               |   +-- types/        # GraphQL type definitions
-|               |       +-- mod.rs
-|               |       +-- task.rs
-|               |       +-- meeting.rs
-|               |       +-- project.rs
-|               |       +-- dashboard.rs
-|               |       +-- activity.rs
-|               |       +-- alert.rs
-|               |       +-- workload.rs
-|               |       +-- priority.rs
-|               |       +-- sync.rs
-|               +-- middleware/
-|               |   +-- mod.rs
-|               |   +-- auth.rs       # Auth middleware (no-op locally)
-|               +-- context.rs        # Request context (user_id extraction)
-|               +-- state.rs          # Application state (repos, services)
+|               +-- main.rs           # Entry point: clap dispatch
+|               +-- cli.rs            # clap derive: Cli + Commands enum
+|               +-- client.rs         # reqwest::blocking + graphql_client wrapper
+|               +-- lookup.rs         # Task identifier resolver (UUID/key/fuzzy/current)
+|               +-- output.rs         # Exit codes, JSON helper
+|               +-- queries.rs        # GraphQLQuery derives, custom scalar mappings
+|               +-- commands.rs       # One fn per subcommand
 |
 +-- frontend/                         # React application
 |   +-- package.json
@@ -1090,6 +1122,13 @@ pub struct TaskFilter {
     pub deadline_before: Option<NaiveDate>,
     pub deadline_after: Option<NaiveDate>,
     pub tag_ids: Option<Vec<TagId>>,
+    pub tracking_state: Option<Vec<TrackingState>>,
+    /// Exact match against `tasks.source_id` (e.g. a Jira key like "AP-123").
+    /// Used by the CLI to look up a task by Jira key.
+    pub source_id: Option<String>,
+    /// Case-insensitive substring match against `tasks.title`.
+    /// Used by the CLI's fuzzy lookup and the frontend search bar.
+    pub title_contains: Option<String>,
 }
 
 #[async_trait]
@@ -2395,6 +2434,8 @@ input TaskFilter {
   deadlineBefore: Date
   deadlineAfter: Date
   tagIds: [ID!]
+  sourceId: String           # Exact match on tasks.source_id (e.g. Jira key)
+  titleContains: String      # Case-insensitive substring match on title
 }
 
 input CreateTaskInput {
