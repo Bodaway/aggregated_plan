@@ -623,3 +623,38 @@ async fn start_with_uuid_token_starts_activity() {
         .stdout(predicate::str::contains("Auth migration"))
         .stdout(predicate::str::contains("morning"));
 }
+
+#[tokio::test]
+async fn priority_sets_urgency_and_impact() {
+    let server = mock_graphql(json!({
+        "data": {
+            "updatePriority": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": "Auth migration",
+                "sourceId": "AP-1234",
+                "urgency": "HIGH",
+                "impact": "CRITICAL",
+                "urgencyManual": true
+            }
+        }
+    }))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args([
+            "--api-url",
+            &url,
+            "priority",
+            "00000000-0000-0000-0000-000000000001",
+            "--urgency",
+            "high",
+            "--impact",
+            "critical",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("AP-1234"))
+        .stdout(predicate::str::contains("HIGH"))
+        .stdout(predicate::str::contains("CRITICAL"));
+}

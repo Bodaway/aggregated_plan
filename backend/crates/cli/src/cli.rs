@@ -154,6 +154,16 @@ pub enum Commands {
     },
     /// Delete a task.
     Rm { task: String },
+    /// Override priority. Provide --urgency and/or --impact, or --reset.
+    Priority {
+        task: String,
+        #[arg(long, value_enum)]
+        urgency: Option<UrgencyArg>,
+        #[arg(long, value_enum)]
+        impact: Option<ImpactArg>,
+        #[arg(long, conflicts_with_all = ["urgency", "impact"])]
+        reset: bool,
+    },
     /// Create a new personal task.
     New {
         title: String,

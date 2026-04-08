@@ -43,6 +43,19 @@ fn main() -> ExitCode {
         }
         cli::Commands::Alerts { all } => commands::alerts(&args.api_url, args.json, all),
         cli::Commands::Rm { task } => commands::rm(&args.api_url, args.json, &task),
+        cli::Commands::Priority {
+            task,
+            urgency,
+            impact,
+            reset,
+        } => commands::priority(
+            &args.api_url,
+            args.json,
+            &task,
+            urgency.as_ref(),
+            impact.as_ref(),
+            reset,
+        ),
         cli::Commands::New {
             title,
             deadline,

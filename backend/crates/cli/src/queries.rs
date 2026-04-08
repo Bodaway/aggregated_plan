@@ -158,3 +158,19 @@ pub struct CreateTask;
     response_derives = "Debug, Clone"
 )]
 pub struct DeleteTask;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/update_priority.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct UpdatePriority;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/reset_urgency.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ResetUrgency;

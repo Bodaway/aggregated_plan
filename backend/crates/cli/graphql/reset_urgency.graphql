@@ -1,0 +1,9 @@
+mutation ResetUrgency($taskId: ID!) {
+  resetUrgency(taskId: $taskId) {
+    id
+    title
+    sourceId
+    urgency
+    urgencyManual
+  }
+}

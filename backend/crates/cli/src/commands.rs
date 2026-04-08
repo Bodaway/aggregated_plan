@@ -8,10 +8,10 @@ use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, append_task_notes, complete_task, create_task, current_activity,
     daily_dashboard, delete_task, get_task, list_alerts, list_tasks, priority_matrix,
-    set_tracking_state, start_activity, stop_activity, update_task_status, ActivityJournal,
-    AppendTaskNotes, CompleteTask, CreateTask, CurrentActivity, DailyDashboard, DeleteTask,
-    GetTask, ListAlerts, ListTasks, PriorityMatrix, SetTrackingState, StartActivity, StopActivity,
-    UpdateTaskStatus,
+    reset_urgency, set_tracking_state, start_activity, stop_activity, update_priority,
+    update_task_status, ActivityJournal, AppendTaskNotes, CompleteTask, CreateTask,
+    CurrentActivity, DailyDashboard, DeleteTask, GetTask, ListAlerts, ListTasks, PriorityMatrix,
+    ResetUrgency, SetTrackingState, StartActivity, StopActivity, UpdatePriority, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -639,6 +639,103 @@ pub fn current(api_url: &str, json: bool) -> ExitCode {
                     );
                 }
             }
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn priority(
+    api_url: &str,
+    json: bool,
+    task: &str,
+    urgency: Option<&UrgencyArg>,
+    impact: Option<&ImpactArg>,
+    reset: bool,
+) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let target = match resolve_task(&client, Some(task)) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return e.exit_code();
+        }
+    };
+
+    if reset {
+        let result = client.run::<ResetUrgency>(reset_urgency::Variables {
+            task_id: target.id.clone(),
+        });
+        match result {
+            Ok(r) => {
+                if json {
+                    if let Err(e) = print_json(&r.raw) {
+                        eprintln!("error writing output: {}", e);
+                        return ExitCode::Generic;
+                    }
+                    return ExitCode::Success;
+                }
+                let label = r
+                    .data
+                    .reset_urgency
+                    .source_id
+                    .as_deref()
+                    .unwrap_or(&r.data.reset_urgency.title);
+                println!(
+                    "↺ {}: urgency reset to auto ({:?})",
+                    label, r.data.reset_urgency.urgency
+                );
+                return ExitCode::Success;
+            }
+            Err(e) => {
+                eprintln!("error: {}", e);
+                return ExitCode::Generic;
+            }
+        }
+    }
+
+    if urgency.is_none() && impact.is_none() {
+        eprintln!("error: provide --urgency, --impact, or --reset");
+        return ExitCode::PreconditionFailed;
+    }
+
+    let result = client.run::<UpdatePriority>(update_priority::Variables {
+        task_id: target.id.clone(),
+        urgency: urgency.map(|u| match u {
+            UrgencyArg::Low => update_priority::UrgencyLevelGql::LOW,
+            UrgencyArg::Medium => update_priority::UrgencyLevelGql::MEDIUM,
+            UrgencyArg::High => update_priority::UrgencyLevelGql::HIGH,
+            UrgencyArg::Critical => update_priority::UrgencyLevelGql::CRITICAL,
+        }),
+        impact: impact.map(|i| match i {
+            ImpactArg::Low => update_priority::ImpactLevelGql::LOW,
+            ImpactArg::Medium => update_priority::ImpactLevelGql::MEDIUM,
+            ImpactArg::High => update_priority::ImpactLevelGql::HIGH,
+            ImpactArg::Critical => update_priority::ImpactLevelGql::CRITICAL,
+        }),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            let label = r
+                .data
+                .update_priority
+                .source_id
+                .as_deref()
+                .unwrap_or(&r.data.update_priority.title);
+            println!(
+                "⚑ {}: urgency={:?} impact={:?}",
+                label, r.data.update_priority.urgency, r.data.update_priority.impact
+            );
             ExitCode::Success
         }
         Err(e) => {

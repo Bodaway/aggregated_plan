@@ -1,0 +1,10 @@
+mutation UpdatePriority($taskId: ID!, $urgency: UrgencyLevelGql, $impact: ImpactLevelGql) {
+  updatePriority(taskId: $taskId, urgency: $urgency, impact: $impact) {
+    id
+    title
+    sourceId
+    urgency
+    impact
+    urgencyManual
+  }
+}
