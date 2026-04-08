@@ -518,6 +518,7 @@ mod tests {
             let input = CreateTaskInput {
                 title: title.to_string(),
                 description: None,
+                notes: None,
                 project_id: None,
                 deadline: None,
                 planned_start: None,

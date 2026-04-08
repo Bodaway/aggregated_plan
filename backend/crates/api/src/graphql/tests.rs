@@ -276,6 +276,14 @@ impl ActivitySlotRepository for StubActivitySlotRepository {
     ) -> Result<Vec<ActivitySlot>, RepositoryError> {
         Ok(vec![])
     }
+    async fn find_by_user_and_date_range(
+        &self,
+        _user_id: UserId,
+        _start: NaiveDate,
+        _end: NaiveDate,
+    ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+        Ok(vec![])
+    }
     async fn find_active(
         &self,
         _user_id: UserId,
