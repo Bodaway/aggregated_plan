@@ -1,12 +1,13 @@
 //! Subcommand implementations. Each function takes the parsed `Cli` for global
 //! flags (api_url, json) and returns an exit code.
 
+use crate::cli::StatusArg;
 use crate::client::Client;
 use crate::lookup::resolve_task;
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    append_task_notes, current_activity, start_activity, stop_activity, AppendTaskNotes,
-    CurrentActivity, StartActivity, StopActivity,
+    append_task_notes, current_activity, start_activity, stop_activity, update_task_status,
+    AppendTaskNotes, CurrentActivity, StartActivity, StopActivity, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -39,6 +40,44 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
                 .map(|t| t.title.as_str())
                 .unwrap_or(target.title.as_str());
             println!("▶ started: {} ({} slot)", title, half_day);
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn status(api_url: &str, json: bool, state: &StatusArg, task: Option<&str>) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let target = match resolve_task(&client, task) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return e.exit_code();
+        }
+    };
+    let result = client.run::<UpdateTaskStatus>(update_task_status::Variables {
+        id: target.id.clone(),
+        status: state.as_graphql(),
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            let label = r
+                .data
+                .update_task
+                .source_id
+                .as_deref()
+                .unwrap_or(&r.data.update_task.title);
+            println!("↻ {}: status → {:?}", label, r.data.update_task.status);
             ExitCode::Success
         }
         Err(e) => {

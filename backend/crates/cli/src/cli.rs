@@ -1,5 +1,26 @@
 use clap::{Parser, Subcommand};
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+#[value(rename_all = "snake_case")]
+pub enum StatusArg {
+    Todo,
+    InProgress,
+    Done,
+    Blocked,
+}
+
+impl StatusArg {
+    pub fn as_graphql(&self) -> crate::queries::update_task_status::TaskStatusGql {
+        use crate::queries::update_task_status::TaskStatusGql;
+        match self {
+            StatusArg::Todo => TaskStatusGql::TODO,
+            StatusArg::InProgress => TaskStatusGql::IN_PROGRESS,
+            StatusArg::Done => TaskStatusGql::DONE,
+            StatusArg::Blocked => TaskStatusGql::BLOCKED,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "aplan", version, about = "Aggregated Plan command-line cockpit")]
 pub struct Cli {
@@ -43,6 +64,12 @@ pub enum Commands {
         #[arg(required = true)]
         text: Vec<String>,
         /// Override the implicit current-activity target.
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Set the status of the currently-tracked task (or --task TARGET).
+    Status {
+        state: StatusArg,
         #[arg(long)]
         task: Option<String>,
     },

@@ -70,3 +70,11 @@ pub struct StopActivity;
     response_derives = "Debug, Clone"
 )]
 pub struct AppendTaskNotes;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/update_task_status.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct UpdateTaskStatus;

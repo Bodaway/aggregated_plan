@@ -1,0 +1,8 @@
+mutation UpdateTaskStatus($id: ID!, $status: TaskStatusGql!) {
+  updateTask(id: $id, input: { status: $status }) {
+    id
+    title
+    sourceId
+    status
+  }
+}

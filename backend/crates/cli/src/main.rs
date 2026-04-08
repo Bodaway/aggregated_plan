@@ -23,6 +23,9 @@ fn main() -> ExitCode {
         cli::Commands::Note { text, task } => {
             commands::note(&args.api_url, args.json, &text, task.as_deref())
         }
+        cli::Commands::Status { state, task } => {
+            commands::status(&args.api_url, args.json, &state, task.as_deref())
+        }
     };
     code.into()
 }
