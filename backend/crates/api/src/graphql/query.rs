@@ -6,7 +6,7 @@ use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
-use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management};
+use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
 
 use super::types::*;
 
@@ -431,6 +431,41 @@ impl QueryRoot {
             .collect();
 
         Ok(serde_json::Value::Object(map))
+    }
+
+    /// List worklog entries for the authenticated user.
+    async fn worklog_entries(
+        &self,
+        ctx: &Context<'_>,
+        filter: Option<WorklogEntryFilterInput>,
+    ) -> Result<Vec<WorklogEntryGql>> {
+        let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let user_id = *ctx.data::<UserId>()?;
+        let f = filter.unwrap_or_default();
+        let task_ids = match f.task_ids {
+            Some(ids) => {
+                let mut parsed = Vec::with_capacity(ids.len());
+                for i in &ids {
+                    parsed.push(
+                        Uuid::parse_str(i)
+                            .map_err(|e| async_graphql::Error::new(e.to_string()))?,
+                    );
+                }
+                Some(parsed)
+            }
+            None => None,
+        };
+        let wf = WorklogFilter {
+            task_ids,
+            from: f.from,
+            to: f.to,
+            limit: f.limit.unwrap_or(0).max(0) as u32,
+            offset: f.offset.unwrap_or(0).max(0) as u32,
+        };
+        let entries = worklog_uc::list_worklog_entries(repo.as_ref(), user_id, wf)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(entries.into_iter().map(WorklogEntryGql).collect())
     }
 }
 

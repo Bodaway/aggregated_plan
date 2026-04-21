@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use application::repositories::*;
 use application::services::*;
-use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management};
+use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management, worklog as worklog_uc};
 use infrastructure::connectors::jira::HttpJiraClient;
 use infrastructure::connectors::outlook::client::GraphOutlookClient;
 
@@ -109,6 +109,67 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(TaskGql(task))
+    }
+
+    /// Add a timestamped worklog entry to a task.
+    async fn add_worklog_entry(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+        body: String,
+        logged_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<WorklogEntryGql> {
+        let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let user_id = *ctx.data::<UserId>()?;
+        let tid = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+        let entry = worklog_uc::add_worklog_entry(
+            repo.as_ref(),
+            user_id,
+            tid,
+            body,
+            logged_at,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(WorklogEntryGql(entry))
+    }
+
+    /// Update a worklog entry's body and/or logged_at. Only provided fields change.
+    async fn update_worklog_entry(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        body: Option<String>,
+        logged_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<WorklogEntryGql> {
+        let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let user_id = *ctx.data::<UserId>()?;
+        let eid = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid entry ID: {e}")))?;
+        let entry = worklog_uc::update_worklog_entry(
+            repo.as_ref(),
+            user_id,
+            eid,
+            body,
+            logged_at,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(WorklogEntryGql(entry))
+    }
+
+    /// Delete a worklog entry. Returns true if a row was removed.
+    async fn delete_worklog_entry(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let user_id = *ctx.data::<UserId>()?;
+        let eid = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid entry ID: {e}")))?;
+        worklog_uc::delete_worklog_entry(repo.as_ref(), user_id, eid)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))
     }
 
     /// Carry forward all active tasks whose planned_start is before the current

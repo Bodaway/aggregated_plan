@@ -36,6 +36,7 @@ pub fn build_schema(
     task_link_repo: Arc<dyn TaskLinkRepository>,
     sync_repo: Arc<dyn SyncStatusRepository>,
     config_repo: Arc<dyn ConfigRepository>,
+    worklog_repo: Arc<dyn WorklogRepository>,
 ) -> AppSchema {
     // Default user for local development
     let default_user_id: UserId =
@@ -55,6 +56,7 @@ pub fn build_schema(
     .data(task_link_repo)
     .data(sync_repo)
     .data(config_repo)
+    .data(worklog_repo)
     .data(default_user_id)
     .finish()
 }

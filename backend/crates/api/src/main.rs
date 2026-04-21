@@ -60,6 +60,8 @@ async fn main() {
         Arc::new(SqliteSyncStatusRepository::new(db_pool.clone()));
     let config_repo: Arc<dyn application::repositories::ConfigRepository> =
         Arc::new(SqliteConfigRepository::new(db_pool.clone()));
+    let worklog_repo: Arc<dyn application::repositories::WorklogRepository> =
+        Arc::new(SqliteWorklogRepository::new(db_pool.clone()));
 
     let schema = graphql::schema::build_schema(
         task_repo,
@@ -71,6 +73,7 @@ async fn main() {
         task_link_repo,
         sync_repo,
         config_repo,
+        worklog_repo,
     );
 
     if let Some(Command::ExportSchema) = cli.command {
