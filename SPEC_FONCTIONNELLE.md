@@ -686,6 +686,22 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 **Priorité** : Must (MVP v1)
 
+### 6.8 Recherche globale
+
+#### US-070 : Barre de recherche globale
+
+> En tant que Tech Lead, je veux pouvoir rechercher une tâche instantanément depuis n'importe quel écran afin de l'ouvrir ou de la localiser sans changer de vue.
+
+**Critères d'acceptation :**
+- Une barre de recherche est visible en permanence dans le Header de l'application.
+- Les raccourcis `/` et `Cmd/Ctrl+K` permettent de mettre le focus sur la barre de recherche depuis n'importe où dans l'interface. La touche `Esc` efface la saisie et retire le focus.
+- À partir de 2 caractères saisis, les tâches correspondantes sur l'écran courant sont mises en évidence (anneau bleu) et les tâches non correspondantes sont atténuées visuellement.
+- Un menu déroulant affiche les meilleures correspondances ; cliquer sur une suggestion ouvre le panneau d'édition de la tâche sans navigation d'écran.
+- La recherche est floue (fuzzy) et porte sur : le titre, la clé Jira (`sourceId`), les tags, le projet, l'assigné et la description.
+- Les tâches écartées (état `dismissed`) sont exclues des résultats.
+
+**Priorité** : Must (MVP v1)
+
 ---
 
 ## 7. Règles métier

@@ -2006,6 +2006,94 @@ Content:
 - Accept / Reject buttons per suggestion
 - "Don't suggest again" option (saves rejection)
 
+### 6.6 Global Search
+
+#### 6.6.1 Backend — `searchableTasks` query
+
+A lean projection type `SearchableTask` is exposed specifically for the search feature. It avoids fetching heavyweight fields (worklog, activity slots, etc.) that are irrelevant during a search interaction.
+
+```graphql
+type SearchableTask {
+  id: ID!
+  title: String!
+  sourceId: String
+  source: Source!
+  assignee: String
+  projectName: String          # Resolved from the related Project row
+  tags: [String!]!             # Tag names (not IDs) for direct Fuse.js indexing
+  description: String
+  status: TaskStatus!
+}
+
+type Query {
+  # ... existing queries ...
+  searchableTasks: [SearchableTask!]!
+}
+```
+
+**Server-side filter:** only tasks where `tracking_state != 'dismissed'` are returned. The resolver resolves `projectName` and `tags` (names) in a single query with joins rather than N+1 sub-resolvers.
+
+#### 6.6.2 Frontend — `SearchProvider` and Fuse.js
+
+`SearchProvider` is mounted inside `BrowserRouter` (in `App.tsx`) so all child routes can consume `useSearch()`.
+
+```typescript
+// Context shape
+interface SearchContextValue {
+  query: string
+  setQuery: (q: string) => void
+  results: SearchableTask[]   // top matches from Fuse
+  isActive: boolean           // true when query.length >= 2
+}
+```
+
+**Fuse.js configuration:**
+
+```typescript
+const fuseOptions: IFuseOptions<SearchableTask> = {
+  threshold: 0.35,
+  minMatchCharLength: 2,
+  keys: [
+    { name: 'title',       weight: 0.40 },
+    { name: 'sourceId',    weight: 0.25 },
+    { name: 'tags',        weight: 0.15 },
+    { name: 'projectName', weight: 0.08 },
+    { name: 'assignee',    weight: 0.07 },
+    { name: 'description', weight: 0.05 },
+  ],
+}
+```
+
+The `SearchProvider` fetches `searchableTasks` once on mount via the `useSearchableTasksQuery` hook (urql). The Fuse index is rebuilt whenever the task list changes. Dismissed tasks are never included (filtered server-side).
+
+#### 6.6.3 Frontend — `HeaderSearchBar` component
+
+Renders inside `Header.tsx`. Responsibilities:
+
+- Controlled input bound to `SearchContext.query`.
+- On `query.length >= 2`, renders `<SuggestionDropdown>` below the input showing the top matches.
+- Clicking a suggestion calls `onSelect(task)` which opens `<TaskEditSheet>` (no route change).
+- Clears the query (and closes the dropdown) when a suggestion is selected or when `Esc` is pressed.
+
+#### 6.6.4 Frontend — Keyboard shortcuts
+
+| Shortcut | Condition | Behaviour |
+|----------|-----------|-----------|
+| `/` | Active element is **not** `INPUT`, `TEXTAREA`, or `contentEditable` | Focus the search input |
+| `Cmd/Ctrl+K` | Unconditional | Focus the search input |
+| `Esc` | Search input has focus | Clear query and blur |
+
+Implemented via a `useEffect` on `document` in `HeaderSearchBar`. The `/` handler checks `document.activeElement.tagName` before redirecting focus.
+
+#### 6.6.5 Frontend — `TaskCard` highlight classes
+
+`TaskCard` reads `useSearch()`. When `isActive` is `true`:
+
+- **Matching card** (task id is in `results`): `ring-2 ring-blue-500 ring-offset-2`
+- **Non-matching card**: `opacity-40 grayscale-[30%]`
+
+When `isActive` is `false`, no additional classes are applied and the card renders normally.
+
 ---
 
 ## 7. Database Schema
@@ -2381,6 +2469,22 @@ type DeduplicationSuggestion {
   projectMatch: Boolean!
 }
 
+# --- Search ---
+
+# Lean projection for global search. Excludes dismissed tasks (server-side filter).
+# projectName and tags (names) are pre-resolved to avoid N+1 on the client.
+type SearchableTask {
+  id: ID!
+  title: String!
+  sourceId: String
+  source: Source!
+  assignee: String
+  projectName: String
+  tags: [String!]!
+  description: String
+  status: TaskStatus!
+}
+
 # --- v2 Types ---
 
 type TeamMemberView {
@@ -2533,6 +2637,8 @@ type Query {
   syncStatuses: [SyncStatus!]!
   deduplicationSuggestions: [DeduplicationSuggestion!]!
   configuration: JSON!
+  # Search — lean projection, excludes dismissed tasks, used by the global search bar
+  searchableTasks: [SearchableTask!]!
   # v2
   teamView(filter: TeamFilter): [TeamMemberView!]!
   weeklyRetrospective(weekStart: Date!): WeeklyRetrospective!
