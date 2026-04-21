@@ -81,11 +81,10 @@ const CREATE_ACTIVITY_SLOT_MUTATION = `
   }
 `;
 
-const APPEND_TASK_NOTES_MUTATION = `
-  mutation AppendTaskNotes($taskId: ID!, $text: String!) {
-    appendTaskNotes(taskId: $taskId, text: $text) {
+const ADD_WORKLOG_ENTRY_FROM_TIMER_MUTATION = `
+  mutation AddWorklogEntryFromTimer($taskId: ID!, $body: String!) {
+    addWorklogEntry(taskId: $taskId, body: $body) {
       id
-      notes
     }
   }
 `;
@@ -134,7 +133,7 @@ export function useActivity(date: string) {
   const [, executeDelete] = useMutation(DELETE_ACTIVITY_SLOT_MUTATION);
   const [, executeUpdate] = useMutation(UPDATE_ACTIVITY_SLOT_MUTATION);
   const [, executeCreate] = useMutation(CREATE_ACTIVITY_SLOT_MUTATION);
-  const [, executeAppendNotes] = useMutation(APPEND_TASK_NOTES_MUTATION);
+  const [, executeAddWorklogEntry] = useMutation(ADD_WORKLOG_ENTRY_FROM_TIMER_MUTATION);
 
   const startActivity = useCallback(
     async (taskId?: string) => {
@@ -190,15 +189,13 @@ export function useActivity(date: string) {
 
   const appendTaskNote = useCallback(
     async (taskId: string, text: string) => {
-      const res = await executeAppendNotes({ taskId, text });
+      const res = await executeAddWorklogEntry({ taskId, body: text });
       if (res.error) {
         throw res.error;
       }
-      // No refetch needed: the timer doesn't display notes, and the next time
-      // the task opens in TaskEditSheet it'll be re-queried via cache-and-network.
       return res;
     },
-    [executeAppendNotes]
+    [executeAddWorklogEntry]
   );
 
   const availableTasks: TaskPickerItem[] =
