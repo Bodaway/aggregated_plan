@@ -75,6 +75,13 @@ impl TaskRepository for InMemoryTaskRepository {
                 Some(needle) => t.title.to_lowercase().contains(&needle.to_lowercase()),
                 None => true,
             })
+            .filter(|t| {
+                if let Some(ref states) = filter.tracking_state {
+                    states.contains(&t.tracking_state)
+                } else {
+                    true
+                }
+            })
             .cloned()
             .collect();
         result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -1410,6 +1417,64 @@ async fn tasks_query_filters_by_source_id() {
     assert!(no_match.errors.is_empty(), "Errors: {:?}", no_match.errors);
     let no_match_data = no_match.data.into_json().unwrap();
     assert_eq!(no_match_data["tasks"]["totalCount"], 0);
+}
+
+#[tokio::test]
+async fn searchable_tasks_excludes_dismissed() {
+    let schema = build_test_schema();
+
+    // Inbox (default) — included
+    let _ = schema
+        .execute(r#"mutation { createTask(input: { title: "Inbox task" }) { id } }"#)
+        .await;
+
+    // Followed — included
+    let followed_res = schema
+        .execute(r#"mutation { createTask(input: { title: "Followed task" }) { id } }"#)
+        .await;
+    let followed_id = followed_res.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let _ = schema
+        .execute(&format!(
+            r#"mutation {{ setTrackingState(taskId: "{}", state: FOLLOWED) {{ id }} }}"#,
+            followed_id
+        ))
+        .await;
+
+    // Dismissed — excluded
+    let dismissed_res = schema
+        .execute(r#"mutation { createTask(input: { title: "Dismissed task" }) { id } }"#)
+        .await;
+    let dismissed_id = dismissed_res.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let _ = schema
+        .execute(&format!(
+            r#"mutation {{ setTrackingState(taskId: "{}", state: DISMISSED) {{ id }} }}"#,
+            dismissed_id
+        ))
+        .await;
+
+    let result = schema
+        .execute(r#"{ searchableTasks { id title } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let data = result.data.into_json().unwrap();
+    let titles: Vec<String> = data["searchableTasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap().to_string())
+        .collect();
+
+    assert_eq!(titles.len(), 2);
+    assert!(titles.contains(&"Inbox task".to_string()));
+    assert!(titles.contains(&"Followed task".to_string()));
+    assert!(!titles.contains(&"Dismissed task".to_string()));
 }
 
 #[tokio::test]

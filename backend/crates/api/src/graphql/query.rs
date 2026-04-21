@@ -357,6 +357,65 @@ impl QueryRoot {
         Ok(WeeklyActivitySummaryGql(summary))
     }
 
+    /// All non-dismissed tasks for the current user, projected to a lean
+    /// payload for client-side fuzzy search. Unpaginated on purpose.
+    async fn searchable_tasks(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<Vec<crate::graphql::types::SearchableTaskGql>> {
+        use std::collections::HashMap;
+        use application::repositories::TaskFilter;
+        use domain::types::{TrackingState, TagId, ProjectId};
+
+        let user_id = *ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn application::repositories::TaskRepository>>()?;
+        let tag_repo = ctx.data::<Arc<dyn application::repositories::TagRepository>>()?;
+        let project_repo = ctx.data::<Arc<dyn application::repositories::ProjectRepository>>()?;
+
+        let filter = TaskFilter {
+            tracking_state: Some(vec![TrackingState::Inbox, TrackingState::Followed]),
+            ..TaskFilter::empty()
+        };
+
+        let tasks = task_repo
+            .find_by_user(user_id, &filter)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        let tags = tag_repo
+            .find_by_user(user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let tag_names: HashMap<TagId, String> =
+            tags.into_iter().map(|t| (t.id, t.name)).collect();
+
+        let projects = project_repo
+            .find_by_user(user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let project_names: HashMap<ProjectId, String> =
+            projects.into_iter().map(|p| (p.id, p.name)).collect();
+
+        Ok(tasks
+            .into_iter()
+            .map(|task| {
+                let project_name = task
+                    .project_id
+                    .and_then(|pid| project_names.get(&pid).cloned());
+                let tag_names_vec: Vec<String> = task
+                    .tags
+                    .iter()
+                    .filter_map(|tid| tag_names.get(tid).cloned())
+                    .collect();
+                crate::graphql::types::SearchableTaskGql {
+                    task,
+                    project_name,
+                    tag_names: tag_names_vec,
+                }
+            })
+            .collect())
+    }
+
     /// Get user configuration as a JSON-like list of key-value pairs.
     async fn configuration(&self, ctx: &Context<'_>) -> Result<serde_json::Value> {
         let user_id = ctx.data::<UserId>()?;
