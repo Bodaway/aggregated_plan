@@ -1,0 +1,27 @@
+mutation AddWorklogEntry($taskId: ID!, $body: String!, $loggedAt: DateTime) {
+  addWorklogEntry(taskId: $taskId, body: $body, loggedAt: $loggedAt) {
+    id
+    taskId
+    task { id title }
+    body
+    loggedAt
+    createdAt
+    updatedAt
+  }
+}
+
+mutation UpdateWorklogEntry($id: ID!, $body: String, $loggedAt: DateTime) {
+  updateWorklogEntry(id: $id, body: $body, loggedAt: $loggedAt) {
+    id
+    taskId
+    task { id title }
+    body
+    loggedAt
+    createdAt
+    updatedAt
+  }
+}
+
+mutation DeleteWorklogEntry($id: ID!) {
+  deleteWorklogEntry(id: $id)
+}

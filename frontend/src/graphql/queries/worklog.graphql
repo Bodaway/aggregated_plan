@@ -1,0 +1,14 @@
+query WorklogEntries($filter: WorklogEntryFilterInput) {
+  worklogEntries(filter: $filter) {
+    id
+    taskId
+    task {
+      id
+      title
+    }
+    body
+    loggedAt
+    createdAt
+    updatedAt
+  }
+}
