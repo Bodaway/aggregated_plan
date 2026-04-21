@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useSearch } from '@/lib/search/SearchProvider';
 import {
   DndContext,
   DragOverlay,
@@ -25,7 +26,6 @@ import {
   getWeekDays,
   isToday,
 } from '@/lib/date-utils';
-import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 import { TaskCreateSheet } from '@/components/task/TaskCreateSheet';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -333,10 +333,9 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, 
 // ─── DashboardPage ────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
-  // ── Edit sheet ──
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  // ── Edit sheet (owned by SearchProvider) ──
+  const { openTaskInSheet } = useSearch();
   const [creatingForDate, setCreatingForDate] = useState<string | null>(null);
-  const handleSheetClose = useCallback(() => setEditingTaskId(null), []);
 
   // ── Week navigation ──
   const [currentDate, setCurrentDate] = useState(() => new Date());
@@ -408,7 +407,6 @@ export function DashboardPage() {
   const onDragStart = useCallback(({ active }: DragStartEvent) => {
     const id = active.id as string;
     setActiveTaskId(id);
-    setEditingTaskId(null);
     setCreatingForDate(null);
     const allDayTasks = Object.values(tasksByDate).flat();
     draggingTaskRef.current =
@@ -584,7 +582,7 @@ export function DashboardPage() {
             onDragCancel={onDragCancel}
           >
             <div className="flex gap-3">
-              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={setEditingTaskId} />
+              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={openTaskInSheet} />
               <div className="flex-1 min-w-0">
                 <div style={{ display: 'grid', gridTemplateColumns: `repeat(${workingDays.length}, minmax(0, 1fr))`, gap: '0.5rem' }}>
                   {weekDays.map(day => {
@@ -595,7 +593,7 @@ export function DashboardPage() {
                         date={day}
                         tasks={tasksByDate[dayStr] ?? []}
                         meetings={meetingsByDate[dayStr] ?? []}
-                        onTaskClick={setEditingTaskId}
+                        onTaskClick={openTaskInSheet}
                         isDragging={activeTaskId !== null}
                         onAddTask={() => setCreatingForDate(dayStr)}
                         workingHoursPerDay={data?.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK}
@@ -640,7 +638,6 @@ export function DashboardPage() {
         </>
       )}
 
-      <TaskEditSheet taskId={editingTaskId} onClose={handleSheetClose} />
       <TaskCreateSheet
         plannedDate={creatingForDate}
         onClose={() => setCreatingForDate(null)}

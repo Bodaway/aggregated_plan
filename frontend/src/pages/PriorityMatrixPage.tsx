@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { usePriorityMatrix } from '@/hooks/use-priority-matrix';
 import { PriorityGrid } from '@/components/priority/PriorityGrid';
-import { TaskEditSheet } from '@/components/task/TaskEditSheet';
+import { useSearch } from '@/lib/search/SearchProvider';
 import type { QuadrantKey, PriorityMatrixData } from '@/hooks/use-priority-matrix';
 
 // urgency arrives as a string enum ("LOW"|"MEDIUM"|"HIGH"|"CRITICAL") from the
@@ -14,7 +14,7 @@ function toUrgencyNum(u: unknown): number {
 
 export function PriorityMatrixPage() {
   const { data, loading, error, updatePriority } = usePriorityMatrix();
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const { openTaskInSheet } = useSearch();
 
   const criticalTasks = data
     ? [
@@ -41,8 +41,8 @@ export function PriorityMatrixPage() {
   };
 
   const handleEdit = useCallback((taskId: string) => {
-    setEditingTaskId(taskId);
-  }, []);
+    openTaskInSheet(taskId);
+  }, [openTaskInSheet]);
 
   if (error) {
     return (
@@ -95,9 +95,7 @@ export function PriorityMatrixPage() {
       </div>
 
       {/* Priority grid (critical section rendered inside DndContext for drag support) */}
-      <PriorityGrid data={filteredData!} criticalTasks={criticalTasks} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => setEditingTaskId(null)} />
-
-      <TaskEditSheet taskId={editingTaskId} onClose={() => setEditingTaskId(null)} />
+      <PriorityGrid data={filteredData!} criticalTasks={criticalTasks} onMoveTask={handleMoveTask} onEdit={handleEdit} onDragStartExternal={() => { /* sheet state is owned by SearchProvider */ }} />
     </div>
   );
 }

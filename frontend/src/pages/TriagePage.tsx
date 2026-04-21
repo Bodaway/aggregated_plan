@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearch } from '@/lib/search/SearchProvider';
 import {
   DndContext,
   DragOverlay,
@@ -13,7 +14,6 @@ import { useDroppable } from '@dnd-kit/core';
 import { useDraggable } from '@dnd-kit/core';
 import { useTriageTasks, type TriageTask } from '@/hooks/use-triage';
 import { TaskCard } from '@/components/task/TaskCard';
-import { TaskEditSheet } from '@/components/task/TaskEditSheet';
 
 function DraggableTaskCard({
   task,
@@ -154,8 +154,8 @@ export function TriagePage() {
     followAll,
   } = useTriageTasks();
 
+  const { openTaskInSheet } = useSearch();
   const [activeTask, setActiveTask] = useState<TriageTask | null>(null);
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -164,7 +164,6 @@ export function TriagePage() {
   const allTasks = [...inboxTasks, ...followedTasks];
 
   const handleDragStart = (event: DragStartEvent) => {
-    setEditingTaskId(null); // Close sheet on drag start
     const task = allTasks.find(t => t.id === event.active.id);
     setActiveTask(task ?? null);
   };
@@ -244,7 +243,7 @@ export function TriagePage() {
                   key={task.id}
                   task={task}
                   onDismiss={() => dismissTask(task.id)}
-                  onEdit={(id) => setEditingTaskId(id)}
+                  onEdit={openTaskInSheet}
                 />
               ))
             )}
@@ -262,7 +261,7 @@ export function TriagePage() {
               </p>
             ) : (
               followedTasks.map(task => (
-                <DraggableTaskCard key={task.id} task={task} onEdit={(id) => setEditingTaskId(id)} />
+                <DraggableTaskCard key={task.id} task={task} onEdit={openTaskInSheet} />
               ))
             )}
           </DroppableColumn>
@@ -273,7 +272,6 @@ export function TriagePage() {
         </DragOverlay>
       </DndContext>
 
-      <TaskEditSheet taskId={editingTaskId} onClose={() => setEditingTaskId(null)} />
     </>
   );
 }
