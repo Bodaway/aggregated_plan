@@ -7,3 +7,4 @@ pub mod sync;
 pub mod deduplication;
 pub mod alerts;
 pub mod configuration;
+pub mod worklog;
