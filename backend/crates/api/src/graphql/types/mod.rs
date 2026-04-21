@@ -12,6 +12,7 @@ pub mod tag;
 pub mod dedup;
 pub mod enums;
 pub mod pagination;
+pub mod worklog_entry;
 
 pub use task::*;
 pub use meeting::*;
@@ -27,3 +28,4 @@ pub use tag::*;
 pub use dedup::*;
 pub use enums::*;
 pub use pagination::*;
+pub use worklog_entry::*;
