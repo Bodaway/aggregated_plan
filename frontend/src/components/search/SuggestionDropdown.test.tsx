@@ -75,39 +75,54 @@ describe('SuggestionDropdown', () => {
       result(task('1', 'Refactor auth middleware'), [[9, 12]]),
       result(task('2', 'Write auth tests'), [[6, 9]]),
     ];
-    render(<SuggestionDropdown listboxId="lb" />);
+    render(<SuggestionDropdown listboxId="lb" activeIndex={0} />);
     expect(screen.getAllByRole('option')).toHaveLength(2);
   });
 
-  it('shows an empty state including the query when there are no matches', () => {
+  it('shows an empty-state status region (not listbox) when there are no matches', () => {
     ctx.query = 'zzzzz';
     ctx.matches = [];
-    render(<SuggestionDropdown listboxId="lb" />);
-    expect(screen.getByText(/No tasks match/i).textContent).toContain('zzzzz');
+    render(<SuggestionDropdown listboxId="lb" activeIndex={0} />);
+    // Must NOT be a listbox — an empty listbox is an ARIA violation
+    expect(screen.queryByRole('listbox')).toBeNull();
+    // Must be a live region announcing the empty state
+    const status = screen.getByRole('status');
+    expect(status.textContent).toContain('zzzzz');
   });
 
   it('clicking a row opens the task and clears the query', () => {
     ctx.matches = [result(task('1', 'Auth work'))];
-    render(<SuggestionDropdown listboxId="lb" />);
+    render(<SuggestionDropdown listboxId="lb" activeIndex={0} />);
     fireEvent.mouseDown(screen.getAllByRole('option')[0]);
     expect(openSpy).toHaveBeenCalledWith('1');
     expect(clearSpy).toHaveBeenCalled();
   });
 
-  it('ArrowDown on the listbox moves the active option', () => {
+  it('renders the option at activeIndex with aria-selected="true"', () => {
     ctx.matches = [
       result(task('1', 'Auth A')),
       result(task('2', 'Auth B')),
     ];
-    render(<SuggestionDropdown listboxId="lb" />);
-    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowDown' });
+    render(<SuggestionDropdown listboxId="lb" activeIndex={1} />);
     const options = screen.getAllByRole('option');
+    expect(options[0]).toHaveAttribute('aria-selected', 'false');
     expect(options[1]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('each option gets a stable id derived from listboxId', () => {
+    ctx.matches = [
+      result(task('1', 'Auth A')),
+      result(task('2', 'Auth B')),
+    ];
+    render(<SuggestionDropdown listboxId="lb" activeIndex={0} />);
+    const options = screen.getAllByRole('option');
+    expect(options[0]).toHaveAttribute('id', 'lb-option-0');
+    expect(options[1]).toHaveAttribute('id', 'lb-option-1');
   });
 
   it('bolds matched character ranges in the title', () => {
     ctx.matches = [result(task('1', 'Refactor auth middleware'), [[9, 12]])];
-    render(<SuggestionDropdown listboxId="lb" />);
+    render(<SuggestionDropdown listboxId="lb" activeIndex={0} />);
     expect(screen.getByText('auth').tagName).toBe('STRONG');
   });
 });

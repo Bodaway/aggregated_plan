@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
 import type { FuseResultMatch } from 'fuse.js';
 import { useSearch } from '@/lib/search/SearchProvider';
 import { MAX_DROPDOWN_ROWS } from '@/lib/search/fuse-config';
 
 interface Props {
   readonly listboxId: string;
+  readonly activeIndex: number;
 }
 
 function renderHighlightedTitle(
@@ -35,41 +35,14 @@ const SOURCE_ICON: Record<string, string> = {
   OUTLOOK: '📅',
 };
 
-export function SuggestionDropdown({ listboxId }: Props) {
+export function SuggestionDropdown({ listboxId, activeIndex }: Props) {
   const { matches, openTaskInSheet, clearQuery, query } = useSearch();
-  const [activeIndex, setActiveIndex] = useState(0);
-  const ref = useRef<HTMLUListElement>(null);
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [matches]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (matches.length === 0) return;
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setActiveIndex((i) => Math.min(i + 1, matches.length - 1));
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setActiveIndex((i) => Math.max(i - 1, 0));
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        const picked = matches[activeIndex];
-        if (picked) {
-          openTaskInSheet(picked.item.id);
-          clearQuery();
-        }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [matches, activeIndex, openTaskInSheet, clearQuery]);
 
   if (matches.length === 0) {
     return (
       <div
-        role="listbox"
+        role="status"
+        aria-live="polite"
         id={listboxId}
         className="absolute z-30 mt-1 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-500 shadow-lg"
       >
@@ -80,21 +53,10 @@ export function SuggestionDropdown({ listboxId }: Props) {
 
   return (
     <ul
-      ref={ref}
       role="listbox"
       id={listboxId}
       className="absolute z-30 mt-1 w-full overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg"
       style={{ maxHeight: `${MAX_DROPDOWN_ROWS * 3.25}rem` }}
-      tabIndex={-1}
-      onKeyDown={(e) => {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setActiveIndex((i) => Math.min(i + 1, matches.length - 1));
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setActiveIndex((i) => Math.max(i - 1, 0));
-        }
-      }}
     >
       {matches.map((m, i) => {
         const { item } = m;
@@ -105,13 +67,13 @@ export function SuggestionDropdown({ listboxId }: Props) {
         return (
           <li
             key={item.id}
+            id={`${listboxId}-option-${i}`}
             role="option"
             aria-selected={active}
             onMouseDown={() => {
               openTaskInSheet(item.id);
               clearQuery();
             }}
-            onMouseEnter={() => setActiveIndex(i)}
             className={
               'flex cursor-pointer gap-2 px-3 py-2 text-sm ' +
               (active ? 'bg-blue-50' : 'hover:bg-gray-50')

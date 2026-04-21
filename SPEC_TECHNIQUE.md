@@ -2031,28 +2031,37 @@ type Query {
 }
 ```
 
-**Server-side filter:** only tasks where `tracking_state != 'dismissed'` are returned. The resolver resolves `projectName` and `tags` (names) in a single query with joins rather than N+1 sub-resolvers.
+**Server-side filter:** only tasks where `tracking_state != 'dismissed'` are returned. The resolver calls `find_by_user` three times (once each for tasks, projects, tags) and resolves `projectName` and tag names in memory using a hashmap — it does **not** use SQL joins.
 
 #### 6.6.2 Frontend — `SearchProvider` and Fuse.js
 
 `SearchProvider` is mounted inside `BrowserRouter` (in `App.tsx`) so all child routes can consume `useSearch()`.
 
 ```typescript
-// Context shape
+// Context shape (SearchContextValue)
 interface SearchContextValue {
-  query: string
-  setQuery: (q: string) => void
-  results: SearchableTask[]   // top matches from Fuse
-  isActive: boolean           // true when query.length >= 2
+  readonly query: string;
+  readonly setQuery: (q: string) => void;
+  readonly matches: readonly FuseResult<SearchableTask>[];  // top Fuse hits
+  readonly matchedIds: ReadonlySet<string>;                 // set of matched task ids
+  readonly highlightActive: boolean;                        // true when query.length >= 2 and not loading/error
+  readonly openTaskId: string | null;
+  readonly openTaskInSheet: (id: string) => void;
+  readonly closeSheet: () => void;
+  readonly clearQuery: () => void;
+  readonly loading: boolean;
+  readonly error: Error | null;
 }
 ```
 
 **Fuse.js configuration:**
 
 ```typescript
-const fuseOptions: IFuseOptions<SearchableTask> = {
+const FUSE_OPTIONS: IFuseOptions<SearchableTask> = {
   threshold: 0.35,
   minMatchCharLength: 2,
+  ignoreLocation: true,
+  includeMatches: true,
   keys: [
     { name: 'title',       weight: 0.40 },
     { name: 'sourceId',    weight: 0.25 },
@@ -2064,15 +2073,18 @@ const fuseOptions: IFuseOptions<SearchableTask> = {
 }
 ```
 
-The `SearchProvider` fetches `searchableTasks` once on mount via the `useSearchableTasksQuery` hook (urql). The Fuse index is rebuilt whenever the task list changes. Dismissed tasks are never included (filtered server-side).
+The `SearchProvider` fetches `searchableTasks` once on mount via the `useSearchableTasks` hook (custom hook, not urql's generated hook). The Fuse index is rebuilt whenever the task list changes. Dismissed tasks are never included (filtered server-side).
 
 #### 6.6.3 Frontend — `HeaderSearchBar` component
 
 Renders inside `Header.tsx`. Responsibilities:
 
-- Controlled input bound to `SearchContext.query`.
-- On `query.length >= 2`, renders `<SuggestionDropdown>` below the input showing the top matches.
-- Clicking a suggestion calls `onSelect(task)` which opens `<TaskEditSheet>` (no route change).
+- Controlled input (`role="combobox"`) bound to `SearchContext.query`.
+- On `query.length >= 2` and input focused, renders `<SuggestionDropdown>` below the input.
+- Owns `activeIndex` state (the highlighted suggestion row). Resets to 0 whenever `matches` changes.
+- Handles all keyboard navigation in its own `onKeyDown` handler (see §6.6.4).
+- `aria-activedescendant` points to the id of the currently highlighted option (`${listboxId}-option-${activeIndex}`) when the dropdown is open and matches exist.
+- Opening a suggestion calls `openTaskInSheet(id)` which opens `<TaskEditSheet>` (no route change).
 - Clears the query (and closes the dropdown) when a suggestion is selected or when `Esc` is pressed.
 
 #### 6.6.4 Frontend — Keyboard shortcuts
@@ -2082,17 +2094,20 @@ Renders inside `Header.tsx`. Responsibilities:
 | `/` | Active element is **not** `INPUT`, `TEXTAREA`, or `contentEditable` | Focus the search input |
 | `Cmd/Ctrl+K` | Unconditional | Focus the search input |
 | `Esc` | Search input has focus | Clear query and blur |
+| `ArrowDown` | Dropdown open with matches | Advance highlight (clamped at last option) |
+| `ArrowUp` | Dropdown open with matches | Move highlight back (clamped at first option) |
+| `Enter` | Dropdown open with matches | Open highlighted task in sheet; clear query |
 
-Implemented via a `useEffect` on `document` in `HeaderSearchBar`. The `/` handler checks `document.activeElement.tagName` before redirecting focus.
+Global shortcuts (`/` and `Cmd/Ctrl+K`) are wired via a `useEffect`+`window.addEventListener` in `HeaderSearchBar`. Arrow/Enter navigation is handled entirely inside the input's `onKeyDown` — `SuggestionDropdown` is presentational and has no keyboard handlers.
 
 #### 6.6.5 Frontend — `TaskCard` highlight classes
 
-`TaskCard` reads `useSearch()`. When `isActive` is `true`:
+`TaskCard` reads `useSearch()`. When `highlightActive` is `true`:
 
-- **Matching card** (task id is in `results`): `ring-2 ring-blue-500 ring-offset-2`
+- **Matching card** (task id is in `matchedIds`): `ring-2 ring-blue-500 ring-offset-2`
 - **Non-matching card**: `opacity-40 grayscale-[30%]`
 
-When `isActive` is `false`, no additional classes are applied and the card renders normally.
+When `highlightActive` is `false`, no additional classes are applied and the card renders normally.
 
 ---
 

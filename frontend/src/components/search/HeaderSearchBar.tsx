@@ -10,11 +10,18 @@ function isTypingTarget(el: Element | null): boolean {
 }
 
 export function HeaderSearchBar() {
-  const { query, setQuery, clearQuery, highlightActive, loading, error } = useSearch();
+  const { query, setQuery, clearQuery, highlightActive, matches, openTaskInSheet, loading, error } = useSearch();
   const inputRef = useRef<HTMLInputElement>(null);
   const [isFocused, setIsFocused] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const listboxId = useId();
 
+  // Reset active index whenever the match list changes.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [matches]);
+
+  // Global shortcut: "/" and Cmd/Ctrl+K focus the search input.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const input = inputRef.current;
@@ -45,6 +52,37 @@ export function HeaderSearchBar() {
       : 'Search tasks   /';
 
   const showDropdown = highlightActive && isFocused;
+  const hasMatches = matches.length > 0;
+
+  // Stable id for the currently highlighted option (used by aria-activedescendant).
+  const activeDescendant =
+    showDropdown && hasMatches ? `${listboxId}-option-${activeIndex}` : undefined;
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape') {
+      clearQuery();
+      inputRef.current?.blur();
+      return;
+    }
+
+    // Arrow/Enter navigation only makes sense when the dropdown is open with results.
+    if (!showDropdown || !hasMatches) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, matches.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const picked = matches[activeIndex];
+      if (picked) {
+        openTaskInSheet(picked.item.id);
+        clearQuery();
+      }
+    }
+  }
 
   return (
     <div className="relative w-80">
@@ -55,6 +93,7 @@ export function HeaderSearchBar() {
         aria-expanded={showDropdown}
         aria-controls={listboxId}
         aria-autocomplete="list"
+        aria-activedescendant={activeDescendant}
         value={query}
         placeholder={placeholder}
         onChange={(e) => setQuery(e.target.value)}
@@ -63,12 +102,7 @@ export function HeaderSearchBar() {
           // Delay so a click inside the dropdown still registers
           setTimeout(() => setIsFocused(false), 150);
         }}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            clearQuery();
-            inputRef.current?.blur();
-          }
-        }}
+        onKeyDown={handleKeyDown}
         className="w-full rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
         disabled={!!error}
       />
@@ -85,7 +119,9 @@ export function HeaderSearchBar() {
           ×
         </button>
       )}
-      {showDropdown && <SuggestionDropdown listboxId={listboxId} />}
+      {showDropdown && (
+        <SuggestionDropdown listboxId={listboxId} activeIndex={activeIndex} />
+      )}
     </div>
   );
 }
