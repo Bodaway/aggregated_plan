@@ -22,6 +22,7 @@
     "@urql/core": "^5.2.0",
     "@urql/exchange-graphcache": "^7.2.4",
     "date-fns": "^4.1.0",
+    "fuse.js": "^7.3.0",
     "graphql": "^16.13.1",
     "graphql-sse": "^2.6.0",
     "react": "^18.3.1",
