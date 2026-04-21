@@ -346,6 +346,31 @@ impl TaskRepository for SqliteTaskRepository {
         Ok(tasks)
     }
 
+    async fn find_planned_before(
+        &self,
+        user_id: UserId,
+        before_date: NaiveDate,
+    ) -> Result<Vec<Task>, RepositoryError> {
+        let before_str = before_date.format("%Y-%m-%d").to_string();
+        let rows = sqlx::query(
+            "SELECT * FROM tasks \
+             WHERE user_id = ? \
+               AND planned_start IS NOT NULL \
+               AND date(planned_start) < ? \
+               AND status != 'done' \
+             ORDER BY planned_start",
+        )
+        .bind(user_id.to_string())
+        .bind(&before_str)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        let mut tasks: Vec<Task> = rows.iter().map(map_task_row).collect::<Result<_, _>>()?;
+        load_tags_for_tasks(&self.pool, &mut tasks).await?;
+        Ok(tasks)
+    }
+
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
             "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, created_at, updated_at)
@@ -946,5 +971,41 @@ mod tests {
         assert!(loaded.jira_time_spent_seconds.is_none());
         assert!(loaded.remaining_hours_override.is_none());
         assert!(loaded.estimated_hours_override.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_planned_before_returns_only_active_past_tasks() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let last_monday = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        let this_monday = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
+
+        // Active task planned last Monday — should be returned
+        let mut stale = make_task("Stale");
+        stale.planned_start = Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        stale.status = TaskStatus::Todo;
+        repo.save(&stale).await.unwrap();
+
+        // Done task planned last Monday — must NOT be returned
+        let mut done = make_task("Done");
+        done.planned_start = Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        done.status = TaskStatus::Done;
+        repo.save(&done).await.unwrap();
+
+        // Task planned this Monday — must NOT be returned
+        let mut current = make_task("Current");
+        current.planned_start = Some(this_monday.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        current.status = TaskStatus::Todo;
+        repo.save(&current).await.unwrap();
+
+        // Task with no planned_start — must NOT be returned
+        let no_date = make_task("No Date");
+        repo.save(&no_date).await.unwrap();
+
+        let results = repo.find_planned_before(user_id(), this_monday).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Stale");
     }
 }

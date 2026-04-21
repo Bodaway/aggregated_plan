@@ -130,3 +130,5 @@ storybook-static/
 # Temporary folders
 .tmp/
 .temp/
+.aider*
+.superpowers/

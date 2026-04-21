@@ -242,6 +242,32 @@ pub async fn set_tracking_state_batch(
     Ok(results)
 }
 
+/// Carry forward tasks whose planned_start is before `current_monday` to that Monday.
+///
+/// Only non-Done tasks are rescheduled. Returns the number of tasks updated.
+pub async fn carry_forward_tasks(
+    task_repo: &dyn TaskRepository,
+    user_id: UserId,
+    current_monday: NaiveDate,
+) -> Result<usize, AppError> {
+    let tasks = task_repo
+        .find_planned_before(user_id, current_monday)
+        .await?;
+
+    let new_start = current_monday
+        .and_hms_opt(8, 0, 0)
+        .expect("valid time")
+        .and_utc();
+
+    let count = tasks.len();
+    for mut task in tasks {
+        task.planned_start = Some(new_start);
+        task.updated_at = Utc::now();
+        task_repo.save(&task).await?;
+    }
+    Ok(count)
+}
+
 /// Mark a task as completed.
 pub async fn complete_task(
     task_repo: &dyn TaskRepository,
@@ -357,6 +383,25 @@ mod tests {
                     t.user_id == user_id
                         && t.deadline
                             .map(|d| d >= start && d <= end)
+                            .unwrap_or(false)
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn find_planned_before(
+            &self,
+            user_id: UserId,
+            before_date: NaiveDate,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            let tasks = self.tasks.lock().unwrap();
+            Ok(tasks
+                .values()
+                .filter(|t| {
+                    t.user_id == user_id
+                        && t.status != TaskStatus::Done
+                        && t.planned_start
+                            .map(|dt| dt.date_naive() < before_date)
                             .unwrap_or(false)
                 })
                 .cloned()
@@ -937,5 +982,95 @@ mod tests {
         let repo = InMemoryTaskRepository::new();
         let result = append_to_task_notes(&repo, Uuid::new_v4(), "anything").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn carry_forward_moves_past_week_tasks_to_monday() {
+        let repo = InMemoryTaskRepository::new();
+        let last_monday = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
+        let this_monday = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
+
+        // Task planned last Monday — should be carried forward
+        let stale = CreateTaskInput {
+            title: "Stale Task".to_string(),
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let stale_task = create_personal_task(&repo, test_user_id(), stale, today())
+            .await
+            .unwrap();
+
+        // Done task from last week — must NOT be moved
+        let done = CreateTaskInput {
+            title: "Done Task".to_string(),
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let done_task = create_personal_task(&repo, test_user_id(), done, today())
+            .await
+            .unwrap();
+        // Mark as done
+        complete_task(&repo, done_task.id).await.unwrap();
+
+        // Task already on current Monday — must NOT be affected
+        let current = CreateTaskInput {
+            title: "Current Task".to_string(),
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: Some(this_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let current_task = create_personal_task(&repo, test_user_id(), current, today())
+            .await
+            .unwrap();
+
+        let count = carry_forward_tasks(&repo, test_user_id(), this_monday)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1, "only the stale active task should be moved");
+
+        let updated = repo.find_by_id(stale_task.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.planned_start.unwrap().date_naive(),
+            this_monday,
+            "stale task should be rescheduled to current Monday"
+        );
+
+        let done_after = repo.find_by_id(done_task.id).await.unwrap().unwrap();
+        assert_eq!(
+            done_after.planned_start.unwrap().date_naive(),
+            last_monday,
+            "done task should not be moved"
+        );
+
+        let current_after = repo.find_by_id(current_task.id).await.unwrap().unwrap();
+        assert_eq!(
+            current_after.planned_start.unwrap().date_naive(),
+            this_monday,
+            "current week task unchanged"
+        );
     }
 }

@@ -21,7 +21,7 @@ export interface TriageTask {
 
 const TRIAGE_TASKS_QUERY = `
   query TriageTasks($trackingState: [TrackingStateGql!]) {
-    tasks(filter: { status: [TODO, IN_PROGRESS], trackingState: $trackingState }) {
+    tasks(filter: { status: [TODO, IN_PROGRESS, BLOCKED], trackingState: $trackingState }) {
       edges {
         node {
           id

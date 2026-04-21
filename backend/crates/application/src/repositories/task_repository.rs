@@ -67,6 +67,14 @@ pub trait TaskRepository: Send + Sync {
         end: NaiveDate,
     ) -> Result<Vec<Task>, RepositoryError>;
 
+    /// Find active tasks whose planned_start is strictly before `before_date`.
+    /// "Active" means status is not Done.
+    async fn find_planned_before(
+        &self,
+        user_id: UserId,
+        before_date: NaiveDate,
+    ) -> Result<Vec<Task>, RepositoryError>;
+
     /// Save a new task or update an existing one.
     async fn save(&self, task: &Task) -> Result<(), RepositoryError>;
 

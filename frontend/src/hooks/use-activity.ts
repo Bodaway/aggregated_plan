@@ -92,7 +92,7 @@ const APPEND_TASK_NOTES_MUTATION = `
 
 const ACTIVE_TASKS_QUERY = `
   query ActiveTasksForPicker {
-    tasks(filter: { status: [TODO, IN_PROGRESS] }) {
+    tasks(filter: { status: [TODO, IN_PROGRESS, DONE, BLOCKED] }) {
       edges {
         node {
           id

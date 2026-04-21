@@ -99,6 +99,14 @@ impl TaskRepository for InMemoryTaskRepository {
         Ok(vec![])
     }
 
+    async fn find_planned_before(
+        &self,
+        _user_id: UserId,
+        _before_date: NaiveDate,
+    ) -> Result<Vec<Task>, RepositoryError> {
+        Ok(vec![])
+    }
+
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         let mut tasks = self.tasks.lock().unwrap();
         tasks.insert(task.id, task.clone());

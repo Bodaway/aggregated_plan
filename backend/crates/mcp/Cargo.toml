@@ -1,0 +1,22 @@
+[package]
+name = "mcp"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aggregated-plan-mcp"
+path = "src/main.rs"
+
+[dependencies]
+domain = { path = "../domain" }
+application = { path = "../application" }
+infrastructure = { path = "../infrastructure" }
+rmcp = { version = "1", features = ["server", "transport-io"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"

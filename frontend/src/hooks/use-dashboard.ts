@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { useQuery } from 'urql';
+import { useEffect, useMemo } from 'react';
+import { useMutation, useQuery } from 'urql';
 
 const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 const IMPACT_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
@@ -106,6 +106,12 @@ export interface DailyDashboardData {
   readonly workingDays: readonly number[];
 }
 
+const CARRY_FORWARD_MUTATION = `
+  mutation CarryForwardTasks {
+    carryForwardTasks
+  }
+`;
+
 const DASHBOARD_QUERY = `
   query DailyDashboard($date: String!) {
     dailyDashboard(date: $date) {
@@ -176,11 +182,21 @@ const DASHBOARD_QUERY = `
 `;
 
 export function useDashboard(date: string) {
+  const [, executeCarryForward] = useMutation<{ carryForwardTasks: number }>(CARRY_FORWARD_MUTATION);
+
   const [result, reexecute] = useQuery<{ dailyDashboard: DailyDashboardData }>({
     query: DASHBOARD_QUERY,
     variables: { date },
     requestPolicy: 'cache-and-network',
   });
+
+  // On mount, carry forward any tasks stuck in a past week, then refresh.
+  useEffect(() => {
+    executeCarryForward({}).then(() => {
+      reexecute({ requestPolicy: 'network-only' });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const raw = result.data?.dailyDashboard ?? null;
   const data = useMemo(

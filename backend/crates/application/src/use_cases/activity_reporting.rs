@@ -226,6 +226,7 @@ mod tests {
         async fn find_by_user(&self, _user_id: UserId, _filter: &crate::repositories::TaskFilter) -> Result<Vec<Task>, RepositoryError> { Ok(vec![]) }
         async fn find_by_source(&self, _user_id: UserId, _source: Source, _source_id: &str) -> Result<Option<Task>, RepositoryError> { Ok(None) }
         async fn find_by_date_range(&self, _user_id: UserId, _start: NaiveDate, _end: NaiveDate) -> Result<Vec<Task>, RepositoryError> { Ok(vec![]) }
+        async fn find_planned_before(&self, _user_id: UserId, _before_date: NaiveDate) -> Result<Vec<Task>, RepositoryError> { Ok(vec![]) }
         async fn save(&self, _task: &Task) -> Result<(), RepositoryError> { Ok(()) }
         async fn save_batch(&self, _tasks: &[Task]) -> Result<(), RepositoryError> { Ok(()) }
         async fn delete(&self, _id: TaskId) -> Result<(), RepositoryError> { Ok(()) }
