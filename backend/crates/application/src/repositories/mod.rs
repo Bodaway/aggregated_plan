@@ -7,6 +7,7 @@ pub mod tag_repository;
 pub mod task_link_repository;
 pub mod sync_status_repository;
 pub mod config_repository;
+pub mod worklog_repository;
 
 pub use task_repository::*;
 pub use meeting_repository::*;
@@ -17,3 +18,4 @@ pub use tag_repository::*;
 pub use task_link_repository::*;
 pub use sync_status_repository::*;
 pub use config_repository::*;
+pub use worklog_repository::*;
