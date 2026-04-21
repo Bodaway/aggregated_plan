@@ -8,12 +8,14 @@ import { DeduplicationPage } from '@/pages/DeduplicationPage';
 import { AlertsPage } from '@/pages/AlertsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { TriagePage } from '@/pages/TriagePage';
+import { SearchProvider } from '@/lib/search/SearchProvider';
 
 export function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      <SearchProvider>
+        <Routes>
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route
           path="/dashboard"
           element={
@@ -78,7 +80,8 @@ export function App() {
             </PageLayout>
           }
         />
-      </Routes>
+        </Routes>
+      </SearchProvider>
     </BrowserRouter>
   );
 }
