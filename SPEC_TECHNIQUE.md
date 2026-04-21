@@ -2261,6 +2261,17 @@ CREATE TABLE configuration (
     UNIQUE(user_id, key)
 );
 
+-- Worklog entries (timestamped, task-scoped journal)
+CREATE TABLE worklog_entries (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    logged_at  TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Indexes
 CREATE INDEX idx_tasks_user ON tasks(user_id);
 CREATE INDEX idx_tasks_source ON tasks(user_id, source, source_id);
@@ -2272,7 +2283,22 @@ CREATE INDEX idx_meetings_project ON meetings(project_id);
 CREATE INDEX idx_activity_user_date ON activity_slots(user_id, date);
 CREATE INDEX idx_alerts_user_resolved ON alerts(user_id, resolved);
 CREATE INDEX idx_projects_user ON projects(user_id);
+CREATE INDEX idx_worklog_entries_user_logged_at ON worklog_entries(user_id, logged_at DESC);
+CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logged_at DESC);
 ```
+
+#### Worklog entries
+
+- Validation: `body` non-empty after trim, max 10 000 characters (enforced in the domain layer).
+- Ordering: `list` returns entries sorted by `logged_at DESC, created_at DESC`.
+- Query limits: default 200 rows, absolute cap 1 000 (clamped in the application layer).
+- Cascade: deleting a task removes its worklog entries via the FK.
+- GraphQL surface:
+  - Query `worklogEntries(filter: WorklogEntryFilterInput): [WorklogEntry!]!`
+  - Mutation `addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntry!`
+  - Mutation `updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntry!`
+  - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
+- Backward compatibility: the `appendTaskNotes` mutation remains registered but is no longer invoked by the frontend (the activity-timer quick note writes a worklog entry instead).
 
 ### 7.2 Notes
 

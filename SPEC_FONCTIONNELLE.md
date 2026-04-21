@@ -480,6 +480,25 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+### 6.4bis Journal de bord (Worklog)
+
+#### US-WL : Consigner et consulter un journal de bord horodaté
+
+> En tant que Tech Lead, je veux saisir des notes horodatées pendant que j'avance sur une tâche, et pouvoir relire l'ensemble des entrées d'une journée ou d'une tâche donnée, afin de reconstituer ce que j'ai fait et pourquoi.
+
+**Critères d'acceptation :**
+- **R-WL-01** : une entrée de worklog est toujours attachée à une tâche (pas d'entrée orpheline).
+- **R-WL-02** : l'horodatage (`loggedAt`) est fixé automatiquement à l'instant de création. Il reste modifiable via une action secondaire (menu kebab → « Edit timestamp »).
+- **R-WL-03** : le corps d'une entrée est en markdown, non vide après trim, et ne dépasse pas 10 000 caractères.
+- **R-WL-04** : la page `/worklog` est filtrable par plage de dates (presets : Aujourd'hui, 7 derniers jours, Cette semaine, Ce mois, Personnalisé) et par tâche/projet. Les entrées sont regroupées par jour, ordre anti-chronologique.
+- **R-WL-05** : supprimer une tâche supprime toutes ses entrées de worklog (cascade FK).
+- **R-WL-06** : arrêter le timer d'activité avec une note rapide crée une entrée de worklog associée à la tâche courante (et n'écrit plus dans le champ `notes`).
+- **R-WL-07** : dans `TaskEditSheet`, la section Worklog apparaît juste sous le champ `notes`, avec un champ d'ajout (Ctrl/Cmd+Enter pour soumettre) et la liste des dernières entrées de la tâche.
+
+**Priorité** : Must (MVP v1)
+
+---
+
 ### 6.5 Tâches personnelles
 
 #### US-040 : Créer une tâche personnelle
