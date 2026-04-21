@@ -4,6 +4,7 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { PriorityMatrixPage } from '@/pages/PriorityMatrixPage';
 import { WorkloadPage } from '@/pages/WorkloadPage';
 import { ActivityJournalPage } from '@/pages/ActivityJournalPage';
+import { WorklogPage } from '@/pages/WorklogPage';
 import { DeduplicationPage } from '@/pages/DeduplicationPage';
 import { AlertsPage } from '@/pages/AlertsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -53,6 +54,14 @@ export function App() {
           element={
             <PageLayout title="Activity Journal">
               <ActivityJournalPage />
+            </PageLayout>
+          }
+        />
+        <Route
+          path="/worklog"
+          element={
+            <PageLayout title="Worklog">
+              <WorklogPage />
             </PageLayout>
           }
         />
