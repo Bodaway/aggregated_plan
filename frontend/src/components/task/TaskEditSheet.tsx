@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTaskEdit } from '@/hooks/use-task-edit';
 import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
+import { WorklogSection } from '@/components/worklog/WorklogSection';
 
 interface TaskEditSheetProps {
   readonly taskId: string | null;
@@ -391,6 +392,12 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                         placeholder="Working notes, decisions, links… (preserved across Jira syncs)"
                       />
                     </div>
+
+                    {task?.id && (
+                      <div className="border-t border-gray-200 pt-4">
+                        <WorklogSection taskId={task.id} />
+                      </div>
+                    )}
                   </div>
                 </>
               ) : null}
