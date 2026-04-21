@@ -1,4 +1,5 @@
 import { SOURCE_COLORS, QUADRANT_LABELS } from '@/lib/constants';
+import { useSearch } from '@/lib/search/SearchProvider';
 
 interface TaskTag {
   readonly id: string;
@@ -100,6 +101,7 @@ function urgencyBorderClass(urgency: number): string {
 }
 
 export function TaskCard({
+  id,
   title,
   source,
   sourceId,
@@ -117,13 +119,21 @@ export function TaskCard({
   compact = false,
   onClick,
 }: TaskCardProps) {
+  const { highlightActive, matchedIds } = useSearch();
+  const isMatch = matchedIds.has(id);
+  const highlightClasses = !highlightActive
+    ? ''
+    : isMatch
+      ? 'ring-2 ring-blue-500 ring-offset-2'
+      : 'opacity-40 grayscale-[30%]';
   const sourceColor = getSourceColor(source);
   const statusStyle = STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-700';
 
   if (compact) {
     return (
       <div
-        className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+        data-testid="task-card-root"
+        className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
         onClick={onClick}
       >
         {/* Top row: source ID + remaining hours */}
@@ -162,7 +172,8 @@ export function TaskCard({
 
   return (
     <div
-      className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''}`}
+      data-testid="task-card-root"
+      className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
       onClick={onClick}
     >
       <div className="flex items-start justify-between gap-2">
