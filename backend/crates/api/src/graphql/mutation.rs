@@ -539,6 +539,36 @@ impl MutationRoot {
         Ok(MeetingGql(meeting))
     }
 
+    // ─── Project management mutations ───
+
+    /// Create a new project.
+    async fn create_project(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateProjectInput,
+    ) -> Result<ProjectGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let project_repo = ctx.data::<Arc<dyn ProjectRepository>>()?;
+
+        let project = domain::types::Project {
+            id: Uuid::new_v4(),
+            user_id: *user_id,
+            name: input.name,
+            source: domain::types::Source::Personal,
+            source_id: None,
+            status: domain::types::ProjectStatus::Active,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        project_repo
+            .save(&project)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(ProjectGql(project))
+    }
+
     // ─── Tag management mutations (Task 39) ───
 
     /// Create a new tag.

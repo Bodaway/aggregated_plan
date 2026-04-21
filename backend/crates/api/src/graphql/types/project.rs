@@ -1,4 +1,4 @@
-use async_graphql::{Object, ID};
+use async_graphql::{InputObject, Object, ID};
 use chrono::{DateTime, Utc};
 
 use domain::types::Project;
@@ -49,4 +49,10 @@ impl ProjectGql {
     async fn updated_at(&self) -> DateTime<Utc> {
         self.0.updated_at
     }
+}
+
+/// Input for creating a new project.
+#[derive(InputObject, Debug)]
+pub struct CreateProjectInput {
+    pub name: String,
 }

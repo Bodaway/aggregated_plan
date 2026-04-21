@@ -1511,3 +1511,54 @@ async fn tasks_query_filters_by_title_contains() {
     let no_match_data = no_match.data.into_json().unwrap();
     assert_eq!(no_match_data["tasks"]["totalCount"], 0);
 }
+
+#[tokio::test]
+async fn searchable_tasks_resolves_tag_and_project_names() {
+    let schema = build_test_schema();
+
+    // Create project
+    let project_res = schema
+        .execute(
+            r#"mutation { createProject(input: { name: "Platform Team" }) { id } }"#,
+        )
+        .await;
+    assert!(project_res.errors.is_empty(), "create project: {:?}", project_res.errors);
+    let project_id = project_res.data.into_json().unwrap()["createProject"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Create tag
+    let tag_res = schema
+        .execute(r#"mutation { createTag(name: "backend") { id } }"#)
+        .await;
+    assert!(tag_res.errors.is_empty(), "create tag: {:?}", tag_res.errors);
+    let tag_id = tag_res.data.into_json().unwrap()["createTag"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Create task referencing both
+    let task_res = schema
+        .execute(&format!(
+            r#"mutation {{ createTask(input: {{
+                title: "Refactor auth middleware",
+                projectId: "{}",
+                tagIds: ["{}"]
+            }}) {{ id }} }}"#,
+            project_id, tag_id
+        ))
+        .await;
+    assert!(task_res.errors.is_empty(), "create task: {:?}", task_res.errors);
+
+    let result = schema
+        .execute(r#"{ searchableTasks { title projectName tags } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let data = result.data.into_json().unwrap();
+    let first = &data["searchableTasks"][0];
+    assert_eq!(first["title"], "Refactor auth middleware");
+    assert_eq!(first["projectName"], "Platform Team");
+    assert_eq!(first["tags"][0], "backend");
+}
