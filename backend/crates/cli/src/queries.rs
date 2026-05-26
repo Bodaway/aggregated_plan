@@ -10,9 +10,9 @@ use graphql_client::GraphQLQuery;
 type DateTime = String;
 #[allow(non_camel_case_types)]
 type NaiveDate = String;
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, dead_code)]
 type ID = String;
-#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
 type JSON = serde_json::Value;
 
 #[derive(GraphQLQuery)]
@@ -21,6 +21,7 @@ type JSON = serde_json::Value;
     query_path = "graphql/health.graphql",
     response_derives = "Debug, Clone"
 )]
+#[allow(dead_code)]
 pub struct Health;
 
 #[derive(GraphQLQuery)]

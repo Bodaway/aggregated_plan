@@ -25,7 +25,7 @@ impl From<ExitCode> for ProcessExitCode {
 pub fn print_json<T: serde::Serialize>(value: &T) -> std::io::Result<()> {
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     writeln!(stdout)?;
     Ok(())
 }
