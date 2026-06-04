@@ -67,6 +67,11 @@ impl TaskGql {
         self.0.assignee.as_deref()
     }
 
+    /// Person this task is delegated to. User-owned — preserved across syncs.
+    async fn delegated_to(&self) -> Option<&str> {
+        self.0.delegated_to.as_deref()
+    }
+
     async fn deadline(&self) -> Option<NaiveDate> {
         self.0.deadline
     }
@@ -205,6 +210,9 @@ pub struct UpdateTaskInput {
     pub remaining_hours_override: Option<Option<f64>>,
     /// Set to Some(Some(val)) to override, Some(None) to clear, None to leave unchanged.
     pub estimated_hours_override: Option<Option<f64>>,
+    /// Set to a name to delegate, explicit null to clear, omit to leave unchanged.
+    #[graphql(default)]
+    pub delegated_to: MaybeUndefined<String>,
 }
 
 /// Filter input for querying tasks.

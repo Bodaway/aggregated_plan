@@ -137,6 +137,18 @@ impl TaskRepository for InMemoryTaskRepository {
     async fn delete_stale_by_source(&self, _user_id: UserId, _source: Source, _keep_ids: &[String]) -> Result<u64, RepositoryError> {
         Ok(0)
     }
+
+    async fn list_delegates(&self, user_id: UserId) -> Result<Vec<String>, RepositoryError> {
+        let tasks = self.tasks.lock().unwrap();
+        let mut names: Vec<String> = tasks
+            .values()
+            .filter(|t| t.user_id == user_id)
+            .filter_map(|t| t.delegated_to.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
 }
 
 struct InMemoryProjectRepository {
@@ -1561,4 +1573,71 @@ async fn searchable_tasks_resolves_tag_and_project_names() {
     assert_eq!(first["title"], "Refactor auth middleware");
     assert_eq!(first["projectName"], "Platform Team");
     assert_eq!(first["tags"][0], "backend");
+}
+
+#[tokio::test]
+async fn update_task_sets_and_clears_delegated_to() {
+    let schema = build_test_schema();
+
+    let create = schema
+        .execute(r#"mutation { createTask(input: { title: "Delegate me" }) { id } }"#)
+        .await;
+    assert!(create.errors.is_empty(), "Errors: {:?}", create.errors);
+    let task_id = create.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Set
+    let set = schema
+        .execute(format!(
+            r#"mutation {{ updateTask(id: "{}", input: {{ delegatedTo: "Marie" }}) {{ id delegatedTo }} }}"#,
+            task_id
+        ))
+        .await;
+    assert!(set.errors.is_empty(), "Errors: {:?}", set.errors);
+    assert_eq!(
+        set.data.into_json().unwrap()["updateTask"]["delegatedTo"],
+        "Marie"
+    );
+
+    // Clear with explicit null
+    let clear = schema
+        .execute(format!(
+            r#"mutation {{ updateTask(id: "{}", input: {{ delegatedTo: null }}) {{ id delegatedTo }} }}"#,
+            task_id
+        ))
+        .await;
+    assert!(clear.errors.is_empty(), "Errors: {:?}", clear.errors);
+    assert!(clear.data.into_json().unwrap()["updateTask"]["delegatedTo"].is_null());
+}
+
+#[tokio::test]
+async fn delegates_query_returns_learned_names() {
+    let schema = build_test_schema();
+
+    for (title, name) in [("T1", "Marie"), ("T2", "Ahmed"), ("T3", "Marie")] {
+        let create = schema
+            .execute(format!(
+                r#"mutation {{ createTask(input: {{ title: "{}" }}) {{ id }} }}"#,
+                title
+            ))
+            .await;
+        let id = create.data.into_json().unwrap()["createTask"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let update = schema
+            .execute(format!(
+                r#"mutation {{ updateTask(id: "{}", input: {{ delegatedTo: "{}" }}) {{ id }} }}"#,
+                id, name
+            ))
+            .await;
+        assert!(update.errors.is_empty(), "Errors: {:?}", update.errors);
+    }
+
+    let result = schema.execute("{ delegates }").await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["delegates"], serde_json::json!(["Ahmed", "Marie"]));
 }

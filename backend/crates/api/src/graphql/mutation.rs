@@ -1021,6 +1021,10 @@ fn convert_update_input(
             Some(None) => Some(None),
             None => None,
         },
-        delegated_to: None, // placeholder — real mapping lands in Task 5
+        delegated_to: match input.delegated_to {
+            async_graphql::MaybeUndefined::Value(name) => Some(Some(name)),
+            async_graphql::MaybeUndefined::Null => Some(None),
+            async_graphql::MaybeUndefined::Undefined => None,
+        },
     })
 }

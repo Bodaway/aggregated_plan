@@ -152,6 +152,17 @@ impl QueryRoot {
         Ok(projects.into_iter().map(ProjectGql).collect())
     }
 
+    /// Distinct delegate names previously used on the current user's tasks.
+    /// Backs the auto-learned suggestion list for the delegation field.
+    async fn delegates(&self, ctx: &Context<'_>) -> Result<Vec<String>> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let user_id = ctx.data::<UserId>()?;
+        task_repo
+            .list_delegates(*user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))
+    }
+
     /// Fetch all tags for the current user.
     async fn tags(&self, ctx: &Context<'_>) -> Result<Vec<TagGql>> {
         let user_id = ctx.data::<UserId>()?;
