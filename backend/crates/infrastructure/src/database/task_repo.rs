@@ -387,8 +387,8 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
@@ -401,6 +401,7 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(task_status_to_str(task.status))
         .bind(task.project_id.map(|id| id.to_string()))
         .bind(&task.assignee)
+        .bind(&task.delegated_to)
         .bind(task.deadline.map(|d| d.format("%Y-%m-%d").to_string()))
         .bind(task.planned_start.map(|dt| dt.to_rfc3339()))
         .bind(task.planned_end.map(|dt| dt.to_rfc3339()))
@@ -523,6 +524,23 @@ impl TaskRepository for SqliteTaskRepository {
         load_tags_for_tasks(&self.pool, &mut tasks).await?;
 
         Ok(tasks)
+    }
+
+    async fn list_delegates(&self, user_id: UserId) -> Result<Vec<String>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT delegated_to FROM tasks \
+             WHERE user_id = ? AND delegated_to IS NOT NULL \
+             ORDER BY delegated_to",
+        )
+        .bind(user_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        Ok(rows
+            .iter()
+            .map(|row| Row::get(row, "delegated_to"))
+            .collect())
     }
 }
 
@@ -1023,6 +1041,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_and_read_delegated_to() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Delegated");
+        task.delegated_to = Some("Marie".to_string());
+        repo.save(&task).await.unwrap();
+
+        let loaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert_eq!(loaded.delegated_to.as_deref(), Some("Marie"));
+
+        // Clearing: save with None overwrites the previous value
+        task.delegated_to = None;
+        repo.save(&task).await.unwrap();
+        let cleared = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert!(cleared.delegated_to.is_none());
+    }
+
+    #[tokio::test]
     async fn save_and_read_time_tracking_nulls() {
         let pool = setup().await;
         let repo = SqliteTaskRepository::new(pool);
@@ -1180,6 +1217,26 @@ mod tests {
             .unwrap()
             .expect("slot must exist");
         assert_eq!(found.title, "Second");
+    }
+
+    #[tokio::test]
+    async fn list_delegates_returns_distinct_sorted_names() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut t1 = make_task("A");
+        t1.delegated_to = Some("Marie".to_string());
+        let mut t2 = make_task("B");
+        t2.delegated_to = Some("Ahmed".to_string());
+        let mut t3 = make_task("C");
+        t3.delegated_to = Some("Marie".to_string()); // duplicate
+        let t4 = make_task("D"); // not delegated
+        for t in [&t1, &t2, &t3, &t4] {
+            repo.save(t).await.unwrap();
+        }
+
+        let names = repo.list_delegates(user_id()).await.unwrap();
+        assert_eq!(names, vec!["Ahmed".to_string(), "Marie".to_string()]);
     }
 
     // Test 10: find_planned_before excludes BOTH Done AND Cancelled tasks (BLOCKER regression)

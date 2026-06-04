@@ -117,4 +117,12 @@ pub trait TaskRepository: Send + Sync {
         let _ = template_id;
         Ok(vec![])
     }
+
+    /// Distinct, sorted delegate names previously used on the user's tasks.
+    /// Backs the auto-learned suggestion list for the delegation field.
+    /// Default implementation returns an empty list; concrete repositories override.
+    async fn list_delegates(&self, user_id: UserId) -> Result<Vec<String>, RepositoryError> {
+        let _ = user_id;
+        Ok(vec![])
+    }
 }
