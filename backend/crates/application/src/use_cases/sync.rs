@@ -826,6 +826,234 @@ async fn update_sync_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::{ConnectorError, RepositoryError};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Returns one fixed Jira task ("AP-1") on every fetch.
+    struct StubJiraClient;
+
+    #[async_trait]
+    impl JiraClient for StubJiraClient {
+        async fn fetch_tasks(
+            &self,
+            _project_keys: &[String],
+            _assignees: Option<&[String]>,
+            _my_tasks_only: bool,
+        ) -> Result<Vec<JiraTask>, ConnectorError> {
+            Ok(vec![JiraTask {
+                key: "AP-1".to_string(),
+                title: "Synced title".to_string(),
+                description: Some("Synced description".to_string()),
+                status: "In Progress".to_string(),
+                assignee: Some("jira.user@example.com".to_string()),
+                deadline: None,
+                priority: None,
+                project_key: "AP".to_string(),
+                project_name: "Aggregated Plan".to_string(),
+                time_estimate_seconds: None,
+                time_spent_seconds: None,
+                time_original_estimate_seconds: None,
+            }])
+        }
+    }
+
+    /// Minimal in-memory TaskRepository covering only what sync_jira touches.
+    #[derive(Default)]
+    struct MiniTaskRepo {
+        tasks: Mutex<HashMap<TaskId, Task>>,
+    }
+
+    #[async_trait]
+    impl TaskRepository for MiniTaskRepo {
+        async fn find_by_id(&self, id: TaskId) -> Result<Option<Task>, RepositoryError> {
+            Ok(self.tasks.lock().unwrap().get(&id).cloned())
+        }
+        async fn find_by_user(
+            &self,
+            user_id: UserId,
+            _filter: &TaskFilter,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(self
+                .tasks
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|t| t.user_id == user_id)
+                .cloned()
+                .collect())
+        }
+        async fn find_by_source(
+            &self,
+            user_id: UserId,
+            source: Source,
+            source_id: &str,
+        ) -> Result<Option<Task>, RepositoryError> {
+            Ok(self
+                .tasks
+                .lock()
+                .unwrap()
+                .values()
+                .find(|t| {
+                    t.user_id == user_id
+                        && t.source == source
+                        && t.source_id.as_deref() == Some(source_id)
+                })
+                .cloned())
+        }
+        async fn find_by_date_range(
+            &self,
+            _user_id: UserId,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn find_planned_before(
+            &self,
+            _user_id: UserId,
+            _before_date: NaiveDate,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
+            self.tasks.lock().unwrap().insert(task.id, task.clone());
+            Ok(())
+        }
+        async fn save_batch(&self, tasks: &[Task]) -> Result<(), RepositoryError> {
+            for t in tasks {
+                self.save(t).await?;
+            }
+            Ok(())
+        }
+        async fn delete(&self, id: TaskId) -> Result<(), RepositoryError> {
+            self.tasks.lock().unwrap().remove(&id);
+            Ok(())
+        }
+        async fn delete_stale_by_source(
+            &self,
+            _user_id: UserId,
+            _source: Source,
+            _keep_ids: &[String],
+        ) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
+    }
+
+    struct StubProjectRepo;
+
+    #[async_trait]
+    impl ProjectRepository for StubProjectRepo {
+        async fn find_by_id(&self, _id: ProjectId) -> Result<Option<Project>, RepositoryError> {
+            Ok(None)
+        }
+        async fn find_by_user(&self, _user_id: UserId) -> Result<Vec<Project>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn find_by_source(
+            &self,
+            _user_id: UserId,
+            _source: Source,
+            _source_key: &str,
+        ) -> Result<Option<Project>, RepositoryError> {
+            Ok(None)
+        }
+        async fn save(&self, _project: &Project) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        async fn delete(&self, _id: ProjectId) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    struct StubSyncRepo;
+
+    #[async_trait]
+    impl SyncStatusRepository for StubSyncRepo {
+        async fn find_by_user(&self, _user_id: UserId) -> Result<Vec<SyncStatus>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn upsert(&self, _status: &SyncStatus) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn jira_sync_preserves_delegated_to() {
+        let user_id: UserId =
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let task_repo = MiniTaskRepo::default();
+        let now = Utc::now();
+
+        // Pre-existing synced task that the user has delegated locally.
+        let existing = Task {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Old title".to_string(),
+            description: None,
+            notes: Some("local notes".to_string()),
+            source: Source::Jira,
+            source_id: Some("AP-1".to_string()),
+            jira_status: Some("To Do".to_string()),
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            delegated_to: Some("Marie".to_string()),
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            urgency: UrgencyLevel::Low,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: vec![],
+            tracking_state: TrackingState::Followed,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            created_at: now,
+            updated_at: now,
+        };
+        task_repo.save(&existing).await.unwrap();
+
+        let config = JiraConfig {
+            project_keys: vec!["AP".to_string()],
+            assignees: None,
+            my_tasks_only: false,
+        };
+        let result = sync_jira(
+            &StubJiraClient,
+            &task_repo,
+            &StubProjectRepo,
+            &StubSyncRepo,
+            user_id,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.tasks_updated, 1);
+
+        let after = task_repo
+            .find_by_source(user_id, Source::Jira, "AP-1")
+            .await
+            .unwrap()
+            .unwrap();
+        // Sync did run and updated Jira-owned fields…
+        assert_eq!(after.title, "Synced title");
+        assert_eq!(after.assignee.as_deref(), Some("jira.user@example.com"));
+        // …but user-owned fields survived.
+        assert_eq!(
+            after.delegated_to.as_deref(),
+            Some("Marie"),
+            "delegated_to must survive a Jira resync"
+        );
+        assert_eq!(after.notes.as_deref(), Some("local notes"));
+    }
 
     #[test]
     fn jira_status_mapping() {
