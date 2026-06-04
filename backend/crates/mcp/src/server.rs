@@ -505,6 +505,7 @@ impl AggregatedPlanServer {
             tags: None,
             remaining_hours_override: remaining_hours_override.map(Some),
             estimated_hours_override: estimated_hours_override.map(Some),
+            delegated_to: None,
         };
 
         match task_management::update_task(self.task_repo.as_ref(), id, input, self.today()).await {

@@ -37,6 +37,8 @@ pub struct UpdateTaskInput {
     pub tags: Option<Vec<TagId>>,
     pub remaining_hours_override: Option<Option<f32>>,
     pub estimated_hours_override: Option<Option<f32>>,
+    /// Set to Some(Some(name)) to delegate, Some(None) to clear, None to leave unchanged.
+    pub delegated_to: Option<Option<String>>,
 }
 
 /// Create a new personal task with auto-calculated urgency if not provided.
@@ -194,6 +196,9 @@ pub async fn update_task(
     }
     if let Some(estimated) = input.estimated_hours_override {
         task.estimated_hours_override = estimated;
+    }
+    if let Some(delegated_to) = input.delegated_to {
+        task.delegated_to = delegated_to;
     }
 
     task.updated_at = Utc::now();
@@ -664,6 +669,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let updated = update_task(&repo, created.id, update, today())
@@ -696,6 +702,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let result = update_task(&repo, Uuid::new_v4(), update, today()).await;
@@ -739,6 +746,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let updated = update_task(&repo, created.id, update, today())
@@ -855,6 +863,7 @@ mod tests {
             tags: None,
             remaining_hours_override: Some(Some(4.5)),
             estimated_hours_override: Some(Some(8.0)),
+            delegated_to: None,
         };
 
         let updated = update_task(&repo, created.id, update, today())
@@ -902,6 +911,7 @@ mod tests {
             tags: None,
             remaining_hours_override: Some(Some(4.5)),
             estimated_hours_override: Some(Some(8.0)),
+            delegated_to: None,
         };
         let t = update_task(&repo, created.id, update1, today()).await.unwrap();
         assert_eq!(t.remaining_hours_override, Some(4.5));
@@ -922,6 +932,7 @@ mod tests {
             tags: None,
             remaining_hours_override: Some(None),
             estimated_hours_override: Some(None),
+            delegated_to: None,
         };
         let cleared = update_task(&repo, created.id, update2, today()).await.unwrap();
         assert!(cleared.remaining_hours_override.is_none());
@@ -1143,6 +1154,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let result = update_task(&repo, recurring.id, update, today()).await;
@@ -1172,6 +1184,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let result = update_task(&repo, recurring.id, update, today()).await;
@@ -1202,6 +1215,7 @@ mod tests {
             tags: None,
             remaining_hours_override: Some(Some(2.5)),
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let result = update_task(&repo, recurring.id, update, today()).await;
@@ -1231,6 +1245,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let result = update_task(&repo, recurring.id, update, today()).await;
@@ -1260,6 +1275,7 @@ mod tests {
             tags: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            delegated_to: None,
         };
 
         let result = update_task(&repo, recurring.id, update, today()).await;
@@ -1370,6 +1386,99 @@ mod tests {
             this_monday,
             "current week task unchanged"
         );
+    }
+
+    #[tokio::test]
+    async fn update_task_sets_and_clears_delegated_to() {
+        let repo = InMemoryTaskRepository::new();
+        let input = CreateTaskInput {
+            title: "Task".to_string(),
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            impact: None,
+            urgency: None,
+            tags: vec![],
+        };
+        let created = create_personal_task(&repo, test_user_id(), input, today())
+            .await
+            .unwrap();
+        assert!(created.delegated_to.is_none());
+
+        // Set
+        let set = UpdateTaskInput {
+            title: None,
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            status: None,
+            impact: None,
+            urgency: None,
+            tags: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            delegated_to: Some(Some("Marie".to_string())),
+        };
+        let updated = update_task(&repo, created.id, set, today()).await.unwrap();
+        assert_eq!(updated.delegated_to.as_deref(), Some("Marie"));
+
+        // Clear with Some(None)
+        let clear = UpdateTaskInput {
+            title: None,
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            status: None,
+            impact: None,
+            urgency: None,
+            tags: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            delegated_to: Some(None),
+        };
+        let cleared = update_task(&repo, created.id, clear, today()).await.unwrap();
+        assert!(cleared.delegated_to.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_task_recurring_instance_allows_delegated_to() {
+        // Delegation is per-instance, not template-level: it must NOT be
+        // rejected by the recurring-instance guard.
+        let repo = InMemoryTaskRepository::new();
+        let recurring = make_recurring_task(&repo, test_user_id(), None);
+
+        let update = UpdateTaskInput {
+            title: None,
+            description: None,
+            notes: None,
+            project_id: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            status: None,
+            impact: None,
+            urgency: None,
+            tags: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            delegated_to: Some(Some("Marie".to_string())),
+        };
+        let result = update_task(&repo, recurring.id, update, today()).await;
+        assert!(result.is_ok(), "delegated_to on recurring instance should succeed");
+        assert_eq!(result.unwrap().delegated_to.as_deref(), Some("Marie"));
     }
 
     // Deferred test 11 from Wave 3A: carry_forward must not carry Cancelled tasks.

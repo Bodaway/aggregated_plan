@@ -1021,5 +1021,6 @@ fn convert_update_input(
             Some(None) => Some(None),
             None => None,
         },
+        delegated_to: None, // placeholder — real mapping lands in Task 5
     })
 }
