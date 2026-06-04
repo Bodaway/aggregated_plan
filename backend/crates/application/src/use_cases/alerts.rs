@@ -401,6 +401,7 @@ mod tests {
             status: TaskStatus::InProgress,
             project_id: None,
             assignee: None,
+            delegated_to: None,
             deadline: Some(deadline),
             planned_start: None,
             planned_end: None,

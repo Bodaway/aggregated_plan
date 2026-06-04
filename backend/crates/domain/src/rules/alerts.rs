@@ -160,6 +160,7 @@ mod tests {
             status: TaskStatus::Todo,
             project_id: None,
             assignee: None,
+            delegated_to: None,
             deadline,
             planned_start: None,
             planned_end: None,

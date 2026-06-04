@@ -312,6 +312,7 @@ pub async fn materialize_due_occurrences(
                 status: TaskStatus::Todo,
                 project_id: template.project_id,
                 assignee: None,
+                delegated_to: None,
                 deadline: None,
                 planned_start: Some(
                     date.and_hms_opt(8, 0, 0)
@@ -999,6 +1000,7 @@ mod tests {
             status: TaskStatus::Todo,
             project_id: None,
             assignee: None,
+            delegated_to: None,
             deadline: None,
             planned_start: None,
             planned_end: None,

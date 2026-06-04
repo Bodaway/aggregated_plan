@@ -19,6 +19,9 @@ pub struct Task {
     pub status: TaskStatus,
     pub project_id: Option<ProjectId>,
     pub assignee: Option<String>,
+    /// Person this task is delegated to (free text). User-owned — never
+    /// overwritten by Jira/Excel sync, unlike `assignee` which mirrors Jira.
+    pub delegated_to: Option<String>,
     pub deadline: Option<NaiveDate>,
     pub planned_start: Option<DateTime<Utc>>,
     pub planned_end: Option<DateTime<Utc>>,
@@ -75,6 +78,7 @@ mod tests {
             status: TaskStatus::InProgress,
             project_id: None,
             assignee: None,
+            delegated_to: None,
             deadline: None,
             planned_start: None,
             planned_end: None,
