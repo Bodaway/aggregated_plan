@@ -71,30 +71,28 @@ pub async fn find_suggestions(
             // R08: Jira key match
             let mut jira_match = false;
             if let Some(ref source_id) = task_a.source_id {
-                if task_a.source == Source::Jira {
-                    if find_jira_key_in_text(source_id, &task_b.title)
+                if task_a.source == Source::Jira
+                    && (find_jira_key_in_text(source_id, &task_b.title)
                         || task_b
                             .description
                             .as_deref()
                             .map(|d| find_jira_key_in_text(source_id, d))
-                            .unwrap_or(false)
-                    {
-                        jira_match = true;
-                    }
+                            .unwrap_or(false))
+                {
+                    jira_match = true;
                 }
             }
             if !jira_match {
                 if let Some(ref source_id) = task_b.source_id {
-                    if task_b.source == Source::Jira {
-                        if find_jira_key_in_text(source_id, &task_a.title)
+                    if task_b.source == Source::Jira
+                        && (find_jira_key_in_text(source_id, &task_a.title)
                             || task_a
                                 .description
                                 .as_deref()
                                 .map(|d| find_jira_key_in_text(source_id, d))
-                                .unwrap_or(false)
-                        {
-                            jira_match = true;
-                        }
+                                .unwrap_or(false))
+                    {
+                        jira_match = true;
                     }
                 }
             }
@@ -389,6 +387,8 @@ mod tests {
             jira_time_spent_seconds: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

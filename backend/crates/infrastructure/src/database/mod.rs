@@ -9,6 +9,7 @@ pub mod task_link_repo;
 pub mod sync_status_repo;
 pub mod config_repo;
 pub mod worklog_repo;
+pub mod recurrence_repo;
 
 mod conversions;
 
@@ -23,3 +24,4 @@ pub use task_link_repo::SqliteTaskLinkRepository;
 pub use sync_status_repo::SqliteSyncStatusRepository;
 pub use config_repo::SqliteConfigRepository;
 pub use worklog_repo::SqliteWorklogRepository;
+pub use recurrence_repo::SqliteRecurrenceRepository;

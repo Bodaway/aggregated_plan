@@ -24,6 +24,9 @@ query Tasks($filter: TaskFilter, $first: Int, $after: String) {
           name
           color
         }
+        recurrenceId
+        occurrenceDate
+        isRecurring
       }
     }
     pageInfo {
@@ -62,6 +65,9 @@ query Task($id: ID!) {
       name
       color
     }
+    recurrenceId
+    occurrenceDate
+    isRecurring
     createdAt
     updatedAt
   }

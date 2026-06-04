@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_graphql::{EmptySubscription, Schema};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::NaiveDate;
 use domain::types::*;
 use std::collections::HashMap;
 use std::sync::Mutex;

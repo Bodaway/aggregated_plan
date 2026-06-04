@@ -26,30 +26,3 @@ impl SyncStatusGql {
         self.0.error_message.as_deref()
     }
 }
-
-/// Represents a sync event for real-time updates.
-pub struct SyncEventGql {
-    pub source: SourceGql,
-    pub status: SyncSourceStatusGql,
-    pub message: Option<String>,
-    pub timestamp: DateTime<Utc>,
-}
-
-#[Object]
-impl SyncEventGql {
-    async fn source(&self) -> SourceGql {
-        self.source
-    }
-
-    async fn status(&self) -> SyncSourceStatusGql {
-        self.status
-    }
-
-    async fn message(&self) -> Option<&str> {
-        self.message.as_deref()
-    }
-
-    async fn timestamp(&self) -> DateTime<Utc> {
-        self.timestamp
-    }
-}

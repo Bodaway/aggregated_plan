@@ -5,10 +5,28 @@ import { WorklogEntryCard } from './WorklogEntryCard';
 
 interface Props {
   readonly taskId: string;
+  readonly recurrenceId?: string;
+  readonly isRecurring?: boolean;
 }
 
-export function WorklogSection({ taskId }: Props) {
-  const filter = useMemo(() => ({ taskIds: [taskId], limit: 50 }), [taskId]);
+const occurrenceFmt = new Intl.DateTimeFormat('fr-FR', {
+  weekday: 'short',
+  day: 'numeric',
+  month: 'short',
+});
+
+function formatOccurrenceDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  return occurrenceFmt.format(new Date(y, m - 1, d));
+}
+
+export function WorklogSection({ taskId, recurrenceId, isRecurring }: Props) {
+  const filter = useMemo(() => {
+    if (isRecurring && recurrenceId) {
+      return { recurrenceId, limit: 50 };
+    }
+    return { taskIds: [taskId], limit: 50 };
+  }, [taskId, recurrenceId, isRecurring]);
   const { entries, loading, error, addEntry, updateEntry, deleteEntry } = useWorklog(filter);
 
   return (
@@ -40,6 +58,11 @@ export function WorklogSection({ taskId }: Props) {
         <ul className="space-y-2">
           {entries.map((e) => (
             <li key={e.id}>
+              {e.occurrenceDate && (
+                <span className="mb-1 block text-[10px] font-medium text-violet-600 uppercase tracking-wide">
+                  {formatOccurrenceDate(e.occurrenceDate)}
+                </span>
+              )}
               <WorklogEntryCard
                 entry={e}
                 onSave={(patch) => updateEntry({ id: e.id, ...patch }).then(() => undefined)}

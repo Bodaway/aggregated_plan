@@ -2295,9 +2295,13 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 - Cascade: deleting a task removes its worklog entries via the FK.
 - GraphQL surface:
   - Query `worklogEntries(filter: WorklogEntryFilterInput): [WorklogEntry!]!`
+    - `WorklogEntryFilterInput.recurrenceId: ID` — when provided, routes to `WorklogRepository::find_by_recurrence`; wins over `taskIds` if both are present.
+    - `WorklogEntryGql.occurrenceDate: Date` — resolved by loading the task and returning its `occurrence_date`; `null` for non-recurring tasks.
   - Mutation `addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntry!`
   - Mutation `updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntry!`
   - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
+- `WorklogRepository::find_by_recurrence(user_id, template_id, limit, offset)` — SQL join on `tasks.recurrence_id`; returns all entries for any occurrence of the template ordered by `logged_at DESC`.
+- `update_task` per-instance allow-list: recurring instances may update `status`, `plannedStart`, `plannedEnd`, `deadline`, `notes`, `trackingState`, `remainingHoursOverride`, `estimatedHoursOverride`. Template-level fields (`title`, `description`, `urgency`, `impact`, `estimatedHours`, `projectId`, `tags`) must go through `updateRecurringTask`.
 - Backward compatibility: the `appendTaskNotes` mutation remains registered but is no longer invoked by the frontend (the activity-timer quick note writes a worklog entry instead).
 
 ### 7.2 Notes
@@ -3352,3 +3356,296 @@ The MVP should be built in this order, with each phase being independently testa
 - **Explicit over implicit**: Prefer verbose clarity over clever brevity.
 - **Tests first**: Write tests before implementation. Red -> Green -> Refactor.
 - **Domain purity**: Domain logic must be testable without any I/O, database, or HTTP setup.
+
+---
+
+## 20. Recurring Tasks
+
+### 20.1 Database Schema — Migration `007_add_recurrence.sql`
+
+```sql
+CREATE TABLE task_recurrences (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(id),
+    title           TEXT NOT NULL,
+    description     TEXT,
+    notes           TEXT,
+    project_id      TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    urgency         INTEGER NOT NULL CHECK (urgency BETWEEN 1 AND 4),
+    urgency_manual  INTEGER NOT NULL DEFAULT 1,  -- always true for recurring templates
+    impact          INTEGER NOT NULL CHECK (impact BETWEEN 1 AND 4),
+    estimated_hours REAL,
+    rule_json       TEXT NOT NULL,               -- JSON-serialized RecurrenceRule (tagged enum)
+    starts_on       TEXT NOT NULL,               -- ISO date: first allowed occurrence
+    ends_on         TEXT,                        -- ISO date: nil = never (R32b)
+    max_occurrences INTEGER,                     -- nil = never (R32c)
+    last_generated_through TEXT,                 -- watermark: last date checked for generation
+    active          INTEGER NOT NULL DEFAULT 1,  -- 0 = soft-deleted (cancelRecurrence)
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX idx_recurrences_user_active ON task_recurrences(user_id, active);
+
+CREATE TABLE task_recurrence_tags (
+    template_id TEXT NOT NULL REFERENCES task_recurrences(id) ON DELETE CASCADE,
+    tag_id      TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (template_id, tag_id)
+);
+
+-- Two new columns on the existing tasks table
+ALTER TABLE tasks ADD COLUMN recurrence_id   TEXT REFERENCES task_recurrences(id);
+ALTER TABLE tasks ADD COLUMN occurrence_date TEXT;   -- ISO date; the slot this instance fills
+
+-- Unique partial index: one instance per (template, date). Enables idempotent INSERT OR IGNORE.
+CREATE UNIQUE INDEX idx_tasks_recurrence_slot
+    ON tasks(recurrence_id, occurrence_date)
+    WHERE recurrence_id IS NOT NULL;
+
+CREATE INDEX idx_tasks_recurrence ON tasks(recurrence_id);
+```
+
+The `tasks.status` CHECK constraint must be extended to include `'cancelled'`. Because SQLite does not support `ALTER TABLE … ALTER COLUMN`, migration `007` rebuilds the `tasks` table (rename → recreate with new CHECK → copy → drop old), following the same pattern used in earlier migrations.
+
+### 20.2 Domain Types
+
+#### `RecurrenceRule` enum
+
+```rust
+// domain/src/types/recurrence.rs
+
+pub type RecurrenceTemplateId = Uuid;
+
+/// Serialized to/from JSON with serde tag "kind" (snake_case variants).
+/// Stored in task_recurrences.rule_json.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecurrenceRule {
+    /// Every `interval` days (interval >= 1).
+    Daily { interval: u8 },
+
+    /// Every `interval` weeks on the days indicated by `weekdays` bitmask
+    /// (Mon = bit 0, Tue = bit 1, …, Sun = bit 6). At least one bit must be set.
+    Weekly { interval: u8, weekdays: u8 },
+
+    /// Every `interval` months on day `day` of the month (1–31).
+    /// day = 31 means "last day of month" (R35).
+    /// For day 1–30, months shorter than `day` are skipped (R35).
+    MonthlyByDay { interval: u8, day: u8 },
+
+    /// Every `interval` months on the Nth `weekday`
+    /// (e.g. "first Tuesday", "last Friday").
+    MonthlyByWeekday { interval: u8, week: WeekOfMonth, weekday: chrono::Weekday },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum WeekOfMonth { First, Second, Third, Fourth, Last }
+
+pub struct RecurrenceTemplate {
+    pub id: RecurrenceTemplateId,
+    pub user_id: UserId,
+    pub title: String,
+    pub description: Option<String>,
+    pub notes: Option<String>,
+    pub project_id: Option<ProjectId>,
+    pub urgency: UrgencyLevel,
+    pub impact: ImpactLevel,
+    pub estimated_hours: Option<f32>,
+    pub tags: Vec<TagId>,
+    pub rule: RecurrenceRule,
+    pub starts_on: NaiveDate,
+    pub ends_on: Option<NaiveDate>,
+    pub max_occurrences: Option<u32>,
+    pub last_generated_through: Option<NaiveDate>,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+#### `TaskStatus::Cancelled`
+
+A new variant is added to the existing `TaskStatus` enum (R33):
+
+```rust
+pub enum TaskStatus {
+    Todo,
+    InProgress,
+    Done,
+    Blocked,
+    Cancelled,   // used exclusively for skipped recurring instances
+}
+```
+
+The database value is `'cancelled'` (lowercase, consistent with other variants).
+
+#### New fields on `Task`
+
+```rust
+pub struct Task {
+    // ... existing fields unchanged ...
+    pub recurrence_id: Option<RecurrenceTemplateId>,  // None for one-shot tasks
+    pub occurrence_date: Option<NaiveDate>,            // None for one-shot tasks
+}
+```
+
+`task.is_recurring()` is a convenience predicate: `self.recurrence_id.is_some()`.
+
+#### Pure date-generation functions
+
+```rust
+// domain/src/rules/recurrence.rs
+
+impl RecurrenceRule {
+    /// Returns all occurrence dates in the inclusive window [from, to]
+    /// anchored to `starts_on`. Bounded — callers pass narrow windows (≤ 14 days + buffer).
+    pub fn occurrences_in(
+        &self,
+        starts_on: NaiveDate,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Vec<NaiveDate>;
+
+    /// Returns the next occurrence strictly after `previous`, or None if the
+    /// rule produces no further dates from that point.
+    pub fn next_after(
+        &self,
+        starts_on: NaiveDate,
+        previous: NaiveDate,
+    ) -> Option<NaiveDate>;
+}
+```
+
+Both functions are pure (zero I/O). The month-rollover policy (R35) is enforced inside these functions for `MonthlyByDay`.
+
+### 20.3 Application Layer
+
+#### Repository trait
+
+```rust
+// application/src/repositories/recurrence_repository.rs
+
+#[async_trait]
+pub trait RecurrenceRepository: Send + Sync {
+    async fn find_by_id(&self, id: RecurrenceTemplateId)
+        -> RepositoryResult<Option<RecurrenceTemplate>>;
+    async fn find_active_by_user(&self, user_id: UserId)
+        -> RepositoryResult<Vec<RecurrenceTemplate>>;
+    async fn save(&self, template: &RecurrenceTemplate) -> RepositoryResult<()>;
+    async fn deactivate(&self, id: RecurrenceTemplateId) -> RepositoryResult<()>;
+}
+```
+
+#### Use cases
+
+```rust
+// application/src/use_cases/recurrence.rs
+
+/// Create a new recurrence template and materialize the first horizon of instances.
+pub async fn create_recurring_task(input, recurrence_repo, task_repo, today)
+    -> Result<RecurrenceTemplate, AppError>;
+
+/// Update template fields; delete future Todo-with-no-worklog instances; re-materialize.
+/// Past instances and instances with worklog entries or status != Todo are preserved (R36).
+pub async fn update_recurring_task(id, input, recurrence_repo, task_repo, worklog_repo, today)
+    -> Result<RecurrenceTemplate, AppError>;
+
+/// Soft-delete the template (active = false); delete future Todo instances.
+pub async fn cancel_recurrence(id, recurrence_repo, task_repo)
+    -> Result<usize, AppError>;   // returns count of deleted instances
+
+/// Set task.status = Cancelled. Idempotent. Rejects if task.recurrence_id is None (R33).
+pub async fn skip_occurrence(task_id, task_repo)
+    -> Result<Task, AppError>;
+
+/// Lazy materialization: called before every tasks/priorityMatrix/dashboard query
+/// and after triggerSync. Generates instances for [last_generated_through+1, today+14].
+/// INSERT OR IGNORE ensures idempotency (R37). Updates last_generated_through watermark.
+pub async fn materialize_due_occurrences(user_id, today, horizon_days, recurrence_repo, task_repo)
+    -> Result<usize, AppError>;   // returns count of new instances created
+```
+
+`carry_forward_tasks` in `task_management.rs` is modified to filter out tasks where `recurrence_id.is_some()` before applying the Monday-rebase logic (R34). `update_task` and `delete_task` return `AppError::Forbidden` when called on a task with a non-null `recurrence_id`; callers must use `update_recurring_task` / `cancel_recurrence` instead.
+
+### 20.4 GraphQL API
+
+#### New types
+
+```graphql
+# Four concrete rule variants (union discriminant via `kind` field)
+type DailyRule        { kind: String! interval: Int! }
+type WeeklyRule       { kind: String! interval: Int! weekdays: Int! }  # bitmask
+type MonthlyByDayRule { kind: String! interval: Int! day: Int! }
+type MonthlyByWeekdayRule { kind: String! interval: Int! week: String! weekday: String! }
+
+union RecurrenceRule = DailyRule | WeeklyRule | MonthlyByDayRule | MonthlyByWeekdayRule
+
+type RecurrenceTemplate {
+  id: ID!
+  title: String!
+  description: String
+  notes: String
+  projectId: ID
+  urgency: Int!
+  impact: Int!
+  estimatedHours: Float
+  rule: RecurrenceRule!
+  startsOn: Date!
+  endsOn: Date
+  maxOccurrences: Int
+  active: Boolean!
+  tags: [Tag!]!
+}
+```
+
+#### Extensions to `Task`
+
+```graphql
+type Task {
+  # ... existing fields ...
+  recurrenceId: ID          # null for one-shot tasks
+  occurrenceDate: Date      # null for one-shot tasks
+  isRecurring: Boolean!     # = recurrenceId != null
+}
+```
+
+`TaskStatus` enum gains the `CANCELLED` variant.
+
+#### New operations
+
+```graphql
+extend type Query {
+  recurrenceTemplates: [RecurrenceTemplate!]!
+}
+
+extend type Mutation {
+  createRecurringTask(input: CreateRecurringTaskInput!): RecurrenceTemplate!
+  updateRecurringTask(id: ID!, input: UpdateRecurringTaskInput!): RecurrenceTemplate!
+  cancelRecurrence(id: ID!): Int!      # count of deleted future instances
+  skipOccurrence(taskId: ID!): Task!   # sets status = CANCELLED
+}
+```
+
+`tasks`, `priorityMatrix`, and `dashboard` resolvers call `materialize_due_occurrences` at the start of each request before loading data (R37). `triggerSync` mutation does the same after sync completes.
+
+#### Frontend additions
+
+| File | Change |
+|------|--------|
+| `frontend/src/graphql/mutations/recurrence.graphql` | New file — four mutations above |
+| `frontend/src/graphql/queries/tasks.graphql` | Add `recurrenceId`, `occurrenceDate`, `isRecurring` to selection set |
+| `frontend/src/lib/recurrence.ts` | Encode/decode helpers mirroring `RecurrenceRule` enum shape |
+| `frontend/src/components/task/RecurrencePicker.tsx` | Frequency picker + end-policy section (new component) |
+| `frontend/src/components/task/TaskCreateSheet.tsx` | Embed `RecurrencePicker` between planned-date and priority |
+| `frontend/src/components/task/TaskEditSheet.tsx` | Same; add "Skip this occurrence" button when `task.isRecurring` |
+| `frontend/src/components/task/TaskCard.tsx` | Violet repeat icon (12px, `text-violet-600`) when `isRecurring` |
+| `frontend/src/pages/PriorityMatrixPage.tsx` | Filter `status === 'done' && isRecurring` from matrix display |
+| `frontend/src/hooks/use-task-edit.ts` | Branch on `task.recurrenceId` to call `updateRecurringTask` |
+
+### 20.5 Out of scope (MVP)
+
+The following are documented as future follow-ups:
+- Edit-this-occurrence-only (per-instance override without touching the template).
+- Pause/resume a series.
+- Worklog re-attribution between sibling instances.
+- True user-local timezone recurrence (current anchor: 08:00 UTC ≈ 10:00 Paris; ~1h DST drift twice/year is acceptable for a single-user local tool).
+- Background cron materialization (currently lazy on read; no instance generated when the app is idle).

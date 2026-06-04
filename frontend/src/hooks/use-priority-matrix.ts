@@ -19,6 +19,9 @@ export interface MatrixTask {
   readonly effectiveRemainingHours: number | null;
   readonly effectiveEstimatedHours: number | null;
   readonly jiraTimeSpentSeconds: number | null;
+  readonly isRecurring: boolean;
+  readonly recurrenceId?: string | null;
+  readonly occurrenceDate?: string | null;
 }
 
 export interface PriorityMatrixData {
@@ -43,21 +46,25 @@ const PRIORITY_MATRIX_QUERY = `
       urgentImportant {
         id title status urgency impact deadline assignee source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
+        isRecurring recurrenceId occurrenceDate
         project { name }
       }
       important {
         id title status urgency impact deadline assignee source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
+        isRecurring recurrenceId occurrenceDate
         project { name }
       }
       urgent {
         id title status urgency impact deadline assignee source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
+        isRecurring recurrenceId occurrenceDate
         project { name }
       }
       neither {
         id title status urgency impact deadline assignee source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
+        isRecurring recurrenceId occurrenceDate
         project { name }
       }
     }

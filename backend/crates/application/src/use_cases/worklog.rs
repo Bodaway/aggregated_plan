@@ -124,6 +124,15 @@ mod tests {
                 .find(|e| e.id == id && e.user_id == user_id)
                 .cloned())
         }
+        async fn find_by_recurrence(
+            &self,
+            _user_id: UserId,
+            _template_id: domain::types::recurrence::RecurrenceTemplateId,
+            _limit: u32,
+            _offset: u32,
+        ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+            Ok(vec![])
+        }
         async fn list(
             &self,
             user_id: UserId,

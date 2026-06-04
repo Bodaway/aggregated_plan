@@ -52,9 +52,10 @@ function formatSeconds(seconds: number | null): string {
 }
 
 export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps) {
-  const { task, loading, updateTask, updatePriority } = useTaskEdit(taskId);
+  const { task, loading, updateTask, updatePriority, skipOccurrence, updateRecurringTask } = useTaskEdit(taskId);
   const isOpen = taskId !== null;
   const isJira = task?.source === 'JIRA' || task?.source === 'EXCEL';
+  const isRecurring = task?.isRecurring ?? false;
 
   // Local form state
   const [description, setDescription] = useState('');
@@ -83,69 +84,89 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
     }
   }, [task]);
 
+  const handleSkipOccurrence = useCallback(async () => {
+    await skipOccurrence();
+    onUpdated?.();
+    onClose();
+  }, [skipOccurrence, onUpdated, onClose]);
+
   const handleSave = useCallback(async () => {
     if (!task) return;
 
-    // Update urgency/impact via priority mutation
-    const currentUrgency = normalizeEnum(task.urgency);
-    const currentImpact = normalizeEnum(task.impact);
-    if (urgency !== currentUrgency || impact !== currentImpact) {
-      await updatePriority(urgency, impact);
-    }
-
-    // Build update input for other fields
-    const input: Record<string, unknown> = {};
+    // Per-instance fields — safe to send via updateTask for both recurring and one-shot.
+    const perInstanceChanges: Record<string, unknown> = {};
+    // Template fields — for recurring instances, must go through updateRecurringTask.
+    const templateChanges: Record<string, unknown> = {};
 
     if (status !== task.status) {
-      input.status = status;
-    }
-
-    const newDesc = description || null;
-    if (newDesc !== (task.description ?? null)) {
-      input.description = newDesc;
+      perInstanceChanges.status = status;
     }
 
     const newNotes = notes || null;
     if (newNotes !== (task.notes ?? null)) {
-      input.notes = newNotes;
+      perInstanceChanges.notes = newNotes;
+    }
+
+    // Planned date is per-instance
+    const currentPlannedDate = task.plannedStart ? task.plannedStart.slice(0, 10) : '';
+    if (plannedDate !== currentPlannedDate) {
+      perInstanceChanges.plannedStart = plannedDate ? `${plannedDate}T08:00:00Z` : null;
     }
 
     if (isJira) {
-      // Override fields for Jira/Excel tasks
       const newRemaining = remainingOverride ? parseFloat(remainingOverride) : null;
       if (newRemaining !== task.remainingHoursOverride) {
-        input.remainingHoursOverride = newRemaining;
+        perInstanceChanges.remainingHoursOverride = newRemaining;
       }
       const newEstOverride = estimatedOverride ? parseFloat(estimatedOverride) : null;
       if (newEstOverride !== task.estimatedHoursOverride) {
-        input.estimatedHoursOverride = newEstOverride;
+        perInstanceChanges.estimatedHoursOverride = newEstOverride;
       }
-    } else {
-      // Personal tasks: write directly to estimatedHours
+    }
+
+    // Template-level fields — description, urgency/impact, estimated hours
+    const newDesc = description || null;
+    if (newDesc !== (task.description ?? null)) {
+      if (isRecurring) {
+        templateChanges.description = newDesc;
+      } else {
+        perInstanceChanges.description = newDesc;
+      }
+    }
+
+    if (!isJira) {
       const newEst = estimatedHours ? parseFloat(estimatedHours) : null;
       if (newEst !== task.estimatedHours) {
-        input.estimatedHours = newEst;
+        if (isRecurring) {
+          templateChanges.estimatedHours = newEst;
+        } else {
+          perInstanceChanges.estimatedHours = newEst;
+        }
       }
     }
 
-    // Planned date
-    const currentPlannedDate = task.plannedStart ? task.plannedStart.slice(0, 10) : '';
-    if (plannedDate !== currentPlannedDate) {
-      if (plannedDate) {
-        // Convert date string to ISO datetime (start of day UTC)
-        input.plannedStart = `${plannedDate}T08:00:00Z`;
-      } else {
-        input.plannedStart = null;
-      }
+    const currentUrgency = normalizeEnum(task.urgency);
+    const currentImpact = normalizeEnum(task.impact);
+    const urgencyChanged = urgency !== currentUrgency;
+    const impactChanged = impact !== currentImpact;
+    if (isRecurring) {
+      if (urgencyChanged) templateChanges.urgency = urgency;
+      if (impactChanged) templateChanges.impact = impact;
+    } else if (urgencyChanged || impactChanged) {
+      await updatePriority(urgency, impact);
     }
 
-    if (Object.keys(input).length > 0) {
-      await updateTask(input);
+    if (Object.keys(perInstanceChanges).length > 0) {
+      await updateTask(perInstanceChanges);
+    }
+
+    if (isRecurring && task.recurrenceId && Object.keys(templateChanges).length > 0) {
+      await updateRecurringTask(task.recurrenceId, templateChanges);
     }
 
     onUpdated?.();
     onClose();
-  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, updateTask, updatePriority, onUpdated, onClose]);
+  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, isRecurring, updateTask, updatePriority, updateRecurringTask, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
@@ -206,6 +227,18 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                 </div>
               ) : task ? (
                 <>
+                  {/* Recurring task banner */}
+                  {isRecurring && (
+                    <div className="flex items-start gap-2 rounded-md bg-violet-50 border border-violet-200 px-3 py-2 text-sm text-violet-800">
+                      <svg className="mt-0.5 w-4 h-4 flex-shrink-0 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                      </svg>
+                      <span>
+                        Cette tâche fait partie d&apos;une série. Le statut et les dates s&apos;appliquent à cette occurrence ; les autres champs s&apos;appliquent à toute la série.
+                      </span>
+                    </div>
+                  )}
+
                   {/* Info section */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -395,7 +428,11 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
                     {task?.id && (
                       <div className="border-t border-gray-200 pt-4">
-                        <WorklogSection taskId={task.id} />
+                        <WorklogSection
+                          taskId={task.id}
+                          recurrenceId={task.recurrenceId ?? undefined}
+                          isRecurring={isRecurring}
+                        />
                       </div>
                     )}
                   </div>
@@ -404,19 +441,38 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
             </div>
 
             {/* Footer */}
-            <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
-              <button
-                onClick={onClose}
-                className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
-              >
-                Save
-              </button>
+            <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between gap-2">
+              {/* Left side: skip button for recurring instances */}
+              <div>
+                {isRecurring && (
+                  <button
+                    type="button"
+                    data-testid="task-sheet-skip"
+                    onClick={handleSkipOccurrence}
+                    className="px-3 py-1.5 text-sm font-medium text-amber-700 border border-amber-300 bg-amber-50 rounded-md hover:bg-amber-100 transition-colors"
+                  >
+                    Ignorer cette occurrence
+                  </button>
+                )}
+              </div>
+
+              {/* Right side: cancel + save */}
+              <div className="flex items-center gap-2">
+                <button
+                  data-testid="task-sheet-cancel"
+                  onClick={onClose}
+                  className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  data-testid="task-sheet-save"
+                  onClick={handleSave}
+                  className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+                >
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         )}

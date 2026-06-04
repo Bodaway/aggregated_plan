@@ -1,7 +1,11 @@
 // frontend/src/components/task/TaskCreateSheet.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { useCreateTask } from '@/hooks/use-create-task';
+import { useCreateRecurringTask } from '@/hooks/use-create-recurring-task';
 import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
+import { RecurrencePicker } from '@/components/task/RecurrencePicker';
+import type { RecurrenceConfig } from '@/lib/recurrence';
+import { ruleToGqlInput } from '@/lib/recurrence';
 
 export interface TaskCreateSheetProps {
   plannedDate: string | null; // "YYYY-MM-DD"; null = closed
@@ -26,6 +30,7 @@ const IMPACT_OPTIONS = [
 export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateSheetProps) {
   const isOpen = plannedDate !== null;
   const { createTask, loading, error } = useCreateTask();
+  const { createRecurringTask, loading: recurringLoading, error: recurringError } = useCreateRecurringTask();
 
   const [title, setTitle] = useState('');
   const [estimatedHours, setEstimatedHours] = useState('');
@@ -33,6 +38,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
   const [impact, setImpact] = useState('MEDIUM');
   const [description, setDescription] = useState('');
   const [notes, setNotes] = useState('');
+  const [recurrence, setRecurrence] = useState<RecurrenceConfig>(null);
 
   // Reset form when sheet opens
   useEffect(() => {
@@ -43,6 +49,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
       setImpact('MEDIUM');
       setDescription('');
       setNotes('');
+      setRecurrence(null);
     }
   }, [isOpen]);
 
@@ -57,24 +64,50 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
     }
   }, [isOpen, onClose]);
 
+  const isLoading = loading || recurringLoading;
+  const displayError = error ?? recurringError;
+
   const handleSave = useCallback(async () => {
-    if (!title.trim() || loading || !plannedDate) return;
+    if (!title.trim() || isLoading || !plannedDate) return;
 
-    const result = await createTask({
-      title: title.trim(),
-      plannedStart: `${plannedDate}T08:00:00Z`,
-      estimatedHours: estimatedHours ? parseFloat(estimatedHours) : undefined,
-      urgency,
-      impact,
-      description: description.trim() || undefined,
-      notes: notes.trim() || undefined,
-    });
+    if (recurrence !== null) {
+      // Branch: create recurring task template
+      const endCondition = recurrence.end;
+      const result = await createRecurringTask({
+        title: title.trim(),
+        description: description.trim() || undefined,
+        notes: notes.trim() || undefined,
+        urgency,
+        impact,
+        estimatedHours: estimatedHours ? parseFloat(estimatedHours) : undefined,
+        rule: ruleToGqlInput(recurrence.rule),
+        startsOn: plannedDate,
+        endsOn: endCondition.kind === 'on_date' ? endCondition.date : undefined,
+        maxOccurrences: endCondition.kind === 'after_n' ? endCondition.count : undefined,
+      });
 
-    if (!result.error) {
-      onCreated();
-      onClose();
+      if (!result.error) {
+        onCreated();
+        onClose();
+      }
+    } else {
+      // Branch: create one-shot task
+      const result = await createTask({
+        title: title.trim(),
+        plannedStart: `${plannedDate}T08:00:00Z`,
+        estimatedHours: estimatedHours ? parseFloat(estimatedHours) : undefined,
+        urgency,
+        impact,
+        description: description.trim() || undefined,
+        notes: notes.trim() || undefined,
+      });
+
+      if (!result.error) {
+        onCreated();
+        onClose();
+      }
     }
-  }, [title, estimatedHours, urgency, impact, description, notes, plannedDate, loading, createTask, onCreated, onClose]);
+  }, [title, estimatedHours, urgency, impact, description, notes, plannedDate, isLoading, recurrence, createTask, createRecurringTask, onCreated, onClose]);
 
   return (
     <>
@@ -133,6 +166,11 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
                   <span>Planned for <strong>{plannedDate}</strong></span>
                 </div>
               )}
+
+              {/* Recurrence */}
+              <div>
+                <RecurrencePicker value={recurrence} onChange={setRecurrence} />
+              </div>
 
               {/* Priority */}
               <div className="grid grid-cols-2 gap-3">
@@ -201,9 +239,9 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
               </div>
 
               {/* Error */}
-              {error && (
+              {displayError && (
                 <p className="text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">
-                  Failed to create task: {error.message}
+                  Failed to create task: {displayError.message}
                 </p>
               )}
             </div>
@@ -211,6 +249,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
             {/* Footer */}
             <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
               <button
+                data-testid="task-sheet-cancel"
                 onClick={onClose}
                 className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
               >
@@ -218,10 +257,10 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
               </button>
               <button
                 onClick={handleSave}
-                disabled={!title.trim() || loading}
+                disabled={!title.trim() || isLoading}
                 className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {loading ? 'Creating...' : 'Create Task'}
+                {isLoading ? 'Creating...' : (recurrence !== null ? 'Create Recurring Task' : 'Create Task')}
               </button>
             </div>
           </div>

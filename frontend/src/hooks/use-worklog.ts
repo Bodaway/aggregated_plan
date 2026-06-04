@@ -11,6 +11,7 @@ const WORKLOG_QUERY = `
       loggedAt
       createdAt
       updatedAt
+      occurrenceDate
     }
   }
 `;
@@ -43,10 +44,12 @@ export type WorklogEntry = {
   loggedAt: string;
   createdAt: string;
   updatedAt: string;
+  occurrenceDate: string | null;
 };
 
 export type WorklogFilter = {
   taskIds?: string[];
+  recurrenceId?: string;
   from?: string;
   to?: string;
   limit?: number;

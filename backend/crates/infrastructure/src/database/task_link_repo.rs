@@ -179,6 +179,8 @@ mod tests {
             jira_time_spent_seconds: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

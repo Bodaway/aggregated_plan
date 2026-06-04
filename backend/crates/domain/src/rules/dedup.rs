@@ -27,6 +27,8 @@ pub fn normalized_levenshtein(a: &str, b: &str) -> f64 {
     1.0 - (distance as f64 / max_len as f64)
 }
 
+// DP table indexing reads cleaner than enumerate-based iteration for textbook Levenshtein
+#[allow(clippy::needless_range_loop)]
 fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
@@ -204,8 +206,6 @@ mod tests {
 
     #[test]
     fn dedup_threshold_is_reasonable() {
-        assert!(DEDUP_CONFIDENCE_THRESHOLD > 0.0);
-        assert!(DEDUP_CONFIDENCE_THRESHOLD < 1.0);
         assert!((DEDUP_CONFIDENCE_THRESHOLD - 0.7).abs() < f64::EPSILON);
     }
 }

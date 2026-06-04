@@ -58,7 +58,7 @@ test.describe('Smoke Tests', () => {
     // Picking the first suggestion opens the edit sheet
     await page.getByRole('option').first().click();
     // TaskEditSheet doesn't expose role="dialog" or data-sheet-open, so we assert the sheet is visible
-    // by checking for the "Cancel" button which only appears when the sheet is open (isOpen && ...)
-    await expect(page.getByRole('button', { name: /cancel/i })).toBeVisible({ timeout: 2000 });
+    // by checking for the cancel button which only appears when the sheet is open (isOpen && ...)
+    await expect(page.getByTestId('task-sheet-cancel')).toBeVisible({ timeout: 2000 });
   });
 });

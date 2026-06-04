@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
 import { TaskCard, type TaskCardProps } from './TaskCard';
 
+// StatusMenu calls useMutation from urql directly — provide a no-op mock so
+// TaskCard renders without a urql Provider in tests.
+vi.mock('urql', () => ({
+  useMutation: () => [{ fetching: false, data: null, error: null }, vi.fn()],
+  useQuery: () => [{ fetching: false, data: null, error: null }, vi.fn()],
+}));
+
 interface MockCtx {
   query: string;
   matches: [];
@@ -51,6 +58,27 @@ beforeEach(() => {
     loading: false,
     error: null,
   };
+});
+
+describe('TaskCard — isRecurring indicator', () => {
+  it('shows the recurring icon when isRecurring=true', () => {
+    const { container } = render(<TaskCard {...TASK} isRecurring={true} />);
+    // The SVG has aria-label="Tâche récurrente" and role="img"
+    const icon = container.querySelector('[aria-label="Tâche récurrente"]');
+    expect(icon).not.toBeNull();
+  });
+
+  it('does NOT show the recurring icon when isRecurring=false', () => {
+    const { container } = render(<TaskCard {...TASK} isRecurring={false} />);
+    const icon = container.querySelector('[aria-label="Tâche récurrente"]');
+    expect(icon).toBeNull();
+  });
+
+  it('does NOT show the recurring icon when isRecurring is omitted', () => {
+    const { container } = render(<TaskCard {...TASK} />);
+    const icon = container.querySelector('[aria-label="Tâche récurrente"]');
+    expect(icon).toBeNull();
+  });
 });
 
 describe('TaskCard highlight', () => {

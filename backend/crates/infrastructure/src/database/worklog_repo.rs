@@ -7,6 +7,7 @@ use uuid::Uuid;
 use application::errors::RepositoryError;
 use application::repositories::{WorklogFilter, WorklogRepository};
 use domain::types::*;
+use domain::types::recurrence::RecurrenceTemplateId;
 
 pub struct SqliteWorklogRepository {
     pool: SqlitePool,
@@ -157,6 +158,31 @@ impl WorklogRepository for SqliteWorklogRepository {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        rows.iter().map(map_row).collect()
+    }
+
+    async fn find_by_recurrence(
+        &self,
+        user_id: UserId,
+        template_id: RecurrenceTemplateId,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT we.* FROM worklog_entries we
+             JOIN tasks t ON t.id = we.task_id
+             WHERE we.user_id = ? AND t.recurrence_id = ?
+             ORDER BY we.logged_at DESC
+             LIMIT ? OFFSET ?",
+        )
+        .bind(user_id.to_string())
+        .bind(template_id.0.to_string())
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
 
         rows.iter().map(map_row).collect()
     }
@@ -359,5 +385,79 @@ mod tests {
             .await
             .unwrap();
         assert!(repo.find_by_id(entry.id, uid()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn find_by_recurrence_returns_only_matching_template_entries() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+
+        let template_id = Uuid::new_v4();
+        let task1_id = Uuid::new_v4();
+        let task2_id = Uuid::new_v4();
+        let unrelated_task_id = Uuid::new_v4();
+
+        // Insert the recurrence template (required by FK on tasks.recurrence_id)
+        sqlx::query(
+            "INSERT INTO task_recurrences (id, user_id, title, urgency, urgency_manual, impact, rule_json, starts_on, active, created_at, updated_at)
+             VALUES (?, ?, 'Weekly Meeting', 2, 0, 2, '{\"kind\":\"Daily\",\"interval\":7}', '2026-04-01', 1, ?, ?)",
+        )
+        .bind(template_id.to_string())
+        .bind(USER_ID)
+        .bind("2026-04-01T00:00:00+00:00")
+        .bind("2026-04-01T00:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert two occurrence tasks linked to the template
+        for task_id in [task1_id, task2_id] {
+            sqlx::query(
+                "INSERT INTO tasks (id, user_id, title, source, status, impact, urgency, created_at, updated_at, tracking_state, recurrence_id)
+                 VALUES (?, ?, 'T', 'personal', 'todo', 1, 1, ?, ?, 'followed', ?)",
+            )
+            .bind(task_id.to_string())
+            .bind(USER_ID)
+            .bind("2026-04-21T00:00:00+00:00")
+            .bind("2026-04-21T00:00:00+00:00")
+            .bind(template_id.to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // Insert one unrelated task (no recurrence_id)
+        sqlx::query(
+            "INSERT INTO tasks (id, user_id, title, source, status, impact, urgency, created_at, updated_at, tracking_state)
+             VALUES (?, ?, 'U', 'personal', 'todo', 1, 1, ?, ?, 'followed')",
+        )
+        .bind(unrelated_task_id.to_string())
+        .bind(USER_ID)
+        .bind("2026-04-21T00:00:00+00:00")
+        .bind("2026-04-21T00:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let t1 = DateTime::parse_from_rfc3339("2026-04-20T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let t2 = DateTime::parse_from_rfc3339("2026-04-21T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let e1 = WorklogEntry::new(uid(), task1_id, "occ1".into(), t1, t1).unwrap();
+        let e2 = WorklogEntry::new(uid(), task2_id, "occ2".into(), t2, t2).unwrap();
+        let e_unrelated = WorklogEntry::new(uid(), unrelated_task_id, "other".into(), t1, t1).unwrap();
+        repo.create(&e1).await.unwrap();
+        repo.create(&e2).await.unwrap();
+        repo.create(&e_unrelated).await.unwrap();
+
+        let tmpl = RecurrenceTemplateId(template_id);
+        let results = repo.find_by_recurrence(uid(), tmpl, 50, 0).await.unwrap();
+        assert_eq!(results.len(), 2, "should return exactly the 2 entries from the template's occurrences");
+        let bodies: Vec<&str> = results.iter().map(|e| e.body.as_str()).collect();
+        assert!(bodies.contains(&"occ1"), "should include occ1");
+        assert!(bodies.contains(&"occ2"), "should include occ2");
     }
 }

@@ -18,6 +18,7 @@ interface QuadrantTask {
   readonly effectiveRemainingHours: number | null;
   readonly effectiveEstimatedHours: number | null;
   readonly jiraTimeSpentSeconds: number | null;
+  readonly isRecurring?: boolean;
 }
 
 interface QuadrantColumnProps {
@@ -84,6 +85,7 @@ export function DraggableTask({ task, onEdit }: { readonly task: QuadrantTask; r
         effectiveRemainingHours={task.effectiveRemainingHours}
         effectiveEstimatedHours={task.effectiveEstimatedHours}
         jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
+        isRecurring={task.isRecurring}
         compact
         onClick={onEdit ? () => onEdit(task.id) : undefined}
       />

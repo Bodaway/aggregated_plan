@@ -25,6 +25,8 @@ pub enum TaskStatus {
     InProgress,
     Done,
     Blocked,
+    /// Used to mark a skipped occurrence of a recurring task.
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -95,17 +97,12 @@ pub enum TaskLinkType {
     Rejected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TrackingState {
+    #[default]
     Inbox,
     Followed,
     Dismissed,
-}
-
-impl Default for TrackingState {
-    fn default() -> Self {
-        Self::Inbox
-    }
 }
 
 impl std::fmt::Display for TrackingState {

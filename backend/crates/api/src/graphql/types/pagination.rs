@@ -12,15 +12,3 @@ pub struct PageInfo {
     /// Cursor of the first edge in the current page.
     pub start_cursor: Option<String>,
 }
-
-impl PageInfo {
-    /// Create a PageInfo indicating no more pages and no cursors.
-    pub fn empty() -> Self {
-        PageInfo {
-            has_next_page: false,
-            has_previous_page: false,
-            end_cursor: None,
-            start_cursor: None,
-        }
-    }
-}

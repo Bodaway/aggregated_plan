@@ -21,7 +21,7 @@ test.describe('Worklog feature', () => {
     await input.fill(needle);
     await expect(page.getByRole('listbox')).toBeVisible();
     await page.getByRole('option').first().click();
-    await expect(page.getByRole('button', { name: /cancel/i })).toBeVisible({ timeout: 2000 });
+    await expect(page.getByTestId('task-sheet-cancel')).toBeVisible({ timeout: 2000 });
 
     // 2. Log an entry from the Worklog section.
     await expect(page.getByRole('heading', { name: /worklog/i })).toBeVisible();

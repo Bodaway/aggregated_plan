@@ -13,6 +13,9 @@ query DailyDashboard($date: NaiveDate!) {
       quadrant
       deadline
       assignee
+      recurrenceId
+      occurrenceDate
+      isRecurring
       project {
         name
       }

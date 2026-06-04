@@ -8,3 +8,4 @@ pub mod deduplication;
 pub mod alerts;
 pub mod configuration;
 pub mod worklog;
+pub mod recurrence;

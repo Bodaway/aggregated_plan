@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { usePriorityMatrix } from '@/hooks/use-priority-matrix';
 import { PriorityGrid } from '@/components/priority/PriorityGrid';
 import { useSearch } from '@/lib/search/SearchProvider';
-import type { QuadrantKey, PriorityMatrixData } from '@/hooks/use-priority-matrix';
+import type { MatrixTask, QuadrantKey, PriorityMatrixData } from '@/hooks/use-priority-matrix';
 
 // urgency arrives as a string enum ("LOW"|"MEDIUM"|"HIGH"|"CRITICAL") from the
 // priority-matrix GraphQL resolver (TaskGql returns UrgencyLevelGql, not Int).
@@ -12,27 +12,63 @@ function toUrgencyNum(u: unknown): number {
   return URGENCY_NUM[u as string] ?? 1;
 }
 
+/**
+ * For recurring tasks, keep only the earliest upcoming occurrence per
+ * recurrence template. Non-recurring tasks are always included.
+ * This prevents duplicate cards for the same recurring series.
+ */
+function deduplicateRecurring(tasks: readonly MatrixTask[]): readonly MatrixTask[] {
+  const seenRecurrenceIds = new Map<string, MatrixTask>();
+  const result: MatrixTask[] = [];
+  for (const task of tasks) {
+    if (!task.recurrenceId) {
+      result.push(task);
+      continue;
+    }
+    const existing = seenRecurrenceIds.get(task.recurrenceId);
+    if (!existing) {
+      seenRecurrenceIds.set(task.recurrenceId, task);
+      result.push(task);
+    } else {
+      // Keep the one with the earlier occurrenceDate
+      const existingDate = existing.occurrenceDate ?? '';
+      const taskDate = task.occurrenceDate ?? '';
+      if (taskDate < existingDate) {
+        // Replace existing with this earlier occurrence
+        const idx = result.indexOf(existing);
+        if (idx !== -1) result[idx] = task;
+        seenRecurrenceIds.set(task.recurrenceId, task);
+      }
+    }
+  }
+  return result;
+}
+
 export function PriorityMatrixPage() {
   const { data, loading, error, updatePriority } = usePriorityMatrix();
   const { openTaskInSheet } = useSearch();
 
   const criticalTasks = data
-    ? [
+    ? deduplicateRecurring([
         ...data.urgentImportant,
         ...data.important,
         ...data.urgent,
         ...data.neither,
-      ]
-        .filter(t => toUrgencyNum(t.urgency) >= 4)
+      ].filter(t => toUrgencyNum(t.urgency) >= 4))
         .map(t => ({ ...t, urgency: toUrgencyNum(t.urgency), impact: toUrgencyNum(t.impact) }))
     : [];
 
+  const isVisibleInMatrix = (t: { urgency: unknown; status: string; isRecurring: boolean }) =>
+    toUrgencyNum(t.urgency) < 4 &&
+    t.status !== 'CANCELLED' &&
+    !(t.status === 'DONE' && t.isRecurring);
+
   const filteredData: PriorityMatrixData | null = data
     ? {
-        urgentImportant: data.urgentImportant.filter(t => toUrgencyNum(t.urgency) < 4),
-        important: data.important.filter(t => toUrgencyNum(t.urgency) < 4),
-        urgent: data.urgent.filter(t => toUrgencyNum(t.urgency) < 4),
-        neither: data.neither.filter(t => toUrgencyNum(t.urgency) < 4),
+        urgentImportant: deduplicateRecurring(data.urgentImportant.filter(isVisibleInMatrix)),
+        important: deduplicateRecurring(data.important.filter(isVisibleInMatrix)),
+        urgent: deduplicateRecurring(data.urgent.filter(isVisibleInMatrix)),
+        neither: deduplicateRecurring(data.neither.filter(isVisibleInMatrix)),
       }
     : null;
 

@@ -186,6 +186,8 @@ mod tests {
             jira_time_spent_seconds: None,
             project_id: None,
             assignee: None,
+            recurrence_id: None,
+            occurrence_date: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

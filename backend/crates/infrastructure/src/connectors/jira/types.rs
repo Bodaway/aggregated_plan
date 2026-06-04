@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 /// Jira REST API response types.
-
 /// Response from POST /rest/api/3/search/jql (cursor-based pagination).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -7,12 +7,44 @@ use uuid::Uuid;
 
 use application::repositories::*;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
+use application::use_cases::recurrence as recurrence_uc;
 
 use super::types::*;
 
 /// Root query type for the GraphQL schema.
 #[derive(Default)]
 pub struct QueryRoot;
+
+/// Trigger lazy materialization of recurring task instances for the current user.
+///
+/// Runs silently: errors are logged at WARN level but not propagated to the caller, so
+/// a transient recurrence error never breaks an unrelated query.
+async fn trigger_lazy_materialization(ctx: &async_graphql::Context<'_>) {
+    let user_id = match ctx.data::<UserId>() {
+        Ok(id) => *id,
+        Err(_) => return,
+    };
+    let rec_repo = match ctx.data::<Arc<dyn RecurrenceRepository>>() {
+        Ok(r) => r.clone(),
+        Err(_) => return,
+    };
+    let task_repo = match ctx.data::<Arc<dyn TaskRepository>>() {
+        Ok(r) => r.clone(),
+        Err(_) => return,
+    };
+    let today = chrono::Utc::now().date_naive();
+    if let Err(e) = recurrence_uc::materialize_due_occurrences(
+        rec_repo.as_ref(),
+        task_repo.as_ref(),
+        user_id,
+        today,
+        14,
+    )
+    .await
+    {
+        tracing::warn!("lazy materialization error: {e}");
+    }
+}
 
 #[Object]
 impl QueryRoot {
@@ -42,6 +74,8 @@ impl QueryRoot {
         #[graphql(default = 50)] first: i32,
         after: Option<String>,
     ) -> Result<TaskConnection> {
+        trigger_lazy_materialization(ctx).await;
+
         let user_id = ctx.data::<UserId>()?;
         let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
 
@@ -138,6 +172,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         date: NaiveDate,
     ) -> Result<DailyDashboardGql> {
+        trigger_lazy_materialization(ctx).await;
         let user_id = ctx.data::<UserId>()?;
         let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
         let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
@@ -186,6 +221,8 @@ impl QueryRoot {
 
     /// Get the Eisenhower priority matrix for the current user.
     async fn priority_matrix(&self, ctx: &Context<'_>) -> Result<PriorityMatrixGql> {
+        trigger_lazy_materialization(ctx).await;
+
         let user_id = ctx.data::<UserId>()?;
         let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
 
@@ -416,6 +453,19 @@ impl QueryRoot {
             .collect())
     }
 
+    /// List all active recurrence templates for the current user.
+    async fn recurrence_templates(&self, ctx: &Context<'_>) -> Result<Vec<RecurrenceTemplateGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
+
+        let templates = rec_repo
+            .find_active_by_user(*user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(templates.into_iter().map(RecurrenceTemplateGql).collect())
+    }
+
     /// Get user configuration as a JSON-like list of key-value pairs.
     async fn configuration(&self, ctx: &Context<'_>) -> Result<serde_json::Value> {
         let user_id = ctx.data::<UserId>()?;
@@ -434,14 +484,32 @@ impl QueryRoot {
     }
 
     /// List worklog entries for the authenticated user.
+    ///
+    /// If `filter.recurrenceId` is provided, returns all entries whose task belongs to
+    /// that recurrence template — `taskIds` is ignored in this case.
     async fn worklog_entries(
         &self,
         ctx: &Context<'_>,
         filter: Option<WorklogEntryFilterInput>,
     ) -> Result<Vec<WorklogEntryGql>> {
+        use domain::types::recurrence::RecurrenceTemplateId;
+
         let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
         let user_id = *ctx.data::<UserId>()?;
         let f = filter.unwrap_or_default();
+        let limit = f.limit.unwrap_or(0).max(0) as u32;
+        let offset = f.offset.unwrap_or(0).max(0) as u32;
+
+        if let Some(ref rec_id) = f.recurrence_id {
+            let template_id = Uuid::parse_str(rec_id)
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            let entries = repo
+                .find_by_recurrence(user_id, RecurrenceTemplateId(template_id), limit, offset)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            return Ok(entries.into_iter().map(WorklogEntryGql).collect());
+        }
+
         let task_ids = match f.task_ids {
             Some(ids) => {
                 let mut parsed = Vec::with_capacity(ids.len());
@@ -459,8 +527,8 @@ impl QueryRoot {
             task_ids,
             from: f.from,
             to: f.to,
-            limit: f.limit.unwrap_or(0).max(0) as u32,
-            offset: f.offset.unwrap_or(0).max(0) as u32,
+            limit,
+            offset,
         };
         let entries = worklog_uc::list_worklog_entries(repo.as_ref(), user_id, wf)
             .await

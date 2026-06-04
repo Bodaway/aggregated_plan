@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use domain::types::*;
+use domain::types::recurrence::RecurrenceTemplateId;
 
 use crate::errors::RepositoryError;
 
@@ -92,4 +93,28 @@ pub trait TaskRepository: Send + Sync {
         source: Source,
         keep_ids: &[String],
     ) -> Result<u64, RepositoryError>;
+
+    /// Find an existing task instance for a specific recurrence template and occurrence date.
+    ///
+    /// Returns `None` if no instance exists yet. Default implementation returns `Ok(None)`;
+    /// concrete repositories override this when Wave 3A is implemented.
+    async fn find_by_recurrence_slot(
+        &self,
+        template_id: RecurrenceTemplateId,
+        occurrence_date: NaiveDate,
+    ) -> Result<Option<Task>, RepositoryError> {
+        let _ = (template_id, occurrence_date);
+        Ok(None)
+    }
+
+    /// Find all task instances for a given recurrence template.
+    ///
+    /// Default implementation returns an empty vec; concrete repositories override in Wave 3A.
+    async fn find_by_recurrence(
+        &self,
+        template_id: RecurrenceTemplateId,
+    ) -> Result<Vec<Task>, RepositoryError> {
+        let _ = template_id;
+        Ok(vec![])
+    }
 }

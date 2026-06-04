@@ -114,6 +114,19 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
             let v: Option<f64> = Row::try_get(row, "estimated_hours_override").ok().flatten();
             v.map(|x| x as f32)
         },
+        recurrence_id: {
+            let rid: Option<String> = Row::try_get(row, "recurrence_id")
+                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+            rid.map(|s| {
+                s.parse::<RecurrenceTemplateId>()
+                    .map_err(|e| RepositoryError::Database(format!("invalid recurrence_id '{}': {}", s, e)))
+            }).transpose()?
+        },
+        occurrence_date: {
+            let od: Option<String> = Row::try_get(row, "occurrence_date")
+                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+            parse_optional_date(od)?
+        },
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
     })
@@ -357,7 +370,7 @@ impl TaskRepository for SqliteTaskRepository {
              WHERE user_id = ? \
                AND planned_start IS NOT NULL \
                AND date(planned_start) < ? \
-               AND status != 'done' \
+               AND status NOT IN ('done', 'cancelled') \
              ORDER BY planned_start",
         )
         .bind(user_id.to_string())
@@ -373,8 +386,8 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
@@ -400,6 +413,8 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(task.jira_time_spent_seconds)
         .bind(task.remaining_hours_override.map(|h| h as f64))
         .bind(task.estimated_hours_override.map(|h| h as f64))
+        .bind(task.recurrence_id.map(|id| id.to_string()))
+        .bind(task.occurrence_date.map(|d| d.format("%Y-%m-%d").to_string()))
         .bind(task.created_at.to_rfc3339())
         .bind(task.updated_at.to_rfc3339())
         .execute(&self.pool)
@@ -465,6 +480,49 @@ impl TaskRepository for SqliteTaskRepository {
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
         Ok(result.rows_affected())
     }
+
+    async fn find_by_recurrence_slot(
+        &self,
+        template_id: domain::types::recurrence::RecurrenceTemplateId,
+        occurrence_date: NaiveDate,
+    ) -> Result<Option<Task>, RepositoryError> {
+        let date_str = occurrence_date.format("%Y-%m-%d").to_string();
+        let rows = sqlx::query(
+            "SELECT * FROM tasks WHERE recurrence_id = ? AND occurrence_date = ? LIMIT 1",
+        )
+        .bind(template_id.to_string())
+        .bind(&date_str)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => {
+                let mut task = map_task_row(row)?;
+                task.tags = load_tags_for_task(&self.pool, &task.id).await?;
+                Ok(Some(task))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn find_by_recurrence(
+        &self,
+        template_id: domain::types::recurrence::RecurrenceTemplateId,
+    ) -> Result<Vec<Task>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT * FROM tasks WHERE recurrence_id = ? ORDER BY occurrence_date",
+        )
+        .bind(template_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        let mut tasks: Vec<Task> = rows.iter().map(map_task_row).collect::<Result<_, _>>()?;
+        load_tags_for_tasks(&self.pool, &mut tasks).await?;
+
+        Ok(tasks)
+    }
 }
 
 #[cfg(test)]
@@ -523,6 +581,8 @@ mod tests {
             jira_time_spent_seconds: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -894,6 +954,8 @@ mod tests {
             jira_time_spent_seconds: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             notes: None,
@@ -1007,5 +1069,144 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Stale");
+    }
+
+    // Test 8: find_by_recurrence_slot and find_by_recurrence return correct tasks
+    #[tokio::test]
+    async fn find_by_recurrence_slot_and_list() {
+        use domain::types::recurrence::RecurrenceTemplateId;
+
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let template_id = RecurrenceTemplateId::new();
+        let occurrence = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+
+        // Insert a stub recurrence template row so the FK constraint is satisfied.
+        sqlx::query(
+            "INSERT INTO task_recurrences \
+             (id, user_id, title, urgency, urgency_manual, impact, rule_json, starts_on, active, created_at, updated_at) \
+             VALUES (?, ?, 'stub', 2, 0, 2, '{\"kind\":\"daily\",\"interval\":1}', '2026-01-01', 1, ?, ?)",
+        )
+        .bind(template_id.to_string())
+        .bind(user_id().to_string())
+        .bind("2026-01-01T00:00:00+00:00")
+        .bind("2026-01-01T00:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut task = make_task("Recurring instance");
+        task.recurrence_id = Some(template_id);
+        task.occurrence_date = Some(occurrence);
+        repo.save(&task).await.unwrap();
+
+        // find_by_recurrence_slot should return the task
+        let found = repo
+            .find_by_recurrence_slot(template_id, occurrence)
+            .await
+            .unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, task.id);
+
+        // find_by_recurrence should return it in a list
+        let list = repo.find_by_recurrence(template_id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, task.id);
+
+        // find_by_recurrence_slot with a different date returns None
+        let other_date = NaiveDate::from_ymd_opt(2026, 5, 2).unwrap();
+        let not_found = repo
+            .find_by_recurrence_slot(template_id, other_date)
+            .await
+            .unwrap();
+        assert!(not_found.is_none());
+    }
+
+    // Test 9: Unique partial index on (recurrence_id, occurrence_date).
+    //
+    // SQLite's INSERT OR REPLACE resolves the unique-index conflict by deleting the old row
+    // and inserting the new one (not an error). So saving a second task with the same slot
+    // silently overwrites the first. The use-case layer prevents this from happening in
+    // practice by calling `find_by_recurrence_slot` before every materialization save.
+    // This test documents the actual DB behavior.
+    #[tokio::test]
+    async fn recurrence_slot_unique_index_insert_or_replace_overwrites() {
+        use domain::types::recurrence::RecurrenceTemplateId;
+
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let template_id = RecurrenceTemplateId::new();
+        let occurrence = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+
+        sqlx::query(
+            "INSERT INTO task_recurrences \
+             (id, user_id, title, urgency, urgency_manual, impact, rule_json, starts_on, active, created_at, updated_at) \
+             VALUES (?, ?, 'stub', 2, 0, 2, '{\"kind\":\"daily\",\"interval\":1}', '2026-01-01', 1, ?, ?)",
+        )
+        .bind(template_id.to_string())
+        .bind(user_id().to_string())
+        .bind("2026-01-01T00:00:00+00:00")
+        .bind("2026-01-01T00:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut task1 = make_task("First");
+        task1.recurrence_id = Some(template_id);
+        task1.occurrence_date = Some(occurrence);
+        repo.save(&task1).await.unwrap();
+
+        // INSERT OR REPLACE: when a second distinct task (different PK) has the same
+        // (recurrence_id, occurrence_date), SQLite deletes the conflicting row (task1)
+        // and inserts task2. End result: slot still holds exactly one row.
+        let mut task2 = make_task("Second");
+        task2.recurrence_id = Some(template_id);
+        task2.occurrence_date = Some(occurrence);
+        repo.save(&task2).await.unwrap(); // succeeds — old row is replaced
+
+        // Exactly one row remains for the slot, and it is task2
+        let list = repo.find_by_recurrence(template_id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "Second");
+
+        let found = repo
+            .find_by_recurrence_slot(template_id, occurrence)
+            .await
+            .unwrap()
+            .expect("slot must exist");
+        assert_eq!(found.title, "Second");
+    }
+
+    // Test 10: find_planned_before excludes BOTH Done AND Cancelled tasks (BLOCKER regression)
+    #[tokio::test]
+    async fn find_planned_before_excludes_done_and_cancelled() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let past = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+
+        let mut todo_task = make_task("Todo past");
+        todo_task.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        todo_task.status = TaskStatus::Todo;
+        repo.save(&todo_task).await.unwrap();
+
+        let mut done_task = make_task("Done past");
+        done_task.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        done_task.status = TaskStatus::Done;
+        repo.save(&done_task).await.unwrap();
+
+        let mut cancelled_task = make_task("Cancelled past");
+        cancelled_task.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        cancelled_task.status = TaskStatus::Cancelled;
+        repo.save(&cancelled_task).await.unwrap();
+
+        let results = repo.find_planned_before(user_id(), cutoff).await.unwrap();
+
+        // Only the Todo task must be returned
+        assert_eq!(results.len(), 1, "Expected 1 result, got: {:?}", results.iter().map(|t| &t.title).collect::<Vec<_>>());
+        assert_eq!(results[0].title, "Todo past");
     }
 }

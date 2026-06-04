@@ -1,24 +1,6 @@
 use async_graphql::Object;
 
-use super::enums::QuadrantGql;
 use super::task::TaskGql;
-
-/// A task with its computed Eisenhower quadrant for the priority matrix view.
-pub struct TaskWithQuadrantGql {
-    pub task: TaskGql,
-    pub quadrant: QuadrantGql,
-}
-
-#[Object]
-impl TaskWithQuadrantGql {
-    async fn task(&self) -> &TaskGql {
-        &self.task
-    }
-
-    async fn quadrant(&self) -> QuadrantGql {
-        self.quadrant
-    }
-}
 
 /// The full priority matrix grouped by quadrant.
 pub struct PriorityMatrixGql {

@@ -20,27 +20,28 @@ pub struct SyncEngine {
     excel_client: Option<Arc<dyn ExcelClient>>,
 }
 
+pub struct SyncEngineDeps {
+    pub task_repo: Arc<dyn TaskRepository>,
+    pub meeting_repo: Arc<dyn MeetingRepository>,
+    pub project_repo: Arc<dyn ProjectRepository>,
+    pub sync_repo: Arc<dyn SyncStatusRepository>,
+    pub config_repo: Arc<dyn ConfigRepository>,
+    pub jira_client: Option<Arc<dyn JiraClient>>,
+    pub outlook_client: Option<Arc<dyn OutlookClient>>,
+    pub excel_client: Option<Arc<dyn ExcelClient>>,
+}
+
 impl SyncEngine {
-    /// Create a new sync engine with all required repositories and optional clients.
-    pub fn new(
-        task_repo: Arc<dyn TaskRepository>,
-        meeting_repo: Arc<dyn MeetingRepository>,
-        project_repo: Arc<dyn ProjectRepository>,
-        sync_repo: Arc<dyn SyncStatusRepository>,
-        config_repo: Arc<dyn ConfigRepository>,
-        jira_client: Option<Arc<dyn JiraClient>>,
-        outlook_client: Option<Arc<dyn OutlookClient>>,
-        excel_client: Option<Arc<dyn ExcelClient>>,
-    ) -> Self {
+    pub fn new(deps: SyncEngineDeps) -> Self {
         Self {
-            task_repo,
-            meeting_repo,
-            project_repo,
-            sync_repo,
-            config_repo,
-            jira_client,
-            outlook_client,
-            excel_client,
+            task_repo: deps.task_repo,
+            meeting_repo: deps.meeting_repo,
+            project_repo: deps.project_repo,
+            sync_repo: deps.sync_repo,
+            config_repo: deps.config_repo,
+            jira_client: deps.jira_client,
+            outlook_client: deps.outlook_client,
+            excel_client: deps.excel_client,
         }
     }
 
@@ -50,19 +51,17 @@ impl SyncEngine {
         source: Source,
         user_id: UserId,
     ) -> Result<SyncStatus, AppError> {
-        sync::sync_source(
-            source,
-            self.task_repo.as_ref(),
-            self.meeting_repo.as_ref(),
-            self.project_repo.as_ref(),
-            self.sync_repo.as_ref(),
-            self.jira_client.as_deref(),
-            self.outlook_client.as_deref(),
-            self.excel_client.as_deref(),
-            self.config_repo.as_ref(),
-            user_id,
-        )
-        .await
+        let ctx = sync::SyncContext {
+            task_repo: self.task_repo.as_ref(),
+            meeting_repo: self.meeting_repo.as_ref(),
+            project_repo: self.project_repo.as_ref(),
+            sync_repo: self.sync_repo.as_ref(),
+            config_repo: self.config_repo.as_ref(),
+            jira_client: self.jira_client.as_deref(),
+            outlook_client: self.outlook_client.as_deref(),
+            excel_client: self.excel_client.as_deref(),
+        };
+        sync::sync_source(&ctx, source, user_id).await
     }
 
     /// Synchronize all configured sources for the given user.
@@ -70,18 +69,17 @@ impl SyncEngine {
         &self,
         user_id: UserId,
     ) -> Result<Vec<sync::SyncResult>, AppError> {
-        sync::sync_all(
-            self.jira_client.as_deref(),
-            self.outlook_client.as_deref(),
-            self.excel_client.as_deref(),
-            self.task_repo.as_ref(),
-            self.meeting_repo.as_ref(),
-            self.project_repo.as_ref(),
-            self.sync_repo.as_ref(),
-            self.config_repo.as_ref(),
-            user_id,
-        )
-        .await
+        let ctx = sync::SyncContext {
+            task_repo: self.task_repo.as_ref(),
+            meeting_repo: self.meeting_repo.as_ref(),
+            project_repo: self.project_repo.as_ref(),
+            sync_repo: self.sync_repo.as_ref(),
+            config_repo: self.config_repo.as_ref(),
+            jira_client: self.jira_client.as_deref(),
+            outlook_client: self.outlook_client.as_deref(),
+            excel_client: self.excel_client.as_deref(),
+        };
+        sync::sync_all(&ctx, user_id).await
     }
 
     /// Get current sync statuses for a user.

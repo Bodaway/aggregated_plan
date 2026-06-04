@@ -8,11 +8,10 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-mod context;
 mod graphql;
-mod middleware;
 mod state;
 
+use graphql::schema::SchemaDeps;
 use infrastructure::database::*;
 
 #[derive(Parser)]
@@ -62,8 +61,10 @@ async fn main() {
         Arc::new(SqliteConfigRepository::new(db_pool.clone()));
     let worklog_repo: Arc<dyn application::repositories::WorklogRepository> =
         Arc::new(SqliteWorklogRepository::new(db_pool.clone()));
+    let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
+        Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
 
-    let schema = graphql::schema::build_schema(
+    let deps = SchemaDeps {
         task_repo,
         meeting_repo,
         project_repo,
@@ -74,7 +75,9 @@ async fn main() {
         sync_repo,
         config_repo,
         worklog_repo,
-    );
+        recurrence_repo,
+    };
+    let schema = graphql::schema::build_schema(deps);
 
     if let Some(Command::ExportSchema) = cli.command {
         println!("{}", schema.sdl());

@@ -1,5 +1,6 @@
 import { SOURCE_COLORS, QUADRANT_LABELS } from '@/lib/constants';
 import { useSearch } from '@/lib/search/SearchProvider';
+import { StatusMenu } from './StatusMenu';
 
 interface TaskTag {
   readonly id: string;
@@ -24,17 +25,11 @@ export interface TaskCardProps {
   readonly effectiveRemainingHours?: number | null;
   readonly effectiveEstimatedHours?: number | null;
   readonly jiraTimeSpentSeconds?: number | null;
+  readonly isRecurring?: boolean;
   readonly compact?: boolean;
   readonly onClick?: () => void;
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  TODO: 'bg-gray-100 text-gray-700',
-  IN_PROGRESS: 'bg-blue-100 text-blue-700',
-  DONE: 'bg-green-100 text-green-700',
-  BLOCKED: 'bg-red-100 text-red-700',
-  CANCELLED: 'bg-gray-200 text-gray-500',
-};
 
 const QUADRANT_STYLES: Record<string, string> = {
   UrgentImportant: 'bg-red-100 text-red-800',
@@ -116,6 +111,7 @@ export function TaskCard({
   effectiveRemainingHours,
   effectiveEstimatedHours,
   jiraTimeSpentSeconds,
+  isRecurring = false,
   compact = false,
   onClick,
 }: TaskCardProps) {
@@ -127,7 +123,6 @@ export function TaskCard({
       ? 'ring-2 ring-blue-500 ring-offset-2'
       : 'opacity-40 grayscale-[30%]';
   const sourceColor = getSourceColor(source);
-  const statusStyle = STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-700';
 
   if (compact) {
     return (
@@ -153,13 +148,19 @@ export function TaskCard({
         </div>
         {/* Title */}
         <h4 className="text-sm font-medium text-gray-900 mb-1 leading-tight truncate">{title}</h4>
-        {/* Bottom row: status + assignee */}
+        {/* Bottom row: status menu + assignee + recurring icon */}
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${statusStyle}`}>
-            {status.replace('_', ' ')}
-          </span>
+          <StatusMenu taskId={id} status={status} />
           {assignee && (
             <span className="text-xs text-gray-400 truncate">{assignee}</span>
+          )}
+          {isRecurring && (
+            <span title="Tâche récurrente" className="inline-flex items-center">
+              <svg className="w-3 h-3 text-violet-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="Tâche récurrente" role="img">
+                <path d="M17 2l4 4-4 4" /><path d="M3 11V9a4 4 0 014-4h14" />
+                <path d="M7 22l-4-4 4-4" /><path d="M21 13v2a4 4 0 01-4 4H3" />
+              </svg>
+            </span>
           )}
         </div>
       </div>
@@ -193,9 +194,7 @@ export function TaskCard({
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 mb-2">
-            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${statusStyle}`}>
-              {status.replace('_', ' ')}
-            </span>
+            <StatusMenu taskId={id} status={status} />
             {jiraStatus && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
                 <svg className="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
@@ -217,6 +216,16 @@ export function TaskCard({
           />
 
           <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 mt-1">
+            {isRecurring && (
+              <span title="Tâche récurrente" className="inline-flex items-center gap-0.5">
+                <svg className="w-3 h-3 text-violet-600 inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="Tâche récurrente" role="img">
+                  <polyline points="17 1 21 5 17 9" />
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                  <polyline points="7 23 3 19 7 15" />
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                </svg>
+              </span>
+            )}
             {deadline && (
               <span className="flex items-center gap-1">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

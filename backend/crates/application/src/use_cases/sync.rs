@@ -7,6 +7,18 @@ use crate::errors::AppError;
 use crate::repositories::*;
 use crate::services::*;
 
+/// Aggregates all dependencies needed to run a full or partial sync.
+pub struct SyncContext<'a> {
+    pub task_repo: &'a dyn TaskRepository,
+    pub meeting_repo: &'a dyn MeetingRepository,
+    pub project_repo: &'a dyn ProjectRepository,
+    pub sync_repo: &'a dyn SyncStatusRepository,
+    pub config_repo: &'a dyn ConfigRepository,
+    pub jira_client: Option<&'a dyn JiraClient>,
+    pub outlook_client: Option<&'a dyn OutlookClient>,
+    pub excel_client: Option<&'a dyn ExcelClient>,
+}
+
 /// Result of a synchronization operation with a single source.
 pub struct SyncResult {
     pub source: Source,
@@ -149,6 +161,8 @@ pub async fn sync_jira(
                     jira_time_spent_seconds: jira_task.time_spent_seconds,
                     remaining_hours_override: None,
                     estimated_hours_override: None,
+                    recurrence_id: None,
+                    occurrence_date: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -413,6 +427,8 @@ pub async fn sync_excel(
                     jira_time_spent_seconds: None,
                     remaining_hours_override: None,
                     estimated_hours_override: None,
+                    recurrence_id: None,
+                    occurrence_date: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -448,17 +464,15 @@ pub async fn sync_excel(
 }
 
 /// Run all configured synchronizations for a user.
-pub async fn sync_all(
-    jira_client: Option<&dyn JiraClient>,
-    outlook_client: Option<&dyn OutlookClient>,
-    excel_client: Option<&dyn ExcelClient>,
-    task_repo: &dyn TaskRepository,
-    meeting_repo: &dyn MeetingRepository,
-    project_repo: &dyn ProjectRepository,
-    sync_repo: &dyn SyncStatusRepository,
-    config_repo: &dyn ConfigRepository,
-    user_id: UserId,
-) -> Result<Vec<SyncResult>, AppError> {
+pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<SyncResult>, AppError> {
+    let task_repo = ctx.task_repo;
+    let meeting_repo = ctx.meeting_repo;
+    let project_repo = ctx.project_repo;
+    let sync_repo = ctx.sync_repo;
+    let config_repo = ctx.config_repo;
+    let jira_client = ctx.jira_client;
+    let outlook_client = ctx.outlook_client;
+    let excel_client = ctx.excel_client;
     let mut results: Vec<SyncResult> = Vec::new();
 
     // Jira sync.
@@ -600,18 +614,15 @@ pub async fn sync_all(
 }
 
 /// Synchronize a specific source. Convenience function for the force_sync mutation.
-pub async fn sync_source(
-    source: Source,
-    task_repo: &dyn TaskRepository,
-    meeting_repo: &dyn MeetingRepository,
-    project_repo: &dyn ProjectRepository,
-    sync_repo: &dyn SyncStatusRepository,
-    jira_client: Option<&dyn JiraClient>,
-    outlook_client: Option<&dyn OutlookClient>,
-    excel_client: Option<&dyn ExcelClient>,
-    config_repo: &dyn ConfigRepository,
-    user_id: UserId,
-) -> Result<SyncStatus, AppError> {
+pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId) -> Result<SyncStatus, AppError> {
+    let task_repo = ctx.task_repo;
+    let meeting_repo = ctx.meeting_repo;
+    let project_repo = ctx.project_repo;
+    let sync_repo = ctx.sync_repo;
+    let config_repo = ctx.config_repo;
+    let jira_client = ctx.jira_client;
+    let outlook_client = ctx.outlook_client;
+    let excel_client = ctx.excel_client;
     match source {
         Source::Jira => {
             if let Some(client) = jira_client {

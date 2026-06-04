@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use async_graphql::{Context, MaybeUndefined, Object, Result, ID};
 use chrono::Datelike;
+use domain::types::common::{ImpactLevel, UrgencyLevel};
 use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management, worklog as worklog_uc};
+use application::use_cases::recurrence as recurrence_uc;
 use infrastructure::connectors::jira::HttpJiraClient;
 use infrastructure::connectors::outlook::client::GraphOutlookClient;
 
@@ -321,42 +323,31 @@ impl MutationRoot {
         let excel_client: Option<Arc<dyn ExcelClient>> = ctx
             .data::<Arc<dyn ExcelClient>>()
             .ok()
-            .map(|c| c.clone());
+            .cloned();
 
+        let ctx = sync::SyncContext {
+            task_repo: task_repo.as_ref(),
+            meeting_repo: meeting_repo.as_ref(),
+            project_repo: project_repo.as_ref(),
+            sync_repo: sync_repo.as_ref(),
+            config_repo: config_repo.as_ref(),
+            jira_client: jira_client.as_deref(),
+            outlook_client: outlook_client.as_deref(),
+            excel_client: excel_client.as_deref(),
+        };
         match source {
             Some(src) => {
                 // Sync a single source.
                 let domain_source: domain::types::Source = src.into();
-                sync::sync_source(
-                    domain_source,
-                    task_repo.as_ref(),
-                    meeting_repo.as_ref(),
-                    project_repo.as_ref(),
-                    sync_repo.as_ref(),
-                    jira_client.as_deref(),
-                    outlook_client.as_deref(),
-                    excel_client.as_deref(),
-                    config_repo.as_ref(),
-                    *user_id,
-                )
-                .await
-                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                sync::sync_source(&ctx, domain_source, *user_id)
+                    .await
+                    .map_err(|e| async_graphql::Error::new(e.to_string()))?;
             }
             None => {
                 // Sync all sources.
-                sync::sync_all(
-                    jira_client.as_deref(),
-                    outlook_client.as_deref(),
-                    excel_client.as_deref(),
-                    task_repo.as_ref(),
-                    meeting_repo.as_ref(),
-                    project_repo.as_ref(),
-                    sync_repo.as_ref(),
-                    config_repo.as_ref(),
-                    *user_id,
-                )
-                .await
-                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                sync::sync_all(&ctx, *user_id)
+                    .await
+                    .map_err(|e| async_graphql::Error::new(e.to_string()))?;
             }
         }
 
@@ -709,6 +700,236 @@ impl MutationRoot {
 
         Ok(true)
     }
+
+    // ─── Recurrence mutations ───
+
+    /// Create a new recurring task template and materialize the first 14-day horizon.
+    async fn create_recurring_task(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateRecurringTaskInput,
+    ) -> Result<RecurrenceTemplateGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let today = chrono::Utc::now().date_naive();
+
+        let app_input = convert_create_recurring_input(*user_id, input)?;
+
+        let template = recurrence_uc::create_recurring_task(rec_repo.as_ref(), app_input)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        // Eagerly materialize the first horizon so instances are immediately available.
+        let _ = recurrence_uc::materialize_due_occurrences(
+            rec_repo.as_ref(),
+            task_repo.as_ref(),
+            *user_id,
+            today,
+            14,
+        )
+        .await
+        .map_err(|e| tracing::warn!("materialize after create failed: {e}"));
+
+        // Reload the template so the updated watermark is returned.
+        let updated = rec_repo
+            .find_by_id(template.id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .unwrap_or(template);
+
+        Ok(RecurrenceTemplateGql(updated))
+    }
+
+    /// Update a recurring task template and re-materialize future instances.
+    async fn update_recurring_task(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        input: UpdateRecurringTaskInput,
+    ) -> Result<RecurrenceTemplateGql> {
+        use domain::types::recurrence::RecurrenceTemplateId;
+
+        let user_id = ctx.data::<UserId>()?;
+        let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let today = chrono::Utc::now().date_naive();
+
+        let template_id = id
+            .parse::<RecurrenceTemplateId>()
+            .map_err(|e| async_graphql::Error::new(format!("Invalid template ID: {e}")))?;
+
+        let app_input = convert_update_recurring_input(input)?;
+
+        let template = recurrence_uc::update_recurring_task(
+            rec_repo.as_ref(),
+            task_repo.as_ref(),
+            template_id,
+            *user_id,
+            app_input,
+            today,
+            14,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(RecurrenceTemplateGql(template))
+    }
+
+    /// Cancel a recurring task series. Deactivates the template and deletes
+    /// all future Todo instances. Returns the count of deleted instances.
+    async fn cancel_recurrence(&self, ctx: &Context<'_>, id: ID) -> Result<i32> {
+        use domain::types::recurrence::RecurrenceTemplateId;
+
+        let user_id = ctx.data::<UserId>()?;
+        let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let today = chrono::Utc::now().date_naive();
+
+        let template_id = id
+            .parse::<RecurrenceTemplateId>()
+            .map_err(|e| async_graphql::Error::new(format!("Invalid template ID: {e}")))?;
+
+        let deleted = recurrence_uc::cancel_recurrence(
+            rec_repo.as_ref(),
+            task_repo.as_ref(),
+            template_id,
+            *user_id,
+            today,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(deleted as i32)
+    }
+
+    /// Skip (cancel) a single recurring task occurrence. Returns the updated task.
+    async fn skip_occurrence(&self, ctx: &Context<'_>, task_id: ID) -> Result<TaskGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+
+        let tid = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+
+        let task = recurrence_uc::skip_occurrence(task_repo.as_ref(), tid, *user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(TaskGql(task))
+    }
+}
+
+// ─── Recurrence conversion helpers ───────────────────────────────────────────
+
+fn convert_create_recurring_input(
+    user_id: UserId,
+    input: CreateRecurringTaskInput,
+) -> async_graphql::Result<recurrence_uc::CreateRecurringTaskInput> {
+    let urgency: UrgencyLevel = input.urgency.into();
+    let impact: ImpactLevel = input.impact.into();
+
+    let project_id = match input.project_id {
+        Some(id) => Some(
+            Uuid::parse_str(&id)
+                .map_err(|e| async_graphql::Error::new(format!("Invalid project ID: {e}")))?,
+        ),
+        None => None,
+    };
+
+    let tag_ids: Vec<Uuid> = match input.tag_ids {
+        Some(ids) => ids
+            .into_iter()
+            .map(|id| {
+                Uuid::parse_str(&id)
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid tag ID: {e}")))
+            })
+            .collect::<async_graphql::Result<Vec<_>>>()?,
+        None => vec![],
+    };
+
+    if let Some(max) = input.max_occurrences {
+        if max < 1 {
+            return Err(async_graphql::Error::new("max_occurrences must be >= 1"));
+        }
+    }
+
+    if let (Some(ends_on), starts_on) = (input.ends_on, input.starts_on) {
+        if ends_on < starts_on {
+            return Err(async_graphql::Error::new("ends_on must not be before starts_on"));
+        }
+    }
+
+    let rule = input.rule.try_into_domain()?;
+
+    Ok(recurrence_uc::CreateRecurringTaskInput {
+        user_id,
+        title: input.title,
+        description: input.description,
+        notes: input.notes,
+        project_id,
+        urgency,
+        impact,
+        estimated_hours: input.estimated_hours,
+        tag_ids,
+        rule,
+        starts_on: input.starts_on,
+        ends_on: input.ends_on,
+        max_occurrences: input.max_occurrences.map(|n| n as u32),
+    })
+}
+
+fn convert_update_recurring_input(
+    input: UpdateRecurringTaskInput,
+) -> async_graphql::Result<recurrence_uc::UpdateRecurringTaskInput> {
+    let urgency: Option<UrgencyLevel> = input.urgency.map(|u| u.into());
+    let impact: Option<ImpactLevel> = input.impact.map(|i| i.into());
+
+    let project_id: Option<Option<Uuid>> = match input.project_id {
+        Some(Some(id)) => Some(Some(
+            Uuid::parse_str(&id)
+                .map_err(|e| async_graphql::Error::new(format!("Invalid project ID: {e}")))?,
+        )),
+        Some(None) => Some(None),
+        None => None,
+    };
+
+    let tag_ids: Option<Vec<Uuid>> = match input.tag_ids {
+        Some(ids) => Some(
+            ids.into_iter()
+                .map(|id| {
+                    Uuid::parse_str(&id)
+                        .map_err(|e| async_graphql::Error::new(format!("Invalid tag ID: {e}")))
+                })
+                .collect::<async_graphql::Result<Vec<_>>>()?,
+        ),
+        None => None,
+    };
+
+    if let Some(Some(max)) = input.max_occurrences {
+        if max < 1 {
+            return Err(async_graphql::Error::new("max_occurrences must be >= 1"));
+        }
+    }
+
+    let rule = match input.rule {
+        Some(r) => Some(r.try_into_domain()?),
+        None => None,
+    };
+
+    Ok(recurrence_uc::UpdateRecurringTaskInput {
+        title: input.title,
+        description: input.description,
+        notes: input.notes,
+        project_id,
+        urgency,
+        impact,
+        estimated_hours: input.estimated_hours,
+        tag_ids,
+        rule,
+        starts_on: input.starts_on,
+        ends_on: input.ends_on,
+        max_occurrences: input.max_occurrences.map(|opt| opt.map(|n| n as u32)),
+    })
 }
 
 /// Convert GraphQL CreateTaskInput to application layer input.

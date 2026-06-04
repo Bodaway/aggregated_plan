@@ -8,6 +8,7 @@ pub mod tag;
 pub mod user;
 pub mod task_link;
 pub mod worklog;
+pub mod recurrence;
 
 pub use common::*;
 pub use task::*;
@@ -19,3 +20,4 @@ pub use tag::*;
 pub use user::*;
 pub use task_link::*;
 pub use worklog::*;
+pub use recurrence::*;

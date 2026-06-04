@@ -26,6 +26,9 @@ export interface FullTask {
   readonly effectiveEstimatedHours: number | null;
   readonly project: { readonly name: string } | null;
   readonly tags: readonly { readonly id: string; readonly name: string; readonly color: string | null }[];
+  readonly recurrenceId: string | null;
+  readonly occurrenceDate: string | null;
+  readonly isRecurring: boolean;
 }
 
 const TASK_QUERY = `
@@ -56,6 +59,9 @@ const TASK_QUERY = `
       effectiveEstimatedHours
       project { name }
       tags { id name color }
+      recurrenceId
+      occurrenceDate
+      isRecurring
     }
   }
 `;
@@ -90,6 +96,24 @@ const UPDATE_PRIORITY_MUTATION = `
   }
 `;
 
+const SKIP_OCCURRENCE_MUTATION = `
+  mutation SkipOccurrence($taskId: ID!) {
+    skipOccurrence(taskId: $taskId) {
+      id
+      status
+    }
+  }
+`;
+
+const UPDATE_RECURRING_TASK_MUTATION = `
+  mutation UpdateRecurringTask($id: ID!, $input: UpdateRecurringTaskInput!) {
+    updateRecurringTask(id: $id, input: $input) {
+      id
+      title
+    }
+  }
+`;
+
 export function useTaskEdit(taskId: string | null) {
   const [result, reexecute] = useQuery<{ task: FullTask }>({
     query: TASK_QUERY,
@@ -100,6 +124,8 @@ export function useTaskEdit(taskId: string | null) {
 
   const [, executeUpdate] = useMutation(UPDATE_TASK_MUTATION);
   const [, executePriorityUpdate] = useMutation(UPDATE_PRIORITY_MUTATION);
+  const [, executeSkipOccurrence] = useMutation(SKIP_OCCURRENCE_MUTATION);
+  const [, executeUpdateRecurring] = useMutation(UPDATE_RECURRING_TASK_MUTATION);
 
   const updateTask = async (input: Record<string, unknown>) => {
     if (!taskId) return;
@@ -113,12 +139,25 @@ export function useTaskEdit(taskId: string | null) {
     reexecute({ requestPolicy: 'network-only' });
   };
 
+  const skipOccurrence = async () => {
+    if (!taskId) return;
+    await executeSkipOccurrence({ taskId });
+    reexecute({ requestPolicy: 'network-only' });
+  };
+
+  const updateRecurringTask = async (recurrenceId: string, input: Record<string, unknown>) => {
+    await executeUpdateRecurring({ id: recurrenceId, input });
+    reexecute({ requestPolicy: 'network-only' });
+  };
+
   return {
     task: result.data?.task ?? null,
     loading: result.fetching,
     error: result.error ?? null,
     updateTask,
     updatePriority,
+    skipOccurrence,
+    updateRecurringTask,
     refetch: () => reexecute({ requestPolicy: 'network-only' }),
   };
 }

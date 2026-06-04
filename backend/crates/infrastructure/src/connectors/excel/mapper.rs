@@ -24,7 +24,7 @@ pub fn map_worksheet_range(
         .map(|(idx, row)| {
             let columns: HashMap<String, String> = headers
                 .iter()
-                .zip(row.into_iter())
+                .zip(row)
                 .map(|(header, cell)| {
                     let value = match cell {
                         serde_json::Value::String(s) => s,

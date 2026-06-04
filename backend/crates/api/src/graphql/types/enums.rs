@@ -42,6 +42,8 @@ pub enum TaskStatusGql {
     InProgress,
     Done,
     Blocked,
+    /// Marks a skipped occurrence of a recurring task.
+    Cancelled,
 }
 
 impl From<types::TaskStatus> for TaskStatusGql {
@@ -51,6 +53,7 @@ impl From<types::TaskStatus> for TaskStatusGql {
             types::TaskStatus::InProgress => TaskStatusGql::InProgress,
             types::TaskStatus::Done => TaskStatusGql::Done,
             types::TaskStatus::Blocked => TaskStatusGql::Blocked,
+            types::TaskStatus::Cancelled => TaskStatusGql::Cancelled,
         }
     }
 }
@@ -62,6 +65,7 @@ impl From<TaskStatusGql> for types::TaskStatus {
             TaskStatusGql::InProgress => types::TaskStatus::InProgress,
             TaskStatusGql::Done => types::TaskStatus::Done,
             TaskStatusGql::Blocked => types::TaskStatus::Blocked,
+            TaskStatusGql::Cancelled => types::TaskStatus::Cancelled,
         }
     }
 }

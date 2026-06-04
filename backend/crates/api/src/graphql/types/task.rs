@@ -152,6 +152,21 @@ impl TaskGql {
     async fn effective_estimated_hours(&self) -> Option<f64> {
         self.0.effective_estimated_hours().map(|h| h as f64)
     }
+
+    /// ID of the recurrence template this task was generated from, if any.
+    async fn recurrence_id(&self) -> Option<ID> {
+        self.0.recurrence_id.map(|rid| ID(rid.to_string()))
+    }
+
+    /// The specific occurrence date this task instance fills (within its recurrence series).
+    async fn occurrence_date(&self) -> Option<NaiveDate> {
+        self.0.occurrence_date
+    }
+
+    /// True when this task is a generated instance of a recurrence template.
+    async fn is_recurring(&self) -> bool {
+        self.0.recurrence_id.is_some()
+    }
 }
 
 /// Input for creating a new task.

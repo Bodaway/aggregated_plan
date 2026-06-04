@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use domain::types::*;
+use domain::types::recurrence::RecurrenceTemplateId;
 
 use crate::errors::RepositoryError;
 
@@ -36,5 +37,14 @@ pub trait WorklogRepository: Send + Sync {
         &self,
         user_id: UserId,
         filter: &WorklogFilter,
+    ) -> Result<Vec<WorklogEntry>, RepositoryError>;
+    /// List all worklog entries whose task belongs to the given recurrence template.
+    /// Results are ordered by `logged_at DESC`.
+    async fn find_by_recurrence(
+        &self,
+        user_id: UserId,
+        template_id: RecurrenceTemplateId,
+        limit: u32,
+        offset: u32,
     ) -> Result<Vec<WorklogEntry>, RepositoryError>;
 }

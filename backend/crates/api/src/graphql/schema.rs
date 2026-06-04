@@ -25,19 +25,35 @@ pub struct CombinedMutation(pub MutationRoot);
 
 pub type AppSchema = Schema<CombinedQuery, CombinedMutation, SubscriptionRoot>;
 
+pub struct SchemaDeps {
+    pub task_repo: Arc<dyn TaskRepository>,
+    pub meeting_repo: Arc<dyn MeetingRepository>,
+    pub project_repo: Arc<dyn ProjectRepository>,
+    pub activity_repo: Arc<dyn ActivitySlotRepository>,
+    pub alert_repo: Arc<dyn AlertRepository>,
+    pub tag_repo: Arc<dyn TagRepository>,
+    pub task_link_repo: Arc<dyn TaskLinkRepository>,
+    pub sync_repo: Arc<dyn SyncStatusRepository>,
+    pub config_repo: Arc<dyn ConfigRepository>,
+    pub worklog_repo: Arc<dyn WorklogRepository>,
+    pub recurrence_repo: Arc<dyn RecurrenceRepository>,
+}
+
 /// Build the async-graphql schema with all repository instances injected as data.
-pub fn build_schema(
-    task_repo: Arc<dyn TaskRepository>,
-    meeting_repo: Arc<dyn MeetingRepository>,
-    project_repo: Arc<dyn ProjectRepository>,
-    activity_repo: Arc<dyn ActivitySlotRepository>,
-    alert_repo: Arc<dyn AlertRepository>,
-    tag_repo: Arc<dyn TagRepository>,
-    task_link_repo: Arc<dyn TaskLinkRepository>,
-    sync_repo: Arc<dyn SyncStatusRepository>,
-    config_repo: Arc<dyn ConfigRepository>,
-    worklog_repo: Arc<dyn WorklogRepository>,
-) -> AppSchema {
+pub fn build_schema(deps: SchemaDeps) -> AppSchema {
+    let SchemaDeps {
+        task_repo,
+        meeting_repo,
+        project_repo,
+        activity_repo,
+        alert_repo,
+        tag_repo,
+        task_link_repo,
+        sync_repo,
+        config_repo,
+        worklog_repo,
+        recurrence_repo,
+    } = deps;
     // Default user for local development
     let default_user_id: UserId =
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
@@ -57,6 +73,7 @@ pub fn build_schema(
     .data(sync_repo)
     .data(config_repo)
     .data(worklog_repo)
+    .data(recurrence_repo)
     .data(default_user_id)
     .finish()
 }

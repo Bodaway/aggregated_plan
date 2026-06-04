@@ -1,0 +1,48 @@
+mutation CreateRecurringTask($input: CreateRecurringTaskInput!) {
+  createRecurringTask(input: $input) {
+    id
+    title
+    rule {
+      kind
+      interval
+      weekdays
+      dayOfMonth
+      week
+      weekday
+    }
+    startsOn
+    endsOn
+    maxOccurrences
+    active
+  }
+}
+
+mutation UpdateRecurringTask($id: ID!, $input: UpdateRecurringTaskInput!) {
+  updateRecurringTask(id: $id, input: $input) {
+    id
+    title
+    rule {
+      kind
+      interval
+      weekdays
+      dayOfMonth
+      week
+      weekday
+    }
+    startsOn
+    endsOn
+    maxOccurrences
+    active
+  }
+}
+
+mutation CancelRecurrence($id: ID!) {
+  cancelRecurrence(id: $id)
+}
+
+mutation SkipOccurrence($taskId: ID!) {
+  skipOccurrence(taskId: $taskId) {
+    id
+    status
+  }
+}

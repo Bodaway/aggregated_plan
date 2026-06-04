@@ -2,6 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::common::*;
+use super::recurrence::RecurrenceTemplateId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -32,6 +33,10 @@ pub struct Task {
     pub jira_time_spent_seconds: Option<i32>,
     pub remaining_hours_override: Option<f32>,
     pub estimated_hours_override: Option<f32>,
+    /// Links this task instance to its recurrence template, if any.
+    pub recurrence_id: Option<RecurrenceTemplateId>,
+    /// The occurrence slot this instance fills (the "planned date" for the recurrence).
+    pub occurrence_date: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -84,6 +89,8 @@ mod tests {
             jira_time_spent_seconds: None,
             remaining_hours_override: None,
             estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

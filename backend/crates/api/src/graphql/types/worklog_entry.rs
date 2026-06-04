@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, InputObject, Object, ID};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::TaskRepository;
 use domain::types::WorklogEntry;
@@ -44,12 +44,23 @@ impl WorklogEntryGql {
     async fn updated_at(&self) -> DateTime<Utc> {
         self.0.updated_at
     }
+
+    /// The occurrence date of the task this entry belongs to.
+    /// `Some` for recurring instances, `None` for one-shot tasks.
+    async fn occurrence_date(&self, ctx: &Context<'_>) -> Option<NaiveDate> {
+        let repo = ctx.data::<Arc<dyn TaskRepository>>().ok()?;
+        let task = repo.find_by_id(self.0.task_id).await.ok()??;
+        task.occurrence_date
+    }
 }
 
 /// Filter input for `worklogEntries`.
+/// When `recurrence_id` is provided, it wins over `task_ids` and returns all entries
+/// whose task belongs to the given recurrence template.
 #[derive(InputObject, Debug, Default)]
 pub struct WorklogEntryFilterInput {
     pub task_ids: Option<Vec<ID>>,
+    pub recurrence_id: Option<ID>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub limit: Option<i32>,

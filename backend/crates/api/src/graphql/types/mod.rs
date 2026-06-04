@@ -1,4 +1,5 @@
 pub mod task;
+pub mod recurrence;
 pub mod meeting;
 pub mod project;
 pub mod activity;
@@ -15,6 +16,7 @@ pub mod pagination;
 pub mod worklog_entry;
 
 pub use task::*;
+pub use recurrence::*;
 pub use meeting::*;
 pub use project::*;
 pub use activity::*;

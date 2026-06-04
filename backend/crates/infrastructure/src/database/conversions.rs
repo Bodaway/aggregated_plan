@@ -31,6 +31,7 @@ pub fn task_status_to_str(s: TaskStatus) -> &'static str {
         TaskStatus::InProgress => "in_progress",
         TaskStatus::Done => "done",
         TaskStatus::Blocked => "blocked",
+        TaskStatus::Cancelled => "cancelled",
     }
 }
 
@@ -40,6 +41,7 @@ pub fn task_status_from_str(s: &str) -> TaskStatus {
         "in_progress" => TaskStatus::InProgress,
         "done" => TaskStatus::Done,
         "blocked" => TaskStatus::Blocked,
+        "cancelled" => TaskStatus::Cancelled,
         _ => TaskStatus::Todo,
     }
 }
