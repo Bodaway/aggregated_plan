@@ -719,6 +719,9 @@ pub struct Task {
     pub jira_time_spent_seconds: Option<i32>,       // From Jira timespent
     pub remaining_hours_override: Option<f32>,       // Local override for remaining time
     pub estimated_hours_override: Option<f32>,       // Local override for estimated time
+    /// Delegated-to name. User-owned free text, never overwritten by sync —
+    /// same preservation contract as `notes`. Per-occurrence for recurring tasks.
+    pub delegated_to: Option<String>,
     pub tags: Vec<TagId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1146,6 +1149,10 @@ pub trait TaskRepository: Send + Sync {
     async fn save(&self, task: &Task) -> Result<(), RepositoryError>;
     async fn save_batch(&self, tasks: &[Task]) -> Result<(), RepositoryError>;
     async fn delete(&self, id: TaskId) -> Result<(), RepositoryError>;
+    /// Returns distinct non-null delegated_to values for a user, sorted alphabetically.
+    /// Used to populate the auto-suggestion list in the delegation field.
+    /// Default implementation returns an empty vec (no-op for non-SQLite backends).
+    async fn list_delegates(&self, user_id: UserId) -> Result<Vec<String>, RepositoryError>;
 }
 ```
 
@@ -1440,6 +1447,7 @@ pub async fn sync_jira(
 ) -> Result<SyncResult, AppError> { /* ... */ }
 // NOTE: champs jamais touchés par le sync Jira (préservés à chaque synchro) :
 //   - notes (markdown utilisateur)
+//   - delegated_to (délégation utilisateur)
 //   - urgency_manual (override de priorité)
 //   - remaining_hours_override / estimated_hours_override (overrides de temps)
 
@@ -2144,6 +2152,7 @@ CREATE TABLE tasks (
     title TEXT NOT NULL,
     description TEXT,
     notes TEXT,                              -- markdown, user-owned, jamais écrasé par la sync Jira
+    delegated_to TEXT,                       -- personne délégataire (texte libre, user-owned, jamais écrasé par la sync). Migration 008_add_delegated_to.sql.
     source TEXT NOT NULL CHECK (source IN ('jira', 'excel', 'obsidian', 'personal')),
     source_id TEXT,
     jira_status TEXT,
@@ -2304,6 +2313,13 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 - `update_task` per-instance allow-list: recurring instances may update `status`, `plannedStart`, `plannedEnd`, `deadline`, `notes`, `trackingState`, `remainingHoursOverride`, `estimatedHoursOverride`. Template-level fields (`title`, `description`, `urgency`, `impact`, `estimatedHours`, `projectId`, `tags`) must go through `updateRecurringTask`.
 - Backward compatibility: the `appendTaskNotes` mutation remains registered but is no longer invoked by the frontend (the activity-timer quick note writes a worklog entry instead).
 
+#### Migrations ultérieures
+
+| Migration | Fichier | Description |
+|-----------|---------|-------------|
+| 002–007 | (voir `migrations/sqlite/`) | Récurrence, worklog, CLI, recherche, etc. |
+| **008** | `008_add_delegated_to.sql` | `ALTER TABLE tasks ADD COLUMN delegated_to TEXT;` — champ délégation (texte libre, user-owned, jamais écrasé par la sync). |
+
 ### 7.2 Notes
 
 - All IDs are UUIDs stored as TEXT (both SQLite and Postgres support this).
@@ -2382,6 +2398,7 @@ type Task {
   title: String!
   description: String
   notes: String                        # Markdown user-owned, preserved across Jira syncs
+  delegatedTo: String                  # Free-text delegate name, user-owned, preserved across syncs
   source: Source!
   sourceId: String
   jiraStatus: String
@@ -2605,6 +2622,7 @@ input UpdateTaskInput {
   title: String
   description: String
   notes: String                    # null = clear, absent = don't change
+  delegatedTo: String              # valeur = définir, null explicite = effacer, absent = inchangé (MaybeUndefined)
   projectId: ID
   deadline: Date
   plannedStart: DateTime
@@ -2682,6 +2700,8 @@ type Query {
   syncStatuses: [SyncStatus!]!
   deduplicationSuggestions: [DeduplicationSuggestion!]!
   configuration: JSON!
+  # Délégation — noms distincts triés (auto-complétion pour le champ delegatedTo)
+  delegates: [String!]!
   # Search — lean projection, excludes dismissed tasks, used by the global search bar
   searchableTasks: [SearchableTask!]!
   # v2

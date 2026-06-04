@@ -499,6 +499,24 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+### 6.4ter Délégation de tâche
+
+#### US-DEL : Indiquer la personne à qui une tâche est déléguée
+
+> En tant que Tech Lead, je veux pouvoir noter à qui je délègue une tâche afin de garder une trace visible directement sur la carte sans changer d'outil.
+
+**Critères d'acceptation :**
+- **R-DEL-01** : un champ texte libre « Delegated to » est disponible dans le panneau d'édition de la tâche (`TaskEditSheet`). Vider le champ retire la délégation.
+- **R-DEL-02** : le champ est purement informatif — il n'a aucune incidence sur la charge, les alertes ou la matrice de priorités.
+- **R-DEL-03** : les noms déjà saisis sur les tâches de l'utilisateur alimentent automatiquement une liste de suggestions (auto-complétion). Aucune gestion de liste dans les paramètres ; tout nouveau nom saisi enrichit la liste.
+- **R-DEL-04** : le champ est local et distinct de l'assigné Jira (`assignee`, lecture seule). La valeur survit aux synchronisations Jira/Excel, au même titre que `notes`.
+- **R-DEL-05** : quand une tâche est déléguée, le nom du délégué est affiché sur les cartes de tâche (matrice de priorités, vue Triage), préfixé d'une flèche « → ».
+- **R-DEL-06** : pour les tâches récurrentes, la délégation est par occurrence — elle n'est pas propagée au modèle de récurrence.
+
+**Priorité** : Must (MVP v1)
+
+---
+
 ### 6.5 Tâches personnelles
 
 #### US-040 : Créer une tâche personnelle
@@ -820,6 +838,7 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | titre | Texte | Oui | Titre de la tâche |
 | description | Texte | Non | Description détaillée. Pour les tâches Jira, **synchronisée et écrasée à chaque sync**. |
 | notes | Markdown | Non | Notes utilisateur en markdown, **toujours préservées** par les synchronisations. C'est le champ recommandé pour stocker des observations, plans, journal de bord, etc. |
+| delegated_to | Texte | Non | Personne à qui la tâche est déléguée (texte libre, **toujours préservé** par les synchronisations, distinct de l'assigné Jira). Voir R-DEL-01 à R-DEL-06. |
 | source | Enum | Oui | `jira`, `excel`, `obsidian`, `personnel` |
 | sourceId | Texte | Non | Identifiant dans la source d'origine (ex : numéro Jira) |
 | statut | Enum | Oui | `à_faire`, `en_cours`, `terminée`, `bloquée` |
