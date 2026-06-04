@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTaskEdit } from '@/hooks/use-task-edit';
+import { useDelegates } from '@/hooks/use-delegates';
 import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
 import { WorklogSection } from '@/components/worklog/WorklogSection';
 
@@ -53,6 +54,7 @@ function formatSeconds(seconds: number | null): string {
 
 export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps) {
   const { task, loading, updateTask, updatePriority, skipOccurrence, updateRecurringTask } = useTaskEdit(taskId);
+  const { delegates } = useDelegates();
   const isOpen = taskId !== null;
   const isJira = task?.source === 'JIRA' || task?.source === 'EXCEL';
   const isRecurring = task?.isRecurring ?? false;
@@ -67,6 +69,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const [impact, setImpact] = useState('MEDIUM');
   const [status, setStatus] = useState('TODO');
   const [plannedDate, setPlannedDate] = useState('');
+  const [delegatedTo, setDelegatedTo] = useState('');
 
   // Sync form state when task loads
   useEffect(() => {
@@ -81,6 +84,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
       setStatus(task.status ?? 'TODO');
       // Extract date portion from ISO datetime
       setPlannedDate(task.plannedStart ? task.plannedStart.slice(0, 10) : '');
+      setDelegatedTo(task.delegatedTo ?? '');
     }
   }, [task]);
 
@@ -111,6 +115,11 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
     const currentPlannedDate = task.plannedStart ? task.plannedStart.slice(0, 10) : '';
     if (plannedDate !== currentPlannedDate) {
       perInstanceChanges.plannedStart = plannedDate ? `${plannedDate}T08:00:00Z` : null;
+    }
+
+    const newDelegate = delegatedTo.trim() || null;
+    if (newDelegate !== (task.delegatedTo ?? null)) {
+      perInstanceChanges.delegatedTo = newDelegate;
     }
 
     if (isJira) {
@@ -166,7 +175,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
     onUpdated?.();
     onClose();
-  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, isJira, isRecurring, updateTask, updatePriority, updateRecurringTask, onUpdated, onClose]);
+  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, delegatedTo, isJira, isRecurring, updateTask, updatePriority, updateRecurringTask, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
@@ -318,6 +327,26 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                           Clear planned date
                         </button>
                       )}
+                    </div>
+
+                    <div>
+                      <label htmlFor="task-delegated-to" className="block text-xs font-medium text-gray-700 mb-1">
+                        Delegated to
+                      </label>
+                      <input
+                        id="task-delegated-to"
+                        type="text"
+                        list="delegate-suggestions"
+                        value={delegatedTo}
+                        onChange={(e) => setDelegatedTo(e.target.value)}
+                        placeholder="Nobody — type a name to delegate"
+                        className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <datalist id="delegate-suggestions">
+                        {delegates.map((name) => (
+                          <option key={name} value={name} />
+                        ))}
+                      </datalist>
                     </div>
 
                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Priority</h4>

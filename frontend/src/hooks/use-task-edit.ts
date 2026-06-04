@@ -15,6 +15,7 @@ export interface FullTask {
   readonly deadline: string | null;
   readonly plannedStart: string | null;
   readonly assignee: string | null;
+  readonly delegatedTo: string | null;
   readonly estimatedHours: number | null;
   readonly trackingState: string;
   readonly jiraRemainingSeconds: number | null;
@@ -48,6 +49,7 @@ const TASK_QUERY = `
       deadline
       plannedStart
       assignee
+      delegatedTo
       estimatedHours
       trackingState
       jiraRemainingSeconds
@@ -73,6 +75,7 @@ const UPDATE_TASK_MUTATION = `
       title
       description
       notes
+      delegatedTo
       status
       urgency
       impact

@@ -12,6 +12,10 @@ const mockUpdateRecurringTask = vi.fn(async () => {});
 
 let mockTask: FullTask | null = null;
 
+vi.mock('@/hooks/use-delegates', () => ({
+  useDelegates: () => ({ delegates: ['Ahmed', 'Marie'] }),
+}));
+
 vi.mock('@/hooks/use-task-edit', () => ({
   useTaskEdit: () => ({
     task: mockTask,
@@ -59,6 +63,7 @@ const BASE_TASK: FullTask = {
   deadline: null,
   plannedStart: '2026-04-27T08:00:00Z',
   assignee: null,
+  delegatedTo: null,
   estimatedHours: null,
   trackingState: 'IDLE',
   jiraRemainingSeconds: null,
@@ -212,5 +217,59 @@ describe('TaskEditSheet — one-shot task', () => {
     fireEvent.click(saveBtn);
 
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  });
+});
+
+// ── Tests: delegation ─────────────────────────────────────────────────────────
+
+describe('delegation', () => {
+  beforeEach(() => {
+    mockTask = { ...BASE_TASK };
+    mockUpdateTask.mockClear();
+  });
+
+  it('renders the delegated-to input with learned suggestions', () => {
+    renderSheet();
+    const input = screen.getByLabelText(/delegated to/i);
+    expect(input).toHaveAttribute('list', 'delegate-suggestions');
+    const datalist = document.getElementById('delegate-suggestions');
+    expect(datalist).not.toBeNull();
+    const options = Array.from(datalist!.querySelectorAll('option')).map(o => o.getAttribute('value'));
+    expect(options).toEqual(['Ahmed', 'Marie']);
+  });
+
+  it('sends delegatedTo on save when a name is entered', async () => {
+    renderSheet();
+    fireEvent.change(screen.getByLabelText(/delegated to/i), { target: { value: 'Marie' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenCalledWith(
+        expect.objectContaining({ delegatedTo: 'Marie' })
+      );
+    });
+  });
+
+  it('sends delegatedTo: null on save when the field is emptied', async () => {
+    mockTask = { ...BASE_TASK, delegatedTo: 'Marie' };
+    renderSheet();
+    fireEvent.change(screen.getByLabelText(/delegated to/i), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+    await waitFor(() => {
+      expect(mockUpdateTask).toHaveBeenCalledWith(
+        expect.objectContaining({ delegatedTo: null })
+      );
+    });
+  });
+
+  it('does not send delegatedTo when unchanged', async () => {
+    mockTask = { ...BASE_TASK, delegatedTo: 'Marie', notes: 'x' };
+    renderSheet();
+    // change something else so save fires an update
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'y' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect(mockUpdateTask).toHaveBeenCalledWith(
+      expect.not.objectContaining({ delegatedTo: expect.anything() })
+    );
   });
 });

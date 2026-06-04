@@ -15,6 +15,7 @@ mutation UpdateTask($id: ID!, $input: UpdateTaskInput!) {
     id
     title
     notes
+    delegatedTo
     status
     urgency
     impact
