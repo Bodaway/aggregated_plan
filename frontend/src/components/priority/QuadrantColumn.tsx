@@ -11,6 +11,7 @@ interface QuadrantTask {
   readonly impact: number;
   readonly deadline: string | null;
   readonly assignee: string | null;
+  readonly delegatedTo?: string | null;
   readonly project: { readonly name: string } | null;
   readonly source: string;
   readonly sourceId: string | null;
@@ -47,6 +48,7 @@ export function TaskCardOverlay({ task }: { readonly task: QuadrantTask }) {
         quadrant=""
         deadline={task.deadline}
         assignee={task.assignee}
+        delegatedTo={task.delegatedTo}
         projectName={task.project?.name ?? null}
         effectiveRemainingHours={task.effectiveRemainingHours}
         effectiveEstimatedHours={task.effectiveEstimatedHours}
@@ -81,6 +83,7 @@ export function DraggableTask({ task, onEdit }: { readonly task: QuadrantTask; r
         quadrant=""
         deadline={task.deadline}
         assignee={task.assignee}
+        delegatedTo={task.delegatedTo}
         projectName={task.project?.name ?? null}
         effectiveRemainingHours={task.effectiveRemainingHours}
         effectiveEstimatedHours={task.effectiveEstimatedHours}

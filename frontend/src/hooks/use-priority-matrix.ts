@@ -12,6 +12,7 @@ export interface MatrixTask {
   readonly impact: number;
   readonly deadline: string | null;
   readonly assignee: string | null;
+  readonly delegatedTo?: string | null;
   readonly project: MatrixProject | null;
   readonly source: string;
   readonly sourceId: string | null;
@@ -44,25 +45,25 @@ const PRIORITY_MATRIX_QUERY = `
   query PriorityMatrix {
     priorityMatrix {
       urgentImportant {
-        id title status urgency impact deadline assignee source sourceId jiraStatus
+        id title status urgency impact deadline assignee delegatedTo source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         isRecurring recurrenceId occurrenceDate
         project { name }
       }
       important {
-        id title status urgency impact deadline assignee source sourceId jiraStatus
+        id title status urgency impact deadline assignee delegatedTo source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         isRecurring recurrenceId occurrenceDate
         project { name }
       }
       urgent {
-        id title status urgency impact deadline assignee source sourceId jiraStatus
+        id title status urgency impact deadline assignee delegatedTo source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         isRecurring recurrenceId occurrenceDate
         project { name }
       }
       neither {
-        id title status urgency impact deadline assignee source sourceId jiraStatus
+        id title status urgency impact deadline assignee delegatedTo source sourceId jiraStatus
         effectiveRemainingHours effectiveEstimatedHours jiraTimeSpentSeconds
         isRecurring recurrenceId occurrenceDate
         project { name }

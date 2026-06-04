@@ -20,6 +20,7 @@ export interface TaskCardProps {
   readonly quadrant: string;
   readonly deadline?: string | null;
   readonly assignee?: string | null;
+  readonly delegatedTo?: string | null;
   readonly projectName?: string | null;
   readonly tags?: readonly TaskTag[];
   readonly effectiveRemainingHours?: number | null;
@@ -106,6 +107,7 @@ export function TaskCard({
   quadrant,
   deadline,
   assignee,
+  delegatedTo,
   projectName,
   tags,
   effectiveRemainingHours,
@@ -153,6 +155,11 @@ export function TaskCard({
           <StatusMenu taskId={id} status={status} />
           {assignee && (
             <span className="text-xs text-gray-400 truncate">{assignee}</span>
+          )}
+          {delegatedTo && (
+            <span className="text-xs text-violet-700 truncate" title={`Délégué à ${delegatedTo}`}>
+              → {delegatedTo}
+            </span>
           )}
           {isRecurring && (
             <span title="Tâche récurrente" className="inline-flex items-center">
@@ -240,6 +247,11 @@ export function TaskCard({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
                 </svg>
                 {assignee}
+              </span>
+            )}
+            {delegatedTo && (
+              <span className="text-xs text-violet-700 truncate" title={`Délégué à ${delegatedTo}`}>
+                → {delegatedTo}
               </span>
             )}
             {projectName && (

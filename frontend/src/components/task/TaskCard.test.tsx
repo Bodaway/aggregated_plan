@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { TaskCard, type TaskCardProps } from './TaskCard';
 
 // StatusMenu calls useMutation from urql directly — provide a no-op mock so
@@ -78,6 +78,36 @@ describe('TaskCard — isRecurring indicator', () => {
     const { container } = render(<TaskCard {...TASK} />);
     const icon = container.querySelector('[aria-label="Tâche récurrente"]');
     expect(icon).toBeNull();
+  });
+});
+
+function renderCard(overrides: Partial<TaskCardProps> = {}) {
+  return render(<TaskCard {...TASK} {...overrides} />);
+}
+
+function renderCardCompact(overrides: Partial<TaskCardProps> = {}) {
+  return render(<TaskCard {...TASK} compact {...overrides} />);
+}
+
+describe('TaskCard — delegatedTo badge', () => {
+  it('shows the delegate name when delegatedTo is set (full card)', () => {
+    renderCard({ delegatedTo: 'Marie' });
+    expect(screen.getByText('→ Marie')).toBeInTheDocument();
+  });
+
+  it('shows no delegate badge when delegatedTo is absent (full card)', () => {
+    renderCard({});
+    expect(screen.queryByText(/^→ /)).not.toBeInTheDocument();
+  });
+
+  it('shows the delegate name when delegatedTo is set (compact card)', () => {
+    renderCardCompact({ delegatedTo: 'Marie' });
+    expect(screen.getByText('→ Marie')).toBeInTheDocument();
+  });
+
+  it('shows no delegate badge when delegatedTo is absent (compact card)', () => {
+    renderCardCompact({});
+    expect(screen.queryByText(/^→ /)).not.toBeInTheDocument();
   });
 });
 

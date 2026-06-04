@@ -52,6 +52,7 @@ function DraggableTaskCard({
         quadrant=""
         deadline={task.deadline}
         assignee={task.assignee}
+        delegatedTo={task.delegatedTo}
         projectName={task.project?.name ?? null}
         effectiveRemainingHours={task.effectiveRemainingHours ?? null}
         effectiveEstimatedHours={task.effectiveEstimatedHours ?? null}
@@ -88,6 +89,7 @@ function TaskCardOverlay({ task }: { readonly task: TriageTask }) {
         quadrant=""
         deadline={task.deadline}
         assignee={task.assignee}
+        delegatedTo={task.delegatedTo}
         projectName={task.project?.name ?? null}
         effectiveRemainingHours={task.effectiveRemainingHours ?? null}
         effectiveEstimatedHours={task.effectiveEstimatedHours ?? null}

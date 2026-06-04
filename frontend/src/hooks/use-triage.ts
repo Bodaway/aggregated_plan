@@ -13,6 +13,7 @@ export interface TriageTask {
   readonly trackingState: string;
   readonly deadline: string | null;
   readonly assignee: string | null;
+  readonly delegatedTo: string | null;
   readonly project: { readonly name: string } | null;
   readonly effectiveRemainingHours: number | null;
   readonly effectiveEstimatedHours: number | null;
@@ -36,6 +37,7 @@ const TRIAGE_TASKS_QUERY = `
           trackingState
           deadline
           assignee
+          delegatedTo
           project { name }
           effectiveRemainingHours
           effectiveEstimatedHours
