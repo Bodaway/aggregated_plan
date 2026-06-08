@@ -56,16 +56,15 @@ impl OutlookOAuth {
     }
 
     pub fn authorize_url(&self, state: &str) -> String {
-        let mut url = reqwest::Url::parse(&self.config.authorize_endpoint())
-            .expect("valid authorize endpoint");
-        url.query_pairs_mut()
+        let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("client_id", &self.config.client_id)
             .append_pair("response_type", "code")
             .append_pair("response_mode", "query")
             .append_pair("redirect_uri", &self.config.redirect_uri)
             .append_pair("scope", self.config.scope())
-            .append_pair("state", state);
-        url.to_string()
+            .append_pair("state", state)
+            .finish();
+        format!("{}?{}", self.config.authorize_endpoint(), query)
     }
 
     pub async fn exchange_code(&self, code: &str) -> Result<TokenSet, ConnectorError> {
