@@ -657,7 +657,13 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
         Source::Outlook => {
             if let Some(client) = outlook_client {
                 let today = Utc::now().date_naive();
-                let end = today + chrono::Duration::days(30);
+                let days: i64 = config_repo
+                    .get(user_id, "outlook.calendar_days")
+                    .await?
+                    .and_then(|v| v.trim().parse::<i64>().ok())
+                    .filter(|d| *d > 0)
+                    .unwrap_or(14);
+                let end = today + chrono::Duration::days(days);
                 sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end)).await?;
             } else {
                 update_sync_error(sync_repo, user_id, Source::Outlook, "Not configured").await?;
