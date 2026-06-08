@@ -11,6 +11,7 @@ export interface SyncStatusData {
 export interface ConfigurationData {
   readonly configuration: Record<string, string>;
   readonly syncStatuses: readonly SyncStatusData[];
+  readonly outlookConnection: { readonly connected: boolean; readonly account: string | null };
 }
 
 const CONFIGURATION_QUERY = `
@@ -22,6 +23,7 @@ const CONFIGURATION_QUERY = `
       lastSyncAt
       errorMessage
     }
+    outlookConnection { connected account }
   }
 `;
 
@@ -42,6 +44,10 @@ const FORCE_SYNC_MUTATION = `
   }
 `;
 
+const DISCONNECT_OUTLOOK_MUTATION = `
+  mutation DisconnectOutlook { disconnectOutlook }
+`;
+
 interface ForceSyncResult {
   readonly forceSync: readonly SyncStatusData[];
 }
@@ -57,6 +63,10 @@ export function useSettings() {
 
   const [syncResult, executeForceSync] = useMutation<ForceSyncResult>(FORCE_SYNC_MUTATION);
 
+  const [, executeDisconnectOutlook] = useMutation<{ disconnectOutlook: boolean }>(
+    DISCONNECT_OUTLOOK_MUTATION
+  );
+
   const configuration = useMemo(
     () => result.data?.configuration ?? {},
     [result.data?.configuration]
@@ -66,6 +76,17 @@ export function useSettings() {
     () => result.data?.syncStatuses ?? [],
     [result.data?.syncStatuses]
   );
+
+  const outlookConnection = useMemo(
+    () => result.data?.outlookConnection ?? { connected: false, account: null },
+    [result.data?.outlookConnection]
+  );
+
+  const disconnectOutlook = useCallback(async () => {
+    const res = await executeDisconnectOutlook({});
+    if (!res.error) reexecute({ requestPolicy: 'network-only' });
+    return res;
+  }, [executeDisconnectOutlook, reexecute]);
 
   const updateConfig = useCallback(
     async (key: string, value: string) => {
@@ -92,11 +113,13 @@ export function useSettings() {
   return {
     configuration,
     syncStatuses,
+    outlookConnection,
     loading: result.fetching,
     error: result.error ?? null,
     syncing: syncResult.fetching,
     updateConfig,
     forceSync,
+    disconnectOutlook,
     refetch: () => reexecute({ requestPolicy: 'network-only' }),
   };
 }

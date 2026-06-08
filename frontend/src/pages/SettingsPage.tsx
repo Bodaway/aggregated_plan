@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useSettings } from '@/hooks/use-settings';
 import type { SyncStatusData } from '@/hooks/use-settings';
 
@@ -9,7 +9,6 @@ const CONFIG_KEYS = {
   JIRA_TOKEN: 'jira.token',
   JIRA_PROJECT_KEYS: 'jira.project_keys',
   JIRA_MY_TASKS_ONLY: 'jira.my_tasks_only',
-  OUTLOOK_ACCESS_TOKEN: 'outlook.access_token',
   OUTLOOK_CALENDAR_DAYS: 'outlook.calendar_days',
   EXCEL_SHAREPOINT_PATH: 'excel.sharepoint_path',
   EXCEL_SHEET_NAME: 'excel.sheet_name',
@@ -346,8 +345,17 @@ function WorkingDaysSelector({
 }
 
 export function SettingsPage() {
-  const { configuration, syncStatuses, loading, error, syncing, updateConfig, forceSync } =
-    useSettings();
+  const {
+    configuration,
+    syncStatuses,
+    outlookConnection,
+    loading,
+    error,
+    syncing,
+    updateConfig,
+    forceSync,
+    disconnectOutlook,
+  } = useSettings();
 
   // Local state for form fields (initialized from fetched configuration)
   const [localConfig, setLocalConfig] = useState<Record<string, string>>({});
@@ -371,6 +379,15 @@ export function SettingsPage() {
     setSaveMessage(null);
   }, []);
 
+  // Show a status message when the OAuth flow redirects back to /settings?outlook=...
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const o = p.get('outlook');
+    if (o === 'connected') setSaveMessage('Outlook connected successfully.');
+    else if (o === 'error') setSaveMessage(`Outlook connection failed: ${p.get('reason') ?? 'unknown'}`);
+    if (o) window.history.replaceState({}, '', '/settings');
+  }, []);
+
   /** Save a group of config keys to the backend. */
   const saveConfigKeys = useCallback(
     async (keys: readonly string[]) => {
@@ -379,6 +396,9 @@ export function SettingsPage() {
       try {
         for (const key of keys) {
           const value = getConfigValue(key);
+          // The backend redacts stored secrets as "********". Skip saving the sentinel back so
+          // we never overwrite a real secret with the redacted placeholder.
+          if (value === '********') continue;
           await updateConfig(key, value);
         }
         setSaveMessage('Settings saved successfully.');
@@ -577,14 +597,27 @@ export function SettingsPage() {
       {/* Section 2: Microsoft Graph (Outlook + Excel) */}
       <SettingsSection title="Microsoft Graph (Outlook)" icon={<OutlookIcon />}>
         <div className="space-y-4">
-          <SettingsInput
-            label="Access Token"
-            value={getConfigValue(CONFIG_KEYS.OUTLOOK_ACCESS_TOKEN)}
-            onChange={v => setConfigValue(CONFIG_KEYS.OUTLOOK_ACCESS_TOKEN, v)}
-            type="password"
-            placeholder="Microsoft Graph access token"
-            description="OAuth2 access token for Microsoft Graph API"
-          />
+          {outlookConnection.connected ? (
+            <div className="flex items-center justify-between rounded border border-gray-200 p-3">
+              <span className="text-sm">
+                Connected as <strong>{outlookConnection.account ?? 'unknown'}</strong>
+              </span>
+              <button
+                type="button"
+                className="rounded bg-red-600 px-3 py-1 text-sm text-white hover:bg-red-700 transition-colors"
+                onClick={async () => { await disconnectOutlook(); }}
+              >
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <a
+              className="inline-block rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 transition-colors"
+              href="http://localhost:3001/auth/outlook/login"
+            >
+              Connect Outlook
+            </a>
+          )}
           <SettingsInput
             label="Calendar Range (days)"
             value={getConfigValue(CONFIG_KEYS.OUTLOOK_CALENDAR_DAYS, '14')}
@@ -596,12 +629,7 @@ export function SettingsPage() {
 
           <div className="pt-2">
             <SaveButton
-              onClick={() =>
-                saveConfigKeys([
-                  CONFIG_KEYS.OUTLOOK_ACCESS_TOKEN,
-                  CONFIG_KEYS.OUTLOOK_CALENDAR_DAYS,
-                ])
-              }
+              onClick={() => saveConfigKeys([CONFIG_KEYS.OUTLOOK_CALENDAR_DAYS])}
               saving={saving}
             />
           </div>
