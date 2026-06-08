@@ -37,6 +37,7 @@ pub struct SchemaDeps {
     pub config_repo: Arc<dyn ConfigRepository>,
     pub worklog_repo: Arc<dyn WorklogRepository>,
     pub recurrence_repo: Arc<dyn RecurrenceRepository>,
+    pub outlook_token_provider: Arc<dyn application::services::OutlookTokenProvider>,
 }
 
 /// Build the async-graphql schema with all repository instances injected as data.
@@ -53,6 +54,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
         config_repo,
         worklog_repo,
         recurrence_repo,
+        outlook_token_provider,
     } = deps;
     // Default user for local development
     let default_user_id: UserId =
@@ -74,6 +76,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     .data(config_repo)
     .data(worklog_repo)
     .data(recurrence_repo)
+    .data(outlook_token_provider)
     .data(default_user_id)
     .finish()
 }

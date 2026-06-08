@@ -313,13 +313,12 @@ impl MutationRoot {
                 _ => None,
             }
         };
-        let outlook_client: Option<Arc<dyn OutlookClient>> = {
-            let token = config_repo.get(*user_id, "outlook.access_token").await.ok().flatten();
-            match token {
-                Some(tok) if !tok.is_empty() => Some(Arc::new(GraphOutlookClient::new(tok))),
-                _ => None,
-            }
-        };
+        let outlook_token_provider = ctx.data::<Arc<dyn OutlookTokenProvider>>()?;
+        let outlook_client: Option<Arc<dyn OutlookClient>> =
+            match outlook_token_provider.valid_access_token(*user_id).await {
+                Ok(token) => Some(Arc::new(GraphOutlookClient::new(token))),
+                Err(_) => None, // not connected or reconnect required; sync_source records the error
+            };
         let excel_client: Option<Arc<dyn ExcelClient>> = ctx
             .data::<Arc<dyn ExcelClient>>()
             .ok()
