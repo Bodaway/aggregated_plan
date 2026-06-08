@@ -118,7 +118,7 @@ Au quotidien, le Tech Lead utilise 5 outils différents pour gérer son activit�
 | Élément | Justification |
 |---------|---------------|
 | Multi-utilisateurs | L'outil est personnel, un seul utilisateur |
-| Authentification complexe (OAuth/EntraID) | Pas nécessaire pour un utilisateur unique |
+| Authentification utilisateur (Azure AD / SSO Teams) | Pas nécessaire pour un utilisateur unique en mode local (le flux OAuth Outlook est uniquement pour l'accès à l'API Microsoft Graph, pas pour authentifier l'utilisateur de l'outil) |
 | Rôles et permissions | Un seul utilisateur = accès total |
 | Intégration Teams (bot, tab) | Pas prioritaire, l'outil est un dashboard web personnel |
 | Export PDF/Excel/CSV | Reporté, le reporting est d'abord pour consultation personnelle |
@@ -283,6 +283,22 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - Les événements sont positionnés sur le planning de la journée
 - Les créneaux occupés par des réunions réduisent la capacité de travail disponible
 - Les annulations et modifications sont reflétées après synchronisation
+
+**Priorité** : Must (MVP v1)
+
+---
+
+#### US-002b : Connexion interactive Outlook (OAuth)
+
+> En tant que Tech Lead, je veux me connecter à Outlook une seule fois via un bouton dédié afin que la synchronisation du calendrier fonctionne sans intervention manuelle par la suite.
+
+**Critères d'acceptation :**
+- La page Paramètres affiche un bouton « Se connecter à Outlook » lorsqu'aucun compte n'est connecté.
+- Un clic ouvre la page de connexion Microsoft dans le navigateur (flux OAuth interactif). Après authentification, l'utilisateur est redirigé automatiquement vers la page Paramètres.
+- Une fois connecté, la page Paramètres affiche « Connecté en tant que \<adresse e-mail\> » et un bouton « Déconnecter ».
+- Le jeton d'accès est renouvelé automatiquement en arrière-plan sans aucune action de l'utilisateur.
+- Si le renouvellement échoue (token révoqué, mot de passe changé, etc.), le statut de synchronisation Outlook indique « Reconnect required » et l'utilisateur doit cliquer à nouveau sur « Se connecter à Outlook ».
+- Cliquer sur « Déconnecter » supprime les jetons stockés et désactive la synchronisation Outlook jusqu'à une nouvelle connexion.
 
 **Priorité** : Must (MVP v1)
 
@@ -929,6 +945,8 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | heuresFinTravail | Heure (HH:MM) | 17:00 | Heure de fin de la journée de travail |
 | jiraUrl | Texte | — | URL de l'instance Jira |
 | jiraProjetKeys | Liste de textes | — | Clés de projets Jira à importer |
+| outlook.account | Texte | — | Adresse email du compte Outlook connecté (lecture seule — renseigné après connexion OAuth) |
+| outlook.calendar_days | Entier (jours) | 14 | Horizon de synchronisation du calendrier Outlook |
 | excelSharepointPath | Texte | — | Chemin du fichier Excel sur SharePoint |
 | excelMappingConfig | Objet | — | Mapping colonnes Excel → champs de l'outil |
 | obsidianVaultPath | Texte | — | Chemin du vault Obsidian (v2) |
