@@ -488,7 +488,14 @@ impl QueryRoot {
 
         let map: serde_json::Map<String, serde_json::Value> = pairs
             .into_iter()
-            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .map(|(k, v)| {
+                let displayed = if is_secret_key(&k) && !v.is_empty() {
+                    "********".to_string()
+                } else {
+                    v
+                };
+                (k, serde_json::Value::String(displayed))
+            })
             .collect();
 
         Ok(serde_json::Value::Object(map))
@@ -575,4 +582,14 @@ fn convert_task_filter(input: Option<TaskFilterInput>) -> TaskFilter {
             title_contains: f.title_contains,
         },
     }
+}
+
+/// Returns true if a configuration key holds a secret that must never be
+/// returned in plaintext over the API.
+fn is_secret_key(key: &str) -> bool {
+    key.ends_with(".token")
+        || key.ends_with(".access_token")
+        || key.ends_with(".refresh_token")
+        || key.ends_with(".secret")
+        || key.ends_with(".client_secret")
 }

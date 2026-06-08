@@ -101,14 +101,19 @@ async fn main() {
     }
 
     let default_user_id =
-        Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap();
 
     let app = Router::new()
         .route("/graphql", post(graphql::schema::graphql_handler))
         .route("/graphql/playground", get(graphql::schema::graphql_playground))
         .route("/auth/outlook/login", get(auth::outlook::login))
         .route("/auth/outlook/callback", get(auth::outlook::callback))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin("http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap())
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([axum::http::header::CONTENT_TYPE]),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state::AppState {
             schema: schema.clone(),

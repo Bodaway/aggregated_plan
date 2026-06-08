@@ -8,6 +8,9 @@ use crate::graphql::schema::AppSchema;
 use application::repositories::ConfigRepository;
 use infrastructure::connectors::outlook::oauth::OutlookOAuth;
 
+/// Single source of truth for the local-dev default user UUID.
+pub const DEFAULT_USER_ID_STR: &str = "00000000-0000-0000-0000-000000000001";
+
 #[derive(Clone)]
 pub struct AppState {
     pub schema: AppSchema,

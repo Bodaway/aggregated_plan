@@ -58,7 +58,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     } = deps;
     // Default user for local development
     let default_user_id: UserId =
-        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+        Uuid::parse_str(crate::state::DEFAULT_USER_ID_STR).expect("valid default UUID");
 
     Schema::build(
         CombinedQuery(QueryRoot),

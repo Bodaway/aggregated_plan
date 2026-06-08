@@ -3,9 +3,11 @@ use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
 
-/// Insert a freshly-issued state token.
+/// Insert a freshly-issued state token, evicting any entries older than 10 minutes.
 pub fn remember_state(store: &Mutex<HashMap<String, DateTime<Utc>>>, state: String, now: DateTime<Utc>) {
-    store.lock().unwrap().insert(state, now);
+    let mut guard = store.lock().unwrap();
+    guard.retain(|_, issued| now - *issued < Duration::minutes(10));
+    guard.insert(state, now);
 }
 
 /// Validate + consume a state token. Returns true if present and younger than 10 minutes.
@@ -73,23 +75,23 @@ pub async fn callback(
         }
     };
     let uid = app.default_user_id;
-    let _ = app
-        .config_repo
-        .set(uid, "outlook.access_token", &tokens.access_token)
-        .await;
-    let _ = app
-        .config_repo
-        .set(
-            uid,
-            "outlook.token_expires_at",
-            &tokens.expires_at.to_rfc3339(),
-        )
-        .await;
+    let persist_err = || Redirect::temporary(&format!("{SETTINGS_URL}?outlook=error&reason=persist_failed"));
+
+    if app.config_repo.set(uid, "outlook.access_token", &tokens.access_token).await.is_err() {
+        return persist_err();
+    }
+    if app.config_repo.set(uid, "outlook.token_expires_at", &tokens.expires_at.to_rfc3339()).await.is_err() {
+        return persist_err();
+    }
     if let Some(rt) = &tokens.refresh_token {
-        let _ = app.config_repo.set(uid, "outlook.refresh_token", rt).await;
+        if app.config_repo.set(uid, "outlook.refresh_token", rt).await.is_err() {
+            return persist_err();
+        }
     }
     if let Some(acct) = &tokens.account {
-        let _ = app.config_repo.set(uid, "outlook.account", acct).await;
+        if app.config_repo.set(uid, "outlook.account", acct).await.is_err() {
+            return persist_err();
+        }
     }
     Redirect::temporary(&format!("{SETTINGS_URL}?outlook=connected"))
 }
