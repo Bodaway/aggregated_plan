@@ -11,6 +11,13 @@ use application::use_cases::recurrence as recurrence_uc;
 
 use super::types::*;
 
+/// Outlook OAuth connection status returned by the `outlookConnection` query.
+#[derive(async_graphql::SimpleObject)]
+pub struct OutlookConnectionGql {
+    pub connected: bool,
+    pub account: Option<String>,
+}
+
 /// Root query type for the GraphQL schema.
 #[derive(Default)]
 pub struct QueryRoot;
@@ -499,6 +506,27 @@ impl QueryRoot {
             .collect();
 
         Ok(serde_json::Value::Object(map))
+    }
+
+    /// Outlook OAuth connection status for the current user.
+    ///
+    /// Reads `outlook.refresh_token` directly from the config store (never
+    /// redacted here) so `connected` reflects the real stored value.
+    async fn outlook_connection(&self, ctx: &Context<'_>) -> Result<OutlookConnectionGql> {
+        let user_id = ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let refresh = config_repo
+            .get(*user_id, "outlook.refresh_token")
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let account = config_repo
+            .get(*user_id, "outlook.account")
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(OutlookConnectionGql {
+            connected: refresh.map(|s| !s.is_empty()).unwrap_or(false),
+            account,
+        })
     }
 
     /// List worklog entries for the authenticated user.

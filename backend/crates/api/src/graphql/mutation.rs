@@ -700,6 +700,25 @@ impl MutationRoot {
         Ok(true)
     }
 
+    /// Disconnect the Outlook account by clearing all stored OAuth tokens.
+    /// Returns true on success.
+    async fn disconnect_outlook(&self, ctx: &Context<'_>) -> Result<bool> {
+        let user_id = ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        for key in [
+            "outlook.access_token",
+            "outlook.refresh_token",
+            "outlook.token_expires_at",
+            "outlook.account",
+        ] {
+            config_repo
+                .set(*user_id, key, "")
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        }
+        Ok(true)
+    }
+
     // ─── Recurrence mutations ───
 
     /// Create a new recurring task template and materialize the first 14-day horizon.
