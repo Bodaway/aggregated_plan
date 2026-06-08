@@ -5,7 +5,7 @@ use application::repositories::ConfigRepository;
 use application::services::OutlookTokenProvider;
 use async_trait::async_trait;
 use chrono::Utc;
-use domain::types::UserId;
+use domain::types::{Source, UserId};
 
 use super::oauth::{should_refresh, OutlookOAuth};
 
@@ -25,17 +25,14 @@ impl OutlookTokenProvider for RefreshingOutlookTokenProvider {
     async fn valid_access_token(&self, user_id: UserId) -> Result<String, AppError> {
         let access = self.config_repo.get(user_id, "outlook.access_token").await?;
         let expires = self.config_repo.get(user_id, "outlook.token_expires_at").await?;
-        let needs_refresh = match (&access, &expires) {
-            (Some(a), Some(e)) if !a.is_empty() => {
-                match chrono::DateTime::parse_from_rfc3339(e) {
-                    Ok(exp) => should_refresh(Utc::now(), exp.with_timezone(&Utc)),
-                    Err(_) => true,
+        if let (Some(a), Some(e)) = (&access, &expires) {
+            if !a.is_empty() {
+                if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(e) {
+                    if !should_refresh(Utc::now(), exp.with_timezone(&Utc)) {
+                        return Ok(a.clone());
+                    }
                 }
             }
-            _ => true,
-        };
-        if !needs_refresh {
-            return Ok(access.unwrap());
         }
 
         let refresh_token = self
@@ -44,7 +41,7 @@ impl OutlookTokenProvider for RefreshingOutlookTokenProvider {
             .await?
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::Connector {
-                connector_source: domain::types::Source::Outlook,
+                connector_source: Source::Outlook,
                 message: "Reconnect required".to_string(),
             })?;
 
@@ -53,7 +50,7 @@ impl OutlookTokenProvider for RefreshingOutlookTokenProvider {
             .refresh(&refresh_token)
             .await
             .map_err(|e| AppError::Connector {
-                connector_source: domain::types::Source::Outlook,
+                connector_source: Source::Outlook,
                 message: format!("Reconnect required: {e}"),
             })?;
 
