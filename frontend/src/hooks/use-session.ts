@@ -13,11 +13,15 @@ export function useSession() {
     await executeSignOut({});
     reexecute({ requestPolicy: 'network-only' });
   }, [executeSignOut, reexecute]);
+  const refresh = useCallback(
+    () => reexecute({ requestPolicy: 'network-only' }),
+    [reexecute]
+  );
   return {
     session: result.data?.session ?? { authenticated: false, account: null },
     fetching: result.fetching,
     error: result.error ?? null,
-    refresh: () => reexecute({ requestPolicy: 'network-only' }),
+    refresh,
     signOut,
   };
 }
