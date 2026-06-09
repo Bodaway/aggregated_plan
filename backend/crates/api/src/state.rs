@@ -6,7 +6,7 @@ use domain::types::UserId;
 
 use crate::graphql::schema::AppSchema;
 use application::repositories::ConfigRepository;
-use infrastructure::connectors::outlook::oauth::OutlookOAuth;
+use infrastructure::connectors::microsoft::oauth::MicrosoftOAuth;
 
 /// Single source of truth for the local-dev default user UUID.
 pub const DEFAULT_USER_ID_STR: &str = "00000000-0000-0000-0000-000000000001";
@@ -15,7 +15,7 @@ pub const DEFAULT_USER_ID_STR: &str = "00000000-0000-0000-0000-000000000001";
 pub struct AppState {
     pub schema: AppSchema,
     pub config_repo: Arc<dyn ConfigRepository>,
-    pub oauth: Arc<OutlookOAuth>,
+    pub oauth: Arc<MicrosoftOAuth>,
     pub default_user_id: UserId,
     /// CSRF state store: state token -> issued-at.
     pub oauth_state: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,

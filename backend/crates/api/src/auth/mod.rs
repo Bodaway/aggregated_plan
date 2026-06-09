@@ -1,1 +1,1 @@
-pub mod outlook;
+pub mod microsoft;

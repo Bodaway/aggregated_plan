@@ -26,9 +26,9 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
-const SETTINGS_URL: &str = "http://localhost:3000/settings";
+const SPA_ROOT: &str = "http://localhost:3000";
 
-/// GET /auth/outlook/login — redirect the browser to Microsoft's authorize page.
+/// GET /auth/microsoft/login — redirect the browser to Microsoft's authorize page.
 pub async fn login(State(state): State<AppState>) -> Redirect {
     let csrf = Uuid::new_v4().to_string();
     remember_state(&state.oauth_state, csrf.clone(), Utc::now());
@@ -43,7 +43,7 @@ pub struct CallbackParams {
     pub error_description: Option<String>,
 }
 
-/// GET /auth/outlook/callback — exchange the code and persist tokens.
+/// GET /auth/microsoft/callback — exchange the code and persist tokens.
 pub async fn callback(
     State(app): State<AppState>,
     Query(params): Query<CallbackParams>,
@@ -51,49 +51,49 @@ pub async fn callback(
     if let Some(err) = params.error {
         let reason = params.error_description.unwrap_or(err);
         return Redirect::temporary(&format!(
-            "{SETTINGS_URL}?outlook=error&reason={}",
+            "{SPA_ROOT}/?auth=error&reason={}",
             urlencoding::encode(&reason)
         ));
     }
     let (Some(code), Some(state)) = (params.code, params.state) else {
         return Redirect::temporary(&format!(
-            "{SETTINGS_URL}?outlook=error&reason=missing_code"
+            "{SPA_ROOT}/?auth=error&reason=missing_code"
         ));
     };
     if !consume_state(&app.oauth_state, &state, Utc::now()) {
         return Redirect::temporary(&format!(
-            "{SETTINGS_URL}?outlook=error&reason=bad_state"
+            "{SPA_ROOT}/?auth=error&reason=bad_state"
         ));
     }
     let tokens = match app.oauth.exchange_code(&code).await {
         Ok(t) => t,
         Err(e) => {
             return Redirect::temporary(&format!(
-                "{SETTINGS_URL}?outlook=error&reason={}",
+                "{SPA_ROOT}/?auth=error&reason={}",
                 urlencoding::encode(&e.to_string())
             ))
         }
     };
     let uid = app.default_user_id;
-    let persist_err = || Redirect::temporary(&format!("{SETTINGS_URL}?outlook=error&reason=persist_failed"));
+    let persist_err = || Redirect::temporary(&format!("{SPA_ROOT}/?auth=error&reason=persist_failed"));
 
-    if app.config_repo.set(uid, "outlook.access_token", &tokens.access_token).await.is_err() {
+    if app.config_repo.set(uid, "microsoft.access_token", &tokens.access_token).await.is_err() {
         return persist_err();
     }
-    if app.config_repo.set(uid, "outlook.token_expires_at", &tokens.expires_at.to_rfc3339()).await.is_err() {
+    if app.config_repo.set(uid, "microsoft.token_expires_at", &tokens.expires_at.to_rfc3339()).await.is_err() {
         return persist_err();
     }
     if let Some(rt) = &tokens.refresh_token {
-        if app.config_repo.set(uid, "outlook.refresh_token", rt).await.is_err() {
+        if app.config_repo.set(uid, "microsoft.refresh_token", rt).await.is_err() {
             return persist_err();
         }
     }
     if let Some(acct) = &tokens.account {
-        if app.config_repo.set(uid, "outlook.account", acct).await.is_err() {
+        if app.config_repo.set(uid, "microsoft.account", acct).await.is_err() {
             return persist_err();
         }
     }
-    Redirect::temporary(&format!("{SETTINGS_URL}?outlook=connected"))
+    Redirect::temporary(&format!("{SPA_ROOT}/?auth=connected"))
 }
 
 #[cfg(test)]

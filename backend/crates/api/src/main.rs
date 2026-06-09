@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use graphql::schema::SchemaDeps;
 use infrastructure::database::*;
-use infrastructure::connectors::outlook::oauth::{OutlookOAuth, OutlookOAuthConfig};
-use infrastructure::connectors::outlook::token_provider::RefreshingOutlookTokenProvider;
+use infrastructure::connectors::microsoft::oauth::{MicrosoftOAuth, MicrosoftOAuthConfig};
+use infrastructure::connectors::microsoft::token_provider::RefreshingGraphTokenProvider;
 
 #[derive(Parser)]
 #[command(name = "api", about = "Aggregated Plan API server")]
@@ -69,15 +69,15 @@ async fn main() {
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
 
-    let oauth = std::sync::Arc::new(OutlookOAuth::new(OutlookOAuthConfig {
-        client_id: std::env::var("OUTLOOK_CLIENT_ID").unwrap_or_default(),
-        tenant_id: std::env::var("OUTLOOK_TENANT_ID").unwrap_or_default(),
-        client_secret: std::env::var("OUTLOOK_CLIENT_SECRET").unwrap_or_default(),
-        redirect_uri: std::env::var("OUTLOOK_REDIRECT_URI")
-            .unwrap_or_else(|_| "http://localhost:3001/auth/outlook/callback".to_string()),
+    let oauth = std::sync::Arc::new(MicrosoftOAuth::new(MicrosoftOAuthConfig {
+        client_id: std::env::var("MICROSOFT_CLIENT_ID").unwrap_or_default(),
+        tenant_id: std::env::var("MICROSOFT_TENANT_ID").unwrap_or_default(),
+        client_secret: std::env::var("MICROSOFT_CLIENT_SECRET").unwrap_or_default(),
+        redirect_uri: std::env::var("MICROSOFT_REDIRECT_URI")
+            .unwrap_or_else(|_| "http://localhost:3001/auth/microsoft/callback".to_string()),
     }));
-    let outlook_token_provider: std::sync::Arc<dyn application::services::OutlookTokenProvider> =
-        std::sync::Arc::new(RefreshingOutlookTokenProvider::new(config_repo.clone(), oauth.clone()));
+    let graph_token_provider: std::sync::Arc<dyn application::services::GraphTokenProvider> =
+        std::sync::Arc::new(RefreshingGraphTokenProvider::new(config_repo.clone(), oauth.clone()));
 
     let deps = SchemaDeps {
         task_repo,
@@ -91,7 +91,7 @@ async fn main() {
         config_repo: config_repo.clone(),
         worklog_repo,
         recurrence_repo,
-        outlook_token_provider: outlook_token_provider.clone(),
+        graph_token_provider: graph_token_provider.clone(),
     };
     let schema = graphql::schema::build_schema(deps);
 
@@ -106,8 +106,8 @@ async fn main() {
     let app = Router::new()
         .route("/graphql", post(graphql::schema::graphql_handler))
         .route("/graphql/playground", get(graphql::schema::graphql_playground))
-        .route("/auth/outlook/login", get(auth::outlook::login))
-        .route("/auth/outlook/callback", get(auth::outlook::callback))
+        .route("/auth/microsoft/login", get(auth::microsoft::login))
+        .route("/auth/microsoft/callback", get(auth::microsoft::callback))
         .layer(
             CorsLayer::new()
                 .allow_origin("http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap())

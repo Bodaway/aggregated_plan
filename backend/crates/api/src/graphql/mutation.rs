@@ -313,11 +313,11 @@ impl MutationRoot {
                 _ => None,
             }
         };
-        let outlook_token_provider = ctx.data::<Arc<dyn OutlookTokenProvider>>()?;
+        let graph_token_provider = ctx.data::<Arc<dyn GraphTokenProvider>>()?;
         let outlook_client: Option<Arc<dyn OutlookClient>> =
-            match outlook_token_provider.valid_access_token(*user_id).await {
+            match graph_token_provider.valid_access_token(*user_id).await {
                 Ok(token) => Some(Arc::new(GraphOutlookClient::new(token))),
-                Err(_) => None, // not connected or reconnect required; sync_source records the error
+                Err(_) => None, // not connected or sign-in required; sync_source records the error
             };
         let excel_client: Option<Arc<dyn ExcelClient>> = ctx
             .data::<Arc<dyn ExcelClient>>()
@@ -706,10 +706,10 @@ impl MutationRoot {
         let user_id = ctx.data::<UserId>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
         for key in [
-            "outlook.access_token",
-            "outlook.refresh_token",
-            "outlook.token_expires_at",
-            "outlook.account",
+            "microsoft.access_token",
+            "microsoft.refresh_token",
+            "microsoft.token_expires_at",
+            "microsoft.account",
         ] {
             config_repo
                 .set(*user_id, key, "")
