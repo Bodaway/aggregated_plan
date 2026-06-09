@@ -1236,16 +1236,17 @@ pub trait JiraClient: Send + Sync {
 ```
 
 ```rust
-// services/outlook_token_provider.rs
+// services/graph_token_provider.rs
 
 /// Trait fournissant un access token Microsoft Graph toujours frais.
-/// L'implémentation concrète (`RefreshingOutlookTokenProvider`) gère le renouvellement
+/// L'implémentation concrète (`RefreshingGraphTokenProvider`) gère le renouvellement
 /// silencieux via le refresh token (marge 60 s, rotation incluse).
+/// Ce fournisseur est partagé par les connecteurs Outlook et Excel/SharePoint.
 #[async_trait]
-pub trait OutlookTokenProvider: Send + Sync {
+pub trait GraphTokenProvider: Send + Sync {
     /// Retourne un access token valide, ou une erreur si le renouvellement a échoué.
-    async fn get_access_token(&self) -> Result<String, ConnectorError>;
-    /// Indique si un refresh token est stocké (connexion établie).
+    async fn valid_access_token(&self, user_id: Uuid) -> Result<String, AppError>;
+    /// Indique si un refresh token est stocké (session active).
     async fn is_connected(&self) -> bool;
     /// Retourne l'adresse email du compte connecté, si disponible.
     async fn account(&self) -> Option<String>;
@@ -1983,7 +1984,7 @@ Timeline of the day's activity (US-032):
 
 Configuration interface (section 15):
 - Jira connection: URL, API token, project keys
-- Microsoft Outlook: bouton « Se connecter à Outlook » (si non connecté) ou statut « Connecté en tant que \<compte\> » + bouton « Déconnecter » (si connecté). Le champ de saisie manuelle du token access Graph précédent est supprimé.
+- Microsoft Graph : section informative indiquant que l'authentification est gérée par la porte de connexion au démarrage (« Connecté via la porte de connexion Microsoft »). Le bouton « Se déconnecter » est accessible dans l'en-tête de l'application. Le champ de saisie manuelle du token access Graph précédent est supprimé.
 - Excel mapping: SharePoint path, column mapping
 - Sync frequency
 - Weekly capacity
@@ -2548,12 +2549,12 @@ type DeduplicationSuggestion {
   projectMatch: Boolean!
 }
 
-# --- Outlook OAuth ---
+# --- Microsoft Sign-In Gate ---
 
-# Statut de connexion Outlook. `connected` est vrai si un refresh token valide est stocké.
+# Statut de session Microsoft. `authenticated` est vrai si un refresh token valide est stocké.
 # `account` contient l'adresse email du compte connecté (null si non connecté).
-type OutlookConnection {
-  connected: Boolean!
+type SessionGql {
+  authenticated: Boolean!
   account: String
 }
 
@@ -2730,8 +2731,8 @@ type Query {
   delegates: [String!]!
   # Search — lean projection, excludes dismissed tasks, used by the global search bar
   searchableTasks: [SearchableTask!]!
-  # Outlook OAuth — statut de connexion (connecté / compte)
-  outlookConnection: OutlookConnection!
+  # Microsoft Sign-In Gate — statut de session (authentifié / compte)
+  session: SessionGql!
   # v2
   teamView(filter: TeamFilter): [TeamMemberView!]!
   weeklyRetrospective(weekStart: Date!): WeeklyRetrospective!
@@ -2784,8 +2785,8 @@ type Mutation {
   # Configuration
   updateConfiguration(key: String!, value: JSON!): Boolean!
 
-  # Outlook OAuth — supprime les jetons stockés (déconnexion)
-  disconnectOutlook: Boolean!
+  # Microsoft Sign-In Gate — efface les jetons stockés (déconnexion)
+  signOut: Boolean!
 }
 
 # --- Subscriptions ---
@@ -2851,29 +2852,34 @@ project IN ({configured_keys})
 
 ### 9.2 Microsoft Graph API
 
-**Authentication:** Flux *authorization code* (client confidentiel) contre l'application Entra mono-locataire `12dd5cbd-f897-4184-a473-8effc7a93aba`. Scopes demandés : `https://graph.microsoft.com/Calendars.Read offline_access openid profile`.
+**Authentication:** Flux *authorization code* (client confidentiel) contre l'application Entra mono-locataire `12dd5cbd-f897-4184-a473-8effc7a93aba`. Scopes demandés : `Calendars.Read Files.Read.All offline_access openid profile`. Le **consentement administrateur est accordé au niveau du locataire** (`consentType: AllPrincipals`) — la connexion n'affiche aucune invite de consentement.
 
-**Flux OAuth interactif (connexion initiale) :**
+**Porte d'authentification Microsoft (démarrage de l'application) :**
 
-1. L'utilisateur clique sur « Se connecter à Outlook » dans la page Paramètres.
-2. Le navigateur est redirigé vers `GET /auth/outlook/login`, qui génère un état CSRF à usage unique (TTL 10 min, stocké en mémoire), puis redirige vers `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize`.
-3. Microsoft redirige vers `GET /auth/outlook/callback?code=...&state=...`. Le handler valide l'état CSRF, échange le code contre un `TokenSet` (`access_token` + `refresh_token` + `expires_at`) via l'endpoint token Microsoft, persiste les jetons chiffrés dans la table `configuration`, puis redirige le navigateur vers `http://localhost:3000/settings`.
+L'application est bloquée au démarrage tant qu'aucune session Microsoft valide n'est détectée. Un seul jeton Graph couvre à la fois le connecteur Outlook (calendrier) et le connecteur Excel/SharePoint.
 
-**Routes Axum ajoutées :**
+1. L'application frontend charge le composant `AuthGate`, qui interroge la query GraphQL `session { authenticated account }`.
+2. Si `authenticated` est `false`, l'`AuthGate` affiche l'écran de connexion avec un bouton « Se connecter avec Microsoft » pointant vers `GET /auth/microsoft/login`.
+3. Le navigateur est redirigé vers `GET /auth/microsoft/login`, qui génère un état CSRF à usage unique (TTL 10 min, stocké en mémoire), puis redirige vers `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize`.
+4. Microsoft redirige vers `GET /auth/microsoft/callback?code=...&state=...`. Le handler valide l'état CSRF, échange le code contre un `TokenSet` (`access_token` + `refresh_token` + `expires_at`) via l'endpoint token Microsoft, persiste les jetons chiffrés dans la table `configuration` (clés `microsoft.*`), puis redirige le navigateur vers `http://localhost:3000/?auth=connected`.
+5. L'`AuthGate` détecte le paramètre `auth=connected`, rafraîchit la query `session` et lève le blocage — l'application s'affiche normalement. L'en-tête affiche l'adresse email du compte connecté et un bouton « Se déconnecter ».
+
+**Routes Axum :**
 
 | Méthode | Chemin | Description |
 |---------|--------|-------------|
-| `GET` | `/auth/outlook/login` | Génère l'état CSRF, redirige vers la page d'autorisation Microsoft |
-| `GET` | `/auth/outlook/callback` | Échange le code, persiste les jetons, redirige vers `http://localhost:3000/settings` |
+| `GET` | `/auth/microsoft/login` | Génère l'état CSRF, redirige vers la page d'autorisation Microsoft |
+| `GET` | `/auth/microsoft/callback` | Échange le code, persiste les jetons, redirige vers `http://localhost:3000/?auth=connected` (ou `?auth=error&reason=...` en cas d'échec) |
 
-**Renouvellement automatique — `RefreshingOutlookTokenProvider` :**
+**Renouvellement automatique — `RefreshingGraphTokenProvider` :**
 
-`RefreshingOutlookTokenProvider` (infrastructure) implémente le trait `OutlookTokenProvider` (application). À chaque demande de jeton, il :
-1. Lit `outlook.access_token` et `outlook.token_expires_at` depuis la table `configuration`.
-2. Si l'expiration est dans moins de 60 secondes, appelle l'endpoint token Microsoft avec le `refresh_token` stocké, met à jour les trois clés (`access_token`, `refresh_token`, `token_expires_at`) — rotation du refresh token incluse.
+`RefreshingGraphTokenProvider` (infrastructure) implémente le trait `GraphTokenProvider` (application). Ce fournisseur est **partagé** par les connecteurs Outlook et Excel/SharePoint — un seul appel `valid_access_token` alimente les deux lors d'une synchronisation. À chaque demande de jeton, il :
+
+1. Lit `microsoft.access_token` et `microsoft.token_expires_at` depuis la table `configuration`.
+2. Si l'expiration est dans moins de 60 secondes, appelle l'endpoint token Microsoft avec le `refresh_token` stocké, met à jour les quatre clés (`microsoft.access_token`, `microsoft.refresh_token`, `microsoft.token_expires_at`, `microsoft.account`) — rotation du refresh token incluse.
 3. Retourne le jeton d'accès frais.
 
-En cas d'échec du renouvellement (refresh token invalide ou révoqué), le statut de synchronisation Outlook est mis à `error` avec le message `"Reconnect required"`. L'accès à Outlook est suspendu jusqu'à une nouvelle connexion interactive.
+En cas d'erreur `invalid_grant` lors du renouvellement, `microsoft.refresh_token` et `microsoft.access_token` sont effacés (mis à `""`), la session est invalidée et `session { authenticated }` retourne `false` — l'`AuthGate` ramène l'utilisateur à l'écran de connexion.
 
 **Correctif horizon de synchronisation :** La synchronisation Outlook lit la clé de configuration `outlook.calendar_days` (défaut : 14) pour calculer la fenêtre temporelle. L'horizon fixe précédent de 30 jours est supprimé.
 
@@ -3124,7 +3130,7 @@ Activity tracking uses three trigger types (US-031):
 |--------|---------------|
 | User auth | None. A default user is created at first startup. `user_id` is injected by middleware automatically. |
 | API tokens (Jira) | Stored encrypted in `configuration` table. Encryption key derived from a local secret (generated at first startup, stored in a `.secret` file). |
-| Graph tokens | OAuth2 tokens (access + refresh) obtenus via le flux interactif (§9.2) et stockés chiffrés dans la table `configuration`. Le backend renouvelle silencieusement l'access token via `RefreshingOutlookTokenProvider`. |
+| Graph tokens | OAuth2 tokens (access + refresh) obtenus via le flux interactif (§9.2) et stockés chiffrés dans la table `configuration` (clés `microsoft.*`). Le backend renouvelle silencieusement l'access token via `RefreshingGraphTokenProvider`. En cas d'`invalid_grant`, les jetons sont effacés et la session est invalidée. |
 | CORS | Restreint à `http://localhost:3000` (frontend Vite). Toute autre origine est rejetée. |
 | Protection CSRF | L'état `state` du flux OAuth est un token aléatoire à usage unique (TTL 10 min, stocké en mémoire côté serveur). Toute valeur `state` absente, inconnue ou expirée entraîne le rejet de la callback. |
 | Masquage des secrets | La query GraphQL `configuration` remplace les valeurs dont la clé correspond aux patterns `*.token`, `*.secret`, `*.password`, `*.access_token`, `*.refresh_token` par `"********"`. Les valeurs brutes ne sont jamais exposées via GraphQL. |
@@ -3167,12 +3173,12 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `jira_email` | string | `""` | Jira user email |
 | `jira_project_keys` | string[] | `[]` | Jira project keys to sync |
 | `jira_team_members` | string[] | `[]` | Team member usernames for Jira |
-| `graph_client_id` | string | `""` | Azure AD app client ID (lecture seule, identique à `OUTLOOK_CLIENT_ID`) |
-| `graph_tenant_id` | string | `""` | Azure AD tenant ID (lecture seule, identique à `OUTLOOK_TENANT_ID`) |
-| `outlook.access_token` | string (encrypted) | `""` | Access token Microsoft Graph — géré par la machine (`RefreshingOutlookTokenProvider`), ne pas saisir à la main |
-| `outlook.refresh_token` | string (encrypted) | `""` | Refresh token OAuth — persisté après la connexion interactive, renouvelé automatiquement |
-| `outlook.token_expires_at` | string (ISO 8601) | `""` | Horodatage d'expiration de l'access token |
-| `outlook.account` | string | `""` | Adresse email du compte Outlook connecté |
+| `graph_client_id` | string | `""` | Azure AD app client ID (lecture seule, identique à `MICROSOFT_CLIENT_ID`) |
+| `graph_tenant_id` | string | `""` | Azure AD tenant ID (lecture seule, identique à `MICROSOFT_TENANT_ID`) |
+| `microsoft.access_token` | string (encrypted) | `""` | Access token Microsoft Graph — géré par la machine (`RefreshingGraphTokenProvider`), ne pas saisir à la main |
+| `microsoft.refresh_token` | string (encrypted) | `""` | Refresh token OAuth — persisté après la connexion interactive, renouvelé automatiquement |
+| `microsoft.token_expires_at` | string (ISO 8601) | `""` | Horodatage d'expiration de l'access token |
+| `microsoft.account` | string | `""` | Adresse email du compte Microsoft connecté |
 | `outlook.calendar_days` | integer | `14` | Horizon en jours pour la synchronisation du calendrier Outlook |
 | `excel_sharepoint_path` | string | `""` | SharePoint path to Excel file |
 | `excel_sheet_name` | string | `""` | Sheet name in Excel |
@@ -3193,11 +3199,11 @@ JIRA_BASE_URL=https://mycompany.atlassian.net
 JIRA_API_TOKEN=...
 GRAPH_CLIENT_ID=...
 GRAPH_TENANT_ID=...
-# Outlook OAuth (flux authorization code)
-OUTLOOK_CLIENT_ID=12dd5cbd-f897-4184-a473-8effc7a93aba
-OUTLOOK_TENANT_ID=0ca0e5b0-fbba-4994-839d-8d47b96d86db
-OUTLOOK_CLIENT_SECRET=...
-OUTLOOK_REDIRECT_URI=http://localhost:3001/auth/outlook/callback
+# Microsoft OAuth (flux authorization code — porte d'authentification)
+MICROSOFT_CLIENT_ID=12dd5cbd-f897-4184-a473-8effc7a93aba
+MICROSOFT_TENANT_ID=0ca0e5b0-fbba-4994-839d-8d47b96d86db
+MICROSOFT_CLIENT_SECRET=...
+MICROSOFT_REDIRECT_URI=http://localhost:3001/auth/microsoft/callback
 ```
 
 Environment variables take precedence over database-stored configuration for the same key.

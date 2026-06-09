@@ -288,17 +288,18 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
-#### US-002b : Connexion interactive Outlook (OAuth)
+#### US-002b : Porte d'authentification Microsoft (sign-in gate)
 
-> En tant que Tech Lead, je veux me connecter à Outlook une seule fois via un bouton dédié afin que la synchronisation du calendrier fonctionne sans intervention manuelle par la suite.
+> En tant que Tech Lead, je veux m'authentifier avec mon compte Microsoft au démarrage de l'application afin que la synchronisation du calendrier Outlook et des fichiers Excel/SharePoint fonctionne sans intervention manuelle par la suite.
 
 **Critères d'acceptation :**
-- La page Paramètres affiche un bouton « Se connecter à Outlook » lorsqu'aucun compte n'est connecté.
-- Un clic ouvre la page de connexion Microsoft dans le navigateur (flux OAuth interactif). Après authentification, l'utilisateur est redirigé automatiquement vers la page Paramètres.
-- Une fois connecté, la page Paramètres affiche « Connecté en tant que \<adresse e-mail\> » et un bouton « Déconnecter ».
+- Au démarrage, l'application affiche une porte d'authentification (`AuthGate`) bloquant l'accès tant qu'aucune session Microsoft valide n'est détectée.
+- L'écran de connexion propose un bouton « Se connecter avec Microsoft ». Un clic ouvre le flux OAuth Microsoft dans le navigateur (consentement administrateur accordé — aucune invite de consentement supplémentaire). Après authentification, l'utilisateur est redirigé automatiquement vers l'application, qui s'affiche normalement.
+- **Une seule authentification couvre les deux connecteurs** : Outlook (calendrier) et Excel/SharePoint utilisent le même jeton Microsoft Graph.
+- Une fois connecté, l'en-tête de l'application affiche l'adresse email du compte et un bouton « Se déconnecter ».
 - Le jeton d'accès est renouvelé automatiquement en arrière-plan sans aucune action de l'utilisateur.
-- Si le renouvellement échoue (token révoqué, mot de passe changé, etc.), le statut de synchronisation Outlook indique « Reconnect required » et l'utilisateur doit cliquer à nouveau sur « Se connecter à Outlook ».
-- Cliquer sur « Déconnecter » supprime les jetons stockés et désactive la synchronisation Outlook jusqu'à une nouvelle connexion.
+- Si le renouvellement échoue avec `invalid_grant` (token révoqué, mot de passe changé, etc.), les jetons stockés sont effacés et l'application retourne à l'écran de connexion (porte d'authentification affichée de nouveau).
+- Cliquer sur « Se déconnecter » (mutation `signOut`) efface les jetons stockés et ramène l'utilisateur à la porte d'authentification.
 
 **Priorité** : Must (MVP v1)
 
@@ -945,7 +946,7 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | heuresFinTravail | Heure (HH:MM) | 17:00 | Heure de fin de la journée de travail |
 | jiraUrl | Texte | — | URL de l'instance Jira |
 | jiraProjetKeys | Liste de textes | — | Clés de projets Jira à importer |
-| outlook.account | Texte | — | Adresse email du compte Outlook connecté (lecture seule — renseigné après connexion OAuth) |
+| microsoft.account | Texte | — | Adresse email du compte Microsoft connecté (lecture seule — renseigné après connexion via la porte d'authentification) |
 | outlook.calendar_days | Entier (jours) | 14 | Horizon de synchronisation du calendrier Outlook |
 | excelSharepointPath | Texte | — | Chemin du fichier Excel sur SharePoint |
 | excelMappingConfig | Objet | — | Mapping colonnes Excel → champs de l'outil |
