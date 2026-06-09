@@ -213,6 +213,7 @@ pub async fn sync_outlook(
     sync_repo: &dyn SyncStatusRepository,
     user_id: UserId,
     date_range: (NaiveDate, NaiveDate),
+    exclude_patterns: &[String],
 ) -> Result<SyncResult, AppError> {
     let now = Utc::now();
 
@@ -234,6 +235,12 @@ pub async fn sync_outlook(
             connector_source: Source::Outlook,
             message: e.to_string(),
         })?;
+
+    // Skip events whose title matches the user's exclusion list (case-insensitive contains).
+    let events: Vec<_> = events
+        .into_iter()
+        .filter(|e| !domain::rules::meeting::is_excluded(&e.title, exclude_patterns))
+        .collect();
 
     // Convert events to meetings.
     let meetings: Vec<Meeting> = events
@@ -528,7 +535,7 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
         let today = Utc::now().date_naive();
         // Sync the next 30 days by default.
         let end = today + chrono::Duration::days(30);
-        match sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end)).await {
+        match sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end), &[]).await {
             Ok(result) => results.push(result),
             Err(e) => {
                 update_sync_error(sync_repo, user_id, Source::Outlook, &e.to_string()).await?;
@@ -664,7 +671,17 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
                     .filter(|d| *d > 0)
                     .unwrap_or(14);
                 let end = today + chrono::Duration::days(days);
-                sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end)).await?;
+                let exclude_patterns: Vec<String> = config_repo
+                    .get(user_id, "outlook.exclude_patterns")
+                    .await?
+                    .map(|raw| {
+                        raw.lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end), &exclude_patterns).await?;
             } else {
                 update_sync_error(sync_repo, user_id, Source::Outlook, "Not configured").await?;
             }
@@ -1085,5 +1102,132 @@ mod tests {
         assert_eq!(map_excel_status("Bloqué"), TaskStatus::Blocked);
         assert_eq!(map_excel_status(""), TaskStatus::Todo);
         assert_eq!(map_excel_status("anything"), TaskStatus::Todo);
+    }
+
+    // -----------------------------------------------------------------------
+    // Outlook exclusion test stubs
+    // -----------------------------------------------------------------------
+
+    /// Minimal in-memory MeetingRepository; records which outlook_ids were upserted.
+    #[derive(Default)]
+    struct MiniMeetingRepo {
+        upserted: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl MeetingRepository for MiniMeetingRepo {
+        async fn find_by_id(&self, _id: MeetingId) -> Result<Option<Meeting>, RepositoryError> {
+            Ok(None)
+        }
+        async fn update(&self, _meeting: &Meeting) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        async fn find_by_user_and_date(
+            &self,
+            _user_id: UserId,
+            _date: NaiveDate,
+        ) -> Result<Vec<Meeting>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn find_by_user_and_range(
+            &self,
+            _user_id: UserId,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Meeting>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn upsert_batch(&self, meetings: &[Meeting]) -> Result<(), RepositoryError> {
+            let mut ids = self.upserted.lock().unwrap();
+            for m in meetings {
+                ids.push(m.outlook_id.clone());
+            }
+            Ok(())
+        }
+        async fn delete_stale(
+            &self,
+            _user_id: UserId,
+            _current_outlook_ids: &[String],
+        ) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
+        async fn find_by_project(
+            &self,
+            _user_id: UserId,
+            _project_id: ProjectId,
+        ) -> Result<Vec<Meeting>, RepositoryError> {
+            Ok(vec![])
+        }
+    }
+
+    /// Returns two calendar events: one matching "pause midi", one not.
+    struct StubOutlookClientTwoEvents;
+
+    #[async_trait]
+    impl OutlookClient for StubOutlookClientTwoEvents {
+        async fn fetch_calendar(
+            &self,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<OutlookEvent>, ConnectorError> {
+            use chrono::TimeZone;
+            let base = chrono::Utc.with_ymd_and_hms(2026, 6, 9, 9, 0, 0).unwrap();
+            Ok(vec![
+                OutlookEvent {
+                    outlook_id: "evt-excluded".to_string(),
+                    title: "Pause Midi — équipe".to_string(),
+                    start_time: base,
+                    end_time: base + chrono::Duration::hours(1),
+                    location: None,
+                    participants: vec![],
+                    is_cancelled: false,
+                    show_as: None,
+                },
+                OutlookEvent {
+                    outlook_id: "evt-kept".to_string(),
+                    title: "Sprint review".to_string(),
+                    start_time: base,
+                    end_time: base + chrono::Duration::hours(1),
+                    location: None,
+                    participants: vec![],
+                    is_cancelled: false,
+                    show_as: None,
+                },
+            ])
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_outlook_excludes_matching_events() {
+        let user_id: UserId =
+            Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        let meeting_repo = MiniMeetingRepo::default();
+        let today = chrono::Utc::now().date_naive();
+        let end = today + chrono::Duration::days(14);
+        let patterns = vec!["pause midi".to_string()];
+
+        let result = sync_outlook(
+            &StubOutlookClientTwoEvents,
+            &meeting_repo,
+            &StubSyncRepo,
+            user_id,
+            (today, end),
+            &patterns,
+        )
+        .await
+        .unwrap();
+
+        let upserted = meeting_repo.upserted.lock().unwrap().clone();
+        // Only the non-matching event should have been upserted.
+        assert!(
+            !upserted.contains(&"evt-excluded".to_string()),
+            "excluded event must not be upserted"
+        );
+        assert!(
+            upserted.contains(&"evt-kept".to_string()),
+            "non-excluded event must be upserted"
+        );
+        // meetings_synced reflects the filtered count.
+        assert_eq!(result.meetings_synced, 1);
     }
 }
