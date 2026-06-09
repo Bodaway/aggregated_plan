@@ -98,23 +98,17 @@ impl MicrosoftOAuth {
             .await
             .map_err(|e| ConnectorError::NetworkError(e.to_string()))?;
         let status = resp.status();
-        if status == reqwest::StatusCode::BAD_REQUEST {
-            let body = resp.text().await.unwrap_or_default();
-            // Distinguish a permanent invalid_grant from other 400 errors so the
-            // token provider can clear the stored tokens.
-            if body.contains("invalid_grant") {
-                return Err(ConnectorError::AuthFailed {
-                    service: format!("Microsoft: invalid_grant -- {body}"),
-                });
-            }
-            return Err(ConnectorError::AuthFailed { service: format!("Microsoft: {body}") });
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::AuthFailed { service: format!("Microsoft: {body}") });
-        }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
+            // Only a 400 whose body contains "invalid_grant" maps to AuthFailed so the
+            // token provider can safely clear the stored session.  All other non-2xx
+            // responses (other 400s, 401, 403, 5xx) remain Http errors and must NOT
+            // trigger session clearing.
+            if status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid_grant") {
+                return Err(ConnectorError::AuthFailed {
+                    service: "Microsoft".to_string(),
+                });
+            }
             return Err(ConnectorError::Http { status: status.as_u16(), message: body });
         }
         let tr: TokenResponse = resp.json().await

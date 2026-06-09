@@ -41,6 +41,7 @@ impl GraphTokenProvider for RefreshingGraphTokenProvider {
             .await?
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::Connector {
+                // shared Graph token; Outlook is the primary consumer, no Source::Microsoft variant exists
                 connector_source: Source::Outlook,
                 message: "Sign-in required".to_string(),
             })?;
@@ -50,15 +51,15 @@ impl GraphTokenProvider for RefreshingGraphTokenProvider {
             Err(e) => {
                 // On a definitive invalid_grant (HTTP 400 with invalid_grant body):
                 // clear stored tokens so the auth gate will show "sign in".
-                // Transient errors (network, 5xx) surface as non-AuthFailed variants
-                // and do NOT clear the keys.
+                // Transient errors (network, 5xx) surface as Http variants and do NOT clear the keys.
                 if matches!(e, ConnectorError::AuthFailed { .. }) {
                     let _ = self.config_repo.set(user_id, "microsoft.refresh_token", "").await;
                     let _ = self.config_repo.set(user_id, "microsoft.access_token", "").await;
                 }
                 return Err(AppError::Connector {
+                    // shared Graph token; Outlook is the primary consumer, no Source::Microsoft variant exists
                     connector_source: Source::Outlook,
-                    message: format!("Sign-in required: {e}"),
+                    message: "Sign-in required".to_string(),
                 });
             }
         };
