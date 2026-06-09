@@ -10,6 +10,7 @@ const CONFIG_KEYS = {
   JIRA_PROJECT_KEYS: 'jira.project_keys',
   JIRA_MY_TASKS_ONLY: 'jira.my_tasks_only',
   OUTLOOK_CALENDAR_DAYS: 'outlook.calendar_days',
+  OUTLOOK_EXCLUDE_PATTERNS: 'outlook.exclude_patterns',
   EXCEL_SHAREPOINT_PATH: 'excel.sharepoint_path',
   EXCEL_SHEET_NAME: 'excel.sheet_name',
   EXCEL_TITLE_COLUMN: 'excel.title_column',
@@ -597,9 +598,24 @@ export function SettingsPage() {
             description="Number of days ahead to sync calendar events"
           />
 
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700">Excluded meeting titles (one per line)</label>
+            <textarea
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+              rows={4}
+              value={getConfigValue(CONFIG_KEYS.OUTLOOK_EXCLUDE_PATTERNS)}
+              onChange={e => setConfigValue(CONFIG_KEYS.OUTLOOK_EXCLUDE_PATTERNS, e.target.value)}
+              placeholder={'pause midi\nDaily standup'}
+            />
+            <p className="text-xs text-gray-400">Case-insensitive; a meeting is skipped if its title contains any line.</p>
+          </div>
+
           <div className="pt-2">
             <SaveButton
-              onClick={() => saveConfigKeys([CONFIG_KEYS.OUTLOOK_CALENDAR_DAYS])}
+              onClick={() => saveConfigKeys([
+                CONFIG_KEYS.OUTLOOK_CALENDAR_DAYS,
+                CONFIG_KEYS.OUTLOOK_EXCLUDE_PATTERNS,
+              ])}
               saving={saving}
             />
           </div>
