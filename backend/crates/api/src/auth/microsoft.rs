@@ -5,14 +5,14 @@ use chrono::{DateTime, Duration, Utc};
 
 /// Insert a freshly-issued state token, evicting any entries older than 10 minutes.
 pub fn remember_state(store: &Mutex<HashMap<String, DateTime<Utc>>>, state: String, now: DateTime<Utc>) {
-    let mut guard = store.lock().unwrap();
+    let mut guard = store.lock().unwrap_or_else(|p| p.into_inner());
     guard.retain(|_, issued| now - *issued < Duration::minutes(10));
     guard.insert(state, now);
 }
 
 /// Validate + consume a state token. Returns true if present and younger than 10 minutes.
 pub fn consume_state(store: &Mutex<HashMap<String, DateTime<Utc>>>, state: &str, now: DateTime<Utc>) -> bool {
-    let mut guard = store.lock().unwrap();
+    let mut guard = store.lock().unwrap_or_else(|p| p.into_inner());
     match guard.remove(state) {
         Some(issued) => now - issued < Duration::minutes(10),
         None => false,

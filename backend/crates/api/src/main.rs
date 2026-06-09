@@ -103,11 +103,14 @@ async fn main() {
     let default_user_id =
         Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap();
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/graphql", post(graphql::schema::graphql_handler))
-        .route("/graphql/playground", get(graphql::schema::graphql_playground))
         .route("/auth/microsoft/login", get(auth::microsoft::login))
-        .route("/auth/microsoft/callback", get(auth::microsoft::callback))
+        .route("/auth/microsoft/callback", get(auth::microsoft::callback));
+    if cfg!(debug_assertions) {
+        app = app.route("/graphql/playground", get(graphql::schema::graphql_playground));
+    }
+    let app = app
         .layer(
             CorsLayer::new()
                 .allow_origin("http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap())
