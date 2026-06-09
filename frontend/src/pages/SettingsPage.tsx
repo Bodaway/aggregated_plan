@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { useSettings } from '@/hooks/use-settings';
 import type { SyncStatusData } from '@/hooks/use-settings';
 
@@ -348,13 +348,11 @@ export function SettingsPage() {
   const {
     configuration,
     syncStatuses,
-    outlookConnection,
     loading,
     error,
     syncing,
     updateConfig,
     forceSync,
-    disconnectOutlook,
   } = useSettings();
 
   // Local state for form fields (initialized from fetched configuration)
@@ -379,14 +377,6 @@ export function SettingsPage() {
     setSaveMessage(null);
   }, []);
 
-  // Show a status message when the OAuth flow redirects back to /settings?outlook=...
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const o = p.get('outlook');
-    if (o === 'connected') setSaveMessage('Outlook connected successfully.');
-    else if (o === 'error') setSaveMessage(`Outlook connection failed: ${p.get('reason') ?? 'unknown'}`);
-    if (o) window.history.replaceState({}, '', '/settings');
-  }, []);
 
   /** Save a group of config keys to the backend. */
   const saveConfigKeys = useCallback(
@@ -597,27 +587,7 @@ export function SettingsPage() {
       {/* Section 2: Microsoft Graph (Outlook + Excel) */}
       <SettingsSection title="Microsoft Graph (Outlook)" icon={<OutlookIcon />}>
         <div className="space-y-4">
-          {outlookConnection.connected ? (
-            <div className="flex items-center justify-between rounded border border-gray-200 p-3">
-              <span className="text-sm">
-                Connected as <strong>{outlookConnection.account ?? 'unknown'}</strong>
-              </span>
-              <button
-                type="button"
-                className="rounded bg-red-600 px-3 py-1 text-sm text-white hover:bg-red-700 transition-colors"
-                onClick={async () => { await disconnectOutlook(); }}
-              >
-                Disconnect
-              </button>
-            </div>
-          ) : (
-            <a
-              className="inline-block rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 transition-colors"
-              href="http://localhost:3001/auth/outlook/login"
-            >
-              Connect Outlook
-            </a>
-          )}
+          <p className="text-sm text-gray-500">Signed in via the app sign-in.</p>
           <SettingsInput
             label="Calendar Range (days)"
             value={getConfigValue(CONFIG_KEYS.OUTLOOK_CALENDAR_DAYS, '14')}
