@@ -286,6 +286,8 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 **Priorité** : Must (MVP v1)
 
+> **Note — liste d'exclusion :** L'utilisateur peut exclure des réunions de la synchronisation en listant des titres (une entrée par ligne) dans les paramètres Outlook. La correspondance est insensible à la casse et s'effectue par sous-chaîne : une réunion est ignorée si son titre contient l'un des motifs saisis. Pratique pour les réunions récurrentes parasites (ex. « pause midi »).
+
 ---
 
 #### US-002b : Porte d'authentification Microsoft (sign-in gate)

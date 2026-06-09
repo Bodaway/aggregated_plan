@@ -3180,6 +3180,7 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `microsoft.token_expires_at` | string (ISO 8601) | `""` | Horodatage d'expiration de l'access token |
 | `microsoft.account` | string | `""` | Adresse email du compte Microsoft connecté |
 | `outlook.calendar_days` | integer | `14` | Horizon en jours pour la synchronisation du calendrier Outlook |
+| `outlook.exclude_patterns` | string (multiligne) | `""` | Liste de titres de réunions à exclure de la synchronisation (une entrée par ligne) ; exclusion par sous-chaîne insensible à la casse, appliquée dans `sync_outlook` via `domain::rules::meeting::is_excluded` ; les réunions déjà synchronisées correspondant à un nouveau motif sont purgées par `delete_stale` au prochain sync ; appliqué de façon cohérente par `sync_source` ET `sync_all` |
 | `excel_sharepoint_path` | string | `""` | SharePoint path to Excel file |
 | `excel_sheet_name` | string | `""` | Sheet name in Excel |
 | `excel_mapping` | object | `{}` | Column name -> field mapping |
