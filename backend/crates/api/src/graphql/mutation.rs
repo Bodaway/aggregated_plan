@@ -10,6 +10,7 @@ use application::repositories::*;
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management, worklog as worklog_uc};
 use application::use_cases::recurrence as recurrence_uc;
+use infrastructure::connectors::excel::GraphExcelClient;
 use infrastructure::connectors::jira::HttpJiraClient;
 use infrastructure::connectors::outlook::client::GraphOutlookClient;
 
@@ -313,16 +314,14 @@ impl MutationRoot {
                 _ => None,
             }
         };
+        // One Graph token serves both connectors.
         let graph_token_provider = ctx.data::<Arc<dyn GraphTokenProvider>>()?;
-        let outlook_client: Option<Arc<dyn OutlookClient>> =
-            match graph_token_provider.valid_access_token(*user_id).await {
-                Ok(token) => Some(Arc::new(GraphOutlookClient::new(token))),
-                Err(_) => None, // not connected or sign-in required; sync_source records the error
-            };
-        let excel_client: Option<Arc<dyn ExcelClient>> = ctx
-            .data::<Arc<dyn ExcelClient>>()
-            .ok()
-            .cloned();
+        let graph_token = graph_token_provider.valid_access_token(*user_id).await.ok();
+        let outlook_client: Option<Arc<dyn OutlookClient>> = graph_token
+            .clone()
+            .map(|t| Arc::new(GraphOutlookClient::new(t)) as Arc<dyn OutlookClient>);
+        let excel_client: Option<Arc<dyn ExcelClient>> = graph_token
+            .map(|t| Arc::new(GraphExcelClient::new(t)) as Arc<dyn ExcelClient>);
 
         let ctx = sync::SyncContext {
             task_repo: task_repo.as_ref(),
@@ -700,9 +699,9 @@ impl MutationRoot {
         Ok(true)
     }
 
-    /// Disconnect the Outlook account by clearing all stored OAuth tokens.
+    /// Sign out by clearing all stored Microsoft OAuth tokens.
     /// Returns true on success.
-    async fn disconnect_outlook(&self, ctx: &Context<'_>) -> Result<bool> {
+    async fn sign_out(&self, ctx: &Context<'_>) -> Result<bool> {
         let user_id = ctx.data::<UserId>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
         for key in [
