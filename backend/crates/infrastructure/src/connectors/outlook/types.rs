@@ -5,6 +5,8 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct GraphCalendarResponse {
     pub value: Vec<GraphEvent>,
+    #[serde(rename = "@odata.nextLink")]
+    pub odata_next_link: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
