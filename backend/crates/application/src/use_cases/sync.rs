@@ -533,9 +533,24 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
     // Outlook sync.
     if let Some(client) = outlook_client {
         let today = Utc::now().date_naive();
-        // Sync the next 30 days by default.
-        let end = today + chrono::Duration::days(30);
-        match sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end), &[]).await {
+        let days: i64 = config_repo
+            .get(user_id, "outlook.calendar_days")
+            .await?
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .filter(|d| *d > 0)
+            .unwrap_or(14);
+        let end = today + chrono::Duration::days(days);
+        let exclude_patterns: Vec<String> = config_repo
+            .get(user_id, "outlook.exclude_patterns")
+            .await?
+            .map(|raw| {
+                raw.lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        match sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end), &exclude_patterns).await {
             Ok(result) => results.push(result),
             Err(e) => {
                 update_sync_error(sync_repo, user_id, Source::Outlook, &e.to_string()).await?;
