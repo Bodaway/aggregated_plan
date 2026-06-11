@@ -222,18 +222,14 @@ async fn triage_sets_tracking_state() {
 #[tokio::test]
 async fn status_updates_currently_tracked_task() {
     let server = MockServer::start().await;
+    // resolve_task (implicit) reads aplan.active_task_id from GetConfiguration
     Mock::given(method("POST"))
         .and(path("/graphql"))
-        .and(wiremock::matchers::body_string_contains("CurrentActivity"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": {
-                "currentActivity": {
-                    "id": "00000000-0000-0000-0000-000000000010",
-                    "taskId": "00000000-0000-0000-0000-000000000001",
-                    "startTime": "2026-04-08T09:00:00Z",
-                    "halfDay": "MORNING",
-                    "date": "2026-04-08",
-                    "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+                "configuration": {
+                    "aplan.active_task_id": "00000000-0000-0000-0000-000000000001"
                 }
             }
         })))
@@ -265,21 +261,16 @@ async fn status_updates_currently_tracked_task() {
 }
 
 #[tokio::test]
-async fn note_appends_to_current_activity_task() {
+async fn note_appends_to_active_task() {
     let server = MockServer::start().await;
-    // First call: currentActivity returns a slot with a task
+    // resolve_task (implicit) reads aplan.active_task_id from GetConfiguration
     Mock::given(method("POST"))
         .and(path("/graphql"))
-        .and(wiremock::matchers::body_string_contains("CurrentActivity"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": {
-                "currentActivity": {
-                    "id": "00000000-0000-0000-0000-000000000010",
-                    "taskId": "00000000-0000-0000-0000-000000000001",
-                    "startTime": "2026-04-08T09:00:00Z",
-                    "halfDay": "MORNING",
-                    "date": "2026-04-08",
-                    "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+                "configuration": {
+                    "aplan.active_task_id": "00000000-0000-0000-0000-000000000001"
                 }
             }
         })))
@@ -312,8 +303,10 @@ async fn note_appends_to_current_activity_task() {
 }
 
 #[tokio::test]
-async fn note_without_current_activity_exits_4() {
-    let server = mock_graphql(json!({ "data": { "currentActivity": null } })).await;
+async fn note_without_active_task_exits_4() {
+    // GetConfiguration returns an empty map (no aplan.active_task_id) →
+    // resolve_task fails with LookupError::NoCurrentActivity → exit code 4.
+    let server = mock_graphql(json!({ "data": { "configuration": {} } })).await;
     let url = format!("{}/graphql", server.uri());
 
     aplan()
