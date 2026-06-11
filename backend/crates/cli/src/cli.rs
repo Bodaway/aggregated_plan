@@ -104,6 +104,15 @@ pub enum Commands {
         #[arg(long)]
         task: Option<String>,
     },
+    /// Append a timestamped entry to the worklog of the active task (or --task TARGET).
+    Log {
+        /// Entry text. Variadic — multiple words are joined with spaces.
+        #[arg(required = true)]
+        text: Vec<String>,
+        /// Override the implicit active-task target.
+        #[arg(long)]
+        task: Option<String>,
+    },
     /// Set the status of the currently-tracked task (or --task TARGET).
     Status {
         state: StatusArg,

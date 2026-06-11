@@ -6,14 +6,14 @@ use crate::client::Client;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    activity_journal, append_task_notes, complete_task, create_task, current_activity,
-    daily_dashboard, delete_task, force_sync, get_configuration, get_task, list_alerts, list_tasks,
-    priority_matrix, reset_urgency, resolve_alert, set_tracking_state, start_activity,
-    stop_activity, update_configuration, update_priority, update_task_status, ActivityJournal,
-    AppendTaskNotes, CompleteTask, CreateTask, CurrentActivity, DailyDashboard, DeleteTask,
-    ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks, PriorityMatrix, ResetUrgency,
-    ResolveAlert, SetTrackingState, StartActivity, StopActivity, UpdateConfiguration,
-    UpdatePriority, UpdateTaskStatus,
+    activity_journal, add_worklog_entry, append_task_notes, complete_task, create_task,
+    current_activity, daily_dashboard, delete_task, force_sync, get_configuration, get_task,
+    list_alerts, list_tasks, priority_matrix, reset_urgency, resolve_alert, set_tracking_state,
+    start_activity, stop_activity, update_configuration, update_priority, update_task_status,
+    ActivityJournal, AddWorklogEntry, AppendTaskNotes, CompleteTask, CreateTask, CurrentActivity,
+    DailyDashboard, DeleteTask, ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks,
+    PriorityMatrix, ResetUrgency, ResolveAlert, SetTrackingState, StartActivity, StopActivity,
+    UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
 };
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
@@ -252,6 +252,39 @@ pub fn note(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> E
                 .as_deref()
                 .unwrap_or(&r.data.append_task_notes.title);
             println!("✎ {}: note appended", label);
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            ExitCode::Generic
+        }
+    }
+}
+
+pub fn log(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    let target = match resolve_task(&client, task) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return e.exit_code();
+        }
+    };
+    let joined = text.join(" ");
+    let result = client.run::<AddWorklogEntry>(add_worklog_entry::Variables {
+        task_id: target.id.clone(),
+        body: joined,
+    });
+    match result {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {}", e);
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            println!("✎ {}: worklog entry added", target.title);
             ExitCode::Success
         }
         Err(e) => {
