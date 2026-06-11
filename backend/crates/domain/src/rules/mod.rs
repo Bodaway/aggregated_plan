@@ -5,3 +5,4 @@ pub mod alerts;
 pub mod dedup;
 pub mod recurrence;
 pub mod meeting;
+pub mod worklog_time;
