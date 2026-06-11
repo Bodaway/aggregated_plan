@@ -162,6 +162,9 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
 - **Output:** terse one-line human format by default; `--json` emits the raw GraphQL `data.*` payload for parsing by Claude or shell scripts.
 - **Exit codes:** `0` success, `1` generic, `2` not found, `3` ambiguous lookup, `4` precondition failed.
 - **Claude integration:** a `.claude/skills/aplan/SKILL.md` ships in-repo so Claude Code uses the CLI instead of crafting GraphQL queries by hand.
+- **Worklog CLI verbs:**
+  - `aplan log [--task <TASK>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
+  - `aplan flush [--json] <TASK>` — materializes closed activity slots from pending worklog entries (entries whose `logged_at` falls after `aplan.active_since`), grouped by day and half-day via `derive_time_blocks`. Does **not** clear the active-task pointer (`aplan.active_task_id`). Calls the `flushWorklogTime` GraphQL mutation internally. Used by the `SessionEnd` hook.
 
 The CLI is a third client alongside the React frontend and the existing `aggregated-plan-mcp` MCP server. The MCP server talks directly to SQLite via the application/infrastructure crates; the CLI deliberately goes over HTTP so it can never race on the database file and shares one source of truth with the frontend.
 
@@ -1073,6 +1076,48 @@ pub fn normalized_levenshtein(a: &str, b: &str) -> f64 {
 pub const DEDUP_CONFIDENCE_THRESHOLD: f64 = 0.7;
 ```
 
+**Worklog time derivation (`derive_time_blocks`):**
+
+```rust
+// rules/worklog.rs
+
+use chrono_tz::Tz;
+
+/// A (date, half-day) pair representing a closed activity block.
+pub struct TimeBlock {
+    pub date: NaiveDate,
+    pub half_day: HalfDay,
+}
+
+/// Derive closed time blocks from a slice of UTC timestamps.
+///
+/// Each timestamp is converted to local time using `tz`, then classified into
+/// morning (before 13:00 local) or afternoon (13:00+). Duplicate (date, half-day)
+/// pairs are deduplicated — a half-day is counted at most once regardless of how
+/// many worklog entries fall within it. Only timestamps strictly after `since` are
+/// considered.
+///
+/// Pure function: no I/O, no side effects.
+pub fn derive_time_blocks(
+    logged_ats: &[DateTime<Utc>],
+    since: DateTime<Utc>,
+    tz: Tz,
+) -> Vec<TimeBlock> {
+    let mut seen = std::collections::HashSet::new();
+    let mut blocks = Vec::new();
+    for &ts in logged_ats {
+        if ts <= since { continue; }
+        let local = ts.with_timezone(&tz);
+        let date = local.date_naive();
+        let half_day = if local.hour() < 13 { HalfDay::Morning } else { HalfDay::Afternoon };
+        if seen.insert((date, half_day)) {
+            blocks.push(TimeBlock { date, half_day });
+        }
+    }
+    blocks
+}
+```
+
 #### 5.1.3 Domain Errors
 
 ```rust
@@ -1441,6 +1486,28 @@ pub async fn start_activity(
 pub async fn stop_activity(/* ... */) -> Result<Option<ActivitySlot>, AppError> { /* ... */ }
 pub async fn update_activity_slot(/* ... */) -> Result<ActivitySlot, AppError> { /* ... */ }
 pub async fn get_activity_journal(/* ... */) -> Result<Vec<ActivitySlot>, AppError> { /* ... */ }
+
+/// Materialize closed activity slots from worklog entries logged after `since`.
+///
+/// 1. Loads all worklog entries for `task_id` whose `logged_at > since`.
+/// 2. Calls `derive_time_blocks` (domain rule) with the user's configured `aplan.timezone`.
+/// 3. For each derived (date, half-day) block, inserts an `ActivitySlot` with
+///    `start_time` = block start boundary, `end_time` = block end boundary
+///    (morning: 08:00–12:00, afternoon: 13:00–17:00, in the configured timezone).
+/// 4. Skips blocks for which a slot already exists for (user_id, task_id, date, half_day).
+/// 5. Does **not** modify `aplan.active_task_id` — the session link is preserved.
+/// 6. Updates `aplan.active_since` to `Utc::now()` so the next flush does not re-process
+///    already-materialized entries.
+///
+/// Called by the `flushWorklogTime` mutation and by `stop_activity`/`complete_task`.
+pub async fn materialize_worklog_time(
+    worklog_repo: &dyn WorklogRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    config_repo: &dyn ConfigRepository,
+    user_id: UserId,
+    task_id: TaskId,
+    since: DateTime<Utc>,
+) -> Result<Vec<ActivitySlot>, AppError> { /* ... */ }
 ```
 
 ```rust
@@ -2327,6 +2394,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
   - Mutation `addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntry!`
   - Mutation `updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntry!`
   - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
+  - Mutation `flushWorklogTime(taskId: ID!): [ActivitySlot!]!` — calls `materialize_worklog_time` for the given task, using `aplan.active_since` as the watermark. Returns the newly created activity slots. Does not modify the active-task pointer. Idempotent: re-running produces no duplicate slots.
 - `WorklogRepository::find_by_recurrence(user_id, template_id, limit, offset)` — SQL join on `tasks.recurrence_id`; returns all entries for any occurrence of the template ordered by `logged_at DESC`.
 - `update_task` per-instance allow-list: recurring instances may update `status`, `plannedStart`, `plannedEnd`, `deadline`, `notes`, `trackingState`, `remainingHoursOverride`, `estimatedHoursOverride`. Template-level fields (`title`, `description`, `urgency`, `impact`, `estimatedHours`, `projectId`, `tags`) must go through `updateRecurringTask`.
 - Backward compatibility: the `appendTaskNotes` mutation remains registered but is no longer invoked by the frontend (the activity-timer quick note writes a worklog entry instead).
@@ -2748,6 +2816,11 @@ type Mutation {
   # Append text to a task's user-owned `notes` field (used by the activity quick-note input)
   appendTaskNotes(taskId: ID!, text: String!): Task!
 
+  # Worklog time materialization — creates closed activity slots from worklog-entry timestamps.
+  # Uses aplan.active_since as watermark; does not clear the active-task pointer.
+  # Idempotent: re-running never creates duplicate slots.
+  flushWorklogTime(taskId: ID!): [ActivitySlot!]!
+
   # Triage / Tracking state
   setTrackingState(taskId: ID!, state: TrackingState!): Task!
   setTrackingStateBatch(taskIds: [ID!]!, state: TrackingState!): [Task!]!
@@ -3120,6 +3193,19 @@ Activity tracking uses three trigger types (US-031):
 - Post-meeting reminders: only for meetings the user attended (not declined)
 - If the user already changed activity within the last 15 minutes, skip the periodic reminder
 
+### 13.4 Worklog-Driven Time Tracking (Claude Code integration)
+
+When Claude Code drives the cockpit via the `aplan` CLI, time is tracked through worklog entries rather than open activity slots:
+
+| Aspect | Detail |
+|--------|--------|
+| **Session link** | `aplan start <task>` writes `aplan.active_task_id` (config key). No `ActivitySlot` is opened. |
+| **Time materialization** | Closed `ActivitySlot` records are derived from worklog-entry `logged_at` timestamps via `derive_time_blocks` (domain rule) and persisted by `materialize_worklog_time` (use case). |
+| **Granularity** | One slot per (task, date, half-day). A half-day is counted at most once, regardless of the number of entries. Boundaries: morning 08:00–12:00, afternoon 13:00–17:00 (local time per `aplan.timezone`). |
+| **Trigger** | Materialization runs on `aplan stop`, `aplan done`, and on every Claude Code `SessionEnd` hook (`~/.claude/hooks/aplan-session-end.sh`). The hook calls `aplan flush <task_id>`, which calls the `flushWorklogTime` mutation. |
+| **Watermark** | `aplan.active_since` tracks the last flush timestamp. Only entries after this timestamp are processed, preventing duplicate slots across sessions. |
+| **No open slots** | There is never an open (`end_time IS NULL`) slot associated with the active-task pointer. The existing `start_activity` / `stop_activity` use cases are unaffected and continue to work for UI-driven tracking. |
+
 ---
 
 ## 14. Authentication & Security
@@ -3180,7 +3266,10 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `microsoft.token_expires_at` | string (ISO 8601) | `""` | Horodatage d'expiration de l'access token |
 | `microsoft.account` | string | `""` | Adresse email du compte Microsoft connecté |
 | `outlook.calendar_days` | integer | `14` | Horizon en jours pour la synchronisation du calendrier Outlook |
-| `outlook.exclude_patterns` | string (multiligne) | `""` | Liste de titres de réunions à exclure de la synchronisation (une entrée par ligne) ; exclusion par sous-chaîne insensible à la casse, appliquée dans `sync_outlook` via `domain::rules::meeting::is_excluded` ; les réunions déjà synchronisées correspondant à un nouveau motif sont purgées par `delete_stale` au prochain sync ; appliqué de façon cohérente par `sync_source` ET `sync_all` |
+| `outlook.exclude_patterns` | string (multiligne) | `""` | Liste de titres de réunions à exclure de la synchronisation
+| `aplan.active_task_id` | string (UUID) | `""` | Task UUID the current Claude Code session is linked to. Set by `aplan start`, cleared by `aplan stop`/`aplan done`. No open activity slot is associated — time is derived from worklog timestamps. |
+| `aplan.active_since` | string (ISO 8601 UTC) | `""` | Watermark: only worklog entries with `logged_at > active_since` are considered by `materialize_worklog_time`. Updated to `now()` by each successful `flushWorklogTime` call. |
+| `aplan.timezone` | string (IANA tz) | `"Europe/Paris"` | Timezone used by `derive_time_blocks` to convert UTC worklog timestamps into local day/half-day boundaries. | (une entrée par ligne) ; exclusion par sous-chaîne insensible à la casse, appliquée dans `sync_outlook` via `domain::rules::meeting::is_excluded` ; les réunions déjà synchronisées correspondant à un nouveau motif sont purgées par `delete_stale` au prochain sync ; appliqué de façon cohérente par `sync_source` ET `sync_all` |
 | `excel_sharepoint_path` | string | `""` | SharePoint path to Excel file |
 | `excel_sheet_name` | string | `""` | Sheet name in Excel |
 | `excel_mapping` | object | `{}` | Column name -> field mapping |

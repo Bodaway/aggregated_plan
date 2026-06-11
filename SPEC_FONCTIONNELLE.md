@@ -513,6 +513,10 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - **R-WL-05** : supprimer une tâche supprime toutes ses entrées de worklog (cascade FK).
 - **R-WL-06** : arrêter le timer d'activité avec une note rapide crée une entrée de worklog associée à la tâche courante (et n'écrit plus dans le champ `notes`).
 - **R-WL-07** : dans `TaskEditSheet`, la section Worklog apparaît juste sous le champ `notes`, avec un champ d'ajout (Ctrl/Cmd+Enter pour soumettre) et la liste des dernières entrées de la tâche.
+- **R-WL-08** : Claude Code journalise via le worklog horodaté (`aplan log "<texte>"`). Chaque appel crée une entrée distincte et atomique — ne pas regrouper plusieurs découvertes en un seul appel.
+- **R-WL-09** : le temps est enregistré en créneaux **fermés** (granularité demi-journée) dérivés des horodatages des entrées de worklog, jamais via un créneau ouvert. Les créneaux sont matérialisés à `aplan stop`, `aplan done`, ou en fin de session (hook `SessionEnd`).
+- **R-WL-10** : le fuseau horaire `aplan.timezone` (défaut `Europe/Paris`) définit les bornes de journée et de demi-journée utilisées pour dériver les créneaux à partir des horodatages UTC des entrées.
+- **R-WL-11** : le lien session→tâche est le pointeur de configuration `aplan.active_task_id` (défini par `aplan start`, effacé par `aplan stop`/`aplan done`). Il n'existe aucun créneau d'activité ouvert associé à ce pointeur.
 
 **Priorité** : Must (MVP v1)
 
@@ -950,6 +954,9 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | jiraProjetKeys | Liste de textes | — | Clés de projets Jira à importer |
 | microsoft.account | Texte | — | Adresse email du compte Microsoft connecté (lecture seule — renseigné après connexion via la porte d'authentification) |
 | outlook.calendar_days | Entier (jours) | 14 | Horizon de synchronisation du calendrier Outlook |
+| aplan.active_task_id | Texte (UUID) | — | Identifiant de la tâche liée à la session Claude courante (pointeur de configuration, défini par `aplan start`, effacé par `aplan stop`/`aplan done`) |
+| aplan.active_since | Texte (ISO 8601) | — | Horodatage du début du suivi de la tâche active (utilisé comme borne de début pour la matérialisation des créneaux) |
+| aplan.timezone | Texte (IANA) | `Europe/Paris` | Fuseau horaire utilisé pour convertir les horodatages UTC des entrées de worklog en bornes de journée/demi-journée |
 | excelSharepointPath | Texte | — | Chemin du fichier Excel sur SharePoint |
 | excelMappingConfig | Objet | — | Mapping colonnes Excel → champs de l'outil |
 | obsidianVaultPath | Texte | — | Chemin du vault Obsidian (v2) |
