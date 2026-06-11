@@ -1,0 +1,6 @@
+mutation FlushWorklogTime($taskId: ID!) {
+  flushWorklogTime(taskId: $taskId) {
+    slotsWritten
+    activeSince
+  }
+}

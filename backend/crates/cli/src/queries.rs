@@ -207,3 +207,19 @@ pub struct GetConfiguration;
     response_derives = "Debug, Clone"
 )]
 pub struct UpdateConfiguration;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/add_worklog_entry.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct AddWorklogEntry;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/flush_worklog_time.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct FlushWorklogTime;
