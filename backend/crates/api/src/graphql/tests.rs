@@ -433,6 +433,145 @@ impl ConfigRepository for StubConfigRepository {
     }
 }
 
+struct InMemoryWorklogRepository {
+    entries: Mutex<Vec<domain::types::WorklogEntry>>,
+}
+
+impl InMemoryWorklogRepository {
+    fn new() -> Self {
+        Self {
+            entries: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl application::repositories::WorklogRepository for InMemoryWorklogRepository {
+    async fn create(
+        &self,
+        entry: &domain::types::WorklogEntry,
+    ) -> Result<(), RepositoryError> {
+        self.entries.lock().unwrap().push(entry.clone());
+        Ok(())
+    }
+    async fn update(
+        &self,
+        entry: &domain::types::WorklogEntry,
+    ) -> Result<(), RepositoryError> {
+        let mut v = self.entries.lock().unwrap();
+        if let Some(slot) = v.iter_mut().find(|e| e.id == entry.id) {
+            *slot = entry.clone();
+        }
+        Ok(())
+    }
+    async fn delete(
+        &self,
+        id: domain::types::WorklogEntryId,
+        user_id: UserId,
+    ) -> Result<bool, RepositoryError> {
+        let mut v = self.entries.lock().unwrap();
+        let before = v.len();
+        v.retain(|e| !(e.id == id && e.user_id == user_id));
+        Ok(v.len() < before)
+    }
+    async fn find_by_id(
+        &self,
+        id: domain::types::WorklogEntryId,
+        user_id: UserId,
+    ) -> Result<Option<domain::types::WorklogEntry>, RepositoryError> {
+        Ok(self
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.id == id && e.user_id == user_id)
+            .cloned())
+    }
+    async fn list(
+        &self,
+        user_id: UserId,
+        filter: &application::repositories::WorklogFilter,
+    ) -> Result<Vec<domain::types::WorklogEntry>, RepositoryError> {
+        let v = self.entries.lock().unwrap();
+        let mut out: Vec<domain::types::WorklogEntry> = v
+            .iter()
+            .filter(|e| e.user_id == user_id)
+            .filter(|e| match &filter.task_ids {
+                Some(ids) => ids.contains(&e.task_id),
+                None => true,
+            })
+            .filter(|e| match filter.from {
+                Some(f) => e.logged_at >= f,
+                None => true,
+            })
+            .filter(|e| match filter.to {
+                Some(t) => e.logged_at < t,
+                None => true,
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.logged_at.cmp(&a.logged_at));
+        let start = filter.offset as usize;
+        let end = (start + filter.limit as usize).min(out.len());
+        if start >= out.len() {
+            Ok(vec![])
+        } else {
+            Ok(out[start..end].to_vec())
+        }
+    }
+    async fn find_by_recurrence(
+        &self,
+        _user_id: UserId,
+        _template_id: domain::types::recurrence::RecurrenceTemplateId,
+        _limit: u32,
+        _offset: u32,
+    ) -> Result<Vec<domain::types::WorklogEntry>, RepositoryError> {
+        Ok(vec![])
+    }
+}
+
+struct StubRecurrenceRepository;
+#[async_trait]
+impl application::repositories::RecurrenceRepository for StubRecurrenceRepository {
+    async fn find_by_id(
+        &self,
+        _id: domain::types::recurrence::RecurrenceTemplateId,
+    ) -> Result<Option<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
+        Ok(None)
+    }
+    async fn find_active_by_user(
+        &self,
+        _user_id: UserId,
+    ) -> Result<Vec<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
+        Ok(vec![])
+    }
+    async fn save(
+        &self,
+        _template: &domain::types::recurrence::RecurrenceTemplate,
+    ) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+    async fn deactivate(
+        &self,
+        _id: domain::types::recurrence::RecurrenceTemplateId,
+    ) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+}
+
+struct StubGraphTokenProvider;
+#[async_trait]
+impl application::services::GraphTokenProvider for StubGraphTokenProvider {
+    async fn valid_access_token(
+        &self,
+        _user_id: UserId,
+    ) -> Result<String, application::errors::AppError> {
+        Err(application::errors::AppError::Configuration(
+            "no token in tests".into(),
+        ))
+    }
+}
+
 // ─── Test schema builder ───
 
 type TestSchema = Schema<CombinedQuery, CombinedMutation, EmptySubscription>;
@@ -450,6 +589,12 @@ fn build_test_schema() -> TestSchema {
     let task_link_repo: Arc<dyn TaskLinkRepository> = Arc::new(StubTaskLinkRepository);
     let sync_repo: Arc<dyn SyncStatusRepository> = Arc::new(StubSyncStatusRepository);
     let config_repo: Arc<dyn ConfigRepository> = Arc::new(StubConfigRepository);
+    let worklog_repo: Arc<dyn application::repositories::WorklogRepository> =
+        Arc::new(InMemoryWorklogRepository::new());
+    let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
+        Arc::new(StubRecurrenceRepository);
+    let graph_token_provider: Arc<dyn application::services::GraphTokenProvider> =
+        Arc::new(StubGraphTokenProvider);
 
     Schema::build(
         CombinedQuery(QueryRoot),
@@ -465,6 +610,9 @@ fn build_test_schema() -> TestSchema {
     .data(task_link_repo)
     .data(sync_repo)
     .data(config_repo)
+    .data(worklog_repo)
+    .data(recurrence_repo)
+    .data(graph_token_provider)
     .data(default_user_id)
     .finish()
 }
@@ -1640,4 +1788,60 @@ async fn delegates_query_returns_learned_names() {
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
     let data = result.data.into_json().unwrap();
     assert_eq!(data["delegates"], serde_json::json!(["Ahmed", "Marie"]));
+}
+
+// ─── Worklog Tests ───
+
+#[tokio::test]
+async fn flush_worklog_time_materializes_morning_slot() {
+    let schema = build_test_schema();
+
+    // Create a task to associate worklog entries with.
+    let create_result = schema
+        .execute(r#"mutation { createTask(input: { title: "Worklog Task" }) { id } }"#)
+        .await;
+    assert!(
+        create_result.errors.is_empty(),
+        "create task errors: {:?}",
+        create_result.errors
+    );
+    let task_id = create_result.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Seed two worklog entries in the same local morning (Europe/Paris = UTC+2 in June).
+    // 08:00 UTC = 10:00 Paris — morning half-day.
+    for logged_at in ["2026-06-08T08:00:00Z", "2026-06-08T09:30:00Z"] {
+        let seed = format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{}", body: "work", loggedAt: "{}") {{ id }} }}"#,
+            task_id, logged_at
+        );
+        let r = schema.execute(&seed).await;
+        assert!(r.errors.is_empty(), "seed worklog errors: {:?}", r.errors);
+    }
+
+    // Execute the flush.
+    let query = format!(
+        r#"mutation {{ flushWorklogTime(taskId: "{}") {{ slotsWritten activeSince }} }}"#,
+        task_id
+    );
+    let result = schema.execute(&query).await;
+    assert!(
+        result.errors.is_empty(),
+        "flushWorklogTime errors: {:?}",
+        result.errors
+    );
+    let data = result.data.into_json().unwrap();
+    let flush = &data["flushWorklogTime"];
+
+    assert!(
+        flush["slotsWritten"].as_i64().unwrap() >= 1,
+        "expected at least one slot written, got: {}",
+        flush["slotsWritten"]
+    );
+    assert!(
+        flush["activeSince"].as_str().is_some(),
+        "activeSince should be a datetime string"
+    );
 }
