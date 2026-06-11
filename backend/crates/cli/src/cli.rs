@@ -95,6 +95,12 @@ pub enum Commands {
     },
     /// Stop the currently running worklog. Prints duration.
     Stop,
+    /// Flush the worklog time of TASK into closed activity slots, WITHOUT
+    /// clearing the active-task pointer. Used by the SessionEnd hook.
+    Flush {
+        /// Task to flush: UUID, Jira-style key, or fuzzy title.
+        task: String,
+    },
     /// Append a markdown note to the currently-tracked task (or --task TARGET).
     Note {
         /// Note text. Variadic — multiple words are joined with spaces.
