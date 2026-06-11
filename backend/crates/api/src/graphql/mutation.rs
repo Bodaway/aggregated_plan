@@ -175,6 +175,49 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))
     }
 
+    /// Materialize worklog entries logged since `aplan.active_since` for the given
+    /// task into closed activity slots. Advances the stored watermark.
+    async fn flush_worklog_time(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+    ) -> Result<FlushResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let tid = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+
+        let now = chrono::Utc::now();
+        let from = config_repo
+            .get(user_id, "aplan.active_since")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap());
+
+        let outcome = worklog_uc::materialize_worklog_time(
+            worklog_repo.as_ref(),
+            activity_repo.as_ref(),
+            config_repo.as_ref(),
+            user_id,
+            tid,
+            from,
+            now,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        configuration::set_config(config_repo.as_ref(), user_id, "aplan.active_since", &outcome.active_since.to_rfc3339())
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(FlushResultGql(outcome))
+    }
+
     /// Carry forward all active tasks whose planned_start is before the current
     /// Monday to that Monday at 08:00 UTC. Returns the number of tasks updated.
     async fn carry_forward_tasks(&self, ctx: &Context<'_>) -> Result<i32> {
