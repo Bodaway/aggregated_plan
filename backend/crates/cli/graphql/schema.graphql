@@ -102,6 +102,28 @@ type CombinedMutation {
 	"""
 	appendTaskNotes(taskId: ID!, text: String!): TaskGql!
 	"""
+	Add a timestamped worklog entry to a task.
+	"""
+	addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntryGql!
+	"""
+	Update a worklog entry's body and/or logged_at. Only provided fields change.
+	"""
+	updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntryGql!
+	"""
+	Delete a worklog entry. Returns true if a row was removed.
+	"""
+	deleteWorklogEntry(id: ID!): Boolean!
+	"""
+	Materialize worklog entries logged since `aplan.active_since` for the given
+	task into closed activity slots. Advances the stored watermark.
+	"""
+	flushWorklogTime(taskId: ID!): FlushResultGql!
+	"""
+	Carry forward all active tasks whose planned_start is before the current
+	Monday to that Monday at 08:00 UTC. Returns the number of tasks updated.
+	"""
+	carryForwardTasks: Int!
+	"""
 	Set the tracking state of a task (inbox/followed/dismissed).
 	"""
 	setTrackingState(taskId: ID!, state: TrackingStateGql!): TaskGql!
@@ -163,6 +185,10 @@ type CombinedMutation {
 	"""
 	updateMeetingProject(meetingId: ID!, projectId: ID): MeetingGql!
 	"""
+	Create a new project.
+	"""
+	createProject(input: CreateProjectInput!): ProjectGql!
+	"""
 	Create a new tag.
 	"""
 	createTag(name: String!, color: String): TagGql!
@@ -178,6 +204,28 @@ type CombinedMutation {
 	Update a configuration key-value pair.
 	"""
 	updateConfiguration(key: String!, value: String!): Boolean!
+	"""
+	Sign out by clearing all stored Microsoft OAuth tokens.
+	Returns true on success.
+	"""
+	signOut: Boolean!
+	"""
+	Create a new recurring task template and materialize the first 14-day horizon.
+	"""
+	createRecurringTask(input: CreateRecurringTaskInput!): RecurrenceTemplateGql!
+	"""
+	Update a recurring task template and re-materialize future instances.
+	"""
+	updateRecurringTask(id: ID!, input: UpdateRecurringTaskInput!): RecurrenceTemplateGql!
+	"""
+	Cancel a recurring task series. Deactivates the template and deletes
+	all future Todo instances. Returns the count of deleted instances.
+	"""
+	cancelRecurrence(id: ID!): Int!
+	"""
+	Skip (cancel) a single recurring task occurrence. Returns the updated task.
+	"""
+	skipOccurrence(taskId: ID!): TaskGql!
 }
 
 """
@@ -200,6 +248,11 @@ type CombinedQuery {
 	Fetch all projects for the current user.
 	"""
 	projects: [ProjectGql!]!
+	"""
+	Distinct delegate names previously used on the current user's tasks.
+	Backs the auto-learned suggestion list for the delegation field.
+	"""
+	delegates: [String!]!
 	"""
 	Fetch all tags for the current user.
 	"""
@@ -242,9 +295,32 @@ type CombinedQuery {
 	"""
 	weeklyActivitySummary(weekStart: NaiveDate!): WeeklyActivitySummaryGql!
 	"""
+	All non-dismissed tasks for the current user, projected to a lean
+	payload for client-side fuzzy search. Unpaginated on purpose.
+	"""
+	searchableTasks: [SearchableTaskGql!]!
+	"""
+	List all active recurrence templates for the current user.
+	"""
+	recurrenceTemplates: [RecurrenceTemplateGql!]!
+	"""
 	Get user configuration as a JSON-like list of key-value pairs.
 	"""
 	configuration: JSON!
+	"""
+	Microsoft session status for the current user.
+	
+	Reads `microsoft.refresh_token` directly from the config store (never
+	redacted here) so `authenticated` reflects the real stored value.
+	"""
+	session: SessionGql!
+	"""
+	List worklog entries for the authenticated user.
+	
+	If `filter.recurrenceId` is provided, returns all entries whose task belongs to
+	that recurrence template — `taskIds` is ignored in this case.
+	"""
+	worklogEntries(filter: WorklogEntryFilterInput): [WorklogEntryGql!]!
 }
 
 """
@@ -263,6 +339,31 @@ input CreateActivitySlotInput {
 	Optional task to associate with.
 	"""
 	taskId: ID
+}
+
+"""
+Input for creating a new project.
+"""
+input CreateProjectInput {
+	name: String!
+}
+
+"""
+Input for creating a new recurring task template.
+"""
+input CreateRecurringTaskInput {
+	title: String!
+	description: String
+	notes: String
+	projectId: ID
+	urgency: UrgencyLevelGql!
+	impact: ImpactLevelGql!
+	estimatedHours: Float
+	tagIds: [ID!]
+	rule: RecurrenceRuleInput!
+	startsOn: NaiveDate!
+	endsOn: NaiveDate
+	maxOccurrences: Int
 }
 
 """
@@ -343,6 +444,17 @@ type DeduplicationSuggestionGql {
 	Whether the projects match.
 	"""
 	projectMatch: Boolean!
+}
+
+type FlushResultGql {
+	"""
+	New watermark: entries at/after this instant are not yet materialized.
+	"""
+	activeSince: DateTime!
+	"""
+	Number of activity slots written by this flush.
+	"""
+	slotsWritten: Int!
 }
 
 """
@@ -500,6 +612,74 @@ enum QuadrantGql {
 	NEITHER
 }
 
+"""
+Flat output type for a recurrence rule.
+
+`kind` is one of: "daily" | "weekly" | "monthly_by_day" | "monthly_by_weekday".
+The optional fields are only populated for the matching kind.
+"""
+type RecurrenceRuleGql {
+	kind: String!
+	interval: Int!
+	"""
+	Set for `weekly`: weekdays on which the task repeats.
+	"""
+	weekdays: [WeekdayGql!]
+	"""
+	Set for `monthly_by_day`: calendar day (1–31; 31 = last day of month).
+	"""
+	dayOfMonth: Int
+	"""
+	Set for `monthly_by_weekday`: which week-of-month.
+	"""
+	week: WeekOfMonthGql
+	"""
+	Set for `monthly_by_weekday`: which weekday.
+	"""
+	weekday: WeekdayGql
+}
+
+"""
+Flat input type for specifying a recurrence rule.
+
+Set `kind` to one of: "daily" | "weekly" | "monthly_by_day" | "monthly_by_weekday".
+The validator (`try_into_domain`) rejects inputs where required fields for the chosen
+kind are missing or out of range.
+"""
+input RecurrenceRuleInput {
+	kind: String!
+	interval: Int!
+	weekdays: [WeekdayGql!]
+	dayOfMonth: Int
+	week: WeekOfMonthGql
+	weekday: WeekdayGql
+}
+
+type RecurrenceTemplateGql {
+	id: ID!
+	userId: ID!
+	title: String!
+	description: String
+	notes: String
+	projectId: ID
+	urgency: UrgencyLevelGql!
+	urgencyManual: Boolean!
+	impact: ImpactLevelGql!
+	estimatedHours: Float
+	"""
+	Tag IDs associated with the template.
+	"""
+	tagIds: [ID!]!
+	rule: RecurrenceRuleGql!
+	startsOn: NaiveDate!
+	endsOn: NaiveDate
+	maxOccurrences: Int
+	lastGeneratedThrough: NaiveDate
+	active: Boolean!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
 type RelatedItemGql {
 	"""
 	The type of the related item: "TASK" or "MEETING".
@@ -509,6 +689,26 @@ type RelatedItemGql {
 	The ID of the related item.
 	"""
 	itemId: ID!
+}
+
+type SearchableTaskGql {
+	id: ID!
+	title: String!
+	sourceId: String
+	source: SourceGql!
+	assignee: String
+	projectName: String
+	tags: [String!]!
+	description: String
+	status: TaskStatusGql!
+}
+
+"""
+Microsoft session status returned by the `session` query.
+"""
+type SessionGql {
+	authenticated: Boolean!
+	account: String
 }
 
 """
@@ -608,6 +808,10 @@ type TaskGql {
 	"""
 	project: ProjectSummaryGql
 	assignee: String
+	"""
+	Person this task is delegated to. User-owned — preserved across syncs.
+	"""
+	delegatedTo: String
 	deadline: NaiveDate
 	plannedStart: DateTime
 	plannedEnd: DateTime
@@ -643,6 +847,18 @@ type TaskGql {
 	Computed: local override > Jira estimate > estimated_hours
 	"""
 	effectiveEstimatedHours: Float
+	"""
+	ID of the recurrence template this task was generated from, if any.
+	"""
+	recurrenceId: ID
+	"""
+	The specific occurrence date this task instance fills (within its recurrence series).
+	"""
+	occurrenceDate: NaiveDate
+	"""
+	True when this task is a generated instance of a recurrence template.
+	"""
+	isRecurring: Boolean!
 }
 
 """
@@ -653,6 +869,10 @@ enum TaskStatusGql {
 	IN_PROGRESS
 	DONE
 	BLOCKED
+	"""
+	Marks a skipped occurrence of a recurring task.
+	"""
+	CANCELLED
 }
 
 """
@@ -683,6 +903,28 @@ input UpdateActivitySlotInput {
 }
 
 """
+Input for updating a recurring task template.
+
+Every field is `Option`-wrapped: `None` means "leave unchanged".
+For nullable domain fields (description, notes, etc.) the inner value
+follows the same `Option<Option<T>>` pattern used by `UpdateTaskInput`.
+"""
+input UpdateRecurringTaskInput {
+	title: String
+	description: String
+	notes: String
+	projectId: ID
+	urgency: UrgencyLevelGql
+	impact: ImpactLevelGql
+	estimatedHours: Float
+	tagIds: [ID!]
+	rule: RecurrenceRuleInput
+	startsOn: NaiveDate
+	endsOn: NaiveDate
+	maxOccurrences: Int
+}
+
+"""
 Input for updating an existing task.
 """
 input UpdateTaskInput {
@@ -706,6 +948,10 @@ input UpdateTaskInput {
 	Set to Some(Some(val)) to override, Some(None) to clear, None to leave unchanged.
 	"""
 	estimatedHoursOverride: Float
+	"""
+	Set to a name to delegate, explicit null to clear, omit to leave unchanged.
+	"""
+	delegatedTo: String = null
 }
 
 """
@@ -716,6 +962,30 @@ enum UrgencyLevelGql {
 	MEDIUM
 	HIGH
 	CRITICAL
+}
+
+"""
+GraphQL enum for the week-of-month position.
+"""
+enum WeekOfMonthGql {
+	FIRST
+	SECOND
+	THIRD
+	FOURTH
+	LAST
+}
+
+"""
+GraphQL enum for days of the week.
+"""
+enum WeekdayGql {
+	MONDAY
+	TUESDAY
+	WEDNESDAY
+	THURSDAY
+	FRIDAY
+	SATURDAY
+	SUNDAY
 }
 
 type WeeklyActivitySummaryGql {
@@ -754,6 +1024,39 @@ type WeeklyWorkloadGql {
 	ISO weekday numbers for working days (1=Mon … 7=Sun).
 	"""
 	workingDays: [Int!]!
+}
+
+"""
+Filter input for `worklogEntries`.
+When `recurrence_id` is provided, it wins over `task_ids` and returns all entries
+whose task belongs to the given recurrence template.
+"""
+input WorklogEntryFilterInput {
+	taskIds: [ID!]
+	recurrenceId: ID
+	from: DateTime
+	to: DateTime
+	limit: Int
+	offset: Int
+}
+
+type WorklogEntryGql {
+	id: ID!
+	taskId: ID!
+	"""
+	Hydrated task. Null only if the task was deleted between list and resolve
+	(shouldn't happen under normal conditions thanks to the FK cascade).
+	"""
+	task: TaskGql
+	body: String!
+	loggedAt: DateTime!
+	createdAt: DateTime!
+	updatedAt: DateTime!
+	"""
+	The occurrence date of the task this entry belongs to.
+	`Some` for recurring instances, `None` for one-shot tasks.
+	"""
+	occurrenceDate: NaiveDate
 }
 
 """
