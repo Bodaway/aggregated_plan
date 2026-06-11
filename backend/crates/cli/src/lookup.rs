@@ -5,8 +5,8 @@
 use crate::client::{Client, ClientError};
 use crate::output::ExitCode;
 use crate::queries::{
-    current_activity, find_task_by_source_id, find_tasks_by_title, CurrentActivity,
-    FindTaskBySourceId, FindTasksByTitle,
+    find_task_by_source_id, find_tasks_by_title, get_configuration, FindTaskBySourceId,
+    FindTasksByTitle, GetConfiguration,
 };
 use thiserror::Error;
 
@@ -14,8 +14,6 @@ use thiserror::Error;
 pub enum LookupError {
     #[error("no worklog is currently running\nhint: pass --task <jira-key> to target a specific task,\n      or start one with `aplan start <task>`")]
     NoCurrentActivity,
-    #[error("the running activity has no associated task\nhint: pass --task <jira-key> explicitly")]
-    CurrentActivityHasNoTask,
     #[error("no task matches `{0}`")]
     NotFound(String),
     #[error("`{query}` matches {count} tasks; please be more specific\n{candidates}")]
@@ -31,7 +29,7 @@ pub enum LookupError {
 impl LookupError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            LookupError::NoCurrentActivity | LookupError::CurrentActivityHasNoTask => {
+            LookupError::NoCurrentActivity => {
                 ExitCode::PreconditionFailed
             }
             LookupError::NotFound(_) => ExitCode::NotFound,
@@ -122,15 +120,18 @@ pub fn resolve_task(client: &Client, token: Option<&str>) -> Result<TaskRef, Loo
 }
 
 fn resolve_from_current_activity(client: &Client) -> Result<TaskRef, LookupError> {
-    let result = client.run::<CurrentActivity>(current_activity::Variables {})?;
-    let slot = result
+    let result = client.run::<GetConfiguration>(get_configuration::Variables {})?;
+    let task_id = result
         .data
-        .current_activity
+        .configuration
+        .get("aplan.active_task_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
         .ok_or(LookupError::NoCurrentActivity)?;
-    let task = slot.task.ok_or(LookupError::CurrentActivityHasNoTask)?;
     Ok(TaskRef {
-        id: task.id,
-        title: task.title,
+        id: task_id,
+        title: String::new(),
         source_id: None,
     })
 }

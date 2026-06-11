@@ -43,30 +43,6 @@ pub struct FindTasksByTitle;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/current_activity.graphql",
-    response_derives = "Debug, Clone"
-)]
-pub struct CurrentActivity;
-
-#[derive(GraphQLQuery)]
-#[graphql(
-    schema_path = "graphql/schema.graphql",
-    query_path = "graphql/start_activity.graphql",
-    response_derives = "Debug, Clone"
-)]
-pub struct StartActivity;
-
-#[derive(GraphQLQuery)]
-#[graphql(
-    schema_path = "graphql/schema.graphql",
-    query_path = "graphql/stop_activity.graphql",
-    response_derives = "Debug, Clone"
-)]
-pub struct StopActivity;
-
-#[derive(GraphQLQuery)]
-#[graphql(
-    schema_path = "graphql/schema.graphql",
     query_path = "graphql/append_task_notes.graphql",
     response_derives = "Debug, Clone"
 )]
