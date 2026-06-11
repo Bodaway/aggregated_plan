@@ -7,15 +7,45 @@ use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, add_worklog_entry, append_task_notes, complete_task, create_task,
-    current_activity, daily_dashboard, delete_task, flush_worklog_time, force_sync,
-    get_configuration, get_task, list_alerts, list_tasks, priority_matrix, reset_urgency,
-    resolve_alert, set_tracking_state, start_activity, stop_activity, update_configuration,
-    update_priority, update_task_status, ActivityJournal, AddWorklogEntry, AppendTaskNotes,
-    CompleteTask, CreateTask, CurrentActivity, DailyDashboard, DeleteTask, FlushWorklogTime,
+    daily_dashboard, delete_task, flush_worklog_time, force_sync, get_configuration, get_task,
+    list_alerts, list_tasks, priority_matrix, reset_urgency, resolve_alert, set_tracking_state,
+    update_configuration, update_priority, update_task_status, ActivityJournal, AddWorklogEntry,
+    AppendTaskNotes, CompleteTask, CreateTask, DailyDashboard, DeleteTask, FlushWorklogTime,
     ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks, PriorityMatrix, ResetUrgency,
-    ResolveAlert, SetTrackingState, StartActivity, StopActivity, UpdateConfiguration,
-    UpdatePriority, UpdateTaskStatus,
+    ResolveAlert, SetTrackingState, UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
 };
+
+/// Read `aplan.active_task_id` from configuration, if set and non-empty.
+fn active_task_id(client: &Client) -> Option<String> {
+    let r = client
+        .run::<GetConfiguration>(get_configuration::Variables {})
+        .ok()?;
+    r.data
+        .configuration
+        .get("aplan.active_task_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Set a single config key (best-effort; warns on failure).
+fn set_config_key(client: &Client, key: &str, value: &str) {
+    if let Err(e) = client.run::<UpdateConfiguration>(update_configuration::Variables {
+        key: key.to_string(),
+        value: value.to_string(),
+    }) {
+        eprintln!("warning: failed to set {}: {}", key, e);
+    }
+}
+
+/// Flush the worklog window of `task_id` into closed activity slots.
+fn flush_task(client: &Client, task_id: &str) {
+    if let Err(e) = client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
+        task_id: task_id.to_string(),
+    }) {
+        eprintln!("warning: failed to flush worklog time: {}", e);
+    }
+}
 
 pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
     let client = Client::new(api_url.to_string());
@@ -26,48 +56,28 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
             return e.exit_code();
         }
     };
-    let result = client.run::<StartActivity>(start_activity::Variables {
-        task_id: Some(target.id.clone()),
-    });
-    match result {
-        Ok(r) => {
-            if json {
-                if let Err(e) = print_json(&r.raw) {
-                    eprintln!("error writing output: {}", e);
-                    return ExitCode::Generic;
-                }
-                return ExitCode::Success;
-            }
-            let half_day = format!("{:?}", r.data.start_activity.half_day).to_lowercase();
-            let title = r
-                .data
-                .start_activity
-                .task
-                .as_ref()
-                .map(|t| t.title.as_str())
-                .unwrap_or(target.title.as_str());
-            println!("▶ started: {} ({} slot)", title, half_day);
-            ExitCode::Success
-        }
-        Err(e) => {
-            eprintln!("error: {}", e);
-            ExitCode::Generic
+    if let Some(prev) = active_task_id(&client) {
+        if prev != target.id {
+            flush_task(&client, &prev);
         }
     }
+    let now = chrono::Utc::now().to_rfc3339();
+    set_config_key(&client, "aplan.active_task_id", &target.id);
+    set_config_key(&client, "aplan.active_since", &now);
+    if json {
+        let payload = serde_json::json!({ "activeTaskId": target.id, "activeSince": now });
+        if let Err(e) = print_json(&payload) {
+            eprintln!("error writing output: {}", e);
+            return ExitCode::Generic;
+        }
+        return ExitCode::Success;
+    }
+    println!("▶ tracking: {}", target.title);
+    ExitCode::Success
 }
 
 pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -> ExitCode {
     let client = Client::new(api_url.to_string());
-
-    // We need to know whether the running activity matches the target so we can
-    // stop the timer iff applicable. Fetch current activity once up front.
-    let current = match client.run::<CurrentActivity>(current_activity::Variables {}) {
-        Ok(r) => r.data.current_activity,
-        Err(e) => {
-            eprintln!("error: {}", e);
-            return ExitCode::Generic;
-        }
-    };
 
     let target_id = if let Some(token) = task {
         match resolve_task(&client, Some(token)) {
@@ -78,7 +88,7 @@ pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -
             }
         }
     } else {
-        match current.as_ref().and_then(|c| c.task_id.clone()) {
+        match active_task_id(&client) {
             Some(id) => id,
             None => {
                 eprintln!("error: {}", LookupError::NoCurrentActivity);
@@ -98,22 +108,12 @@ pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -
         }
     };
 
-    // Stop the timer iff it was tracking this task and --keep-running not set
-    let mut stopped_minutes: Option<i64> = None;
-    let should_stop = !keep_running
-        && current
-            .as_ref()
-            .and_then(|c| c.task_id.as_ref())
-            .map(|tid| tid == &target_id)
-            .unwrap_or(false);
-
-    if should_stop {
-        match client.run::<StopActivity>(stop_activity::Variables {}) {
-            Ok(r) => stopped_minutes = r.data.stop_activity.and_then(|s| s.duration_minutes),
-            Err(e) => {
-                eprintln!("warning: failed to stop activity after completing: {}", e);
-            }
-        }
+    // Flush + clear the pointer iff it was tracking this task (unless --keep-running).
+    let active = active_task_id(&client);
+    let was_tracking_target = active.as_deref() == Some(target_id.as_str());
+    if !keep_running && was_tracking_target {
+        flush_task(&client, &target_id);
+        set_config_key(&client, "aplan.active_task_id", "");
     }
 
     if json {
@@ -123,7 +123,7 @@ pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -
             .unwrap_or(serde_json::Value::Null);
         let payload = serde_json::json!({
             "completed": completed_json,
-            "stoppedMinutes": stopped_minutes,
+            "stoppedMinutes": serde_json::Value::Null,
         });
         if let Err(e) = print_json(&payload) {
             eprintln!("error writing output: {}", e);
@@ -133,14 +133,7 @@ pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -
     }
 
     let label = completed.source_id.as_deref().unwrap_or(&completed.title);
-    match stopped_minutes {
-        Some(m) => {
-            let h = m / 60;
-            let mm = m % 60;
-            println!("✓ {} done — timer stopped ({}h {}m logged)", label, h, mm);
-        }
-        None => println!("✓ {} done", label),
-    }
+    println!("✓ {} done", label);
     ExitCode::Success
 }
 
@@ -297,36 +290,24 @@ pub fn log(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> Ex
 
 pub fn stop(api_url: &str, json: bool) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    match client.run::<StopActivity>(stop_activity::Variables {}) {
-        Ok(r) => {
-            if json {
-                if let Err(e) = print_json(&r.raw) {
-                    eprintln!("error writing output: {}", e);
-                    return ExitCode::Generic;
-                }
-                return ExitCode::Success;
-            }
-            match r.data.stop_activity {
-                None => println!("(no activity was running)"),
-                Some(slot) => {
-                    let title = slot
-                        .task
-                        .as_ref()
-                        .map(|t| t.title.as_str())
-                        .unwrap_or("(no task)");
-                    let mins = slot.duration_minutes.unwrap_or(0);
-                    let h = mins / 60;
-                    let m = mins % 60;
-                    println!("⏹ stopped: {} — {}h {}m logged", title, h, m);
-                }
-            }
-            ExitCode::Success
-        }
-        Err(e) => {
-            eprintln!("error: {}", e);
-            ExitCode::Generic
-        }
+    let active = active_task_id(&client);
+    if let Some(ref tid) = active {
+        flush_task(&client, tid);
     }
+    set_config_key(&client, "aplan.active_task_id", "");
+    if json {
+        let payload = serde_json::json!({ "stopped": active });
+        if let Err(e) = print_json(&payload) {
+            eprintln!("error writing output: {}", e);
+            return ExitCode::Generic;
+        }
+        return ExitCode::Success;
+    }
+    match active {
+        Some(_) => println!("⏹ stopped — worklog time flushed, tracking cleared"),
+        None => println!("(no task was being tracked)"),
+    }
+    ExitCode::Success
 }
 
 pub fn alerts(api_url: &str, json: bool, all: bool) -> ExitCode {
@@ -651,37 +632,29 @@ pub fn ls(api_url: &str, json: bool, status: &[StatusArg], triage: &[TriageArg])
 
 pub fn current(api_url: &str, json: bool) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    match client.run::<CurrentActivity>(current_activity::Variables {}) {
-        Ok(result) => {
-            if json {
-                if let Err(e) = print_json(&result.raw) {
-                    eprintln!("error writing output: {}", e);
-                    return ExitCode::Generic;
-                }
-                return ExitCode::Success;
-            }
-            match result.data.current_activity {
-                None => println!("(no activity running)"),
-                Some(slot) => {
-                    let title = slot
-                        .task
-                        .as_ref()
-                        .map(|t| t.title.as_str())
-                        .unwrap_or("(no task)");
-                    let half_day = format!("{:?}", slot.half_day).to_lowercase();
-                    println!(
-                        "▶ {} — started at {} ({})",
-                        title, slot.start_time, half_day
-                    );
-                }
-            }
-            ExitCode::Success
+    let active = active_task_id(&client);
+    if json {
+        let payload = match &active {
+            Some(id) => match resolve_task(&client, Some(id)) {
+                Ok(t) => serde_json::json!({ "currentActivity": { "task": { "id": t.id, "title": t.title, "sourceId": t.source_id } } }),
+                Err(_) => serde_json::json!({ "currentActivity": null }),
+            },
+            None => serde_json::json!({ "currentActivity": null }),
+        };
+        if let Err(e) = print_json(&payload) {
+            eprintln!("error writing output: {}", e);
+            return ExitCode::Generic;
         }
-        Err(e) => {
-            eprintln!("error: {}", e);
-            ExitCode::Generic
-        }
+        return ExitCode::Success;
     }
+    match active {
+        Some(id) => match resolve_task(&client, Some(&id)) {
+            Ok(t) => println!("▶ tracking: {}", t.title),
+            Err(_) => println!("▶ tracking task {}", id),
+        },
+        None => println!("(no task being tracked)"),
+    }
+    ExitCode::Success
 }
 
 pub fn priority(
