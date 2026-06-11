@@ -4,6 +4,7 @@ use async_graphql::{Context, InputObject, Object, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::TaskRepository;
+use application::use_cases::worklog::FlushOutcome;
 use domain::types::WorklogEntry;
 
 use super::task::TaskGql;
@@ -51,6 +52,21 @@ impl WorklogEntryGql {
         let repo = ctx.data::<Arc<dyn TaskRepository>>().ok()?;
         let task = repo.find_by_id(self.0.task_id).await.ok()??;
         task.occurrence_date
+    }
+}
+
+/// Result of flushing worklog time into activity slots.
+pub struct FlushResultGql(pub FlushOutcome);
+
+#[Object]
+impl FlushResultGql {
+    /// New watermark: entries at/after this instant are not yet materialized.
+    async fn active_since(&self) -> chrono::DateTime<chrono::Utc> {
+        self.0.active_since
+    }
+    /// Number of activity slots written by this flush.
+    async fn slots_written(&self) -> i32 {
+        self.0.slots_written as i32
     }
 }
 
