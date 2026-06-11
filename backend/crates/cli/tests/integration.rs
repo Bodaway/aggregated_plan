@@ -906,6 +906,55 @@ async fn start_log_stop_pointer_lifecycle_log_issues_add_worklog_entry() {
         .stdout(predicate::str::contains("worklog entry added"));
 }
 
+/// `aplan start <uuid>` when the SAME task is already active must flush the
+/// previous worklog before repointing (so entries since the last watermark are
+/// not lost when `aplan.active_since` is reset).
+#[tokio::test]
+async fn start_on_already_active_same_task_flushes_previous() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    // GetConfiguration returns the same task id we are about to re-start.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "configuration": {
+                    "aplan.active_task_id": task_id
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    // FlushWorklogTime MUST be called exactly once — this is the regression gate.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // UpdateConfiguration is called to set the new pointer + active_since.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdateConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "updateConfiguration": true }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "start", task_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("▶ tracking"));
+    // wiremock verifies the .expect(1) on FlushWorklogTime when `server` drops.
+}
+
 /// `aplan stop --json` issues FlushWorklogTime + UpdateConfiguration and returns
 /// `{"stopped": <id>}` in JSON mode; subsequent current reports null.
 #[tokio::test]
