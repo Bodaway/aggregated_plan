@@ -57,9 +57,7 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
         }
     };
     if let Some(prev) = active_task_id(&client) {
-        if prev != target.id {
-            flush_task(&client, &prev);
-        }
+        flush_task(&client, &prev);
     }
     let now = chrono::Utc::now().to_rfc3339();
     set_config_key(&client, "aplan.active_task_id", &target.id);
