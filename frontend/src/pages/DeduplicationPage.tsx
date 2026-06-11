@@ -1,24 +1,24 @@
 import { useState } from 'react';
-import { useDedup } from '@/hooks/use-dedup';
+import { useDedup, type DeduplicationSuggestion } from '@/hooks/use-dedup';
 import { SuggestionCard } from '@/components/dedup/SuggestionCard';
 
 export function DeduplicationPage() {
   const { suggestions, loading, error, confirmDeduplication } = useDedup();
   const [processingId, setProcessingId] = useState<string | null>(null);
 
-  const handleAccept = async (suggestionId: string) => {
-    setProcessingId(suggestionId);
+  const handleAccept = async (s: DeduplicationSuggestion) => {
+    setProcessingId(s.id);
     try {
-      await confirmDeduplication(suggestionId, true);
+      await confirmDeduplication(s.taskA.id, s.taskB.id, true);
     } finally {
       setProcessingId(null);
     }
   };
 
-  const handleReject = async (suggestionId: string) => {
-    setProcessingId(suggestionId);
+  const handleReject = async (s: DeduplicationSuggestion) => {
+    setProcessingId(s.id);
     try {
-      await confirmDeduplication(suggestionId, false);
+      await confirmDeduplication(s.taskA.id, s.taskB.id, false);
     } finally {
       setProcessingId(null);
     }
@@ -118,8 +118,8 @@ export function DeduplicationPage() {
             titleSimilarity={suggestion.titleSimilarity}
             assigneeMatch={suggestion.assigneeMatch}
             projectMatch={suggestion.projectMatch}
-            onAccept={() => handleAccept(suggestion.id)}
-            onReject={() => handleReject(suggestion.id)}
+            onAccept={() => handleAccept(suggestion)}
+            onReject={() => handleReject(suggestion)}
             processing={processingId === suggestion.id}
           />
         ))}

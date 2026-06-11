@@ -38,8 +38,8 @@ const DEDUP_SUGGESTIONS_QUERY = `
 `;
 
 const CONFIRM_DEDUP_MUTATION = `
-  mutation ConfirmDeduplication($suggestionId: ID!, $accept: Boolean!) {
-    confirmDeduplication(suggestionId: $suggestionId, accept: $accept)
+  mutation ConfirmDeduplication($taskIdPrimary: ID!, $taskIdSecondary: ID!, $accept: Boolean!) {
+    confirmDeduplication(taskIdPrimary: $taskIdPrimary, taskIdSecondary: $taskIdSecondary, accept: $accept)
   }
 `;
 
@@ -55,8 +55,8 @@ export function useDedup() {
   );
 
   const confirmDeduplication = useCallback(
-    async (suggestionId: string, accept: boolean) => {
-      const res = await executeConfirm({ suggestionId, accept });
+    async (taskIdPrimary: string, taskIdSecondary: string, accept: boolean) => {
+      const res = await executeConfirm({ taskIdPrimary, taskIdSecondary, accept });
       if (!res.error) {
         reexecute({ requestPolicy: 'network-only' });
       }
