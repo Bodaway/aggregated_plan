@@ -1,9 +1,12 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
+use domain::rules::worklog_time::derive_time_blocks;
 use domain::types::*;
+use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::repositories::{
-    WorklogFilter, WorklogRepository, WORKLOG_FILTER_DEFAULT_LIMIT, WORKLOG_FILTER_MAX_LIMIT,
+    ActivitySlotRepository, ConfigRepository, WorklogFilter, WorklogRepository,
+    WORKLOG_FILTER_DEFAULT_LIMIT, WORKLOG_FILTER_MAX_LIMIT,
 };
 
 /// Add a new worklog entry. `logged_at` defaults to `now` when `None`.
@@ -74,6 +77,74 @@ pub async fn list_worklog_entries(
     Ok(worklog_repo.list(user_id, &filter).await?)
 }
 
+/// Outcome of a flush: how many slots were written and the new watermark.
+pub struct FlushOutcome {
+    pub slots_written: u32,
+    pub active_since: DateTime<Utc>,
+}
+
+const DEFAULT_TZ: &str = "Europe/Paris";
+
+/// Materialize worklog entries logged in `[from, now]` for `task_id` into closed
+/// activity slots, one per (local day, half-day). Returns new watermark + count.
+pub async fn materialize_worklog_time(
+    worklog_repo: &dyn WorklogRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    config_repo: &dyn ConfigRepository,
+    user_id: UserId,
+    task_id: TaskId,
+    from: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<FlushOutcome, AppError> {
+    let tz: chrono_tz::Tz = config_repo
+        .get(user_id, "aplan.timezone")
+        .await?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| DEFAULT_TZ.parse().expect("default tz parses"));
+
+    let filter = WorklogFilter {
+        task_ids: Some(vec![task_id]),
+        from: Some(from),
+        to: Some(now),
+        limit: WORKLOG_FILTER_MAX_LIMIT,
+        offset: 0,
+    };
+    let entries = worklog_repo.list(user_id, &filter).await?;
+
+    let mut local_to_utc: std::collections::HashMap<chrono::NaiveDateTime, DateTime<Utc>> =
+        std::collections::HashMap::new();
+    let mut local_times = Vec::with_capacity(entries.len());
+    for e in &entries {
+        let local = tz.from_utc_datetime(&e.logged_at.naive_utc()).naive_local();
+        local_to_utc.insert(local, e.logged_at);
+        local_times.push(local);
+    }
+
+    let blocks = derive_time_blocks(&local_times);
+    let mut written = 0u32;
+    for block in blocks {
+        let start_utc = local_to_utc[&block.start];
+        let mut end_utc = local_to_utc[&block.end];
+        if end_utc <= start_utc {
+            end_utc = start_utc + chrono::Duration::minutes(1);
+        }
+        let slot = ActivitySlot {
+            id: Uuid::new_v4(),
+            user_id,
+            task_id: Some(task_id),
+            start_time: start_utc,
+            end_time: Some(end_utc),
+            half_day: block.half_day,
+            date: block.date,
+            created_at: Utc::now(),
+        };
+        activity_repo.save(&slot).await?;
+        written += 1;
+    }
+
+    Ok(FlushOutcome { slots_written: written, active_since: now })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +153,156 @@ mod tests {
     use uuid::Uuid;
 
     use crate::errors::RepositoryError;
+    use crate::repositories::{ActivitySlotRepository, ConfigRepository};
+    use chrono::NaiveDate;
+    use domain::types::{ActivitySlot, ActivitySlotId, HalfDay};
+
+    #[derive(Default)]
+    struct FakeActivityRepo {
+        slots: Mutex<Vec<ActivitySlot>>,
+    }
+
+    #[async_trait]
+    impl ActivitySlotRepository for FakeActivityRepo {
+        async fn find_by_id(
+            &self,
+            id: ActivitySlotId,
+        ) -> Result<Option<ActivitySlot>, RepositoryError> {
+            Ok(self.slots.lock().unwrap().iter().find(|s| s.id == id).cloned())
+        }
+        async fn find_by_user_and_date(
+            &self,
+            user_id: UserId,
+            date: NaiveDate,
+        ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.user_id == user_id && s.date == date)
+                .cloned()
+                .collect())
+        }
+        async fn find_active(&self, _user_id: UserId) -> Result<Option<ActivitySlot>, RepositoryError> {
+            Ok(None)
+        }
+        async fn find_by_user_and_date_range(
+            &self,
+            user_id: UserId,
+            start_date: NaiveDate,
+            end_date: NaiveDate,
+        ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.user_id == user_id && s.date >= start_date && s.date <= end_date)
+                .cloned()
+                .collect())
+        }
+        async fn save(&self, slot: &ActivitySlot) -> Result<(), RepositoryError> {
+            self.slots.lock().unwrap().push(slot.clone());
+            Ok(())
+        }
+        async fn update(&self, _slot: &ActivitySlot) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        async fn delete(&self, _id: ActivitySlotId) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeConfigRepo {
+        map: Mutex<std::collections::HashMap<String, String>>,
+    }
+
+    #[async_trait]
+    impl ConfigRepository for FakeConfigRepo {
+        async fn get(&self, _user_id: UserId, key: &str) -> Result<Option<String>, RepositoryError> {
+            Ok(self.map.lock().unwrap().get(key).cloned())
+        }
+        async fn get_all(&self, _user_id: UserId) -> Result<Vec<(String, String)>, RepositoryError> {
+            Ok(self
+                .map
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
+        }
+        async fn set(
+            &self,
+            _user_id: UserId,
+            key: &str,
+            value: &str,
+        ) -> Result<(), RepositoryError> {
+            self.map.lock().unwrap().insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn materialize_writes_one_local_slot_per_half_day() {
+        use chrono::TimeZone;
+        let wlog = FakeRepo::default();
+        let acts = FakeActivityRepo::default();
+        let cfg = FakeConfigRepo::default();
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let uid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let from = Utc.with_ymd_and_hms(2026, 6, 8, 0, 0, 0).unwrap();
+        let to = Utc.with_ymd_and_hms(2026, 6, 8, 23, 0, 0).unwrap();
+        add_worklog_entry(
+            &wlog,
+            uid,
+            tid,
+            "a".into(),
+            Some(Utc.with_ymd_and_hms(2026, 6, 8, 8, 0, 0).unwrap()),
+            from,
+        )
+        .await
+        .unwrap();
+        add_worklog_entry(
+            &wlog,
+            uid,
+            tid,
+            "b".into(),
+            Some(Utc.with_ymd_and_hms(2026, 6, 8, 9, 30, 0).unwrap()),
+            from,
+        )
+        .await
+        .unwrap();
+
+        let result =
+            materialize_worklog_time(&wlog, &acts, &cfg, uid, tid, from, to).await.unwrap();
+
+        let slots = acts.slots.lock().unwrap();
+        assert_eq!(slots.len(), 1, "one morning block expected");
+        assert_eq!(slots[0].half_day, HalfDay::Morning);
+        assert_eq!(slots[0].date, NaiveDate::from_ymd_opt(2026, 6, 8).unwrap());
+        assert_eq!(slots[0].task_id, Some(tid));
+        assert!(slots[0].end_time.unwrap() > slots[0].start_time);
+        assert_eq!(result.slots_written, 1);
+        assert_eq!(result.active_since, to);
+    }
+
+    #[tokio::test]
+    async fn materialize_empty_window_writes_nothing() {
+        let wlog = FakeRepo::default();
+        let acts = FakeActivityRepo::default();
+        let cfg = FakeConfigRepo::default();
+        let uid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let from = now();
+        let to = now() + chrono::Duration::hours(1);
+        let result =
+            materialize_worklog_time(&wlog, &acts, &cfg, uid, tid, from, to).await.unwrap();
+        assert_eq!(result.slots_written, 0);
+        assert!(acts.slots.lock().unwrap().is_empty());
+    }
 
     #[derive(Default)]
     struct FakeRepo {
