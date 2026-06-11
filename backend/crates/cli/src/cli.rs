@@ -86,14 +86,14 @@ pub struct Cli {
 pub enum Commands {
     /// Print the CLI version (smoke test for the scaffold).
     Version,
-    /// Show the currently running activity slot, if any.
+    /// Show the task this session is linked to (the active-task pointer).
     Current,
-    /// Start a worklog on TASK. Auto-stops any running activity first.
+    /// Link this session to TASK (sets the active-task pointer). Flushes the previously active task's worklog time first.
     Start {
         /// Task to track: UUID, Jira-style key (AP-123), or fuzzy title match.
         task: String,
     },
-    /// Stop the currently running worklog. Prints duration.
+    /// Flush the active task's worklog time into closed slots and clear the active-task pointer.
     Stop,
     /// Flush the worklog time of TASK into closed activity slots, WITHOUT
     /// clearing the active-task pointer. Used by the SessionEnd hook.
