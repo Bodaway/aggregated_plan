@@ -33,8 +33,9 @@ usage) — but **the `aplan` CLI exposes no command to write to it**.
 
 ## Non-goals
 
-- Fixing the UTC-vs-local timezone convention for `date` / `half_day` (kept as-is for
-  consistency with existing `start_activity` / `create_manual_activity_slot`; see Caveats).
+- Re-deriving `date` / `half_day` for the *existing* paths (`start_activity`, the
+  `createActivitySlot` UI mutation) — those keep their current UTC-based behavior. Only the
+  new worklog-derived materialization path is timezone-correct.
 - Changing how the frontend reads/writes worklog entries or activity slots.
 - Migrating historical `notes`-field content into worklog entries.
 
@@ -52,6 +53,9 @@ materialized at lifecycle boundaries.**
   - `aplan.active_task_id` — the task this session is logging against.
   - `aplan.active_since` — watermark: entries with `logged_at >= active_since` have not yet
     been materialized into slots.
+- **Local timezone** — a `configuration` key `aplan.timezone` (IANA name, e.g.
+  `Europe/Paris`, default `Europe/Paris`). Day and half-day boundaries are computed in this
+  zone, DST-aware, so multi-day splits land on the correct local calendar day.
 
 Rejected alternative: a pure derived (never-materialized) view. Simpler and fully
 idempotent, but the existing workload (R16), journal, and dashboard features read
@@ -76,23 +80,31 @@ code `4` (precondition failed) when neither is available.
 Layered per DDD (`domain` → `application` → `api`).
 
 ### domain (`crates/domain`)
-- Pure function `derive_time_blocks(timestamps: &[DateTime<Utc>]) -> Vec<TimeBlock>` where
-  `TimeBlock { start, end, half_day }`:
-  - group timestamps by calendar day (`date_naive()`);
+- Pure function `derive_time_blocks(local_times: &[NaiveDateTime]) -> Vec<LocalBlock>` where
+  `LocalBlock { start: NaiveDateTime, end: NaiveDateTime, date: NaiveDate, half_day }`. It
+  operates on **local** naive datetimes (the application layer does the UTC→local
+  conversion), so the domain crate stays pure (no `chrono-tz` dependency):
+  - group by calendar day (`date()` of the local naive datetime);
   - within a day, split at the half-day boundary (morning ≤ 12:00, afternoon ≥ 13:00) using
     the existing `rules::workload::half_day_of`;
-  - each (day, half-day) group with ≥1 entry → one block from its min to its max timestamp;
+  - each (day, half-day) group with ≥1 entry → one block from its min to its max time;
   - a group whose min == max (single entry) gets a minimal non-zero end (e.g. +1 minute) so
     the existing `end > start` validation passes.
 - Unit-tested in isolation (single day, multi-day, AM-only, PM-only, crossing noon, single
   entry, empty input).
 
 ### application (`crates/application/use_cases`)
-- `materialize_worklog_time(worklog_repo, activity_repo, user_id, task_id, from, now)`:
-  1. `list_worklog_entries` filtered by `task_id` and `logged_at ∈ [from, now]`;
-  2. `derive_time_blocks` over their `logged_at` values;
-  3. write each block via the existing `create_manual_activity_slot`;
-  4. return the new watermark (`now`).
+- `materialize_worklog_time(worklog_repo, activity_repo, config_repo, user_id, task_id, from, now)`:
+  1. resolve the timezone from `aplan.timezone` (default `Europe/Paris`) via `chrono-tz`;
+  2. `list_worklog_entries` filtered by `task_id` and `logged_at ∈ [from, now]`;
+  3. convert each entry's `logged_at` (UTC) to a local `NaiveDateTime` in that zone;
+  4. `derive_time_blocks` over the local times;
+  5. for each block, convert the local `start`/`end` back to UTC instants (DST-aware) and
+     write a closed `ActivitySlot` with the block's local `date` / `half_day` (not the
+     UTC-derived ones — so this path bypasses `create_manual_activity_slot`'s UTC derivation
+     and constructs the slot directly, or calls a new `create_slot_with_classification`);
+  6. return the new watermark (`now`).
+- `chrono-tz` is added to the **application** crate only; the `domain` crate stays pure.
 - Idempotency: the caller advances `aplan.active_since` to the returned watermark, so the
   same entries are never materialized twice. Append-only — no slot is rewritten or deleted.
 
@@ -150,8 +162,11 @@ materializes them. Self-healing.
 - **No entries since last flush**: flush writes nothing.
 - **Single entry in a half-day**: block gets a minimal non-zero duration.
 - **Double flush**: watermark prevents recounting.
-- **Timezone caveat**: `date` and `half_day` are computed in UTC, consistent with existing
-  `start_activity` / `create_manual_activity_slot`. Refining to local time is out of scope.
+- **Local timezone / DST**: `date` and `half_day` for materialized blocks are computed in
+  `aplan.timezone` (default `Europe/Paris`), DST-aware via per-timestamp conversion — so
+  late-evening or early-morning work lands on the correct local day, and a span crossing a
+  DST change is converted correctly. The existing `start_activity` / `createActivitySlot`
+  paths keep their current UTC behavior (out of scope).
 
 ## Testing strategy
 
@@ -164,8 +179,9 @@ materializes them. Self-healing.
 
 ## Files touched (anticipated)
 
-- `backend/crates/domain/src/rules/` — `derive_time_blocks` (+ tests).
-- `backend/crates/application/src/use_cases/` — `materialize_worklog_time` (+ tests).
+- `backend/crates/domain/src/rules/` — `derive_time_blocks` over local naive datetimes (+ tests).
+- `backend/crates/application/` — `materialize_worklog_time` use case (+ tests); add
+  `chrono-tz` dependency and a slot constructor that accepts explicit `date`/`half_day`.
 - `backend/crates/api/src/graphql/` — `flushWorklogTime` mutation; schema regen.
 - `backend/crates/cli/src/` — `cli.rs` (`Log` subcommand), `commands.rs` (`log`, updated
   `start`/`stop`/`done`/`current`), `queries.rs` (new GraphQL ops).
