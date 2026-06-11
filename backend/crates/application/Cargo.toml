@@ -11,3 +11,4 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
+chrono-tz = "0.9"
