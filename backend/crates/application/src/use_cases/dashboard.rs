@@ -499,6 +499,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -532,6 +534,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -577,6 +581,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -611,6 +617,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -697,6 +705,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -770,6 +780,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

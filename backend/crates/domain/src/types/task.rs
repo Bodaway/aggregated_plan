@@ -40,6 +40,11 @@ pub struct Task {
     pub recurrence_id: Option<RecurrenceTemplateId>,
     /// The occurrence slot this instance fills (the "planned date" for the recurrence).
     pub occurrence_date: Option<NaiveDate>,
+    /// Assigned Gryzzly task id (user-owned; never overwritten by sync). Optional.
+    pub gryzzly_task_id: Option<String>,
+    /// Snapshot of the assigned Gryzzly task's project id, captured at assign time so a
+    /// future hours-upload can build a declaration without a live catalog row.
+    pub gryzzly_project_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -165,6 +170,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

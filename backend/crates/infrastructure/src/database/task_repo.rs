@@ -128,6 +128,8 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
                 .map_err(|e| RepositoryError::Database(e.to_string()))?;
             parse_optional_date(od)?
         },
+        gryzzly_task_id: row.try_get("gryzzly_task_id").ok().flatten(),
+        gryzzly_project_id: row.try_get("gryzzly_project_id").ok().flatten(),
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
     })
@@ -403,8 +405,8 @@ impl TaskRepository for SqliteTaskRepository {
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, gryzzly_task_id, gryzzly_project_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
@@ -433,6 +435,8 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(task.estimated_hours_override.map(|h| h as f64))
         .bind(task.recurrence_id.map(|id| id.to_string()))
         .bind(task.occurrence_date.map(|d| d.format("%Y-%m-%d").to_string()))
+        .bind(&task.gryzzly_task_id)
+        .bind(&task.gryzzly_project_id)
         .bind(task.created_at.to_rfc3339())
         .bind(task.updated_at.to_rfc3339())
         .execute(&self.pool)
@@ -619,6 +623,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -993,6 +999,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             notes: None,
@@ -1411,6 +1419,20 @@ mod tests {
         let ids: Vec<_> = tasks.iter().map(|t| t.id).collect();
         assert!(ids.contains(&survivor_id), "survivor must appear");
         assert!(!ids.contains(&loser_id), "loser must be hidden");
+    }
+
+    #[tokio::test]
+    async fn task_persists_gryzzly_assignment() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+        let mut t = make_task("Gryzzly Task");
+        t.gryzzly_task_id = Some("g-123".into());
+        t.gryzzly_project_id = Some("p-9".into());
+        repo.save(&t).await.unwrap();
+
+        let loaded = repo.find_by_id(t.id).await.unwrap().unwrap();
+        assert_eq!(loaded.gryzzly_task_id.as_deref(), Some("g-123"));
+        assert_eq!(loaded.gryzzly_project_id.as_deref(), Some("p-9"));
     }
 
     // Test 10: find_planned_before excludes BOTH Done AND Cancelled tasks (BLOCKER regression)

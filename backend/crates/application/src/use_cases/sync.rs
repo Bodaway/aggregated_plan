@@ -166,6 +166,8 @@ pub async fn sync_jira(
                     estimated_hours_override: None,
                     recurrence_id: None,
                     occurrence_date: None,
+                    gryzzly_task_id: None,
+                    gryzzly_project_id: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -440,6 +442,8 @@ pub async fn sync_excel(
                     estimated_hours_override: None,
                     recurrence_id: None,
                     occurrence_date: None,
+                    gryzzly_task_id: None,
+                    gryzzly_project_id: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -1188,6 +1192,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: now,
             updated_at: now,
         };

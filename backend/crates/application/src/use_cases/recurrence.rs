@@ -333,6 +333,8 @@ pub async fn materialize_due_occurrences(
                 estimated_hours_override: None,
                 recurrence_id: Some(template.id),
                 occurrence_date: Some(date),
+                gryzzly_task_id: None,
+                gryzzly_project_id: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -1017,6 +1019,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: now,
             updated_at: now,
         };
