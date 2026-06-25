@@ -581,6 +581,24 @@ impl QueryRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(entries.into_iter().map(WorklogEntryGql).collect())
     }
+
+    /// List active Gryzzly catalog entries for the current user, optionally filtered by a
+    /// name/project search string and a project-name exact filter, capped at `limit`.
+    async fn gryzzly_tasks(
+        &self,
+        ctx: &Context<'_>,
+        search: Option<String>,
+        project_filter: Option<String>,
+        #[graphql(default = 100)] limit: i32,
+    ) -> Result<Vec<GryzzlyTaskGql>> {
+        let repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
+        let user_id = *ctx.data::<UserId>()?;
+        let rows = repo
+            .list_active(user_id, search.as_deref(), project_filter.as_deref(), limit as i64)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(rows.into_iter().map(GryzzlyTaskGql::from).collect())
+    }
 }
 
 /// Convert GraphQL TaskFilterInput to the application layer TaskFilter.

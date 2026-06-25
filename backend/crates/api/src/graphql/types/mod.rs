@@ -1,3 +1,4 @@
+pub mod gryzzly;
 pub mod task;
 pub mod recurrence;
 pub mod meeting;
@@ -15,6 +16,7 @@ pub mod enums;
 pub mod pagination;
 pub mod worklog_entry;
 
+pub use gryzzly::*;
 pub use task::*;
 pub use recurrence::*;
 pub use meeting::*;

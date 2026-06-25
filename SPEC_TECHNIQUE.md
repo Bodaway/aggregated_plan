@@ -3127,6 +3127,58 @@ Comportement :
 - Si `gryzzlyTaskId` est `null` : les deux champs `gryzzly_task_id` et `gryzzly_project_id` de la tâche sont mis à `null` (dissociation).
 - La tâche mise à jour est persistée via `task_repo.save` et renvoyée au client.
 
+### 10.8 Requête `gryzzlyTasks` et champ `Task.gryzzlyTask`
+
+#### Requête `gryzzlyTasks`
+
+```graphql
+gryzzlyTasks(search: String, projectFilter: String, limit: Int = 100): [GryzzlyTaskGql!]!
+```
+
+Retourne les entrées **actives** (`is_active = 1`) du catalogue Gryzzly de l'utilisateur courant, triées par `project_name` puis `name`, plafonnées à `limit`.
+
+- `search` : filtre optionnel sur le nom de la tâche ou du projet (recherche insensible à la casse).
+- `projectFilter` : filtre optionnel de correspondance exacte sur `project_name`.
+- `limit` : nombre maximum de résultats (défaut 100).
+
+Type de retour `GryzzlyTaskGql` :
+
+| Champ | Type GraphQL | Description |
+|-------|-------------|-------------|
+| `gryzzlyTaskId` | `String!` | Identifiant Gryzzly de la tâche |
+| `name` | `String!` | Libellé de la tâche |
+| `gryzzlyProjectId` | `String!` | Identifiant Gryzzly du projet |
+| `projectName` | `String!` | Nom du projet (dénormalisé) |
+| `customerName` | `String` | Nom du client (optionnel) |
+
+#### Champ `Task.gryzzlyTask`
+
+```graphql
+type Task {
+  # ...
+  gryzzlyTask: AssignedGryzzlyTaskGql
+}
+```
+
+Résout l'assignment Gryzzly d'une tâche aplan. Retourne `null` si la tâche n'est pas assignée à une tâche Gryzzly. Sinon expose trois états de péremption via le champ `stale` :
+
+| État | `stale` | `name` | Description |
+|------|---------|--------|-------------|
+| 1 — actif | `false` | `Some` | La ligne de catalogue est active et à jour |
+| 2 — désactivé | `true` | `Some` | La ligne de catalogue a été soft-désactivée (tâche archivée côté Gryzzly) |
+| 3 — absent | `true` | `None` | La ligne de catalogue est introuvable (assignment orphelin) — **jamais de panique** |
+
+Type `AssignedGryzzlyTaskGql` :
+
+| Champ | Type GraphQL | Description |
+|-------|-------------|-------------|
+| `gryzzlyTaskId` | `String!` | Identifiant Gryzzly de la tâche |
+| `name` | `String` | Libellé (null si état 3) |
+| `projectName` | `String` | Nom du projet (null si état 3) |
+| `stale` | `Boolean!` | Vrai si la ligne est désactivée ou absente |
+
+La résolution utilise `GryzzlyCatalogRepository::find_by_gryzzly_task_id` qui retourne la ligne **quelle que soit sa valeur de `is_active`**, permettant l'affichage des états 2 et 3 sans jamais déclencher de panique.
+
 ---
 
 ## 11. Deduplication Engine

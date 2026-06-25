@@ -1,10 +1,14 @@
-use async_graphql::{InputObject, MaybeUndefined, Object, SimpleObject, ID};
+use std::sync::Arc;
+
+use async_graphql::{Context, InputObject, MaybeUndefined, Object, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
+use application::repositories::GryzzlyCatalogRepository;
 use domain::rules::priority::determine_quadrant;
 use domain::types::Task;
 
 use super::enums::*;
+use super::gryzzly::{resolve_assigned, AssignedGryzzlyTaskGql};
 use super::pagination::PageInfo;
 use super::tag::TagGql;
 
@@ -171,6 +175,27 @@ impl TaskGql {
     /// True when this task is a generated instance of a recurrence template.
     async fn is_recurring(&self) -> bool {
         self.0.recurrence_id.is_some()
+    }
+
+    /// The assigned Gryzzly task (with project context), or null if unassigned.
+    ///
+    /// Returns `AssignedGryzzlyTaskGql` with three stale states:
+    ///   1. `stale = false` — catalog row is active (current).
+    ///   2. `stale = true`, `name = Some` — catalog row is soft-disabled.
+    ///   3. `stale = true`, `name = None` — catalog row is missing (orphaned assignment).
+    async fn gryzzly_task(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Option<AssignedGryzzlyTaskGql>> {
+        let Some(gid) = self.0.gryzzly_task_id.clone() else {
+            return Ok(None);
+        };
+        let repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
+        let entry = repo
+            .find_by_gryzzly_task_id(self.0.user_id, &gid)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(Some(resolve_assigned(gid, entry)))
     }
 }
 
