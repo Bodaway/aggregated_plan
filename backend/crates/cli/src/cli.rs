@@ -213,6 +213,7 @@ pub enum SourceArg {
     Outlook,
     Obsidian,
     Personal,
+    Gryzzly,
 }
 
 #[derive(Subcommand, Debug)]

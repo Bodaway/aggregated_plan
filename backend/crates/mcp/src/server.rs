@@ -210,7 +210,8 @@ fn parse_source(s: &str) -> Result<Source, String> {
         "obsidian" => Ok(Source::Obsidian),
         "personal" => Ok(Source::Personal),
         "outlook" => Ok(Source::Outlook),
-        _ => Err(format!("Invalid source '{}'. Use: jira, excel, obsidian, personal, outlook", s)),
+        "gryzzly" => Ok(Source::Gryzzly),
+        _ => Err(format!("Invalid source '{}'. Use: jira, excel, obsidian, personal, outlook, gryzzly", s)),
     }
 }
 

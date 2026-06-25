@@ -851,6 +851,7 @@ pub fn sync(api_url: &str, json: bool, source: Option<&SourceArg>) -> ExitCode {
             SourceArg::Outlook => force_sync::SourceGql::OUTLOOK,
             SourceArg::Obsidian => force_sync::SourceGql::OBSIDIAN,
             SourceArg::Personal => force_sync::SourceGql::PERSONAL,
+            SourceArg::Gryzzly => force_sync::SourceGql::GRYZZLY,
         }),
     });
     match result {

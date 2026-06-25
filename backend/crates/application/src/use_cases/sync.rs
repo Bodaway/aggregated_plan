@@ -753,6 +753,9 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
         Source::Personal => {
             // Personal tasks are not synced from an external source.
         }
+        Source::Gryzzly => {
+            // Gryzzly sync not yet implemented — placeholder for Task 5.
+        }
     }
 
     // Return the current sync status for the requested source.

@@ -17,6 +17,7 @@ pub enum Source {
     Obsidian,
     Personal,
     Outlook,
+    Gryzzly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

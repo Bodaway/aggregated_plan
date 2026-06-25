@@ -9,6 +9,7 @@ pub fn source_to_str(s: Source) -> &'static str {
         Source::Obsidian => "obsidian",
         Source::Personal => "personal",
         Source::Outlook => "outlook",
+        Source::Gryzzly => "gryzzly",
     }
 }
 
@@ -19,7 +20,27 @@ pub fn source_from_str(s: &str) -> Source {
         "obsidian" => Source::Obsidian,
         "personal" => Source::Personal,
         "outlook" => Source::Outlook,
+        "gryzzly" => Source::Gryzzly,
         _ => Source::Personal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::types::Source;
+
+    #[test]
+    fn source_round_trips_every_variant() {
+        for s in [Source::Jira, Source::Excel, Source::Obsidian, Source::Personal, Source::Outlook, Source::Gryzzly] {
+            assert_eq!(source_from_str(source_to_str(s)), s, "round-trip failed for {s:?}");
+        }
+    }
+
+    #[test]
+    fn gryzzly_maps_to_its_own_string() {
+        assert_eq!(source_to_str(Source::Gryzzly), "gryzzly");
+        assert_eq!(source_from_str("gryzzly"), Source::Gryzzly);
     }
 }
 
