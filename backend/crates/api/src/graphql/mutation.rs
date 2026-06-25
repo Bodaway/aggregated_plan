@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use application::repositories::*;
 use application::services::*;
-use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management, worklog as worklog_uc};
+use application::use_cases::{activity_tracking, alerts, configuration, deduplication, gryzzly_assignment, priority, sync, task_management, worklog as worklog_uc};
 use application::use_cases::recurrence as recurrence_uc;
 use infrastructure::connectors::excel::GraphExcelClient;
 use infrastructure::connectors::gryzzly::HttpGryzzlyClient;
@@ -894,6 +894,28 @@ impl MutationRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
+        Ok(TaskGql(task))
+    }
+
+    // ─── Gryzzly assignment ───
+
+    /// Assign a Gryzzly task to an aplan task. Snapshots the Gryzzly project id
+    /// from the catalog at assign time. Pass `null` for `gryzzly_task_id` to clear.
+    async fn assign_gryzzly_task(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+        gryzzly_task_id: Option<ID>,
+    ) -> Result<TaskGql> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let catalog_repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
+        let tid = Uuid::parse_str(task_id.as_str())
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+        let gid = gryzzly_task_id.map(|g| g.to_string());
+        let task =
+            gryzzly_assignment::assign_gryzzly_task(task_repo.as_ref(), catalog_repo.as_ref(), tid, gid)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(TaskGql(task))
     }
 }

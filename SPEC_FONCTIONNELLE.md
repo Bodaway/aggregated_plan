@@ -367,6 +367,20 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+#### US-007 : Assignation d'une tâche aplan à une tâche Gryzzly
+
+> En tant que Tech Lead, je veux associer une tâche aplan à une tâche Gryzzly du catalogue afin de préparer une future déclaration de temps.
+
+**Critères d'acceptation :**
+- L'utilisateur peut assigner une tâche aplan à une tâche Gryzzly issue du catalogue synchronisé (US-006), via la mutation `assignGryzzlyTask(taskId, gryzzlyTaskId)`.
+- Lors de l'assignation, le `gryzzly_project_id` est snapshoté dans la tâche depuis le catalogue — une déclaration d'heures future n'a pas besoin que le catalogue soit à jour.
+- Si la tâche Gryzzly est inconnue du catalogue, l'assignation est refusée (erreur de validation).
+- L'utilisateur peut effacer l'assignation en passant `gryzzlyTaskId: null` ; les deux champs (`gryzzly_task_id` et `gryzzly_project_id`) sont mis à `null`.
+
+**Priorité** : Should
+
+---
+
 ### 6.2 Vue quotidienne (Dashboard)
 
 #### US-010 : Dashboard du matin

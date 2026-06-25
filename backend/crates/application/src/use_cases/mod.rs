@@ -9,3 +9,4 @@ pub mod alerts;
 pub mod configuration;
 pub mod worklog;
 pub mod recurrence;
+pub mod gryzzly_assignment;

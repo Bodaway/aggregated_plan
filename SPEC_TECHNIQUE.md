@@ -3116,6 +3116,17 @@ Clés de configuration :
 
 Le client `HttpGryzzlyClient` est construit dynamiquement par la mutation `forceSync` à partir de ces clés (à l'image des connecteurs Jira/Outlook/Excel). Le repository `SqliteGryzzlyCatalogRepository` est injecté dans le contexte GraphQL au démarrage.
 
+### 10.7 Mutation `assignGryzzlyTask`
+
+La mutation GraphQL `assignGryzzlyTask(taskId: ID!, gryzzlyTaskId: ID): Task` permet d'associer (ou de dissocier) une tâche aplan à une tâche du catalogue Gryzzly.
+
+**Use case** : `application::use_cases::gryzzly_assignment::assign_gryzzly_task(task_repo, catalog_repo, task_id, gryzzly_task_id: Option<String>)`.
+
+Comportement :
+- Si `gryzzlyTaskId` est fourni : le use case vérifie que la tâche existe dans `gryzzly_tasks` via `find_by_gryzzly_task_id` (renvoie une `AppError::Validation` si absente) puis **snapshote** le `gryzzly_project_id` du catalogue dans la tâche — ainsi une future déclaration d'heures n'a pas besoin d'un catalogue en vie.
+- Si `gryzzlyTaskId` est `null` : les deux champs `gryzzly_task_id` et `gryzzly_project_id` de la tâche sont mis à `null` (dissociation).
+- La tâche mise à jour est persistée via `task_repo.save` et renvoyée au client.
+
 ---
 
 ## 11. Deduplication Engine
