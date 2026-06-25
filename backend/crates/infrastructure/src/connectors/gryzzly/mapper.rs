@@ -51,4 +51,10 @@ mod tests {
         let raw = RawGryzzlyTask { id: "t1".into(), name: "Dev".into(), project_id: "p1".into(), archived: Some(false) };
         assert!(!map_task(raw, false).is_active);
     }
+
+    #[test]
+    fn project_missing_archived_flag_defaults_active() {
+        let raw = RawGryzzlyProject { id: "p3".into(), name: "New".into(), customer_name: None, archived: None };
+        assert!(map_project(raw).is_active);
+    }
 }
