@@ -27,6 +27,7 @@ import {
   isToday,
 } from '@/lib/date-utils';
 import { TaskCreateSheet } from '@/components/task/TaskCreateSheet';
+import { getTaskHours } from '@/lib/task-hours';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,11 +43,6 @@ const UPDATE_TASK_MUTATION = `
 `;
 
 // ─── Helpers (module-level, no deps) ─────────────────────────────────────────
-
-
-function getTaskHours(t: DashboardTask): number {
-  return t.effectiveRemainingHours ?? t.effectiveEstimatedHours ?? 0;
-}
 
 /** Returns the "planned date" key (YYYY-MM-DD) for routing a task to a day column. */
 function getTaskDate(t: DashboardTask): string {
@@ -160,9 +156,13 @@ function DraggableTaskCard({
 function UnplannedSidebar({
   tasks,
   onTaskClick,
+  width,
+  onResize,
 }: {
   readonly tasks: DashboardTask[];
   readonly onTaskClick: (id: string) => void;
+  readonly width: number;
+  readonly onResize: (w: number) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: 'unplanned' });
   const sortedTasks = [...tasks].sort((a, b) => {
@@ -170,38 +170,63 @@ function UnplannedSidebar({
     return b.impact - a.impact;
   });
 
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = width;
+
+    const onPointerMove = (ev: PointerEvent) => {
+      onResize(startWidth + (ev.clientX - startX));
+    };
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  }, [width, onResize]);
+
   return (
-    <div className="flex flex-col w-52 flex-shrink-0">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-1 mb-2">
-        <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-          Unplanned
-        </span>
-        <span className="text-xs font-medium text-gray-500 bg-gray-100 rounded-full px-1.5 py-0.5">
-          {tasks.length}
-        </span>
+    <div className="flex flex-row flex-shrink-0" style={{ width }}>
+      {/* Column content */}
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Header */}
+        <div className="flex items-center gap-2 px-1 mb-2">
+          <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+            Unplanned
+          </span>
+          <span className="text-xs font-medium text-gray-500 bg-gray-100 rounded-full px-1.5 py-0.5">
+            {tasks.length}
+          </span>
+        </div>
+
+        {/* Drop zone */}
+        <div
+          ref={setNodeRef}
+          className={`flex-1 rounded-lg border-2 border-dashed transition-colors p-2 space-y-1.5 overflow-y-auto
+            ${isOver ? 'border-blue-400 bg-blue-50/40' : 'border-gray-200 bg-gray-50/50'}`}
+          style={{ minHeight: 120, maxHeight: 'calc(100vh - 200px)' }}
+        >
+          {sortedTasks.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-6">No unplanned tasks</p>
+          ) : (
+            sortedTasks.map(t => (
+              <DraggableTaskCard key={t.id} task={t} onTaskClick={onTaskClick} />
+            ))
+          )}
+        </div>
+
+        {/* Hint */}
+        <p className="text-xs text-gray-400 text-center mt-1.5">
+          Drag to a day to schedule
+        </p>
       </div>
 
-      {/* Drop zone */}
+      {/* Resize handle */}
       <div
-        ref={setNodeRef}
-        className={`flex-1 rounded-lg border-2 border-dashed transition-colors p-2 space-y-1.5 overflow-y-auto
-          ${isOver ? 'border-blue-400 bg-blue-50/40' : 'border-gray-200 bg-gray-50/50'}`}
-        style={{ minHeight: 120, maxHeight: 'calc(100vh - 200px)' }}
-      >
-        {sortedTasks.length === 0 ? (
-          <p className="text-xs text-gray-400 text-center py-6">No unplanned tasks</p>
-        ) : (
-          sortedTasks.map(t => (
-            <DraggableTaskCard key={t.id} task={t} onTaskClick={onTaskClick} />
-          ))
-        )}
-      </div>
-
-      {/* Hint */}
-      <p className="text-xs text-gray-400 text-center mt-1.5">
-        Drag to a day to schedule
-      </p>
+        className="w-1.5 self-stretch cursor-col-resize hover:bg-blue-300 transition-colors rounded-full mx-0.5"
+        onPointerDown={handlePointerDown}
+      />
     </div>
   );
 }
@@ -261,6 +286,14 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, 
             {formatDayShort(date)}
           </span>
           <div className="flex items-center gap-1.5">
+            {meetingHours > 0 && (
+              <span className="flex items-center gap-0.5 text-xs font-medium text-indigo-500" title="Meeting hours">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {formatHoursCompact(meetingHours)}
+              </span>
+            )}
             <span className={`text-xs font-medium ${overloaded ? 'text-red-600' : 'text-gray-500'}`}>
               {formatHoursCompact(totalHours)}/{formatHoursCompact(availableHours)}
             </span>
@@ -330,12 +363,37 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, 
   );
 }
 
+// ─── UnplannedSidebar width constants ─────────────────────────────────────────
+
+const UNPLANNED_MIN_WIDTH = 160;
+const UNPLANNED_MAX_WIDTH = 520;
+const UNPLANNED_DEFAULT_WIDTH = 208;
+const UNPLANNED_WIDTH_KEY = 'dashboard.unplannedWidth';
+
 // ─── DashboardPage ────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
   // ── Edit sheet (owned by SearchProvider) ──
   const { openTaskInSheet } = useSearch();
   const [creatingForDate, setCreatingForDate] = useState<string | null>(null);
+
+  // ── Unplanned sidebar width ──
+  const [unplannedWidth, setUnplannedWidth] = useState<number>(() => {
+    const raw = localStorage.getItem(UNPLANNED_WIDTH_KEY);
+    const parsed = Number(raw);
+    if (raw === null || isNaN(parsed) || parsed < UNPLANNED_MIN_WIDTH || parsed > UNPLANNED_MAX_WIDTH) {
+      return UNPLANNED_DEFAULT_WIDTH;
+    }
+    return parsed;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(UNPLANNED_WIDTH_KEY, String(unplannedWidth));
+  }, [unplannedWidth]);
+
+  const handleUnplannedResize = useCallback((w: number) => {
+    setUnplannedWidth(Math.min(UNPLANNED_MAX_WIDTH, Math.max(UNPLANNED_MIN_WIDTH, w)));
+  }, []);
 
   // ── Week navigation ──
   const [currentDate, setCurrentDate] = useState(() => new Date());
@@ -582,7 +640,7 @@ export function DashboardPage() {
             onDragCancel={onDragCancel}
           >
             <div className="flex gap-3">
-              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={openTaskInSheet} />
+              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={openTaskInSheet} width={unplannedWidth} onResize={handleUnplannedResize} />
               <div className="flex-1 min-w-0">
                 <div style={{ display: 'grid', gridTemplateColumns: `repeat(${workingDays.length}, minmax(0, 1fr))`, gap: '0.5rem' }}>
                   {weekDays.map(day => {

@@ -265,9 +265,12 @@ fn compute_weekly_workload(
         }
     }
 
-    // total_planned = sum of (effective_remaining or effective_estimated) for tasks in the week
+    // total_planned = sum of (effective_remaining or effective_estimated) for tasks in the week.
+    // Done/Cancelled tasks are excluded — they keep their estimate but no longer represent
+    // outstanding work, so counting them would inflate the total. Blocked tasks still count.
     let total_planned: f64 = tasks
         .iter()
+        .filter(|t| t.counts_toward_workload())
         .filter_map(|t| {
             t.effective_remaining_hours()
                 .or_else(|| t.effective_estimated_hours())
@@ -537,6 +540,85 @@ mod tests {
 
         assert!((result.total_planned - 12.0).abs() < f64::EPSILON);
         assert!(result.overload.is_none()); // 12.0 + 0.0 <= 40.0
+    }
+
+    #[test]
+    fn done_task_is_excluded_from_total_planned() {
+        let monday = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let user_id = Uuid::new_v4();
+
+        // In-progress task: 4h estimate, planned in-week → counts.
+        let in_progress = Task {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Active".to_string(),
+            description: None,
+            notes: None,
+            source: Source::Personal,
+            source_id: None,
+            jira_status: None,
+            status: TaskStatus::InProgress,
+            project_id: None,
+            assignee: None,
+            delegated_to: None,
+            deadline: Some(monday),
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: Some(4.0),
+            urgency: UrgencyLevel::Medium,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: vec![],
+            tracking_state: TrackingState::Inbox,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Done task: 8h estimate, planned in-week → must be EXCLUDED.
+        let done = Task {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Finished".to_string(),
+            description: None,
+            notes: None,
+            source: Source::Personal,
+            source_id: None,
+            jira_status: None,
+            status: TaskStatus::Done,
+            project_id: None,
+            assignee: None,
+            delegated_to: None,
+            deadline: Some(monday + Duration::days(2)),
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: Some(8.0),
+            urgency: UrgencyLevel::Low,
+            urgency_manual: false,
+            impact: ImpactLevel::Low,
+            tags: vec![],
+            tracking_state: TrackingState::Inbox,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let result = compute_weekly_workload(monday, &[], &[in_progress, done], &[1, 2, 3, 4, 5]);
+
+        // Only the in-progress 4h counts; the Done 8h is excluded (NOT 12.0).
+        assert!((result.total_planned - 4.0).abs() < f64::EPSILON);
     }
 
     #[test]

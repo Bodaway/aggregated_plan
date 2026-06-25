@@ -410,13 +410,14 @@ impl MutationRoot {
         task_id_primary: ID,
         task_id_secondary: ID,
     ) -> Result<bool> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
         let task_link_repo = ctx.data::<Arc<dyn TaskLinkRepository>>()?;
         let primary = Uuid::parse_str(&task_id_primary)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
         let secondary = Uuid::parse_str(&task_id_secondary)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
 
-        deduplication::link_tasks(task_link_repo.as_ref(), primary, secondary)
+        deduplication::link_tasks(task_repo.as_ref(), task_link_repo.as_ref(), primary, secondary)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
@@ -444,13 +445,14 @@ impl MutationRoot {
         task_id_secondary: ID,
         accept: bool,
     ) -> Result<bool> {
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
         let task_link_repo = ctx.data::<Arc<dyn TaskLinkRepository>>()?;
         let primary = Uuid::parse_str(&task_id_primary)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
         let secondary = Uuid::parse_str(&task_id_secondary)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {}", e)))?;
 
-        deduplication::confirm_suggestion(task_link_repo.as_ref(), primary, secondary, accept)
+        deduplication::confirm_suggestion(task_repo.as_ref(), task_link_repo.as_ref(), primary, secondary, accept)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 

@@ -1,5 +1,15 @@
 import { useCallback } from 'react';
 import { useQuery, useMutation } from 'urql';
+import { formatDate } from '@/lib/date-utils';
+import { sortTasksForPicker } from '@/lib/task-picker-sort';
+
+const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+const IMPACT_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+
+function toNum(map: Record<string, number>, v: unknown): number {
+  if (typeof v === 'number') return v;
+  return map[v as string] ?? 1;
+}
 
 interface ActivityTask {
   readonly id: string;
@@ -96,6 +106,10 @@ const ACTIVE_TASKS_QUERY = `
         node {
           id
           title
+          plannedStart
+          deadline
+          urgency
+          impact
         }
       }
     }
@@ -105,11 +119,25 @@ const ACTIVE_TASKS_QUERY = `
 export interface TaskPickerItem {
   readonly id: string;
   readonly title: string;
+  readonly plannedStart: string | null;
+  readonly deadline: string | null;
+  readonly urgency: number;
+  readonly impact: number;
+}
+
+/** Raw shape returned by GraphQL before enum → number conversion. */
+interface RawTaskPickerNode {
+  readonly id: string;
+  readonly title: string;
+  readonly plannedStart: string | null;
+  readonly deadline: string | null;
+  readonly urgency: string | number;
+  readonly impact: string | number;
 }
 
 interface ActiveTasksData {
   readonly tasks: {
-    readonly edges: readonly { readonly node: TaskPickerItem }[];
+    readonly edges: readonly { readonly node: RawTaskPickerNode }[];
   };
 }
 
@@ -198,8 +226,14 @@ export function useActivity(date: string) {
     [executeAddWorklogEntry]
   );
 
-  const availableTasks: TaskPickerItem[] =
-    tasksResult.data?.tasks.edges.map(e => e.node) ?? [];
+  const availableTasks: TaskPickerItem[] = sortTasksForPicker(
+    (tasksResult.data?.tasks.edges ?? []).map(e => ({
+      ...e.node,
+      urgency: toNum(URGENCY_NUM, e.node.urgency),
+      impact: toNum(IMPACT_NUM, e.node.impact),
+    })),
+    formatDate(new Date()),
+  );
 
   return {
     slots: result.data?.activityJournal ?? [],

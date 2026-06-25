@@ -929,6 +929,14 @@ pub fn meeting_hours(start: DateTime<Utc>, end: DateTime<Utc>) -> f64 {
 
 /// R16: Detect overload for a week.
 /// Returns Some(excess_hours) if total load exceeds capacity, None otherwise.
+///
+/// Note: `planned_task_hours` (calculé dans `compute_weekly_workload`) **exclut les tâches
+/// Terminées (`Done`) et Annulées (`Cancelled`)** via `Task::counts_toward_workload()`. Ces
+/// tâches conservent leur estimation (Jira original estimate / estimation personnelle) mais
+/// ne comptent plus dans les totaux d'heures (par jour côté frontend et hebdomadaire côté
+/// backend). Les tâches Bloquées (`Blocked`) continuent de compter. Le filtre n'est appliqué
+/// qu'au calcul des heures : les tâches terminées restent récupérées et affichées sur le
+/// tableau de bord.
 pub fn detect_overload(
     planned_task_hours: f64,
     meeting_hours: f64,
@@ -3087,11 +3095,19 @@ The deduplication engine runs after each sync that involves both Jira and Excel 
       |-- Score >= DEDUP_CONFIDENCE_THRESHOLD and pair not rejected
       |   -> create DeduplicationSuggestion for user review
       +-- Score < threshold -> no action
-5. For auto-merged tasks:
-   - Jira task becomes the primary (source of truth for common fields)
-   - Excel data enriches: fields present in Excel but not in Jira are added
-   - A `task_link` record (type: auto_merged) links the Excel task to the Jira task
-   - The Excel task is hidden from normal views (only the merged Jira task is shown)
+5. For merged tasks (auto or confirmed):
+   - Survivor selection (R08b):
+       a. Exactly one task is from Jira -> Jira task is the survivor
+       b. Both or neither from Jira -> task already Followed in the dashboard is the survivor
+       c. Neither Followed -> primary task (task_id_primary in the link) is the survivor (deterministic fallback)
+   - The survivor's tracking_state is set to Followed (made visible).
+   - If the survivor has no planned_start/deadline, it inherits those fields from the loser.
+   - A `task_link` record links survivor (task_id_primary) to loser (task_id_secondary).
+   - The loser (task_id_secondary) is hidden from the dashboard and all task lists:
+     `find_by_user` and `find_by_date_range` exclude any task that is the
+     `task_id_secondary` of an `auto_merged`/`manual_merged` link. The loser's own
+     `tracking_state` is left unchanged (non-destructive — reversed simply by unlinking).
+   - Surviving Jira task: fields follow the merge table in §11.2; Excel data enriches missing fields.
 ```
 
 ### 11.2 Merge Rules
@@ -3112,10 +3128,10 @@ When two tasks are merged (R08 auto-merge or R09 user-confirmed merge):
 
 ### 11.3 User Interactions
 
-- **Accept suggestion**: Creates a `task_link` with type `manual_merged`. The secondary task is hidden.
+- **Accept suggestion**: Applies survivor selection (R08b), creates a `task_link` with type `auto_merged` (via `confirm_suggestion`). The loser (`task_id_secondary`) is hidden from all views through the link-based exclusion above; its `tracking_state` is not modified.
 - **Reject suggestion**: Creates a `task_link` with type `rejected`. The pair is never suggested again.
-- **Manual link**: User can manually link any two tasks via `linkTasks` mutation.
-- **Manual unlink**: User can break a link via `unlinkTasks` mutation.
+- **Manual link**: User can manually link any two tasks via `linkTasks` mutation. Survivor selection (R08b) applies.
+- **Manual unlink**: User can break a link via `unlinkTasks` mutation, which deletes the `task_link`. The loser becomes visible again automatically (it is no longer a merge `task_id_secondary`); no `tracking_state` is restored, since hiding is driven solely by the link and the loser's state was never changed. The survivor keeps its `Followed` state.
 
 ---
 
@@ -3187,13 +3203,26 @@ Activity tracking uses three trigger types (US-031):
 | **R26** | When `updateActivitySlot` changes `startTime`, `half_day` is recomputed from the new `startTime`. The `date` field is not modified (read-only after creation). |
 | **R27** | In `UpdateActivitySlotInput`, `taskId` uses a `MaybeUndefined` wrapper: `null` clears the task association, absent field leaves it unchanged. |
 
-### 13.3 Reminder Suppression
+### 13.3 Task Selector Ordering (R28)
+
+The task list displayed in the activity timer selector (`ActivitySwitcher`) is ordered as follows:
+
+1. **Tâches du jour** (groupe prioritaire) : toute tâche dont `planned_start` (converti dans le fuseau `aplan.timezone`) tombe sur la date courante locale, **ou** dont `deadline` est égale à la date courante locale.
+2. **Autres tâches** : toutes les tâches suivies restantes, dans l'ordre habituel par priorité.
+
+Aucune tâche n'est filtrée ou masquée dans ce sélecteur — seul l'ordre change.
+
+À l'intérieur du groupe « tâches du jour », le tri secondaire est : urgence décroissante (`Critical → Low`), puis impact décroissant (`Critical → Low`).
+
+Côté frontend (`ActivityTimer`), le tri est appliqué côté client avant de rendre la liste déroulante. Côté backend, aucune modification de l'API n'est requise : la logique de tri vit dans le composant React.
+
+### 13.4 Reminder Suppression
 
 - No reminders on weekends or outside configured working hours (default: 08:00-17:00, configurable via `working_hours_start` / `working_hours_end`)
 - Post-meeting reminders: only for meetings the user attended (not declined)
 - If the user already changed activity within the last 15 minutes, skip the periodic reminder
 
-### 13.4 Worklog-Driven Time Tracking (Claude Code integration)
+### 13.5 Worklog-Driven Time Tracking (Claude Code integration)
 
 When Claude Code drives the cockpit via the `aplan` CLI, time is tracked through worklog entries rather than open activity slots:
 

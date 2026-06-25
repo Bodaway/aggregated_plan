@@ -790,6 +790,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 |-------|-------------|
 | **R08** | Quand un numéro de ticket Jira est identifié dans une ligne Excel (quelle que soit la colonne), les deux entrées sont fusionnées automatiquement. La source Jira fait foi pour les champs communs (statut, titre, assigné). |
 | **R09** | Quand il n'y a pas de clé commune, l'outil propose un rapprochement par similarité (titre, assigné, projet) avec un score de confiance. L'utilisateur valide ou rejette la fusion. |
+| **R08b** | **Choix du survivant lors d'une fusion** (auto R08 ou manuelle R09) : (1) si exactement l'une des deux tâches provient de Jira, c'est elle le survivant ; (2) sinon, c'est la tâche déjà visible dans le tableau de bord (`tracking_state = Followed`) ; (3) sinon, c'est la tâche primaire (repli déterministe). Le survivant est rendu visible : `tracking_state` est forcé à `Followed`. S'il n'avait pas de dates planifiées (`planned_start`/`deadline`), il hérite des valeurs correspondantes du doublon. Le doublon (enregistré dans `task_id_secondary` du lien `AutoMerged`/`ManualMerged`) est masqué du tableau de bord et de toutes les listes de tâches. |
 
 ### 7.4 Calcul automatique de l'urgence
 
@@ -806,7 +807,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 | Règle | Description |
 |-------|-------------|
-| **R16** | Une alerte de surcharge est émise lorsque la charge totale en heures (tâches planifiées + réunions) dépasse la capacité hebdomadaire. |
+| **R16** | Une alerte de surcharge est émise lorsque la charge totale en heures (tâches planifiées + réunions) dépasse la capacité hebdomadaire. Les agrégations d'heures (totaux par jour et hebdomadaire) **excluent les tâches Terminées (`Done`) et Annulées (`Cancelled`)** : elles conservent leur estimation mais ne représentent plus de travail à venir, donc les compter gonflerait artificiellement les totaux. Les tâches Bloquées (`Blocked`) continuent de compter. (Les tâches terminées restent néanmoins **affichées** sur le tableau de bord.) |
 | **R17** | Une alerte de deadline est émise lorsque l'échéance d'une tâche est à J-2 ou moins (configurable). |
 | **R18** | Une alerte de conflit est émise lorsque les créneaux horaires de deux éléments (tâche/réunion) se chevauchent. |
 | **R19** | Les alertes sont classées par gravité : **Critique** (dépassement, deadline dépassée), **Avertissement** (surcharge proche, deadline proche), **Information** (conflit mineur). |
@@ -819,6 +820,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 | **R21** | Quand l'utilisateur change de tâche, le créneau précédent est automatiquement fermé (heure de fin = maintenant). |
 | **R22** | Les créneaux sans tâche déclarée sont marqués comme "non renseigné" dans le journal. |
 | **R23** | L'utilisateur peut modifier le journal a posteriori (corriger, ajouter, supprimer des créneaux). |
+| **R28** | **Ordre des tâches dans le sélecteur du minuteur d'activité** : les tâches dont `plannedStart` OU `deadline` correspond à aujourd'hui (selon le fuseau horaire configuré) sont remontées en tête de liste. Aucune tâche n'est filtrée ou masquée. À l'intérieur du groupe « du jour », le tri secondaire est par urgence décroissante puis impact décroissant. Les tâches hors du jour sont triées après ce groupe, selon le tri habituel par priorité. |
 
 ### 7.7 Configuration du fichier Excel
 

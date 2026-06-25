@@ -211,13 +211,22 @@ impl TaskRepository for SqliteTaskRepository {
         user_id: UserId,
         filter: &TaskFilter,
     ) -> Result<Vec<Task>, RepositoryError> {
-        let mut sql = String::from("SELECT * FROM tasks WHERE user_id = ?");
+        // Exclude tasks that are the loser (task_id_secondary) of any merge link.
+        // Rejected links must NOT hide anything.
+        let mut sql = String::from(
+            "SELECT t.* FROM tasks t \
+             WHERE t.user_id = ? \
+             AND t.id NOT IN ( \
+               SELECT tl.task_id_secondary FROM task_links tl \
+               WHERE tl.link_type IN ('auto_merged','manual_merged') \
+             )",
+        );
         let mut bind_values: Vec<String> = vec![user_id.to_string()];
 
         if let Some(ref statuses) = filter.status {
             if !statuses.is_empty() {
                 let placeholders: Vec<&str> = statuses.iter().map(|_| "?").collect();
-                sql.push_str(&format!(" AND status IN ({})", placeholders.join(",")));
+                sql.push_str(&format!(" AND t.status IN ({})", placeholders.join(",")));
                 for s in statuses {
                     bind_values.push(task_status_to_str(*s).to_string());
                 }
@@ -227,7 +236,7 @@ impl TaskRepository for SqliteTaskRepository {
         if let Some(ref sources) = filter.source {
             if !sources.is_empty() {
                 let placeholders: Vec<&str> = sources.iter().map(|_| "?").collect();
-                sql.push_str(&format!(" AND source IN ({})", placeholders.join(",")));
+                sql.push_str(&format!(" AND t.source IN ({})", placeholders.join(",")));
                 for s in sources {
                     bind_values.push(source_to_str(*s).to_string());
                 }
@@ -235,22 +244,22 @@ impl TaskRepository for SqliteTaskRepository {
         }
 
         if let Some(ref pid) = filter.project_id {
-            sql.push_str(" AND project_id = ?");
+            sql.push_str(" AND t.project_id = ?");
             bind_values.push(pid.to_string());
         }
 
         if let Some(ref assignee) = filter.assignee {
-            sql.push_str(" AND assignee = ?");
+            sql.push_str(" AND t.assignee = ?");
             bind_values.push(assignee.clone());
         }
 
         if let Some(ref before) = filter.deadline_before {
-            sql.push_str(" AND deadline IS NOT NULL AND deadline <= ?");
+            sql.push_str(" AND t.deadline IS NOT NULL AND t.deadline <= ?");
             bind_values.push(before.format("%Y-%m-%d").to_string());
         }
 
         if let Some(ref after) = filter.deadline_after {
-            sql.push_str(" AND deadline IS NOT NULL AND deadline >= ?");
+            sql.push_str(" AND t.deadline IS NOT NULL AND t.deadline >= ?");
             bind_values.push(after.format("%Y-%m-%d").to_string());
         }
 
@@ -258,7 +267,7 @@ impl TaskRepository for SqliteTaskRepository {
             if !tag_ids.is_empty() {
                 let placeholders: Vec<&str> = tag_ids.iter().map(|_| "?").collect();
                 sql.push_str(&format!(
-                    " AND id IN (SELECT task_id FROM task_tags WHERE tag_id IN ({}))",
+                    " AND t.id IN (SELECT task_id FROM task_tags WHERE tag_id IN ({}))",
                     placeholders.join(",")
                 ));
                 for tid in tag_ids {
@@ -270,7 +279,7 @@ impl TaskRepository for SqliteTaskRepository {
         if let Some(ref states) = filter.tracking_state {
             if !states.is_empty() {
                 let placeholders: Vec<&str> = states.iter().map(|_| "?").collect();
-                sql.push_str(&format!(" AND tracking_state IN ({})", placeholders.join(",")));
+                sql.push_str(&format!(" AND t.tracking_state IN ({})", placeholders.join(",")));
                 for s in states {
                     bind_values.push(s.to_string());
                 }
@@ -278,16 +287,16 @@ impl TaskRepository for SqliteTaskRepository {
         }
 
         if let Some(ref sid) = filter.source_id {
-            sql.push_str(" AND source_id = ?");
+            sql.push_str(" AND t.source_id = ?");
             bind_values.push(sid.clone());
         }
 
         if let Some(ref needle) = filter.title_contains {
-            sql.push_str(" AND LOWER(title) LIKE ?");
+            sql.push_str(" AND LOWER(t.title) LIKE ?");
             bind_values.push(format!("%{}%", needle.to_lowercase()));
         }
 
-        sql.push_str(" ORDER BY created_at DESC");
+        sql.push_str(" ORDER BY t.created_at DESC");
 
         let mut query = sqlx::query(&sql);
         for val in &bind_values {
@@ -339,11 +348,18 @@ impl TaskRepository for SqliteTaskRepository {
     ) -> Result<Vec<Task>, RepositoryError> {
         let start_str = start.format("%Y-%m-%d").to_string();
         let end_str = end.format("%Y-%m-%d").to_string();
+        // Exclude merged losers (task_id_secondary of AutoMerged/ManualMerged links).
         let rows = sqlx::query(
-            "SELECT * FROM tasks WHERE user_id = ? AND (
-                (deadline IS NOT NULL AND deadline >= ? AND deadline <= ?)
-                OR (planned_start IS NOT NULL AND date(planned_start) >= ? AND date(planned_start) <= ?)
-            ) ORDER BY COALESCE(date(planned_start), deadline)",
+            "SELECT t.* FROM tasks t \
+             WHERE t.user_id = ? \
+             AND t.id NOT IN ( \
+               SELECT tl.task_id_secondary FROM task_links tl \
+               WHERE tl.link_type IN ('auto_merged','manual_merged') \
+             ) \
+             AND ( \
+               (t.deadline IS NOT NULL AND t.deadline >= ? AND t.deadline <= ?) \
+               OR (t.planned_start IS NOT NULL AND date(t.planned_start) >= ? AND date(t.planned_start) <= ?) \
+             ) ORDER BY COALESCE(date(t.planned_start), t.deadline)",
         )
         .bind(user_id.to_string())
         .bind(&start_str)
@@ -1237,6 +1253,164 @@ mod tests {
 
         let names = repo.list_delegates(user_id()).await.unwrap();
         assert_eq!(names, vec!["Ahmed".to_string(), "Marie".to_string()]);
+    }
+
+    // ─── Merge-loser exclusion tests ───
+
+    /// After A(primary)/B(secondary) AutoMerged link is created,
+    /// find_by_user excludes B (the loser) but still returns A (the survivor).
+    #[tokio::test]
+    async fn find_by_user_excludes_merged_loser() {
+        use crate::database::task_link_repo::SqliteTaskLinkRepository;
+        use application::repositories::TaskLinkRepository;
+
+        let pool = setup().await;
+        let task_repo = SqliteTaskRepository::new(pool.clone());
+        let link_repo = SqliteTaskLinkRepository::new(pool.clone());
+
+        let survivor = make_task("Survivor Task");
+        let loser = make_task("Loser Task");
+        let survivor_id = survivor.id;
+        let loser_id = loser.id;
+        task_repo.save(&survivor).await.unwrap();
+        task_repo.save(&loser).await.unwrap();
+
+        // Create AutoMerged link: survivor = primary, loser = secondary
+        let link = TaskLink {
+            id: Uuid::new_v4(),
+            task_id_primary: survivor_id,
+            task_id_secondary: loser_id,
+            link_type: TaskLinkType::AutoMerged,
+            confidence_score: Some(1.0),
+            created_at: Utc::now(),
+        };
+        link_repo.save(&link).await.unwrap();
+
+        let tasks = task_repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+
+        let ids: Vec<_> = tasks.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&survivor_id), "survivor must be visible");
+        assert!(!ids.contains(&loser_id), "loser must be hidden");
+    }
+
+    /// After A(primary)/B(secondary) ManualMerged link is created,
+    /// find_by_user excludes B.
+    #[tokio::test]
+    async fn find_by_user_excludes_manual_merged_loser() {
+        use crate::database::task_link_repo::SqliteTaskLinkRepository;
+        use application::repositories::TaskLinkRepository;
+
+        let pool = setup().await;
+        let task_repo = SqliteTaskRepository::new(pool.clone());
+        let link_repo = SqliteTaskLinkRepository::new(pool.clone());
+
+        let survivor = make_task("Manual Survivor");
+        let loser = make_task("Manual Loser");
+        let survivor_id = survivor.id;
+        let loser_id = loser.id;
+        task_repo.save(&survivor).await.unwrap();
+        task_repo.save(&loser).await.unwrap();
+
+        let link = TaskLink {
+            id: Uuid::new_v4(),
+            task_id_primary: survivor_id,
+            task_id_secondary: loser_id,
+            link_type: TaskLinkType::ManualMerged,
+            confidence_score: None,
+            created_at: Utc::now(),
+        };
+        link_repo.save(&link).await.unwrap();
+
+        let tasks = task_repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+
+        let ids: Vec<_> = tasks.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&survivor_id));
+        assert!(!ids.contains(&loser_id));
+    }
+
+    /// Rejected links must NOT hide the secondary task.
+    #[tokio::test]
+    async fn find_by_user_does_not_hide_rejected_secondary() {
+        use crate::database::task_link_repo::SqliteTaskLinkRepository;
+        use application::repositories::TaskLinkRepository;
+
+        let pool = setup().await;
+        let task_repo = SqliteTaskRepository::new(pool.clone());
+        let link_repo = SqliteTaskLinkRepository::new(pool.clone());
+
+        let t1 = make_task("Task A");
+        let t2 = make_task("Task B");
+        let t1_id = t1.id;
+        let t2_id = t2.id;
+        task_repo.save(&t1).await.unwrap();
+        task_repo.save(&t2).await.unwrap();
+
+        let link = TaskLink {
+            id: Uuid::new_v4(),
+            task_id_primary: t1_id,
+            task_id_secondary: t2_id,
+            link_type: TaskLinkType::Rejected,
+            confidence_score: None,
+            created_at: Utc::now(),
+        };
+        link_repo.save(&link).await.unwrap();
+
+        let tasks = task_repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+
+        assert_eq!(tasks.len(), 2, "Rejected link must not hide either task");
+    }
+
+    /// find_by_date_range also excludes merged losers.
+    #[tokio::test]
+    async fn find_by_date_range_excludes_merged_loser() {
+        use crate::database::task_link_repo::SqliteTaskLinkRepository;
+        use application::repositories::TaskLinkRepository;
+
+        let pool = setup().await;
+        let task_repo = SqliteTaskRepository::new(pool.clone());
+        let link_repo = SqliteTaskLinkRepository::new(pool.clone());
+
+        let deadline = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+
+        let mut survivor = make_task("Survivor Dated");
+        survivor.deadline = Some(deadline);
+        let mut loser = make_task("Loser Dated");
+        loser.deadline = Some(deadline);
+        let survivor_id = survivor.id;
+        let loser_id = loser.id;
+
+        task_repo.save(&survivor).await.unwrap();
+        task_repo.save(&loser).await.unwrap();
+
+        let link = TaskLink {
+            id: Uuid::new_v4(),
+            task_id_primary: survivor_id,
+            task_id_secondary: loser_id,
+            link_type: TaskLinkType::AutoMerged,
+            confidence_score: Some(1.0),
+            created_at: Utc::now(),
+        };
+        link_repo.save(&link).await.unwrap();
+
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        let tasks = task_repo
+            .find_by_date_range(user_id(), start, end)
+            .await
+            .unwrap();
+
+        let ids: Vec<_> = tasks.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&survivor_id), "survivor must appear");
+        assert!(!ids.contains(&loser_id), "loser must be hidden");
     }
 
     // Test 10: find_planned_before excludes BOTH Done AND Cancelled tasks (BLOCKER regression)

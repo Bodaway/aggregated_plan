@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use domain::rules::dedup::{calculate_similarity, find_jira_key_in_text, DEDUP_CONFIDENCE_THRESHOLD};
-use domain::types::*;
+use domain::types::{choose_dedup_survivor, make_survivor_visible, *};
 use uuid::Uuid;
 
 use crate::errors::AppError;
@@ -148,46 +148,93 @@ pub async fn find_suggestions(
 }
 
 /// Confirm or reject a deduplication suggestion.
+///
+/// When `accept` is true:
+/// - Fetches both tasks, applies the deterministic survivor rule, persists the updated
+///   survivor (tracking_state = Followed, planning inherited if unplanned), and saves a
+///   `AutoMerged` link with `task_id_primary = survivor` and `task_id_secondary = loser`.
+/// - If either task cannot be found, falls back to saving the link as-is (no task update).
+///
+/// When `accept` is false, a `Rejected` link is saved with the original ordering.
 pub async fn confirm_suggestion(
+    task_repo: &dyn TaskRepository,
     task_link_repo: &dyn TaskLinkRepository,
     task_id_primary: TaskId,
     task_id_secondary: TaskId,
     accept: bool,
 ) -> Result<(), AppError> {
-    let link_type = if accept {
-        TaskLinkType::AutoMerged
-    } else {
-        TaskLinkType::Rejected
+    if !accept {
+        let link = TaskLink {
+            id: Uuid::new_v4(),
+            task_id_primary,
+            task_id_secondary,
+            link_type: TaskLinkType::Rejected,
+            confidence_score: None,
+            created_at: Utc::now(),
+        };
+        task_link_repo.save(&link).await?;
+        return Ok(());
+    }
+
+    // Fetch both tasks to determine the survivor
+    let task_a = task_repo.find_by_id(task_id_primary).await?;
+    let task_b = task_repo.find_by_id(task_id_secondary).await?;
+
+    let (survivor_id, loser_id) = match (task_a, task_b) {
+        (Some(a), Some(b)) => {
+            let (survivor_ref, loser_ref) = choose_dedup_survivor(&a, &b);
+            let updated_survivor = make_survivor_visible(survivor_ref.clone(), loser_ref);
+            task_repo.save(&updated_survivor).await?;
+            (updated_survivor.id, loser_ref.id)
+        }
+        // Fallback: tasks not found — keep original order, no update
+        _ => (task_id_primary, task_id_secondary),
     };
 
     let link = TaskLink {
         id: Uuid::new_v4(),
-        task_id_primary,
-        task_id_secondary,
-        link_type,
+        task_id_primary: survivor_id,
+        task_id_secondary: loser_id,
+        link_type: TaskLinkType::AutoMerged,
         confidence_score: None,
         created_at: Utc::now(),
     };
-
     task_link_repo.save(&link).await?;
     Ok(())
 }
 
-/// Manually link two tasks.
+/// Manually link two tasks (ManualMerged).
+///
+/// Applies the same survivor rule as `confirm_suggestion`: fetches both tasks, determines
+/// the survivor, persists the updated survivor, and saves the link with
+/// `task_id_primary = survivor` and `task_id_secondary = loser`.
 pub async fn link_tasks(
+    task_repo: &dyn TaskRepository,
     task_link_repo: &dyn TaskLinkRepository,
     task_id_primary: TaskId,
     task_id_secondary: TaskId,
 ) -> Result<(), AppError> {
+    let task_a = task_repo.find_by_id(task_id_primary).await?;
+    let task_b = task_repo.find_by_id(task_id_secondary).await?;
+
+    let (survivor_id, loser_id) = match (task_a, task_b) {
+        (Some(a), Some(b)) => {
+            let (survivor_ref, loser_ref) = choose_dedup_survivor(&a, &b);
+            let updated_survivor = make_survivor_visible(survivor_ref.clone(), loser_ref);
+            task_repo.save(&updated_survivor).await?;
+            (updated_survivor.id, loser_ref.id)
+        }
+        _ => (task_id_primary, task_id_secondary),
+    };
+
     let link = TaskLink {
         id: Uuid::new_v4(),
-        task_id_primary,
-        task_id_secondary,
+        task_id_primary: survivor_id,
+        task_id_secondary: loser_id,
         link_type: TaskLinkType::ManualMerged,
         confidence_score: None,
         created_at: Utc::now(),
     };
-
     task_link_repo.save(&link).await?;
     Ok(())
 }
@@ -494,7 +541,7 @@ mod tests {
         task_repo.insert(task_b);
 
         // Reject the pair
-        confirm_suggestion(&link_repo, a_id, b_id, false)
+        confirm_suggestion(&task_repo, &link_repo, a_id, b_id, false)
             .await
             .unwrap();
 
@@ -523,7 +570,7 @@ mod tests {
         task_repo.insert(task_b);
 
         // Link the pair
-        link_tasks(&link_repo, a_id, b_id).await.unwrap();
+        link_tasks(&task_repo, &link_repo, a_id, b_id).await.unwrap();
 
         let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
             .await
@@ -537,11 +584,13 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_suggestion_accept_creates_auto_merged_link() {
+        // Tasks not found in repo → fallback: original order preserved
+        let task_repo = InMemoryTaskRepository::new();
         let link_repo = InMemoryTaskLinkRepository::new();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
-        confirm_suggestion(&link_repo, a, b, true).await.unwrap();
+        confirm_suggestion(&task_repo, &link_repo, a, b, true).await.unwrap();
 
         let links = link_repo.find_by_user(test_user_id()).await.unwrap();
         assert_eq!(links.len(), 1);
@@ -552,11 +601,12 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_suggestion_reject_creates_rejected_link() {
+        let task_repo = InMemoryTaskRepository::new();
         let link_repo = InMemoryTaskLinkRepository::new();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
-        confirm_suggestion(&link_repo, a, b, false).await.unwrap();
+        confirm_suggestion(&task_repo, &link_repo, a, b, false).await.unwrap();
 
         let links = link_repo.find_by_user(test_user_id()).await.unwrap();
         assert_eq!(links.len(), 1);
@@ -565,11 +615,13 @@ mod tests {
 
     #[tokio::test]
     async fn link_tasks_creates_manual_merged_link() {
+        // Tasks not found in repo → fallback: original order preserved
+        let task_repo = InMemoryTaskRepository::new();
         let link_repo = InMemoryTaskLinkRepository::new();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
-        link_tasks(&link_repo, a, b).await.unwrap();
+        link_tasks(&task_repo, &link_repo, a, b).await.unwrap();
 
         let links = link_repo.find_by_user(test_user_id()).await.unwrap();
         assert_eq!(links.len(), 1);
@@ -580,11 +632,12 @@ mod tests {
 
     #[tokio::test]
     async fn unlink_tasks_removes_link() {
+        let task_repo = InMemoryTaskRepository::new();
         let link_repo = InMemoryTaskLinkRepository::new();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
-        link_tasks(&link_repo, a, b).await.unwrap();
+        link_tasks(&task_repo, &link_repo, a, b).await.unwrap();
 
         let links = link_repo.find_by_user(test_user_id()).await.unwrap();
         assert_eq!(links.len(), 1);
@@ -636,5 +689,89 @@ mod tests {
             (suggestions[0].confidence_score - 1.0).abs() < f64::EPSILON,
             "First suggestion should be the Jira key match with confidence 1.0"
         );
+    }
+
+    // ─── Survivor-selection tests ───
+
+    #[tokio::test]
+    async fn confirm_suggestion_jira_task_becomes_survivor() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        let personal = make_task("Fix PROJ-1 bug");
+        let jira = make_jira_task("Fix bug", "PROJ-1");
+        let personal_id = personal.id;
+        let jira_id = jira.id;
+        task_repo.insert(personal.clone());
+        task_repo.insert(jira.clone());
+
+        // Pass personal as "primary" — Jira should still win
+        confirm_suggestion(&task_repo, &link_repo, personal_id, jira_id, true)
+            .await
+            .unwrap();
+
+        let links = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert_eq!(links.len(), 1);
+        // survivor = Jira task
+        assert_eq!(links[0].task_id_primary, jira_id);
+        assert_eq!(links[0].task_id_secondary, personal_id);
+        assert_eq!(links[0].link_type, TaskLinkType::AutoMerged);
+
+        // Survivor should now be Followed
+        let survivor = task_repo.find_by_id(jira_id).await.unwrap().unwrap();
+        assert_eq!(survivor.tracking_state, TrackingState::Followed);
+    }
+
+    #[tokio::test]
+    async fn confirm_suggestion_survivor_inherits_planning_from_loser() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Jira survivor has no planning dates
+        let mut jira = make_jira_task("Fix bug", "PROJ-2");
+        jira.planned_start = None;
+        jira.deadline = None;
+
+        // Personal loser has planning
+        let mut personal = make_task("Fix PROJ-2 bug");
+        let deadline = chrono::NaiveDate::from_ymd_opt(2025, 12, 31).unwrap();
+        personal.deadline = Some(deadline);
+
+        let jira_id = jira.id;
+        task_repo.insert(jira.clone());
+        task_repo.insert(personal.clone());
+
+        confirm_suggestion(&task_repo, &link_repo, jira_id, personal.id, true)
+            .await
+            .unwrap();
+
+        let survivor = task_repo.find_by_id(jira_id).await.unwrap().unwrap();
+        assert_eq!(survivor.tracking_state, TrackingState::Followed);
+        assert_eq!(survivor.deadline, Some(deadline));
+    }
+
+    #[tokio::test]
+    async fn link_tasks_manual_jira_wins_and_followed() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        let personal = make_task("Work on PROJ-3");
+        let jira = make_jira_task("Implement PROJ-3", "PROJ-3");
+        let personal_id = personal.id;
+        let jira_id = jira.id;
+        task_repo.insert(personal.clone());
+        task_repo.insert(jira.clone());
+
+        link_tasks(&task_repo, &link_repo, personal_id, jira_id)
+            .await
+            .unwrap();
+
+        let links = link_repo.find_by_user(test_user_id()).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].task_id_primary, jira_id);
+        assert_eq!(links[0].link_type, TaskLinkType::ManualMerged);
+
+        let survivor = task_repo.find_by_id(jira_id).await.unwrap().unwrap();
+        assert_eq!(survivor.tracking_state, TrackingState::Followed);
     }
 }
