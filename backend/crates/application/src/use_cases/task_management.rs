@@ -1078,6 +1078,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: Some(RecurrenceTemplateId::new()),
             occurrence_date: planned_start.map(|dt| dt.date_naive()),
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -1521,6 +1523,8 @@ mod tests {
             estimated_hours_override: None,
             recurrence_id: None,
             occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
             created_at: now,
             updated_at: now,
         };

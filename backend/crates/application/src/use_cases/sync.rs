@@ -1233,6 +1233,80 @@ mod tests {
         assert_eq!(after.notes.as_deref(), Some("local notes"));
     }
 
+    #[tokio::test]
+    async fn jira_sync_preserves_gryzzly_assignment() {
+        let user_id: UserId =
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let task_repo = MiniTaskRepo::default();
+        let now = Utc::now();
+
+        // Pre-existing synced task that already has Gryzzly assignment data.
+        let existing = Task {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Old title".to_string(),
+            description: None,
+            notes: Some("local notes".to_string()),
+            source: Source::Jira,
+            source_id: Some("AP-1".to_string()),
+            jira_status: Some("To Do".to_string()),
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            delegated_to: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            urgency: UrgencyLevel::Low,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: vec![],
+            tracking_state: TrackingState::Followed,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            gryzzly_task_id: Some("g-1".to_string()),
+            gryzzly_project_id: Some("p-1".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        task_repo.save(&existing).await.unwrap();
+
+        let config = JiraConfig {
+            project_keys: vec!["AP".to_string()],
+            assignees: None,
+            my_tasks_only: false,
+        };
+        let result = sync_jira(
+            &StubJiraClient,
+            &task_repo,
+            &StubProjectRepo,
+            &StubSyncRepo,
+            user_id,
+            &config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.tasks_updated, 1);
+
+        let after = task_repo
+            .find_by_source(user_id, Source::Jira, "AP-1")
+            .await
+            .unwrap()
+            .unwrap();
+        // Sync did run and updated Jira-owned fields…
+        assert_eq!(after.title, "Synced title");
+        assert_eq!(after.assignee.as_deref(), Some("jira.user@example.com"));
+        // …but Gryzzly assignment fields survived.
+        assert_eq!(after.gryzzly_task_id.as_deref(), Some("g-1"), "gryzzly_task_id must survive a Jira resync");
+        assert_eq!(after.gryzzly_project_id.as_deref(), Some("p-1"), "gryzzly_project_id must survive a Jira resync");
+    }
+
     #[test]
     fn jira_status_mapping() {
         assert_eq!(map_jira_status("Done"), TaskStatus::Done);
