@@ -351,6 +351,22 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+#### US-006 : Synchronisation du catalogue Gryzzly (lecture seule)
+
+> En tant que Tech Lead, je veux que le catalogue Gryzzly (projets actifs et tâches) soit synchronisé automatiquement afin de pouvoir associer mon activité à la bonne tâche Gryzzly lors de la déclaration de temps.
+
+**Critères d'acceptation :**
+- Le catalogue Gryzzly est importé en lecture seule : projets actifs et leurs tâches (l'outil ne modifie jamais Gryzzly).
+- Pour chaque tâche du catalogue, sont conservés : nom de la tâche, projet associé et client (`customer_name`).
+- La synchronisation est déclenchée par `forceSync` (comme les autres sources) si une clé d'API Gryzzly est configurée ; sinon la source est marquée « non configurée ».
+- Le catalogue alimente la sélection d'une tâche Gryzzly lors de la déclaration d'activité (US-030) — il ne crée pas de tâches aplan.
+- Une tâche Gryzzly disparue d'une synchronisation est désactivée mais jamais supprimée : une activité déjà associée à cette tâche reste résoluble.
+- **Robustesse** : si une synchronisation ne retourne aucune tâche (incident transitoire de l'API), le catalogue existant est conservé tel quel (aucune désactivation en masse).
+
+**Priorité** : Should
+
+---
+
 ### 6.2 Vue quotidienne (Dashboard)
 
 #### US-010 : Dashboard du matin
@@ -429,6 +445,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - L'utilisateur sélectionne la tâche active en un ou deux clics
 - Le journal enregistre : tâche sélectionnée, heure de début, heure de fin (quand il change)
 - L'interaction doit être rapide et non-intrusive (popup léger ou barre latérale)
+- Lors de la sélection, l'utilisateur peut associer la tâche à une **tâche Gryzzly** issue du catalogue synchronisé (US-006), en vue d'une future déclaration de temps.
 
 **Priorité** : Must (MVP v1)
 

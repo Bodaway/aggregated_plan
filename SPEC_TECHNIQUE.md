@@ -2363,6 +2363,22 @@ CREATE TABLE configuration (
     UNIQUE(user_id, key)
 );
 
+-- Gryzzly catalog cache (read-only: active projects + their tasks).
+-- Refreshed by the `gryzzly` sync source. Denormalized: project_name/customer_name
+-- are copied onto each task row. Pruning is soft (is_active = 0), never a hard delete.
+CREATE TABLE gryzzly_tasks (
+    id                 TEXT PRIMARY KEY,
+    user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    gryzzly_task_id    TEXT NOT NULL,
+    name               TEXT NOT NULL,
+    gryzzly_project_id TEXT NOT NULL,
+    project_name       TEXT NOT NULL,
+    customer_name      TEXT,
+    is_active          INTEGER NOT NULL DEFAULT 1,
+    last_synced_at     TEXT NOT NULL,
+    UNIQUE(user_id, gryzzly_task_id)
+);
+
 -- Worklog entries (timestamped, task-scoped journal)
 CREATE TABLE worklog_entries (
     id         TEXT PRIMARY KEY,
@@ -3075,6 +3091,31 @@ When a synced task is updated from the source, the following local fields are **
 
 These fields belong to the user's local enrichment and persist across syncs.
 
+### 10.6 Source de synchronisation `gryzzly`
+
+La source `gryzzly` synchronise en lecture seule le **catalogue Gryzzly** (projets actifs et tâches). Contrairement aux autres sources, elle ne crée pas de tâches aplan : elle alimente une table cache (`gryzzly_tasks`) utilisée pour proposer une tâche Gryzzly lors de la déclaration d'activité.
+
+Déroulé de `sync_gryzzly` (use case `application::use_cases::sync::sync_gryzzly`) :
+
+1. `sync_status(gryzzly)` -> `syncing`.
+2. `GryzzlyClient::fetch_projects(active_only = true)` puis `GryzzlyClient::fetch_tasks(project_ids)`.
+   - En cas d'échec d'un appel : `sync_status` -> `error` (message du connecteur) et retour d'une `AppError::Connector`.
+3. **Garde « empty-fetch »** : si `fetch_tasks` retourne une liste vide, l'élagage (`soft_prune_missing`) est **ignoré** afin de ne jamais désactiver des lignes du catalogue sur un fetch transitoirement vide (un assignment existant doit toujours pouvoir être résolu). `sync_status` est marqué en `error` avec le message `empty catalog fetch — skipping prune` et le résultat indique `tasks_created = 0`, `tasks_removed = 0`.
+4. Sinon, chaque tâche est `upsert`ée dans `gryzzly_tasks` (clé `(user_id, gryzzly_task_id)`), avec dénormalisation du nom de projet et du client (`customer_name`) issus des projets.
+5. `soft_prune_missing(user_id, keep_ids)` : désactive (`is_active = 0`) toute ligne de l'utilisateur dont le `gryzzly_task_id` n'est pas dans le lot synchronisé. **Jamais de suppression physique** — une ligne désactivée reste résoluble par `find_by_gryzzly_task_id`.
+6. `sync_status(gryzzly)` -> `success`.
+
+Les compteurs `tasks_created` / `tasks_removed` du `SyncResult` comptent des **lignes de catalogue**, pas des tâches aplan.
+
+Clés de configuration :
+
+| Clé | Type | Défaut | Description |
+|-----|------|--------|-------------|
+| `gryzzly.api_key` | string (secret) | `""` | Clé d'API Gryzzly. Si vide/absente, le client n'est pas construit et la source est marquée `Not configured`. |
+| `gryzzly.base_url` | string | `https://api.gryzzly.io/v1` | URL de base de l'API Gryzzly v1. |
+
+Le client `HttpGryzzlyClient` est construit dynamiquement par la mutation `forceSync` à partir de ces clés (à l'image des connecteurs Jira/Outlook/Excel). Le repository `SqliteGryzzlyCatalogRepository` est injecté dans le contexte GraphQL au démarrage.
+
 ---
 
 ## 11. Deduplication Engine
@@ -3248,7 +3289,7 @@ When Claude Code drives the cockpit via the `aplan` CLI, time is tracked through
 | Graph tokens | OAuth2 tokens (access + refresh) obtenus via le flux interactif (§9.2) et stockés chiffrés dans la table `configuration` (clés `microsoft.*`). Le backend renouvelle silencieusement l'access token via `RefreshingGraphTokenProvider`. En cas d'`invalid_grant`, les jetons sont effacés et la session est invalidée. |
 | CORS | Restreint à `http://localhost:3000` (frontend Vite). Toute autre origine est rejetée. |
 | Protection CSRF | L'état `state` du flux OAuth est un token aléatoire à usage unique (TTL 10 min, stocké en mémoire côté serveur). Toute valeur `state` absente, inconnue ou expirée entraîne le rejet de la callback. |
-| Masquage des secrets | La query GraphQL `configuration` remplace les valeurs dont la clé correspond aux patterns `*.token`, `*.secret`, `*.password`, `*.access_token`, `*.refresh_token` par `"********"`. Les valeurs brutes ne sont jamais exposées via GraphQL. |
+| Masquage des secrets | La query GraphQL `configuration` remplace les valeurs dont la clé correspond aux patterns `*.token`, `*.secret`, `*.client_secret`, `*.password`, `*.api_key`, `*.access_token`, `*.refresh_token` par `"********"`. Les valeurs brutes ne sont jamais exposées via GraphQL. |
 
 ### 14.2 Teams Mode (Future)
 
@@ -3302,6 +3343,8 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `excel_sharepoint_path` | string | `""` | SharePoint path to Excel file |
 | `excel_sheet_name` | string | `""` | Sheet name in Excel |
 | `excel_mapping` | object | `{}` | Column name -> field mapping |
+| `gryzzly.api_key` | string (secret) | `""` | Clé d'API Gryzzly. Si vide/absente, la source `gryzzly` est marquée `Not configured`. |
+| `gryzzly.base_url` | string | `https://api.gryzzly.io/v1` | URL de base de l'API Gryzzly v1. |
 | `obsidian_vault_path` | string | `""` | Path to Obsidian vault (v2) |
 | `obsidian_task_tags` | string[] | `["#task"]` | Tags identifying tasks in Obsidian (v2) |
 

@@ -11,6 +11,7 @@ use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, priority, sync, task_management, worklog as worklog_uc};
 use application::use_cases::recurrence as recurrence_uc;
 use infrastructure::connectors::excel::GraphExcelClient;
+use infrastructure::connectors::gryzzly::HttpGryzzlyClient;
 use infrastructure::connectors::jira::HttpJiraClient;
 use infrastructure::connectors::outlook::client::GraphOutlookClient;
 
@@ -344,6 +345,7 @@ impl MutationRoot {
         let project_repo = ctx.data::<Arc<dyn ProjectRepository>>()?;
         let sync_repo = ctx.data::<Arc<dyn SyncStatusRepository>>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let gryzzly_catalog_repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
 
         // Build clients dynamically from stored configuration.
         let jira_client: Option<Arc<dyn JiraClient>> = {
@@ -366,6 +368,19 @@ impl MutationRoot {
         let excel_client: Option<Arc<dyn ExcelClient>> = graph_token
             .map(|t| Arc::new(GraphExcelClient::new(t)) as Arc<dyn ExcelClient>);
 
+        // Build Gryzzly client from stored config.
+        let gryzzly_api_key = config_repo.get(*user_id, "gryzzly.api_key").await.ok().flatten();
+        let gryzzly_base_url = config_repo
+            .get(*user_id, "gryzzly.base_url")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "https://api.gryzzly.io/v1".to_string());
+        let gryzzly_client: Option<Arc<dyn GryzzlyClient>> = match gryzzly_api_key {
+            Some(k) if !k.is_empty() => Some(Arc::new(HttpGryzzlyClient::new(gryzzly_base_url, k))),
+            _ => None,
+        };
+
         let ctx = sync::SyncContext {
             task_repo: task_repo.as_ref(),
             meeting_repo: meeting_repo.as_ref(),
@@ -375,6 +390,8 @@ impl MutationRoot {
             jira_client: jira_client.as_deref(),
             outlook_client: outlook_client.as_deref(),
             excel_client: excel_client.as_deref(),
+            gryzzly_client: gryzzly_client.as_deref(),
+            gryzzly_catalog_repo: gryzzly_catalog_repo.as_ref(),
         };
         match source {
             Some(src) => {

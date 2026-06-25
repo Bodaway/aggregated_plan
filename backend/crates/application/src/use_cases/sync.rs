@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use domain::rules::urgency::calculate_urgency;
 use domain::types::*;
 use uuid::Uuid;
@@ -17,6 +17,8 @@ pub struct SyncContext<'a> {
     pub jira_client: Option<&'a dyn JiraClient>,
     pub outlook_client: Option<&'a dyn OutlookClient>,
     pub excel_client: Option<&'a dyn ExcelClient>,
+    pub gryzzly_client: Option<&'a dyn GryzzlyClient>,
+    pub gryzzly_catalog_repo: &'a dyn GryzzlyCatalogRepository,
 }
 
 /// Result of a synchronization operation with a single source.
@@ -472,6 +474,108 @@ pub async fn sync_excel(
     })
 }
 
+/// Synchronize the Gryzzly task catalog (projects + tasks).
+/// NOTE: tasks_created/tasks_removed count catalog ROWS, not aplan tasks.
+pub async fn sync_gryzzly(
+    client: &dyn GryzzlyClient,
+    catalog_repo: &dyn GryzzlyCatalogRepository,
+    sync_repo: &dyn SyncStatusRepository,
+    user_id: UserId,
+    now: DateTime<Utc>,
+) -> Result<SyncResult, AppError> {
+    // Mark sync as in progress.
+    sync_repo
+        .upsert(&SyncStatus {
+            source: Source::Gryzzly,
+            user_id,
+            last_sync_at: Some(now),
+            status: SyncSourceStatus::Syncing,
+            error_message: None,
+        })
+        .await?;
+
+    let projects = match client.fetch_projects(true).await {
+        Ok(p) => p,
+        Err(e) => {
+            update_sync_error(sync_repo, user_id, Source::Gryzzly, &e.to_string()).await?;
+            return Err(AppError::Connector {
+                connector_source: Source::Gryzzly,
+                message: e.to_string(),
+            });
+        }
+    };
+
+    let project_ids: Vec<String> = projects.iter().map(|p| p.id.clone()).collect();
+    let tasks = match client.fetch_tasks(&project_ids).await {
+        Ok(t) => t,
+        Err(e) => {
+            update_sync_error(sync_repo, user_id, Source::Gryzzly, &e.to_string()).await?;
+            return Err(AppError::Connector {
+                connector_source: Source::Gryzzly,
+                message: e.to_string(),
+            });
+        }
+    };
+
+    // EMPTY-FETCH GUARD: a transient empty fetch must never wipe catalog rows
+    // that assignments depend on for lookup.
+    if tasks.is_empty() {
+        update_sync_error(sync_repo, user_id, Source::Gryzzly, "empty catalog fetch — skipping prune").await?;
+        return Ok(SyncResult {
+            source: Source::Gryzzly,
+            tasks_created: 0,
+            tasks_updated: 0,
+            tasks_removed: 0,
+            meetings_synced: 0,
+            errors: vec![],
+        });
+    }
+
+    let by_project: std::collections::HashMap<&str, &GryzzlyProject> =
+        projects.iter().map(|p| (p.id.as_str(), p)).collect();
+
+    let mut keep_ids = Vec::with_capacity(tasks.len());
+    let mut upserted = 0usize;
+    for t in &tasks {
+        let proj = by_project.get(t.project_id.as_str());
+        let entry = GryzzlyCatalogEntry {
+            id: Uuid::new_v4(),
+            user_id,
+            gryzzly_task_id: t.id.clone(),
+            name: t.name.clone(),
+            gryzzly_project_id: t.project_id.clone(),
+            project_name: proj.map(|p| p.name.clone()).unwrap_or_default(),
+            customer_name: proj.and_then(|p| p.customer_name.clone()),
+            is_active: t.is_active,
+            last_synced_at: now,
+        };
+        catalog_repo.upsert(&entry).await?;
+        keep_ids.push(t.id.clone());
+        upserted += 1;
+    }
+    let pruned = catalog_repo.soft_prune_missing(user_id, &keep_ids).await? as usize;
+
+    // Mark success.
+    sync_repo
+        .upsert(&SyncStatus {
+            source: Source::Gryzzly,
+            user_id,
+            last_sync_at: Some(Utc::now()),
+            status: SyncSourceStatus::Success,
+            error_message: None,
+        })
+        .await?;
+
+    Ok(SyncResult {
+        source: Source::Gryzzly,
+        tasks_created: upserted,
+        tasks_updated: 0,
+        tasks_removed: pruned,
+        meetings_synced: 0,
+        errors: vec![],
+    })
+}
+
 /// Run all configured synchronizations for a user.
 pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<SyncResult>, AppError> {
     let task_repo = ctx.task_repo;
@@ -634,6 +738,26 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
         update_sync_error(sync_repo, user_id, Source::Excel, "Not configured").await?;
     }
 
+    // Gryzzly catalog sync.
+    if let Some(client) = ctx.gryzzly_client {
+        match sync_gryzzly(client, ctx.gryzzly_catalog_repo, sync_repo, user_id, Utc::now()).await {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                update_sync_error(sync_repo, user_id, Source::Gryzzly, &e.to_string()).await?;
+                results.push(SyncResult {
+                    source: Source::Gryzzly,
+                    tasks_created: 0,
+                    tasks_updated: 0,
+                    tasks_removed: 0,
+                    meetings_synced: 0,
+                    errors: vec![e.to_string()],
+                });
+            }
+        }
+    } else {
+        update_sync_error(sync_repo, user_id, Source::Gryzzly, "Not configured").await?;
+    }
+
     Ok(results)
 }
 
@@ -754,7 +878,12 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
             // Personal tasks are not synced from an external source.
         }
         Source::Gryzzly => {
-            // Gryzzly sync not yet implemented — placeholder for Task 5.
+            if let Some(client) = ctx.gryzzly_client {
+                sync_gryzzly(client, ctx.gryzzly_catalog_repo, ctx.sync_repo, user_id, Utc::now())
+                    .await?;
+            } else {
+                update_sync_error(ctx.sync_repo, user_id, Source::Gryzzly, "Not configured").await?;
+            }
         }
     }
 
@@ -1247,5 +1376,162 @@ mod tests {
         );
         // meetings_synced reflects the filtered count.
         assert_eq!(result.meetings_synced, 1);
+    }
+}
+
+#[cfg(test)]
+mod gryzzly_tests {
+    use super::*;
+    use crate::errors::{ConnectorError, RepositoryError};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct FakeGryzzly {
+        projects: Vec<GryzzlyProject>,
+        tasks: Vec<GryzzlyTask>,
+    }
+
+    #[async_trait]
+    impl GryzzlyClient for FakeGryzzly {
+        async fn fetch_projects(&self, _active_only: bool) -> Result<Vec<GryzzlyProject>, ConnectorError> {
+            Ok(self.projects.clone())
+        }
+        async fn fetch_tasks(&self, _ids: &[String]) -> Result<Vec<GryzzlyTask>, ConnectorError> {
+            Ok(self.tasks.clone())
+        }
+    }
+
+    // In-memory GryzzlyCatalogRepository
+    #[derive(Default)]
+    struct MemCatalogRepo {
+        rows: Mutex<HashMap<String, GryzzlyCatalogEntry>>, // keyed by gryzzly_task_id
+    }
+
+    #[async_trait]
+    impl GryzzlyCatalogRepository for MemCatalogRepo {
+        async fn upsert(&self, entry: &GryzzlyCatalogEntry) -> Result<(), RepositoryError> {
+            let mut rows = self.rows.lock().unwrap();
+            rows.insert(entry.gryzzly_task_id.clone(), entry.clone());
+            Ok(())
+        }
+
+        async fn soft_prune_missing(&self, user_id: UserId, keep_ids: &[String]) -> Result<u64, RepositoryError> {
+            if keep_ids.is_empty() {
+                return Ok(0);
+            }
+            let mut rows = self.rows.lock().unwrap();
+            let mut count = 0u64;
+            for entry in rows.values_mut() {
+                if entry.user_id == user_id && !keep_ids.contains(&entry.gryzzly_task_id) && entry.is_active {
+                    entry.is_active = false;
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+
+        async fn list_active(&self, user_id: UserId, _search: Option<&str>, _project_filter: Option<&str>, _limit: i64) -> Result<Vec<GryzzlyCatalogEntry>, RepositoryError> {
+            let rows = self.rows.lock().unwrap();
+            Ok(rows.values().filter(|e| e.user_id == user_id && e.is_active).cloned().collect())
+        }
+
+        async fn find_by_gryzzly_task_id(&self, user_id: UserId, gryzzly_task_id: &str) -> Result<Option<GryzzlyCatalogEntry>, RepositoryError> {
+            let rows = self.rows.lock().unwrap();
+            Ok(rows.values().find(|e| e.user_id == user_id && e.gryzzly_task_id == gryzzly_task_id).cloned())
+        }
+    }
+
+    // Noop SyncStatusRepository
+    struct NoopSyncRepo;
+    #[async_trait]
+    impl SyncStatusRepository for NoopSyncRepo {
+        async fn find_by_user(&self, _user_id: UserId) -> Result<Vec<SyncStatus>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn upsert(&self, _status: &SyncStatus) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    fn make_entry(user_id: UserId, gid: &str, active: bool) -> GryzzlyCatalogEntry {
+        GryzzlyCatalogEntry {
+            id: Uuid::new_v4(),
+            user_id,
+            gryzzly_task_id: gid.to_string(),
+            name: format!("Task {gid}"),
+            gryzzly_project_id: "proj-1".to_string(),
+            project_name: "Website".to_string(),
+            customer_name: None,
+            is_active: active,
+            last_synced_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_fetch_skips_prune() {
+        let user_id: UserId = Uuid::parse_str("00000000-0000-0000-0000-000000000010").unwrap();
+        let catalog = MemCatalogRepo::default();
+        // Seed g1 as active.
+        catalog.upsert(&make_entry(user_id, "g1", true)).await.unwrap();
+
+        let client = FakeGryzzly {
+            projects: vec![GryzzlyProject {
+                id: "proj-1".to_string(),
+                name: "Website".to_string(),
+                customer_name: None,
+                is_active: true,
+            }],
+            tasks: vec![], // empty fetch
+        };
+
+        let result = sync_gryzzly(&client, &catalog, &NoopSyncRepo, user_id, Utc::now())
+            .await
+            .unwrap();
+
+        // Empty fetch: prune skipped, g1 must still be active.
+        let g1 = catalog.find_by_gryzzly_task_id(user_id, "g1").await.unwrap().unwrap();
+        assert!(g1.is_active, "empty fetch must NOT prune existing catalog rows");
+        assert_eq!(result.tasks_removed, 0);
+    }
+
+    #[tokio::test]
+    async fn upserts_and_soft_prunes() {
+        let user_id: UserId = Uuid::parse_str("00000000-0000-0000-0000-000000000011").unwrap();
+        let catalog = MemCatalogRepo::default();
+        // Seed g1 and g2 as active.
+        catalog.upsert(&make_entry(user_id, "g1", true)).await.unwrap();
+        catalog.upsert(&make_entry(user_id, "g2", true)).await.unwrap();
+
+        let client = FakeGryzzly {
+            projects: vec![GryzzlyProject {
+                id: "proj-1".to_string(),
+                name: "Website".to_string(),
+                customer_name: Some("Acme".to_string()),
+                is_active: true,
+            }],
+            tasks: vec![GryzzlyTask {
+                id: "g1".to_string(),
+                name: "Dev".to_string(),
+                project_id: "proj-1".to_string(),
+                is_active: true,
+            }], // only g1 returned
+        };
+
+        let result = sync_gryzzly(&client, &catalog, &NoopSyncRepo, user_id, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(result.tasks_created, 1);
+        assert_eq!(result.tasks_removed, 1);
+
+        // g1 active, updated with customer_name.
+        let g1 = catalog.find_by_gryzzly_task_id(user_id, "g1").await.unwrap().unwrap();
+        assert!(g1.is_active);
+        assert_eq!(g1.customer_name, Some("Acme".to_string()));
+
+        // g2 soft-disabled but still present.
+        let g2 = catalog.find_by_gryzzly_task_id(user_id, "g2").await.unwrap().unwrap();
+        assert!(!g2.is_active, "g2 must be soft-disabled after prune");
     }
 }

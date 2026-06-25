@@ -620,4 +620,6 @@ fn is_secret_key(key: &str) -> bool {
         || key.ends_with(".refresh_token")
         || key.ends_with(".secret")
         || key.ends_with(".client_secret")
+        || key.ends_with(".api_key")
+        || key.ends_with(".password")
 }

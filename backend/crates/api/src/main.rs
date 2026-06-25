@@ -68,6 +68,8 @@ async fn main() {
         Arc::new(SqliteWorklogRepository::new(db_pool.clone()));
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
+    let gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository> =
+        Arc::new(SqliteGryzzlyCatalogRepository::new(db_pool.clone()));
 
     let oauth = std::sync::Arc::new(MicrosoftOAuth::new(MicrosoftOAuthConfig {
         client_id: std::env::var("MICROSOFT_CLIENT_ID").unwrap_or_default(),
@@ -91,6 +93,7 @@ async fn main() {
         config_repo: config_repo.clone(),
         worklog_repo,
         recurrence_repo,
+        gryzzly_catalog_repo,
         graph_token_provider: graph_token_provider.clone(),
     };
     let schema = graphql::schema::build_schema(deps);

@@ -37,6 +37,7 @@ pub struct SchemaDeps {
     pub config_repo: Arc<dyn ConfigRepository>,
     pub worklog_repo: Arc<dyn WorklogRepository>,
     pub recurrence_repo: Arc<dyn RecurrenceRepository>,
+    pub gryzzly_catalog_repo: Arc<dyn GryzzlyCatalogRepository>,
     pub graph_token_provider: Arc<dyn application::services::GraphTokenProvider>,
 }
 
@@ -54,6 +55,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
         config_repo,
         worklog_repo,
         recurrence_repo,
+        gryzzly_catalog_repo,
         graph_token_provider,
     } = deps;
     // Default user for local development
@@ -76,6 +78,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     .data(config_repo)
     .data(worklog_repo)
     .data(recurrence_repo)
+    .data(gryzzly_catalog_repo)
     .data(graph_token_provider)
     .data(default_user_id)
     .finish()

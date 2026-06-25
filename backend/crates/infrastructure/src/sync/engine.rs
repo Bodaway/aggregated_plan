@@ -18,6 +18,8 @@ pub struct SyncEngine {
     jira_client: Option<Arc<dyn JiraClient>>,
     outlook_client: Option<Arc<dyn OutlookClient>>,
     excel_client: Option<Arc<dyn ExcelClient>>,
+    gryzzly_client: Option<Arc<dyn GryzzlyClient>>,
+    gryzzly_catalog_repo: Arc<dyn GryzzlyCatalogRepository>,
 }
 
 pub struct SyncEngineDeps {
@@ -29,6 +31,8 @@ pub struct SyncEngineDeps {
     pub jira_client: Option<Arc<dyn JiraClient>>,
     pub outlook_client: Option<Arc<dyn OutlookClient>>,
     pub excel_client: Option<Arc<dyn ExcelClient>>,
+    pub gryzzly_client: Option<Arc<dyn GryzzlyClient>>,
+    pub gryzzly_catalog_repo: Arc<dyn GryzzlyCatalogRepository>,
 }
 
 impl SyncEngine {
@@ -42,6 +46,8 @@ impl SyncEngine {
             jira_client: deps.jira_client,
             outlook_client: deps.outlook_client,
             excel_client: deps.excel_client,
+            gryzzly_client: deps.gryzzly_client,
+            gryzzly_catalog_repo: deps.gryzzly_catalog_repo,
         }
     }
 
@@ -60,6 +66,8 @@ impl SyncEngine {
             jira_client: self.jira_client.as_deref(),
             outlook_client: self.outlook_client.as_deref(),
             excel_client: self.excel_client.as_deref(),
+            gryzzly_client: self.gryzzly_client.as_deref(),
+            gryzzly_catalog_repo: self.gryzzly_catalog_repo.as_ref(),
         };
         sync::sync_source(&ctx, source, user_id).await
     }
@@ -78,6 +86,8 @@ impl SyncEngine {
             jira_client: self.jira_client.as_deref(),
             outlook_client: self.outlook_client.as_deref(),
             excel_client: self.excel_client.as_deref(),
+            gryzzly_client: self.gryzzly_client.as_deref(),
+            gryzzly_catalog_repo: self.gryzzly_catalog_repo.as_ref(),
         };
         sync::sync_all(&ctx, user_id).await
     }
