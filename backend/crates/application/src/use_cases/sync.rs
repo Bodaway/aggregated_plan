@@ -560,7 +560,7 @@ pub async fn sync_gryzzly(
         .upsert(&SyncStatus {
             source: Source::Gryzzly,
             user_id,
-            last_sync_at: Some(Utc::now()),
+            last_sync_at: Some(now),
             status: SyncSourceStatus::Success,
             error_message: None,
         })
@@ -742,8 +742,10 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
     if let Some(client) = ctx.gryzzly_client {
         match sync_gryzzly(client, ctx.gryzzly_catalog_repo, sync_repo, user_id, Utc::now()).await {
             Ok(result) => results.push(result),
+            // sync_gryzzly already records the error status on every Err path, so
+            // we do NOT re-write it here (unlike Jira/Outlook/Excel, whose use cases
+            // do not mark the status on all failure paths).
             Err(e) => {
-                update_sync_error(sync_repo, user_id, Source::Gryzzly, &e.to_string()).await?;
                 results.push(SyncResult {
                     source: Source::Gryzzly,
                     tasks_created: 0,
