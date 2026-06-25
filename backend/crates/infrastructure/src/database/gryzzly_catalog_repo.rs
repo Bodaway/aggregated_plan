@@ -212,4 +212,28 @@ mod tests {
         let misses = repo.list_active(user_id, Some("zzz"), None, 100).await.unwrap();
         assert!(misses.is_empty());
     }
+
+    #[tokio::test]
+    async fn soft_prune_with_empty_keep_ids_disables_nothing() {
+        let (pool, user_id) = setup_with_user().await;
+        let repo = SqliteGryzzlyCatalogRepository::new(pool);
+        repo.upsert(&entry(user_id, "g1", true)).await.unwrap();
+        repo.upsert(&entry(user_id, "g2", true)).await.unwrap();
+        let disabled = repo.soft_prune_missing(user_id, &[]).await.unwrap();
+        assert_eq!(disabled, 0, "empty keep_ids must disable nothing");
+        assert_eq!(repo.list_active(user_id, None, None, 100).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_active_filters_by_project() {
+        let (pool, user_id) = setup_with_user().await;
+        let repo = SqliteGryzzlyCatalogRepository::new(pool);
+        repo.upsert(&entry(user_id, "g1", true)).await.unwrap(); // project_name "Website"
+        let mut other = entry(user_id, "g2", true);
+        other.project_name = "Mobile".into();
+        repo.upsert(&other).await.unwrap();
+        let website = repo.list_active(user_id, None, Some("Website"), 100).await.unwrap();
+        assert!(website.iter().all(|e| e.project_name == "Website"));
+        assert_eq!(website.len(), 1);
+    }
 }
