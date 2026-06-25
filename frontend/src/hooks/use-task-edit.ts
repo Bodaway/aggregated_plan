@@ -30,6 +30,12 @@ export interface FullTask {
   readonly recurrenceId: string | null;
   readonly occurrenceDate: string | null;
   readonly isRecurring: boolean;
+  readonly gryzzlyTask: {
+    readonly gryzzlyTaskId: string;
+    readonly name: string | null;
+    readonly projectName: string | null;
+    readonly stale: boolean;
+  } | null;
 }
 
 const TASK_QUERY = `
@@ -64,6 +70,12 @@ const TASK_QUERY = `
       recurrenceId
       occurrenceDate
       isRecurring
+      gryzzlyTask {
+        gryzzlyTaskId
+        name
+        projectName
+        stale
+      }
     }
   }
 `;

@@ -46,6 +46,10 @@ vi.mock('@/components/worklog/WorklogSection', () => ({
   ),
 }));
 
+vi.mock('@/components/gryzzly/GryzzlyTaskPicker', () => ({
+  GryzzlyTaskPicker: () => <div data-testid="gryzzly-task-picker" />,
+}));
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const BASE_TASK: FullTask = {
@@ -78,6 +82,7 @@ const BASE_TASK: FullTask = {
   recurrenceId: null,
   occurrenceDate: null,
   isRecurring: false,
+  gryzzlyTask: null,
 };
 
 const RECURRING_TASK: FullTask = {

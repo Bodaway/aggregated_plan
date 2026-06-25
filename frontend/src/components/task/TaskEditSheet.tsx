@@ -3,6 +3,7 @@ import { useTaskEdit } from '@/hooks/use-task-edit';
 import { useDelegates } from '@/hooks/use-delegates';
 import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
 import { WorklogSection } from '@/components/worklog/WorklogSection';
+import { GryzzlyTaskPicker } from '@/components/gryzzly/GryzzlyTaskPicker';
 
 interface TaskEditSheetProps {
   readonly taskId: string | null;
@@ -347,6 +348,16 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                           <option key={name} value={name} />
                         ))}
                       </datalist>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Gryzzly task
+                      </label>
+                      <GryzzlyTaskPicker
+                        taskId={task.id}
+                        assigned={task.gryzzlyTask ?? null}
+                      />
                     </div>
 
                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Priority</h4>
