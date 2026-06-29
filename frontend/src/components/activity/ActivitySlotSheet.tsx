@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ActivitySlot, TaskPickerItem } from '@/hooks/use-activity';
+import { TaskPicker } from './TaskPicker';
 
 interface ActivitySlotSheetProps {
   readonly open: boolean;
@@ -196,16 +197,12 @@ export function ActivitySlotSheet({
               {/* Task selector */}
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Task (optional)</label>
-                <select
+                <TaskPicker
+                  tasks={tasks}
                   value={taskId}
-                  onChange={(e) => setTaskId(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">No task</option>
-                  {tasks.map(t => (
-                    <option key={t.id} value={t.id}>{t.title}</option>
-                  ))}
-                </select>
+                  onChange={setTaskId}
+                  selectedTask={mode === 'edit' ? (slot?.task ?? null) : null}
+                />
               </div>
             </div>
 

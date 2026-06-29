@@ -11,6 +11,22 @@ function toNum(map: Record<string, number>, v: unknown): number {
   return map[v as string] ?? 1;
 }
 
+/**
+ * Convert a raw GraphQL task node (urgency/impact as enum strings or numbers)
+ * into the canonical {@link TaskPickerItem}. Shared by the activity picker and
+ * the task-search hook so the enum → number mapping lives in one place.
+ */
+export function toPickerItem(node: RawTaskPickerNode): TaskPickerItem {
+  return {
+    id: node.id,
+    title: node.title,
+    plannedStart: node.plannedStart,
+    deadline: node.deadline,
+    urgency: toNum(URGENCY_NUM, node.urgency),
+    impact: toNum(IMPACT_NUM, node.impact),
+  };
+}
+
 interface ActivityTask {
   readonly id: string;
   readonly title: string;
@@ -101,7 +117,7 @@ const ADD_WORKLOG_ENTRY_FROM_TIMER_MUTATION = `
 
 const ACTIVE_TASKS_QUERY = `
   query ActiveTasksForPicker {
-    tasks(filter: { status: [TODO, IN_PROGRESS, DONE, BLOCKED] }) {
+    tasks(filter: { trackingState: [FOLLOWED], status: [TODO, IN_PROGRESS, BLOCKED] }, first: 500) {
       edges {
         node {
           id
@@ -126,7 +142,7 @@ export interface TaskPickerItem {
 }
 
 /** Raw shape returned by GraphQL before enum → number conversion. */
-interface RawTaskPickerNode {
+export interface RawTaskPickerNode {
   readonly id: string;
   readonly title: string;
   readonly plannedStart: string | null;
@@ -227,11 +243,7 @@ export function useActivity(date: string) {
   );
 
   const availableTasks: TaskPickerItem[] = sortTasksForPicker(
-    (tasksResult.data?.tasks.edges ?? []).map(e => ({
-      ...e.node,
-      urgency: toNum(URGENCY_NUM, e.node.urgency),
-      impact: toNum(IMPACT_NUM, e.node.impact),
-    })),
+    (tasksResult.data?.tasks.edges ?? []).map(e => toPickerItem(e.node)),
     formatDate(new Date()),
   );
 

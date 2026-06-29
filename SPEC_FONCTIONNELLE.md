@@ -505,7 +505,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
   - Date (obligatoire)
   - Heure de début (obligatoire)
   - Heure de fin (obligatoire)
-  - Tâche associée (optionnel, sélectionnée dans la liste des tâches connues)
+  - Tâche associée (optionnel) — sélectionnée via un **sélecteur recherchable** : à l'ouverture (champ vide), il propose le périmètre de travail (tâches suivies actives, celles planifiées/échues le jour même en tête) ; dès la saisie (≥ 2 caractères), il lance une recherche par titre sur l'ensemble des tâches (filtre `titleContains`, débounce ~250 ms). Évite la troncature aux N tâches les plus récemment créées.
 - L'heure de fin doit être postérieure à l'heure de début (validation bloquante)
 - Le créneau créé apparaît immédiatement dans le journal d'activité
 
