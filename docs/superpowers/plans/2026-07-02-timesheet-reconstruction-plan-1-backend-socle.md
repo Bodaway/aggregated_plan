@@ -742,6 +742,9 @@ pub struct Bucket {
 /// leftover is spread across UNpinned buckets by largest fractional remainder.
 /// If unpinned buckets can't absorb the leftover (all pinned), the residual is
 /// appended to the unattributed bucket (key=None), created if absent.
+/// If PINNED buckets alone exceed `target`, unpinned buckets are zeroed and the
+/// returned total equals the pinned sum — the caller MUST validate pinned <= target
+/// (see `save_timesheet_draft` in Task 13) before relying on the total == target invariant.
 pub fn apportion_to_target(buckets: &[Bucket], target: f64, rounding: f64) -> Vec<Bucket> {
     let unit = rounding.max(f64::EPSILON);
     let target_units = (target / unit).round() as i64;
@@ -861,6 +864,23 @@ mod tests {
         let un = out.iter().find(|x| x.key.is_none()).unwrap();
         assert!((un.hours - 4.5).abs() < 1e-9, "unattributed should absorb 4.5, got {}", un.hours);
         assert!((total(&out) - 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn over_pinned_zeroes_unpinned_and_keeps_pinned() {
+        // Pinned lines total 8.5h > 7.5h target: unpinned zeroed, pinned preserved.
+        // (The use case rejects this before persisting; the pure fn stays total-honest.)
+        let out = apportion_to_target(
+            &[b(Some("a"), 5.0, true), b(Some("b"), 3.5, true), b(Some("c"), 2.0, false)],
+            7.5,
+            0.25,
+        );
+        let a = out.iter().find(|x| x.key.as_deref() == Some("a")).unwrap();
+        let bb = out.iter().find(|x| x.key.as_deref() == Some("b")).unwrap();
+        let c = out.iter().find(|x| x.key.as_deref() == Some("c")).unwrap();
+        assert!((a.hours - 5.0).abs() < 1e-9);
+        assert!((bb.hours - 3.5).abs() < 1e-9);
+        assert!((c.hours - 0.0).abs() < 1e-9, "unpinned zeroed when pinned exceed target");
     }
 }
 ```
@@ -1152,21 +1172,43 @@ pub fn reconstruct_day(inputs: &DayInputs, cfg: &ReconstructionConfig) -> Recons
     }
     let raw_total: f64 = raw.values().map(|(h, _)| *h).sum();
 
-    // Guardrails + normalization (Task 6 fills this in; for now compute a raw draft).
-    finalize_day(inputs.date, raw, raw_total, unresolved, blocks, cfg, &ooo_windows)
+    let ooo_hours: f64 = ooo_windows.iter().map(|(s, e)| (e - s) as f64 / 60.0).sum();
+    let low_signal = is_low_signal(&inputs.signals, cfg.min_signal_hours);
+
+    // Guardrails + normalization (Task 6 replaces finalize_day's body).
+    finalize_day(inputs.date, raw, raw_total, low_signal, ooo_hours, unresolved, blocks, cfg)
+}
+
+/// A day is "low signal" when it has fewer than 2 work signals, or all its signals
+/// fall within a wall-clock span shorter than `min_span_hours` — not enough spread
+/// to trust a full-day reconstruction. Measured from RAW signal timestamps, never
+/// from carry-forward-inflated block hours. Meetings are anchors, not counted here.
+fn is_low_signal(signals: &[Signal], min_span_hours: f64) -> bool {
+    if signals.len() < 2 {
+        return true;
+    }
+    let mut min_m = i64::MAX;
+    let mut max_m = i64::MIN;
+    for s in signals {
+        let m = mins(s.at);
+        min_m = min_m.min(m);
+        max_m = max_m.max(m);
+    }
+    ((max_m - min_m) as f64 / 60.0) < min_span_hours
 }
 ```
 
-Add a temporary minimal `finalize_day` so the crate compiles and the allocation tests pass (Task 6 replaces its body):
+Add a temporary minimal `finalize_day` so the crate compiles and the allocation tests pass (Task 6 replaces its body). Note the final signature — Task 6 keeps it identical:
 ```rust
 fn finalize_day(
     date: NaiveDate,
     raw: HashMap<Option<String>, (f64, Vec<String>)>,
     raw_total: f64,
+    low_signal: bool,
+    ooo_hours: f64,
     unresolved: Vec<UnresolvedSignal>,
     blocks: Vec<AttributedBlock>,
     cfg: &ReconstructionConfig,
-    _ooo: &[(i64, i64)],
 ) -> ReconstructedDay {
     if raw_total <= 0.0 {
         return ReconstructedDay {
@@ -1201,7 +1243,8 @@ fn finalize_day(
         }
     }
     let total_hours: f64 = allocations.iter().map(|a| a.hours).sum::<f64>() + unattributed_hours;
-    let day_confidence = if raw_total >= cfg.min_signal_hours { Confidence::High } else { Confidence::Low };
+    let _ = (raw_total, ooo_hours); // used by the Task 6 replacement; silence temp warnings
+    let day_confidence = if low_signal { Confidence::Low } else { Confidence::High };
     ReconstructedDay {
         date,
         allocations,
@@ -1243,13 +1286,13 @@ Add to `mod tests`:
 ```rust
     #[test]
     fn low_signal_day_quarantines_to_unattributed_not_projects() {
-        // One short morning log (well under min_signal_hours worth of real span).
-        let cfg = ReconstructionConfig { min_signal_hours: 4.0, ..Default::default() };
+        // A single work signal → low_signal by count (< 2), regardless of span/threshold.
+        let cfg = ReconstructionConfig::default();
         let out = reconstruct_day(
             &DayInputs { date: day(), meetings: vec![], signals: vec![sig(9, 0, Some("p1"))] },
             &cfg,
         );
-        // p1 keeps only its raw carry-forward hours; the scaled remainder is unattributed.
+        // p1 keeps only its raw carry-forward hours (~4h morning); the fill is quarantined.
         assert_eq!(out.day_confidence, Confidence::Low);
         let p1 = out.allocations.iter().find(|a| a.gryzzly_project_id == "p1").unwrap();
         assert!(p1.hours < out.total_hours, "p1 should not absorb the whole day");
@@ -1258,8 +1301,9 @@ Add to `mod tests`:
     }
 
     #[test]
-    fn out_of_office_day_is_not_scaled_to_target() {
-        // All-morning OOO + one afternoon log. Morning is suppressed.
+    fn out_of_office_day_bills_worked_time_not_full_target() {
+        // Morning OOO (4h off) + full afternoon of work on p1 (back-fill 13:00→17:00 = 4h).
+        // billable_target = 7.5 - 4 = 3.5; worked = 4.0 → total = max(worked, billable) = 4.0.
         let out = reconstruct_day(
             &DayInputs {
                 date: day(),
@@ -1268,8 +1312,10 @@ Add to `mod tests`:
             },
             &ReconstructionConfig::default(),
         );
-        // Total should be at most the afternoon window (4h), never the full 7.5h target.
-        assert!(out.total_hours <= 4.0 + 1e-9, "OOO morning must not be filled, got {}", out.total_hours);
+        assert!(out.total_hours < 7.5, "OOO day must not be scaled to full target");
+        assert!((out.total_hours - 4.0).abs() < 1e-9, "should bill the 4h afternoon, got {}", out.total_hours);
+        // Morning OOO time is never attributed to a project.
+        assert!(out.allocations.iter().all(|a| a.hours <= 4.0 + 1e-9));
     }
 
     #[test]
@@ -1317,16 +1363,22 @@ pub fn renormalize_lines(lines: &[EditedLine], target: f64, rounding: f64) -> Ve
 }
 ```
 
-Replace the body of `finalize_day` with the guarded version:
+Replace the body of `finalize_day` with the guarded version. **Semantics:** on a guarded
+day (low-signal OR any out-of-office time) projects are NEVER inflated — they keep their raw
+carry-forward hours; the day is filled up to the *billable* target (`daily_target_hours − ooo_hours`)
+with quarantined unattributed hours, and `total = max(worked, billable_target)` (you bill at least
+what you actually worked, never more than the honest evidence). On a clean high-signal day with no
+off-time, every bucket scales to the full target via largest-remainder.
 ```rust
 fn finalize_day(
     date: NaiveDate,
     raw: HashMap<Option<String>, (f64, Vec<String>)>,
     raw_total: f64,
+    low_signal: bool,
+    ooo_hours: f64,
     unresolved: Vec<UnresolvedSignal>,
     blocks: Vec<AttributedBlock>,
     cfg: &ReconstructionConfig,
-    ooo: &[(i64, i64)],
 ) -> ReconstructedDay {
     if raw_total <= 0.0 {
         return ReconstructedDay {
@@ -1335,80 +1387,67 @@ fn finalize_day(
         };
     }
 
-    // Available worked hours cap: full day minus OOO-covered time.
-    let ooo_hours: f64 = ooo.iter().map(|(s, e)| (e - s) as f64 / 60.0).sum();
-    let day_cap = (cfg.daily_target_hours - ooo_hours).max(0.0);
+    let unit = cfg.rounding_hours.max(f64::EPSILON);
+    let round = |h: f64| (h / unit).round() * unit;
 
-    let low_signal = raw_total < cfg.min_signal_hours;
-    let day_confidence = if low_signal { Confidence::Low } else { Confidence::High };
-
-    // Determine the target the day is scaled to.
-    // - Low-signal OR OOO present: do NOT inflate projects. Keep project raw hours,
-    //   dump the (capped target - raw) remainder into the unattributed bucket.
-    // - Otherwise: scale projects up to the day cap.
-    let effective_target = day_cap;
-
-    let allocations;
-    let unattributed_hours;
-
-    if low_signal || !ooo.is_empty() {
-        // Project buckets keep their raw hours (rounded); unattributed absorbs the rest.
-        let mut project_units_hours: Vec<(Option<String>, f64)> =
-            raw.iter().map(|(k, (h, _))| (k.clone(), *h)).collect();
-        // Round each project bucket to the increment, then set unattributed = target - sum.
-        let unit = cfg.rounding_hours.max(f64::EPSILON);
+    if low_signal || ooo_hours > 0.0 {
+        // GUARDED: never inflate projects. Keep raw project hours (rounded); fill up
+        // to the billable target with quarantined unattributed hours.
+        let billable_target = (cfg.daily_target_hours - ooo_hours).max(0.0);
+        let mut allocations = Vec::new();
+        let mut raw_unattr = 0.0;
         let mut sum_projects = 0.0;
-        for (_, h) in project_units_hours.iter_mut() {
-            *h = (*h / unit).round() * unit;
-            sum_projects += *h;
-        }
-        let mut allocs = Vec::new();
-        let mut unattr = (effective_target - sum_projects).max(0.0);
-        for (k, h) in project_units_hours {
+        for (k, (h, refs)) in &raw {
+            let rounded = round(*h);
             match k {
                 Some(pid) => {
-                    let refs = raw.get(&Some(pid.clone())).map(|(_, r)| r.clone()).unwrap_or_default();
-                    allocs.push(ProjectAllocation {
-                        gryzzly_project_id: pid,
-                        hours: h,
-                        confidence: Confidence::High,
-                        source_refs: refs,
-                    });
-                }
-                None => unattr += h,
-            }
-        }
-        allocations = allocs;
-        unattributed_hours = unattr;
-    } else {
-        let buckets: Vec<Bucket> = raw
-            .iter()
-            .map(|(k, (h, _))| Bucket { key: k.clone(), hours: *h, pinned: false })
-            .collect();
-        let apportioned = apportion_to_target(&buckets, effective_target, cfg.rounding_hours);
-        let mut allocs = Vec::new();
-        let mut unattr = 0.0;
-        for bkt in &apportioned {
-            match &bkt.key {
-                Some(pid) => {
-                    let refs = raw.get(&Some(pid.clone())).map(|(_, r)| r.clone()).unwrap_or_default();
-                    allocs.push(ProjectAllocation {
+                    sum_projects += rounded;
+                    allocations.push(ProjectAllocation {
                         gryzzly_project_id: pid.clone(),
-                        hours: bkt.hours,
+                        hours: rounded,
                         confidence: Confidence::High,
-                        source_refs: refs,
+                        source_refs: refs.clone(),
                     });
                 }
-                None => unattr += bkt.hours,
+                None => raw_unattr += rounded,
             }
         }
-        allocations = allocs;
-        unattributed_hours = unattr;
+        // Fill only the gap up to the billable target (never negative → never caps real work).
+        let fill = round((billable_target - sum_projects).max(0.0));
+        let unattributed_hours = raw_unattr + fill;
+        let total_hours = sum_projects + unattributed_hours;
+        let day_confidence = if low_signal { Confidence::Low } else { Confidence::Medium };
+        return ReconstructedDay {
+            date, allocations, unattributed_hours, unresolved, total_hours, day_confidence, blocks,
+        };
     }
 
+    // HIGH-SIGNAL, no off-time: scale every bucket to the full target.
+    let buckets: Vec<Bucket> = raw
+        .iter()
+        .map(|(k, (h, _))| Bucket { key: k.clone(), hours: *h, pinned: false })
+        .collect();
+    let apportioned = apportion_to_target(&buckets, cfg.daily_target_hours, cfg.rounding_hours);
+    let mut allocations = Vec::new();
+    let mut unattributed_hours = 0.0;
+    for bkt in &apportioned {
+        match &bkt.key {
+            Some(pid) => {
+                let refs = raw.get(&Some(pid.clone())).map(|(_, r)| r.clone()).unwrap_or_default();
+                allocations.push(ProjectAllocation {
+                    gryzzly_project_id: pid.clone(),
+                    hours: bkt.hours,
+                    confidence: Confidence::High,
+                    source_refs: refs,
+                });
+            }
+            None => unattributed_hours += bkt.hours,
+        }
+    }
     let total_hours: f64 = allocations.iter().map(|a| a.hours).sum::<f64>() + unattributed_hours;
     ReconstructedDay {
-        date, allocations, unattributed_hours, unresolved, total_hours, day_confidence, blocks,
+        date, allocations, unattributed_hours, unresolved, total_hours,
+        day_confidence: Confidence::High, blocks,
     }
 }
 ```
@@ -2536,7 +2575,7 @@ git commit -m "Add timezone helper (resolve_tz, to_local, local_day_bounds)"
 **Interfaces:**
 - Consumes: reconstruction rule (Tasks 4-6), mapping rule (Task 3), `TimesheetDraftRepository` (Task 7), `SignalMappingRepository` (Task 8), `GitConnector` (Task 11), time helper (Task 12), and existing `WorklogRepository`, `MeetingRepository`, `TaskRepository`, `GryzzlyCatalogRepository`, `ConfigRepository`.
 - Produces:
-  - `async fn reconstruct_timesheet(deps..., user_id, date) -> Result<ReconstructedDay, AppError>`
+  - `async fn reconstruct_timesheet(worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo, git: &dyn GitConnector, draft_repo: &dyn TimesheetDraftRepository, user_id, date) -> Result<ReconstructedDay, AppError>` — note `draft_repo` is a required parameter (it persists the draft, guarding on existing status)
   - `async fn save_timesheet_draft(deps..., user_id, date, edited_lines: Vec<EditedLine>) -> Result<(), AppError>`
   - `async fn validate_timesheet(draft_repo, user_id, date) -> Result<(), AppError>`
   - `async fn mark_day_off(draft_repo, user_id, date, scope: DayOffScope) -> Result<(), AppError>`
@@ -2567,6 +2606,13 @@ use crate::repositories::{
 };
 use crate::services::git_connector::{jira_key_in, GitConnector};
 use crate::time::{local_day_bounds, resolve_tz, to_local};
+
+/// Upper bound when scanning the Gryzzly catalog to derive the set of live project
+/// ids. Set well above any realistic catalog size (the catalog is task-grained and
+/// the set dedupes to distinct projects). FOLLOW-UP (Plan 2): replace with a dedicated
+/// `distinct_active_project_ids` repo method so growth can never silently drop a project
+/// and cause a false StaleMapping downgrade.
+const CATALOG_SCAN_LIMIT: i64 = 100_000;
 
 #[derive(Debug, Clone, Copy)]
 pub enum DayOffScope {
@@ -2620,7 +2666,7 @@ pub async fn reconstruct_timesheet(
 
     let rules = mapping_repo.list_enabled(user_id).await?;
     let live_project_ids: HashSet<String> = catalog_repo
-        .list_active(user_id, None, None, 5000)
+        .list_active(user_id, None, None, CATALOG_SCAN_LIMIT)
         .await?
         .into_iter()
         .map(|e| e.gryzzly_project_id)
@@ -2932,6 +2978,15 @@ pub async fn save_timesheet_draft(
     edited: Vec<EditedLine>,
 ) -> Result<(), AppError> {
     let cfg = load_reconstruction_config(config_repo, user_id).await?;
+    // Pinned lines are frozen; if the user pins more than the target, the total can't
+    // honor the invariant — reject rather than silently persist an over-target day.
+    let pinned_total: f64 = edited.iter().filter(|l| l.is_pinned).map(|l| l.hours).sum();
+    if pinned_total > cfg.daily_target_hours + 1e-9 {
+        return Err(AppError::Validation(format!(
+            "pinned hours ({pinned_total}) exceed the daily target ({})",
+            cfg.daily_target_hours
+        )));
+    }
     let normalized = renormalize_lines(&edited, cfg.daily_target_hours, cfg.rounding_hours);
     let now = Utc::now();
     let lines = normalized
@@ -3012,7 +3067,7 @@ pub async fn learn_mapping(
 ) -> Result<SignalMapping, AppError> {
     // Validate the target project against the live catalog + fetch its display name.
     let name = catalog_repo
-        .list_active(user_id, None, None, 5000)
+        .list_active(user_id, None, None, CATALOG_SCAN_LIMIT)
         .await?
         .into_iter()
         .find(|e| e.gryzzly_project_id == gryzzly_project_id)
