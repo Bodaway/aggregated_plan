@@ -11,6 +11,7 @@ pub mod config_repo;
 pub mod worklog_repo;
 pub mod recurrence_repo;
 pub mod gryzzly_catalog_repo;
+pub mod signal_mapping_repo;
 
 mod conversions;
 
@@ -27,3 +28,4 @@ pub use config_repo::SqliteConfigRepository;
 pub use worklog_repo::SqliteWorklogRepository;
 pub use recurrence_repo::SqliteRecurrenceRepository;
 pub use gryzzly_catalog_repo::SqliteGryzzlyCatalogRepository;
+pub use signal_mapping_repo::SqliteSignalMappingRepository;
