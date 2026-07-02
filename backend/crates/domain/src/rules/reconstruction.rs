@@ -159,6 +159,9 @@ pub fn apportion_to_target(buckets: &[Bucket], target: f64, rounding: f64) -> Ve
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.cmp(&b))
     });
+    // Invariant: leftover == sum of fractional remainders < number of unpinned buckets,
+    // so each bucket receives at most one bonus unit (the idx % len wrap never triggers).
+    debug_assert!(leftover <= floors.len() as i64, "leftover ({leftover}) exceeds bucket count {} — floors invariant broken", floors.len());
     let mut idx = 0;
     while leftover > 0 && !order.is_empty() {
         let target_i = order[idx % order.len()];
