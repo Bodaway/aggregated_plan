@@ -98,6 +98,24 @@ pub enum TaskLinkType {
     Rejected,
 }
 
+/// How much the reconstruction trusts an allocation / a day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+impl Confidence {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Confidence::High => "high",
+            Confidence::Medium => "medium",
+            Confidence::Low => "low",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TrackingState {
     #[default]

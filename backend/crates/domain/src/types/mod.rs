@@ -10,6 +10,7 @@ pub mod task_link;
 pub mod worklog;
 pub mod recurrence;
 pub mod gryzzly;
+pub mod signal_mapping;
 
 pub use common::*;
 pub use task::*;
@@ -23,3 +24,4 @@ pub use task_link::*;
 pub use worklog::*;
 pub use recurrence::*;
 pub use gryzzly::*;
+pub use signal_mapping::*;
