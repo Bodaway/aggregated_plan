@@ -367,15 +367,47 @@ fn finalize_day(
 ) -> ReconstructedDay {
     if raw_total <= 0.0 {
         return ReconstructedDay {
-            date,
-            allocations: vec![],
-            unattributed_hours: 0.0,
-            unresolved,
-            total_hours: 0.0,
-            day_confidence: Confidence::Low,
-            blocks,
+            date, allocations: vec![], unattributed_hours: 0.0, unresolved,
+            total_hours: 0.0, day_confidence: Confidence::Low, blocks,
         };
     }
+
+    let unit = cfg.rounding_hours.max(f64::EPSILON);
+    let round = |h: f64| (h / unit).round() * unit;
+
+    if low_signal || ooo_hours > 0.0 {
+        // GUARDED: never inflate projects. Keep raw project hours (rounded); fill up
+        // to the billable target with quarantined unattributed hours.
+        let billable_target = (cfg.daily_target_hours - ooo_hours).max(0.0);
+        let mut allocations = Vec::new();
+        let mut raw_unattr = 0.0;
+        let mut sum_projects = 0.0;
+        for (k, (h, refs)) in &raw {
+            let rounded = round(*h);
+            match k {
+                Some(pid) => {
+                    sum_projects += rounded;
+                    allocations.push(ProjectAllocation {
+                        gryzzly_project_id: pid.clone(),
+                        hours: rounded,
+                        confidence: Confidence::High,
+                        source_refs: refs.clone(),
+                    });
+                }
+                None => raw_unattr += rounded,
+            }
+        }
+        // Fill only the gap up to the billable target (never negative → never caps real work).
+        let fill = round((billable_target - sum_projects).max(0.0));
+        let unattributed_hours = raw_unattr + fill;
+        let total_hours = sum_projects + unattributed_hours;
+        let day_confidence = if low_signal { Confidence::Low } else { Confidence::Medium };
+        return ReconstructedDay {
+            date, allocations, unattributed_hours, unresolved, total_hours, day_confidence, blocks,
+        };
+    }
+
+    // HIGH-SIGNAL, no off-time: scale every bucket to the full target.
     let buckets: Vec<Bucket> = raw
         .iter()
         .map(|(k, (h, _))| Bucket { key: k.clone(), hours: *h, pinned: false })
@@ -398,17 +430,30 @@ fn finalize_day(
         }
     }
     let total_hours: f64 = allocations.iter().map(|a| a.hours).sum::<f64>() + unattributed_hours;
-    let _ = (raw_total, ooo_hours); // used by the Task 6 replacement; silence temp warnings
-    let day_confidence = if low_signal { Confidence::Low } else { Confidence::High };
     ReconstructedDay {
-        date,
-        allocations,
-        unattributed_hours,
-        unresolved,
-        total_hours,
-        day_confidence,
-        blocks,
+        date, allocations, unattributed_hours, unresolved, total_hours,
+        day_confidence: Confidence::High, blocks,
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditedLine {
+    pub gryzzly_project_id: Option<String>,
+    pub hours: f64,
+    pub is_pinned: bool,
+}
+
+/// Re-apply target-rounding to user-edited lines: pinned lines are frozen,
+/// unpinned lines + unattributed absorb the difference so the total == target.
+pub fn renormalize_lines(lines: &[EditedLine], target: f64, rounding: f64) -> Vec<EditedLine> {
+    let buckets: Vec<Bucket> = lines
+        .iter()
+        .map(|l| Bucket { key: l.gryzzly_project_id.clone(), hours: l.hours, pinned: l.is_pinned })
+        .collect();
+    apportion_to_target(&buckets, target, rounding)
+        .into_iter()
+        .map(|b| EditedLine { gryzzly_project_id: b.key, hours: b.hours, is_pinned: b.pinned })
+        .collect()
 }
 
 fn push_or_merge_unattributed(out: &mut Vec<Bucket>, add_hours: f64) {
@@ -570,5 +615,86 @@ mod tests {
         assert!((a.hours - 5.0).abs() < 1e-9);
         assert!((bb.hours - 3.5).abs() < 1e-9);
         assert!((c.hours - 0.0).abs() < 1e-9, "unpinned zeroed when pinned exceed target");
+    }
+
+    #[test]
+    fn low_signal_day_quarantines_to_unattributed_not_projects() {
+        // A single work signal → low_signal by count (< 2), regardless of span/threshold.
+        let cfg = ReconstructionConfig::default();
+        let out = reconstruct_day(
+            &DayInputs { date: day(), meetings: vec![], signals: vec![sig(9, 0, Some("p1"))] },
+            &cfg,
+        );
+        // p1 keeps only its raw carry-forward hours (~4h morning); the fill is quarantined.
+        assert_eq!(out.day_confidence, Confidence::Low);
+        let p1 = out.allocations.iter().find(|a| a.gryzzly_project_id == "p1").unwrap();
+        assert!(p1.hours < out.total_hours, "p1 should not absorb the whole day");
+        assert!(out.unattributed_hours > 0.0);
+        assert!((out.total_hours - cfg.daily_target_hours).abs() < 1e-9);
+    }
+
+    #[test]
+    fn out_of_office_day_bills_worked_time_not_full_target() {
+        // Morning OOO (4h off) + full afternoon of work on p1 (back-fill 13:00→17:00 = 4h).
+        // billable_target = 7.5 - 4 = 3.5; worked = 4.0 → total = max(worked, billable) = 4.0.
+        let out = reconstruct_day(
+            &DayInputs {
+                date: day(),
+                meetings: vec![meeting(8, 12, None, MeetingKind::OutOfOffice)],
+                signals: vec![sig(14, 0, Some("p1"))],
+            },
+            &ReconstructionConfig::default(),
+        );
+        assert!(out.total_hours < 7.5, "OOO day must not be scaled to full target");
+        assert!((out.total_hours - 4.0).abs() < 1e-9, "should bill the 4h afternoon, got {}", out.total_hours);
+        // Morning OOO time is never attributed to a project.
+        assert!(out.allocations.iter().all(|a| a.hours <= 4.0 + 1e-9));
+    }
+
+    #[test]
+    fn renormalize_respects_pinned_and_sums_to_target() {
+        let lines = vec![
+            EditedLine { gryzzly_project_id: Some("a".into()), hours: 3.0, is_pinned: true },
+            EditedLine { gryzzly_project_id: Some("b".into()), hours: 1.0, is_pinned: false },
+            EditedLine { gryzzly_project_id: None, hours: 1.0, is_pinned: false },
+        ];
+        let out = renormalize_lines(&lines, 7.5, 0.25);
+        let a = out.iter().find(|l| l.gryzzly_project_id.as_deref() == Some("a")).unwrap();
+        assert!((a.hours - 3.0).abs() < 1e-9);
+        let total: f64 = out.iter().map(|l| l.hours).sum();
+        assert!((total - 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn overlapping_meetings_earlier_wins() {
+        // Two overlapping WORK meetings in the morning:
+        //   p_a: 09:00–11:00 (2h)
+        //   p_b: 10:00–12:00 (2h raw, but 10:00–11:00 is contested)
+        // Earlier-wins truncation: p_a keeps 09:00–11:00 (2h), cursor moves to 11:00.
+        // p_b is clipped to max(10:00, 11:00)=11:00 → 11:00–12:00 (1h).
+        // No signals → low_signal day (guarded branch). Projects keep raw meeting hours.
+        let out = reconstruct_day(
+            &DayInputs {
+                date: day(),
+                meetings: vec![
+                    meeting(9, 11, Some("p_a"), MeetingKind::Work),
+                    meeting(10, 12, Some("p_b"), MeetingKind::Work),
+                ],
+                signals: vec![],
+            },
+            &ReconstructionConfig::default(),
+        );
+        // Assert on raw blocks (meeting attributed hours) rather than allocations,
+        // since this is a low-signal day and the guarded branch keeps raw hours.
+        let pa_meeting_hours: f64 = out.blocks.iter()
+            .filter(|blk| blk.gryzzly_project_id.as_deref() == Some("p_a") && blk.kind == BlockKind::Meeting)
+            .map(|blk| blk.hours)
+            .sum();
+        let pb_meeting_hours: f64 = out.blocks.iter()
+            .filter(|blk| blk.gryzzly_project_id.as_deref() == Some("p_b") && blk.kind == BlockKind::Meeting)
+            .map(|blk| blk.hours)
+            .sum();
+        assert!((pa_meeting_hours - 2.0).abs() < 1e-9, "p_a should have 2h (09:00–11:00), got {}", pa_meeting_hours);
+        assert!((pb_meeting_hours - 1.0).abs() < 1e-9, "p_b should have 1h (11:00–12:00), got {}", pb_meeting_hours);
     }
 }
