@@ -11,6 +11,7 @@ pub mod worklog_repository;
 pub mod recurrence_repository;
 pub mod gryzzly_catalog_repository;
 pub mod timesheet_draft_repository;
+pub mod signal_mapping_repository;
 
 pub use task_repository::*;
 pub use meeting_repository::*;
@@ -25,3 +26,4 @@ pub use worklog_repository::*;
 pub use recurrence_repository::*;
 pub use gryzzly_catalog_repository::*;
 pub use timesheet_draft_repository::*;
+pub use signal_mapping_repository::*;
