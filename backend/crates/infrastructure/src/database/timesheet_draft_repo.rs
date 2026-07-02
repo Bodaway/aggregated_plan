@@ -37,6 +37,11 @@ fn map_line(row: &SqliteRow) -> Result<TimesheetDraftLine, RepositoryError> {
     let refs_json: Option<String> = Row::get(row, "source_refs_json");
     let is_pinned: i64 = Row::get(row, "is_pinned");
     let conf: String = Row::get(row, "confidence");
+    let source_refs: Vec<String> = match refs_json {
+        None => vec![],
+        Some(j) => serde_json::from_str(&j)
+            .map_err(|e| RepositoryError::Serialization(e.to_string()))?,
+    };
     Ok(TimesheetDraftLine {
         id: Uuid::parse_str(&id_str).map_err(|e| RepositoryError::Database(e.to_string()))?,
         gryzzly_project_id: Row::get(row, "gryzzly_project_id"),
@@ -44,9 +49,7 @@ fn map_line(row: &SqliteRow) -> Result<TimesheetDraftLine, RepositoryError> {
         hours: Row::get(row, "hours"),
         is_pinned: is_pinned != 0,
         confidence: conf_from(&conf),
-        source_refs: refs_json
-            .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_default(),
+        source_refs,
     })
 }
 
