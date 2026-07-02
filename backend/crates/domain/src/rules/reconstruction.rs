@@ -378,7 +378,7 @@ fn finalize_day(
     if low_signal || ooo_hours > 0.0 {
         // GUARDED: never inflate projects. Keep raw project hours (rounded); fill up
         // to the billable target with quarantined unattributed hours.
-        let billable_target = (cfg.daily_target_hours - ooo_hours).max(0.0);
+        let billable_target = round((cfg.daily_target_hours - ooo_hours).max(0.0));
         let mut allocations = Vec::new();
         let mut raw_unattr = 0.0;
         let mut sum_projects = 0.0;
@@ -631,6 +631,9 @@ mod tests {
         assert!(p1.hours < out.total_hours, "p1 should not absorb the whole day");
         assert!(out.unattributed_hours > 0.0);
         assert!((out.total_hours - cfg.daily_target_hours).abs() < 1e-9);
+        let line_sum: f64 =
+            out.allocations.iter().map(|a| a.hours).sum::<f64>() + out.unattributed_hours;
+        assert!((line_sum - out.total_hours).abs() < 1e-9, "lines must sum to total");
     }
 
     #[test]
