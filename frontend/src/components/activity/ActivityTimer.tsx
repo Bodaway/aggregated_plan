@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback, FormEvent } from 'react';
+import { TaskPicker } from './TaskPicker';
+import type { TaskPickerItem } from '@/hooks/use-activity';
 
 interface CurrentActivityData {
   readonly id: string;
@@ -6,14 +8,9 @@ interface CurrentActivityData {
   readonly task?: { readonly id: string; readonly title: string } | null;
 }
 
-interface TaskOption {
-  readonly id: string;
-  readonly title: string;
-}
-
 interface ActivityTimerProps {
   readonly currentActivity?: CurrentActivityData | null;
-  readonly tasks?: readonly TaskOption[];
+  readonly tasks?: readonly TaskPickerItem[];
   readonly onStart: (taskId?: string) => void;
   readonly onStop: () => void;
   /** Optional: append a quick note to the linked task's `notes` field. */
@@ -191,18 +188,9 @@ export function ActivityTimer({ currentActivity, tasks = [], onStart, onStop, on
         </div>
 
         <div className="flex items-center gap-2">
-          <select
-            value={selectedTaskId}
-            onChange={e => setSelectedTaskId(e.target.value)}
-            className="text-sm border border-gray-300 rounded-md px-2 py-2 text-gray-700 bg-white hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent max-w-[240px] truncate"
-          >
-            <option value="">No task</option>
-            {tasks.map(task => (
-              <option key={task.id} value={task.id}>
-                {task.title}
-              </option>
-            ))}
-          </select>
+          <div className="w-60">
+            <TaskPicker tasks={tasks} value={selectedTaskId} onChange={setSelectedTaskId} />
+          </div>
 
           <button
             type="button"

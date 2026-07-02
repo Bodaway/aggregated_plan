@@ -455,7 +455,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 > En tant que Tech Lead, je veux indiquer régulièrement sur quoi je travaille afin de construire automatiquement mon journal d'activité.
 
 **Critères d'acceptation :**
-- L'outil propose la liste des tâches en cours (agrégées de toutes les sources)
+- L'outil propose les tâches via un **sélecteur recherchable** : à l'ouverture (champ vide), il affiche le périmètre de travail suivi (tâches planifiées/échues le jour même en tête) ; dès la saisie (≥ 2 caractères), il recherche par titre sur l'ensemble des tâches (filtre `titleContains`). Évite la troncature aux N tâches les plus récemment créées.
 - L'utilisateur sélectionne la tâche active en un ou deux clics
 - Le journal enregistre : tâche sélectionnée, heure de début, heure de fin (quand il change)
 - L'interaction doit être rapide et non-intrusive (popup léger ou barre latérale)
