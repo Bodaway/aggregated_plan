@@ -33,6 +33,13 @@ pub struct MeetingBlock {
     pub source_ref: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DayInputs {
+    pub date: NaiveDate,
+    pub meetings: Vec<MeetingBlock>,
+    pub signals: Vec<Signal>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ReconstructionConfig {
     pub morning: (u32, u32),
@@ -179,6 +186,231 @@ pub fn apportion_to_target(buckets: &[Bucket], target: f64, rounding: f64) -> Ve
     out
 }
 
+use chrono::Timelike;
+use std::collections::HashMap;
+
+/// A half-day window in local wall-clock minutes-from-midnight.
+struct Window {
+    start_min: i64,
+    end_min: i64,
+}
+
+fn windows(cfg: &ReconstructionConfig) -> [Window; 2] {
+    [
+        Window { start_min: cfg.morning.0 as i64 * 60, end_min: cfg.morning.1 as i64 * 60 },
+        Window { start_min: cfg.afternoon.0 as i64 * 60, end_min: cfg.afternoon.1 as i64 * 60 },
+    ]
+}
+
+fn mins(dt: NaiveDateTime) -> i64 {
+    dt.time().hour() as i64 * 60 + dt.time().minute() as i64
+}
+
+/// Reconstruct one day from its LOCAL-time signals and meetings.
+pub fn reconstruct_day(inputs: &DayInputs, cfg: &ReconstructionConfig) -> ReconstructedDay {
+    let mut blocks: Vec<AttributedBlock> = Vec::new();
+    let mut unresolved: Vec<UnresolvedSignal> = Vec::new();
+
+    // Out-of-office anchors suppress target scaling for the half-days they cover.
+    let mut ooo_windows: Vec<(i64, i64)> = Vec::new();
+
+    for w in windows(cfg).iter() {
+        // Meetings clipped to this window.
+        let mut anchors: Vec<(i64, i64, &MeetingBlock)> = inputs
+            .meetings
+            .iter()
+            .filter_map(|m| {
+                let s = mins(m.start).max(w.start_min);
+                let e = mins(m.end).min(w.end_min);
+                if e > s {
+                    Some((s, e, m))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        anchors.sort_by_key(|a| a.0);
+
+        // Earlier meeting wins contested intervals: truncate later overlaps.
+        let mut cursor = w.start_min;
+        let mut fixed: Vec<(i64, i64, &MeetingBlock)> = Vec::new();
+        for (s, e, m) in anchors {
+            let s = s.max(cursor);
+            if e > s {
+                fixed.push((s, e, m));
+                cursor = e;
+            }
+        }
+        for (s, e, m) in &fixed {
+            let kind = match m.kind {
+                MeetingKind::Work => BlockKind::Meeting,
+                MeetingKind::OutOfOffice => {
+                    ooo_windows.push((*s, *e));
+                    BlockKind::OutOfOffice
+                }
+            };
+            if matches!(kind, BlockKind::OutOfOffice) {
+                continue; // OOO consumes time but is never attributed to a project
+            }
+            blocks.push(AttributedBlock {
+                start: inputs.date.and_hms_opt((*s / 60) as u32, (*s % 60) as u32, 0).unwrap(),
+                end: inputs.date.and_hms_opt((*e / 60) as u32, (*e % 60) as u32, 0).unwrap(),
+                gryzzly_project_id: m.gryzzly_project_id.clone(),
+                kind: BlockKind::Meeting,
+                hours: (e - s) as f64 / 60.0,
+                source_refs: vec![m.source_ref.clone()],
+            });
+        }
+
+        // Free intervals = window minus fixed meeting anchors.
+        let mut free: Vec<(i64, i64)> = Vec::new();
+        let mut c = w.start_min;
+        for (s, e, _) in &fixed {
+            if *s > c {
+                free.push((c, *s));
+            }
+            c = (*e).max(c);
+        }
+        if c < w.end_min {
+            free.push((c, w.end_min));
+        }
+
+        // Signals in this window, sorted by time.
+        let mut sigs: Vec<&Signal> = inputs
+            .signals
+            .iter()
+            .filter(|s| mins(s.at) >= w.start_min && mins(s.at) < w.end_min)
+            .collect();
+        sigs.sort_by_key(|s| mins(s.at));
+
+        // Carry-forward within each free interval.
+        for (fs, fe) in &free {
+            let in_iv: Vec<&Signal> = sigs
+                .iter()
+                .copied()
+                .filter(|s| {
+                    let m = mins(s.at);
+                    m >= *fs && m < *fe
+                })
+                .collect();
+            if in_iv.is_empty() {
+                continue;
+            }
+            for (i, s) in in_iv.iter().enumerate() {
+                let start_min = if i == 0 { *fs } else { mins(s.at) };
+                let end_min = if i + 1 < in_iv.len() { mins(in_iv[i + 1].at) } else { *fe };
+                if end_min <= start_min {
+                    continue;
+                }
+                if s.gryzzly_project_id.is_none() {
+                    unresolved.push(UnresolvedSignal {
+                        source_ref: s.source_ref.clone(),
+                        label: s.label.clone(),
+                        at: s.at,
+                    });
+                }
+                blocks.push(AttributedBlock {
+                    start: inputs.date.and_hms_opt((start_min / 60) as u32, (start_min % 60) as u32, 0).unwrap(),
+                    end: inputs.date.and_hms_opt((end_min / 60) as u32, (end_min % 60) as u32, 0).unwrap(),
+                    gryzzly_project_id: s.gryzzly_project_id.clone(),
+                    kind: BlockKind::Work,
+                    hours: (end_min - start_min) as f64 / 60.0,
+                    source_refs: vec![s.source_ref.clone()],
+                });
+            }
+        }
+    }
+
+    // Aggregate raw hours by project (None = unattributed).
+    let mut raw: HashMap<Option<String>, (f64, Vec<String>)> = HashMap::new();
+    for blk in &blocks {
+        let entry = raw.entry(blk.gryzzly_project_id.clone()).or_insert((0.0, vec![]));
+        entry.0 += blk.hours;
+        entry.1.extend(blk.source_refs.iter().cloned());
+    }
+    let raw_total: f64 = raw.values().map(|(h, _)| *h).sum();
+
+    let ooo_hours: f64 = ooo_windows.iter().map(|(s, e)| (e - s) as f64 / 60.0).sum();
+    let low_signal = is_low_signal(&inputs.signals, cfg.min_signal_hours);
+
+    // Guardrails + normalization (Task 6 replaces finalize_day's body).
+    finalize_day(inputs.date, raw, raw_total, low_signal, ooo_hours, unresolved, blocks, cfg)
+}
+
+/// A day is "low signal" when it has fewer than 2 work signals, or all its signals
+/// fall within a wall-clock span shorter than `min_span_hours` — not enough spread
+/// to trust a full-day reconstruction. Measured from RAW signal timestamps, never
+/// from carry-forward-inflated block hours. Meetings are anchors, not counted here.
+fn is_low_signal(signals: &[Signal], min_span_hours: f64) -> bool {
+    if signals.len() < 2 {
+        return true;
+    }
+    let mut min_m = i64::MAX;
+    let mut max_m = i64::MIN;
+    for s in signals {
+        let m = mins(s.at);
+        min_m = min_m.min(m);
+        max_m = max_m.max(m);
+    }
+    ((max_m - min_m) as f64 / 60.0) < min_span_hours
+}
+
+fn finalize_day(
+    date: NaiveDate,
+    raw: HashMap<Option<String>, (f64, Vec<String>)>,
+    raw_total: f64,
+    low_signal: bool,
+    ooo_hours: f64,
+    unresolved: Vec<UnresolvedSignal>,
+    blocks: Vec<AttributedBlock>,
+    cfg: &ReconstructionConfig,
+) -> ReconstructedDay {
+    if raw_total <= 0.0 {
+        return ReconstructedDay {
+            date,
+            allocations: vec![],
+            unattributed_hours: 0.0,
+            unresolved,
+            total_hours: 0.0,
+            day_confidence: Confidence::Low,
+            blocks,
+        };
+    }
+    let buckets: Vec<Bucket> = raw
+        .iter()
+        .map(|(k, (h, _))| Bucket { key: k.clone(), hours: *h, pinned: false })
+        .collect();
+    let apportioned = apportion_to_target(&buckets, cfg.daily_target_hours, cfg.rounding_hours);
+    let mut allocations = Vec::new();
+    let mut unattributed_hours = 0.0;
+    for bkt in &apportioned {
+        match &bkt.key {
+            Some(pid) => {
+                let refs = raw.get(&Some(pid.clone())).map(|(_, r)| r.clone()).unwrap_or_default();
+                allocations.push(ProjectAllocation {
+                    gryzzly_project_id: pid.clone(),
+                    hours: bkt.hours,
+                    confidence: Confidence::High,
+                    source_refs: refs,
+                });
+            }
+            None => unattributed_hours += bkt.hours,
+        }
+    }
+    let total_hours: f64 = allocations.iter().map(|a| a.hours).sum::<f64>() + unattributed_hours;
+    let _ = (raw_total, ooo_hours); // used by the Task 6 replacement; silence temp warnings
+    let day_confidence = if low_signal { Confidence::Low } else { Confidence::High };
+    ReconstructedDay {
+        date,
+        allocations,
+        unattributed_hours,
+        unresolved,
+        total_hours,
+        day_confidence,
+        blocks,
+    }
+}
+
 fn push_or_merge_unattributed(out: &mut Vec<Bucket>, add_hours: f64) {
     if let Some(b) = out.iter_mut().find(|b| b.key.is_none()) {
         b.hours += add_hours;
@@ -190,6 +422,91 @@ fn push_or_merge_unattributed(out: &mut Vec<Bucket>, add_hours: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
+
+    fn day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()
+    }
+    fn at(h: u32, m: u32) -> NaiveDateTime {
+        day().and_hms_opt(h, m, 0).unwrap()
+    }
+    fn sig(h: u32, m: u32, project: Option<&str>) -> Signal {
+        Signal {
+            at: at(h, m),
+            gryzzly_project_id: project.map(|s| s.to_string()),
+            kind: SignalKind::Log,
+            label: format!("log {h}:{m}"),
+            source_ref: format!("wl-{h}{m}"),
+        }
+    }
+    fn meeting(sh: u32, eh: u32, project: Option<&str>, kind: MeetingKind) -> MeetingBlock {
+        MeetingBlock {
+            start: at(sh, 0),
+            end: at(eh, 0),
+            gryzzly_project_id: project.map(|s| s.to_string()),
+            kind,
+            title: "meet".into(),
+            source_ref: format!("mtg-{sh}"),
+        }
+    }
+
+    #[test]
+    fn empty_day_yields_zero_total_low_confidence() {
+        let out = reconstruct_day(
+            &DayInputs { date: day(), meetings: vec![], signals: vec![] },
+            &ReconstructionConfig::default(),
+        );
+        assert_eq!(out.total_hours, 0.0);
+        assert_eq!(out.day_confidence, Confidence::Low);
+        assert!(out.allocations.is_empty());
+    }
+
+    #[test]
+    fn two_project_signals_split_and_scale_to_target() {
+        // Morning log on p1 at 09:00; afternoon log on p2 at 14:00. Enough span (>2h).
+        let out = reconstruct_day(
+            &DayInputs {
+                date: day(),
+                meetings: vec![],
+                signals: vec![sig(9, 0, Some("p1")), sig(14, 0, Some("p2"))],
+            },
+            &ReconstructionConfig::default(),
+        );
+        assert!((out.total_hours - 7.5).abs() < 1e-9, "total {}", out.total_hours);
+        assert_eq!(out.day_confidence, Confidence::High);
+        let p1 = out.allocations.iter().find(|a| a.gryzzly_project_id == "p1");
+        let p2 = out.allocations.iter().find(|a| a.gryzzly_project_id == "p2");
+        assert!(p1.is_some() && p2.is_some());
+    }
+
+    #[test]
+    fn unresolved_signal_goes_to_unattributed_not_a_project() {
+        let out = reconstruct_day(
+            &DayInputs {
+                date: day(),
+                meetings: vec![],
+                signals: vec![sig(9, 0, Some("p1")), sig(10, 0, None), sig(14, 0, Some("p1"))],
+            },
+            &ReconstructionConfig::default(),
+        );
+        assert!(out.unattributed_hours > 0.0);
+        assert!(out.unresolved.iter().any(|u| u.source_ref == "wl-100"));
+    }
+
+    #[test]
+    fn meeting_anchor_counts_toward_its_project() {
+        // Only a 2h meeting on p_meet in the morning, plus one afternoon log on p1.
+        let out = reconstruct_day(
+            &DayInputs {
+                date: day(),
+                meetings: vec![meeting(9, 11, Some("p_meet"), MeetingKind::Work)],
+                signals: vec![sig(14, 0, Some("p1"))],
+            },
+            &ReconstructionConfig::default(),
+        );
+        assert!(out.allocations.iter().any(|a| a.gryzzly_project_id == "p_meet"));
+        assert!((out.total_hours - 7.5).abs() < 1e-9);
+    }
 
     fn b(key: Option<&str>, hours: f64, pinned: bool) -> Bucket {
         Bucket { key: key.map(|s| s.to_string()), hours, pinned }
