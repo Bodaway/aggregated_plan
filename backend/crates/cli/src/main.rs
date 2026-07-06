@@ -8,6 +8,7 @@ mod commands;
 mod lookup;
 mod output;
 mod queries;
+mod timesheet_cmd;
 
 fn main() -> ExitCode {
     dotenvy::dotenv().ok();
@@ -78,6 +79,22 @@ fn main() -> ExitCode {
         cli::Commands::Sync { source } => commands::sync(&args.api_url, args.json, source.as_ref()),
         cli::Commands::Resolve { alert } => commands::resolve(&args.api_url, args.json, &alert),
         cli::Commands::Config { cmd } => commands::config(&args.api_url, args.json, &cmd),
+        cli::Commands::Timesheet { date, action } => match action {
+            None => timesheet_cmd::timesheet(&args.api_url, args.json, date.as_deref()),
+            Some(cli::TimesheetAction::Validate) => {
+                timesheet_cmd::timesheet_validate(&args.api_url, args.json, date.as_deref())
+            }
+            Some(cli::TimesheetAction::Set { project, hours }) => timesheet_cmd::timesheet_set(
+                &args.api_url,
+                args.json,
+                date.as_deref(),
+                &project,
+                hours,
+            ),
+            Some(cli::TimesheetAction::Off { am, pm }) => {
+                timesheet_cmd::timesheet_off(&args.api_url, args.json, date.as_deref(), am, pm)
+            }
+        },
     };
     code.into()
 }

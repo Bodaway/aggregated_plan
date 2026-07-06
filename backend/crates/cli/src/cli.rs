@@ -203,6 +203,28 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
+    /// Reconstruct + review the day's Gryzzly timesheet (defaults to today).
+    Timesheet {
+        #[arg(long)]
+        date: Option<String>,
+        #[command(subcommand)]
+        action: Option<TimesheetAction>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TimesheetAction {
+    /// Validate the day's draft (ready to copy into Gryzzly).
+    Validate,
+    /// Pin a project to an exact number of hours.
+    Set { project: String, hours: f64 },
+    /// Mark the day (or half-day) off.
+    Off {
+        #[arg(long, conflicts_with = "pm")]
+        am: bool,
+        #[arg(long)]
+        pm: bool,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
