@@ -1,0 +1,14 @@
+mutation SaveTimesheetDraft($date: NaiveDate!, $lines: [TimesheetLineInput!]!) {
+  saveTimesheetDraft(date: $date, lines: $lines) {
+    date
+    status
+    totalHours
+    targetHours
+    lines {
+      gryzzlyProjectId
+      projectName
+      hours
+      isPinned
+    }
+  }
+}

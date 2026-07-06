@@ -1,0 +1,30 @@
+mutation ReconstructTimesheet($date: NaiveDate!) {
+  runTimesheetReconstruction(date: $date) {
+    date
+    status
+    targetHours
+    roundingIncrement
+    totalHours
+    dayConfidence
+    unattributedHours
+    lines {
+      gryzzlyProjectId
+      projectName
+      hours
+      isPinned
+      confidence
+    }
+    unresolved {
+      sourceRef
+      label
+      at
+    }
+    blocks {
+      startTime
+      endTime
+      gryzzlyProjectId
+      kind
+      hours
+    }
+  }
+}

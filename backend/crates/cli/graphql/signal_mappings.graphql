@@ -1,0 +1,11 @@
+query SignalMappings {
+  signalMappings {
+    id
+    kind
+    pattern
+    branchPattern
+    gryzzlyProjectId
+    gryzzlyProjectName
+    isEnabled
+  }
+}

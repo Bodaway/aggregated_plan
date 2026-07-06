@@ -1,0 +1,20 @@
+mutation LearnMapping(
+  $kind: MappingKindGql!
+  $pattern: String!
+  $branchPattern: String
+  $gryzzlyProjectId: ID!
+) {
+  learnMapping(
+    kind: $kind
+    pattern: $pattern
+    branchPattern: $branchPattern
+    gryzzlyProjectId: $gryzzlyProjectId
+  ) {
+    id
+    kind
+    pattern
+    gryzzlyProjectId
+    gryzzlyProjectName
+    isEnabled
+  }
+}

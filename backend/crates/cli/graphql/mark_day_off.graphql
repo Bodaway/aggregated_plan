@@ -1,0 +1,7 @@
+mutation MarkDayOff($date: NaiveDate!, $scope: DayOffScopeGql!) {
+  markDayOff(date: $date, scope: $scope) {
+    date
+    status
+    totalHours
+  }
+}

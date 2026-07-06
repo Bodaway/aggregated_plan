@@ -1,0 +1,7 @@
+mutation ValidateTimesheet($date: NaiveDate!) {
+  validateTimesheet(date: $date) {
+    date
+    status
+    totalHours
+  }
+}

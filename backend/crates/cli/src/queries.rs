@@ -10,6 +10,8 @@ use graphql_client::GraphQLQuery;
 type DateTime = String;
 #[allow(non_camel_case_types)]
 type NaiveDate = String;
+#[allow(non_camel_case_types)]
+type NaiveDateTime = String;
 #[allow(non_camel_case_types, dead_code)]
 type ID = String;
 #[allow(clippy::upper_case_acronyms)]
@@ -199,3 +201,67 @@ pub struct AddWorklogEntry;
     response_derives = "Debug, Clone"
 )]
 pub struct FlushWorklogTime;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/reconstruct_timesheet.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ReconstructTimesheet;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/timesheet_draft.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct TimesheetDraft;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/save_timesheet_draft.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct SaveTimesheetDraft;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/validate_timesheet.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ValidateTimesheet;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/mark_day_off.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct MarkDayOff;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/learn_mapping.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct LearnMapping;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/signal_mappings.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct SignalMappings;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/gryzzly_projects.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct GryzzlyProjects;
