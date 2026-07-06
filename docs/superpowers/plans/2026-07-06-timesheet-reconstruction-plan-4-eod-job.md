@@ -143,7 +143,7 @@ git commit -m "Add AlertType::TimesheetReady variant across domain/infra/api"
 
 - [ ] **Step 1: Write the failing tests + function**
 
-Add to `backend/crates/application/src/use_cases/timesheet.rs` (ensure `use chrono::{NaiveDate, Timelike};` — `NaiveDate` is already used; add `Timelike` only where `run_eod_pass` needs `.hour()` in Task 3):
+Add to `backend/crates/application/src/use_cases/timesheet.rs`. No new import is needed for Task 2 (`compute_target_dates` uses only `NaiveDate`, already imported, plus `succ_opt`/`split_off`). `Timelike` is added in Task 3.
 ```rust
 /// The local dates the end-of-day job should (re)process on this tick, ascending.
 ///
@@ -269,7 +269,7 @@ git commit -m "Add pure compute_target_dates for the end-of-day job"
 
 - [ ] **Step 1: Write the functions**
 
-Add to `use_cases/timesheet.rs`. Ensure imports at top include `use chrono::{DateTime, NaiveDate, Timelike, Utc};` (extend the existing chrono import), `use crate::time::{resolve_tz, to_local};`, `use crate::repositories::AlertRepository;`, `use domain::types::{Alert, AlertSeverity, AlertType};`.
+Add to `use_cases/timesheet.rs`. Imports: EXTEND the existing `use chrono::{DateTime, NaiveDate, Utc};` line to `use chrono::{DateTime, NaiveDate, Timelike, Utc};` (do NOT add a second `use chrono` line); add `use crate::time::{resolve_tz, to_local};` and `use crate::repositories::AlertRepository;`. Do NOT import `Alert`/`AlertSeverity`/`AlertType` explicitly — they are already in scope via the existing `use domain::types::*;` glob (confirm; only add an explicit import if the glob is absent).
 ```rust
 const EOD_CATCHUP_CAP: usize = 7;
 const DEFAULT_AUTO_RECONSTRUCT_HOUR: u32 = 18;
@@ -451,7 +451,9 @@ Add to the existing `#[cfg(test)] mod tests` in `use_cases/timesheet.rs` a mock 
         assert!(alert.saved.lock().unwrap().is_empty());
     }
 ```
-> **Mock note:** implement `eod_mocks()` and `test_user_id()` helpers in the test module that return the Plan-1 in-memory mocks (worklog/meeting/task/catalog/mapping/git/draft) seeded EMPTY, plus a fixed user id. If the Plan-1 Task-13 tests already define equivalent mock structs in this module, construct them directly instead of adding a helper. The `MemConfig` must return `None` for all keys (→ Europe/Paris, trigger 18) OR pre-seed `aplan.timezone` if the existing mock supports it. Add ONE more test that seeds a draft with `total_hours > 0` (via `draft_repo.upsert`) for a date then calls `upsert_timesheet_ready_alert` directly and asserts exactly one alert is created (and a second call creates no duplicate); and one that seeds a Validated draft and asserts no alert (and a pre-existing one is resolved).
+> **REQUIRED mock fix (blocking):** the existing Plan-1 `MemDraft` mock's `find_by_user_and_date` returns `Ok(None)` unconditionally and its `upsert` pushes to a `Vec` that `find` never reads — so `upsert_timesheet_ready_alert` (which reads the draft via `find_by_user_and_date`) would always see `None` and the alert-path tests below would silently create zero alerts. Upgrade `MemDraft` to be find-capable: make `upsert` REPLACE-by-`(user_id, date)` and `find_by_user_and_date` return the stored draft. Minimal change: keep the backing `Mutex<Vec<TimesheetDraft>>`, have `upsert` `retain(|d| !(d.user_id==draft.user_id && d.date==draft.date))` then `push(draft.clone())`, and have `find_by_user_and_date` return the entry matching `(user_id, date)`. This keeps the existing Plan-1 happy-path assertion (`len()==1` after a single distinct-day upsert) valid AND makes the new tests work. (The separate `ValidatedDraft`/panic-on-upsert mock used by `reconstruct_never_clobbers_validated_draft` is unrelated — leave it.)
+>
+> **Mock note:** implement `eod_mocks()` and `test_user_id()` helpers in the test module that return the Plan-1 in-memory mocks (worklog/meeting/task/catalog/mapping/git/draft — with the upgraded `MemDraft`) seeded EMPTY, plus a fixed user id. If the Plan-1 Task-13 tests already define equivalent mock structs in this module, construct them directly instead of adding a helper. The `MemConfig` must return `None` for all keys (→ Europe/Paris, trigger 18) OR pre-seed `aplan.timezone` if the existing mock supports it. Add ONE more test that seeds a draft with `total_hours > 0` (via `draft_repo.upsert`) for a date then calls `upsert_timesheet_ready_alert` directly and asserts exactly one alert is created (and a second call creates no duplicate); and one that seeds a Validated draft and asserts no alert (and a pre-existing one is resolved).
 
 - [ ] **Step 3: Run tests**
 
