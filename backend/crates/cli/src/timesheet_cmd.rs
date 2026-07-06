@@ -5,9 +5,9 @@
 use crate::client::Client;
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    mark_day_off, reconstruct_timesheet, save_timesheet_draft, timesheet_draft,
-    validate_timesheet, MarkDayOff, ReconstructTimesheet, SaveTimesheetDraft, TimesheetDraft,
-    ValidateTimesheet,
+    learn_mapping, mark_day_off, reconstruct_timesheet, save_timesheet_draft, signal_mappings,
+    timesheet_draft, validate_timesheet, LearnMapping, MarkDayOff, ReconstructTimesheet,
+    SaveTimesheetDraft, SignalMappings, TimesheetDraft, ValidateTimesheet,
 };
 
 fn today() -> String {
@@ -237,6 +237,113 @@ pub fn timesheet_off(api_url: &str, json: bool, date: Option<&str>, am: bool, pm
                 return ExitCode::Success;
             }
             println!("\u{23f8} {} marked off", date);
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::Generic
+        }
+    }
+}
+
+/// `aplan map add --repo <path> [--branch <glob>] --project <gid>` (or
+/// `--meeting-subject`/`--meeting-organizer`/`--internal-project` instead of `--repo`)
+/// — learn/update a signal→Gryzzly-project mapping rule. Exactly one selector is required.
+#[allow(clippy::too_many_arguments)]
+pub fn map_add(
+    api_url: &str,
+    json: bool,
+    repo: Option<&str>,
+    branch: Option<&str>,
+    meeting_subject: Option<&str>,
+    meeting_organizer: Option<&str>,
+    internal_project: Option<&str>,
+    project: &str,
+) -> ExitCode {
+    let (kind, pattern, branch_pattern) = if let Some(r) = repo {
+        if branch.is_some() {
+            (
+                learn_mapping::MappingKindGql::BRANCH,
+                r.to_string(),
+                branch.map(String::from),
+            )
+        } else {
+            (learn_mapping::MappingKindGql::REPO_PATH, r.to_string(), None)
+        }
+    } else if let Some(s) = meeting_subject {
+        (
+            learn_mapping::MappingKindGql::MEETING_SUBJECT,
+            s.to_string(),
+            None,
+        )
+    } else if let Some(o) = meeting_organizer {
+        (
+            learn_mapping::MappingKindGql::MEETING_ORGANIZER,
+            o.to_string(),
+            None,
+        )
+    } else if let Some(p) = internal_project {
+        (
+            learn_mapping::MappingKindGql::INTERNAL_PROJECT,
+            p.to_string(),
+            None,
+        )
+    } else {
+        eprintln!(
+            "error: provide one of --repo / --meeting-subject / --meeting-organizer / --internal-project"
+        );
+        return ExitCode::PreconditionFailed;
+    };
+    let client = Client::new(api_url.to_string());
+    let vars = learn_mapping::Variables {
+        kind,
+        pattern,
+        branch_pattern,
+        gryzzly_project_id: project.to_string(),
+    };
+    match client.run::<LearnMapping>(vars) {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            println!("\u{270e} mapping saved \u{2192} project {project}");
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::Generic
+        }
+    }
+}
+
+/// `aplan map list` — list enabled mapping rules.
+pub fn map_list(api_url: &str, json: bool) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+    match client.run::<SignalMappings>(signal_mappings::Variables {}) {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            for m in &r.data.signal_mappings {
+                let br = m
+                    .branch_pattern
+                    .clone()
+                    .map(|b| format!("@{b}"))
+                    .unwrap_or_default();
+                let name = m.gryzzly_project_name.clone().unwrap_or_default();
+                println!(
+                    "  [{:?}] {}{} \u{2192} {} {}",
+                    m.kind, m.pattern, br, m.gryzzly_project_id, name
+                );
+            }
             ExitCode::Success
         }
         Err(e) => {

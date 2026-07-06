@@ -210,6 +210,32 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<TimesheetAction>,
     },
+    /// Manage signal→Gryzzly-project mapping rules.
+    Map {
+        #[command(subcommand)]
+        cmd: MapCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MapCmd {
+    /// Add/update a mapping rule (exactly one of --repo/--meeting-subject/--meeting-organizer/--internal-project).
+    Add {
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long, requires = "repo")]
+        branch: Option<String>,
+        #[arg(long)]
+        meeting_subject: Option<String>,
+        #[arg(long)]
+        meeting_organizer: Option<String>,
+        #[arg(long)]
+        internal_project: Option<String>,
+        #[arg(long)]
+        project: String,
+    },
+    /// List enabled mapping rules.
+    List,
 }
 
 #[derive(Subcommand, Debug)]

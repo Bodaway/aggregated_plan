@@ -95,6 +95,26 @@ fn main() -> ExitCode {
                 timesheet_cmd::timesheet_off(&args.api_url, args.json, date.as_deref(), am, pm)
             }
         },
+        cli::Commands::Map { cmd } => match cmd {
+            cli::MapCmd::Add {
+                repo,
+                branch,
+                meeting_subject,
+                meeting_organizer,
+                internal_project,
+                project,
+            } => timesheet_cmd::map_add(
+                &args.api_url,
+                args.json,
+                repo.as_deref(),
+                branch.as_deref(),
+                meeting_subject.as_deref(),
+                meeting_organizer.as_deref(),
+                internal_project.as_deref(),
+                &project,
+            ),
+            cli::MapCmd::List => timesheet_cmd::map_list(&args.api_url, args.json),
+        },
     };
     code.into()
 }
