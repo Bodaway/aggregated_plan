@@ -70,6 +70,12 @@ async fn main() {
         Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
     let gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository> =
         Arc::new(SqliteGryzzlyCatalogRepository::new(db_pool.clone()));
+    let timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository> =
+        Arc::new(SqliteTimesheetDraftRepository::new(db_pool.clone()));
+    let signal_mapping_repo: Arc<dyn application::repositories::SignalMappingRepository> =
+        Arc::new(SqliteSignalMappingRepository::new(db_pool.clone()));
+    let git_connector: Arc<dyn application::services::git_connector::GitConnector> =
+        Arc::new(infrastructure::connectors::git::ShellGitConnector::new());
 
     let oauth = std::sync::Arc::new(MicrosoftOAuth::new(MicrosoftOAuthConfig {
         client_id: std::env::var("MICROSOFT_CLIENT_ID").unwrap_or_default(),
@@ -94,6 +100,9 @@ async fn main() {
         worklog_repo,
         recurrence_repo,
         gryzzly_catalog_repo,
+        timesheet_draft_repo,
+        signal_mapping_repo,
+        git_connector,
         graph_token_provider: graph_token_provider.clone(),
     };
     let schema = graphql::schema::build_schema(deps);
