@@ -69,6 +69,7 @@ enum AlertTypeGql {
 	DEADLINE
 	OVERLOAD
 	CONFLICT
+	TIMESHEET_READY
 }
 
 """
