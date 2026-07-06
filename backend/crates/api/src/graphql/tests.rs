@@ -572,15 +572,171 @@ impl application::services::GraphTokenProvider for StubGraphTokenProvider {
     }
 }
 
+// ---- Timesheet-draft in-memory repo (captures upserts) ----
+struct InMemoryTimesheetDraftRepository {
+    drafts: Mutex<HashMap<(UserId, chrono::NaiveDate), domain::types::TimesheetDraft>>,
+}
+impl InMemoryTimesheetDraftRepository {
+    fn new() -> Self {
+        Self {
+            drafts: Mutex::new(HashMap::new()),
+        }
+    }
+}
+#[async_trait]
+impl application::repositories::TimesheetDraftRepository for InMemoryTimesheetDraftRepository {
+    async fn upsert(&self, draft: &domain::types::TimesheetDraft) -> Result<(), RepositoryError> {
+        self.drafts
+            .lock()
+            .unwrap()
+            .insert((draft.user_id, draft.date), draft.clone());
+        Ok(())
+    }
+    async fn find_by_user_and_date(
+        &self,
+        user_id: UserId,
+        date: chrono::NaiveDate,
+    ) -> Result<Option<domain::types::TimesheetDraft>, RepositoryError> {
+        Ok(self.drafts.lock().unwrap().get(&(user_id, date)).cloned())
+    }
+    async fn set_status(
+        &self,
+        user_id: UserId,
+        date: chrono::NaiveDate,
+        status: domain::types::TimesheetStatus,
+    ) -> Result<(), RepositoryError> {
+        if let Some(d) = self.drafts.lock().unwrap().get_mut(&(user_id, date)) {
+            d.status = status;
+        }
+        Ok(())
+    }
+}
+
+// ---- Signal-mapping in-memory repo ----
+struct InMemorySignalMappingRepository {
+    rows: Mutex<Vec<domain::types::SignalMapping>>,
+}
+impl InMemorySignalMappingRepository {
+    fn new() -> Self {
+        Self {
+            rows: Mutex::new(vec![]),
+        }
+    }
+}
+#[async_trait]
+impl application::repositories::SignalMappingRepository for InMemorySignalMappingRepository {
+    async fn list_enabled(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<domain::types::SignalMapping>, RepositoryError> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.user_id == user_id && m.is_enabled)
+            .cloned()
+            .collect())
+    }
+    async fn upsert(&self, m: &domain::types::SignalMapping) -> Result<(), RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        rows.retain(|r| !(r.user_id == m.user_id && r.kind == m.kind && r.pattern == m.pattern));
+        rows.push(m.clone());
+        Ok(())
+    }
+    async fn set_enabled(
+        &self,
+        _id: domain::types::SignalMappingId,
+        _enabled: bool,
+    ) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+    async fn delete(&self, _id: domain::types::SignalMappingId) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+}
+
+// ---- Gryzzly catalog in-memory repo ----
+struct InMemoryGryzzlyCatalogRepository {
+    rows: Mutex<Vec<domain::types::GryzzlyCatalogEntry>>,
+}
+impl InMemoryGryzzlyCatalogRepository {
+    fn new() -> Self {
+        Self {
+            rows: Mutex::new(vec![]),
+        }
+    }
+}
+#[async_trait]
+impl application::repositories::GryzzlyCatalogRepository for InMemoryGryzzlyCatalogRepository {
+    async fn upsert(&self, e: &domain::types::GryzzlyCatalogEntry) -> Result<(), RepositoryError> {
+        self.rows.lock().unwrap().push(e.clone());
+        Ok(())
+    }
+    async fn soft_prune_missing(&self, _u: UserId, _keep: &[String]) -> Result<u64, RepositoryError> {
+        Ok(0)
+    }
+    async fn list_active(
+        &self,
+        user_id: UserId,
+        _search: Option<&str>,
+        _project: Option<&str>,
+        _limit: i64,
+    ) -> Result<Vec<domain::types::GryzzlyCatalogEntry>, RepositoryError> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.user_id == user_id && e.is_active)
+            .cloned()
+            .collect())
+    }
+    async fn find_by_gryzzly_task_id(
+        &self,
+        user_id: UserId,
+        gid: &str,
+    ) -> Result<Option<domain::types::GryzzlyCatalogEntry>, RepositoryError> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.user_id == user_id && e.gryzzly_task_id == gid)
+            .cloned())
+    }
+}
+
+// ---- Stub GitConnector (no commits) ----
+struct StubGitConnector;
+#[async_trait]
+impl application::services::git_connector::GitConnector for StubGitConnector {
+    async fn commits_between(
+        &self,
+        _repos: &[String],
+        _from: chrono::DateTime<chrono::Utc>,
+        _to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<application::services::git_connector::GitCommit>, application::errors::AppError> {
+        Ok(vec![])
+    }
+}
+
 // ─── Test schema builder ───
 
 type TestSchema = Schema<CombinedQuery, CombinedMutation, EmptySubscription>;
 
-fn build_test_schema() -> TestSchema {
+/// Build the test schema from pre-seeded (or freshly-empty) repos for the four
+/// timesheet-reconstruction dependencies. All other dependencies get fresh in-memory
+/// (or stub) instances, matching `build_test_schema()`'s previous defaults.
+fn build_test_schema_with(
+    worklog_repo: Arc<dyn application::repositories::WorklogRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository>,
+    timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository>,
+) -> TestSchema {
     let default_user_id: UserId =
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
 
-    let task_repo: Arc<dyn TaskRepository> = Arc::new(InMemoryTaskRepository::new());
     let meeting_repo: Arc<dyn MeetingRepository> = Arc::new(StubMeetingRepository);
     let project_repo: Arc<dyn ProjectRepository> = Arc::new(InMemoryProjectRepository::new());
     let activity_repo: Arc<dyn ActivitySlotRepository> = Arc::new(StubActivitySlotRepository);
@@ -589,12 +745,14 @@ fn build_test_schema() -> TestSchema {
     let task_link_repo: Arc<dyn TaskLinkRepository> = Arc::new(StubTaskLinkRepository);
     let sync_repo: Arc<dyn SyncStatusRepository> = Arc::new(StubSyncStatusRepository);
     let config_repo: Arc<dyn ConfigRepository> = Arc::new(StubConfigRepository);
-    let worklog_repo: Arc<dyn application::repositories::WorklogRepository> =
-        Arc::new(InMemoryWorklogRepository::new());
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(StubRecurrenceRepository);
     let graph_token_provider: Arc<dyn application::services::GraphTokenProvider> =
         Arc::new(StubGraphTokenProvider);
+    let signal_mapping_repo: Arc<dyn application::repositories::SignalMappingRepository> =
+        Arc::new(InMemorySignalMappingRepository::new());
+    let git_connector: Arc<dyn application::services::git_connector::GitConnector> =
+        Arc::new(StubGitConnector);
 
     Schema::build(
         CombinedQuery(QueryRoot),
@@ -612,9 +770,22 @@ fn build_test_schema() -> TestSchema {
     .data(config_repo)
     .data(worklog_repo)
     .data(recurrence_repo)
+    .data(gryzzly_catalog_repo)
+    .data(timesheet_draft_repo)
+    .data(signal_mapping_repo)
+    .data(git_connector)
     .data(graph_token_provider)
     .data(default_user_id)
     .finish()
+}
+
+fn build_test_schema() -> TestSchema {
+    build_test_schema_with(
+        Arc::new(InMemoryWorklogRepository::new()),
+        Arc::new(InMemoryTaskRepository::new()),
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+    )
 }
 
 // ─── Tests ───
@@ -1844,4 +2015,170 @@ async fn flush_worklog_time_materializes_morning_slot() {
         flush["activeSince"].as_str().is_some(),
         "activeSince should be a datetime string"
     );
+}
+
+// ─── Timesheet Reconstruction Tests (Plan 2) ───
+
+#[tokio::test]
+async fn run_reconstruction_on_empty_day_returns_zero() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { runTimesheetReconstruction(date: "2026-06-08") { totalHours dayConfidence status } }"#,
+        )
+        .await;
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let data = res.data.into_json().unwrap();
+    assert_eq!(data["runTimesheetReconstruction"]["totalHours"], 0.0);
+    assert_eq!(data["runTimesheetReconstruction"]["dayConfidence"], "LOW");
+}
+
+#[tokio::test]
+async fn timesheet_draft_is_null_before_reconstruction() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(r#"{ timesheetDraft(date: "2026-06-08") { totalHours } }"#)
+        .await;
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let data = res.data.into_json().unwrap();
+    assert!(data["timesheetDraft"].is_null());
+}
+
+#[tokio::test]
+async fn learn_mapping_rejects_unknown_project() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { learnMapping(kind: REPO_PATH, pattern: "/repo", gryzzlyProjectId: "nope") { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty(), "expected validation error for unknown project");
+}
+
+/// Seeded happy-path: one worklog entry on a task assigned to Gryzzly project "p1",
+/// timestamped so it lands in the Europe/Paris morning window (the stub config
+/// returns None, so `resolve_tz` defaults to Europe/Paris — UTC+2 in June).
+/// A single worklog is "low signal" (< 2 signals): the reconstruction engine keeps
+/// p1's raw carry-forward hours and quarantines the rest of the target as
+/// unattributed, rather than scaling p1 up to fill the whole day.
+#[tokio::test]
+async fn run_reconstruction_with_seeded_worklog_produces_project_line_and_fill() {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+    let task_id: TaskId = Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    let task_repo = InMemoryTaskRepository::new();
+    task_repo
+        .save(&Task {
+            id: task_id,
+            user_id,
+            title: "Timesheet task".to_string(),
+            description: None,
+            notes: None,
+            source: Source::Personal,
+            source_id: None,
+            jira_status: None,
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            delegated_to: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            urgency: UrgencyLevel::Medium,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: vec![],
+            tracking_state: TrackingState::Inbox,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            gryzzly_task_id: Some("g1".to_string()),
+            gryzzly_project_id: Some("p1".to_string()),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+
+    // 09:00 UTC = 11:00 Europe/Paris (CEST, UTC+2 in June) — within the 08:00-12:00 morning window.
+    let logged_at = chrono::DateTime::parse_from_rfc3339("2026-06-08T09:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let worklog_repo = InMemoryWorklogRepository::new();
+    worklog_repo
+        .create(&domain::types::WorklogEntry {
+            id: Uuid::new_v4(),
+            user_id,
+            task_id,
+            body: "Implemented feature".to_string(),
+            logged_at,
+            created_at: logged_at,
+            updated_at: logged_at,
+        })
+        .await
+        .unwrap();
+
+    let catalog_repo = InMemoryGryzzlyCatalogRepository::new();
+    catalog_repo
+        .upsert(&domain::types::GryzzlyCatalogEntry {
+            id: Uuid::new_v4(),
+            user_id,
+            gryzzly_task_id: "g1".to_string(),
+            name: "Task 1".to_string(),
+            gryzzly_project_id: "p1".to_string(),
+            project_name: "Project One".to_string(),
+            customer_name: None,
+            is_active: true,
+            last_synced_at: now,
+        })
+        .await
+        .unwrap();
+
+    let schema = build_test_schema_with(
+        Arc::new(worklog_repo),
+        Arc::new(task_repo),
+        Arc::new(catalog_repo),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+    );
+
+    let query = format!(
+        r#"mutation {{ runTimesheetReconstruction(date: "{date}") {{ status dayConfidence totalHours unattributedHours lines {{ gryzzlyProjectId hours }} }} }}"#
+    );
+    let res = schema.execute(&query).await;
+    assert!(res.errors.is_empty(), "errors: {:?}", res.errors);
+    let data = res.data.into_json().unwrap();
+    let day = &data["runTimesheetReconstruction"];
+
+    assert_eq!(day["status"], "DRAFT");
+    assert_eq!(day["dayConfidence"], "LOW");
+    assert!(
+        (day["totalHours"].as_f64().unwrap() - 7.5).abs() < 1e-9,
+        "expected total_hours=7.5, got {:?}",
+        day["totalHours"]
+    );
+    assert!(
+        day["unattributedHours"].as_f64().unwrap() > 0.0,
+        "expected the unfilled remainder to be quarantined as unattributed"
+    );
+    let lines = day["lines"].as_array().unwrap();
+    assert!(
+        lines.iter().any(|l| l["gryzzlyProjectId"] == "p1"),
+        "expected a p1 line, got {:?}",
+        lines
+    );
+
+    // Now validate the draft and confirm the status transition sticks.
+    let validate_query = format!(r#"mutation {{ validateTimesheet(date: "{date}") {{ status }} }}"#);
+    let validate_res = schema.execute(&validate_query).await;
+    assert!(validate_res.errors.is_empty(), "errors: {:?}", validate_res.errors);
+    let validate_data = validate_res.data.into_json().unwrap();
+    assert_eq!(validate_data["validateTimesheet"]["status"], "VALIDATED");
 }
