@@ -162,7 +162,7 @@ pub async fn reconstruct_timesheet(
 
     // Persist as a draft, but NEVER clobber a validated/submitted day.
     if let Some(existing) = draft_repo.find_by_user_and_date(user_id, date).await? {
-        if matches!(existing.status, TimesheetStatus::Validated | TimesheetStatus::Submitted) {
+        if matches!(existing.status, TimesheetStatus::Validated | TimesheetStatus::Submitted | TimesheetStatus::DayOff) {
             return Ok(day);
         }
     }
