@@ -15,6 +15,7 @@ pub mod dedup;
 pub mod enums;
 pub mod pagination;
 pub mod worklog_entry;
+pub mod timesheet;
 
 pub use gryzzly::*;
 pub use task::*;
@@ -33,3 +34,4 @@ pub use dedup::*;
 pub use enums::*;
 pub use pagination::*;
 pub use worklog_entry::*;
+pub use timesheet::*;
