@@ -72,6 +72,36 @@ enum AlertTypeGql {
 }
 
 """
+The Gryzzly task assigned to a local task — embedded on `TaskGql.gryzzlyTask`.
+
+Three stale states:
+1. `stale = false` — catalog row exists and is active.
+2. `stale = true`, `name = Some` — catalog row exists but has been soft-disabled.
+3. `stale = true`, `name = None` — catalog row is absent (orphaned assignment).
+"""
+type AssignedGryzzlyTaskGql {
+	gryzzlyTaskId: String!
+	name: String
+	projectName: String
+	stale: Boolean!
+}
+
+type AttributedBlockGql {
+	startTime: NaiveDateTime!
+	endTime: NaiveDateTime!
+	gryzzlyProjectId: String
+	kind: BlockKindGql!
+	hours: Float!
+	sourceRefs: [String!]!
+}
+
+enum BlockKindGql {
+	MEETING
+	WORK
+	OUT_OF_OFFICE
+}
+
+"""
 Combined mutation root that merges the base MutationRoot with future module roots.
 """
 type CombinedMutation {
@@ -226,6 +256,31 @@ type CombinedMutation {
 	Skip (cancel) a single recurring task occurrence. Returns the updated task.
 	"""
 	skipOccurrence(taskId: ID!): TaskGql!
+	"""
+	Assign a Gryzzly task to an aplan task. Snapshots the Gryzzly project id
+	from the catalog at assign time. Pass `null` for `gryzzly_task_id` to clear.
+	"""
+	assignGryzzlyTask(taskId: ID!, gryzzlyTaskId: ID): TaskGql!
+	"""
+	Reconstruct the day from ambient signals, persist the draft, return the full result.
+	"""
+	runTimesheetReconstruction(date: NaiveDate!): ReconstructedDayGql!
+	"""
+	Persist user edits (pinned lines frozen; rejects pinned > target); returns the saved draft.
+	"""
+	saveTimesheetDraft(date: NaiveDate!, lines: [TimesheetLineInput!]!): ReconstructedDayGql!
+	"""
+	Mark a day's draft validated (ready to copy into Gryzzly).
+	"""
+	validateTimesheet(date: NaiveDate!): ReconstructedDayGql!
+	"""
+	Mark a whole/half day off (suppresses reconstruction fill).
+	"""
+	markDayOff(date: NaiveDate!, scope: DayOffScopeGql!): ReconstructedDayGql!
+	"""
+	Learn a signal→Gryzzly-project mapping rule (validated against the live catalog).
+	"""
+	learnMapping(kind: MappingKindGql!, pattern: String!, branchPattern: String, gryzzlyProjectId: ID!): SignalMappingGql!
 }
 
 """
@@ -321,6 +376,25 @@ type CombinedQuery {
 	that recurrence template — `taskIds` is ignored in this case.
 	"""
 	worklogEntries(filter: WorklogEntryFilterInput): [WorklogEntryGql!]!
+	"""
+	List active Gryzzly catalog entries for the current user, optionally filtered by a
+	name/project search string and a project-name exact filter, capped at `limit`.
+	"""
+	gryzzlyTasks(search: String, projectFilter: String, limit: Int! = 100): [GryzzlyTaskGql!]!
+	"""
+	Load the persisted timesheet draft for a local date (null if none reconstructed yet).
+	"""
+	timesheetDraft(date: NaiveDate!): ReconstructedDayGql
+	"""
+	List the current user's enabled signal→project mapping rules.
+	"""
+	signalMappings: [SignalMappingGql!]!
+}
+
+enum ConfidenceGql {
+	HIGH
+	MEDIUM
+	LOW
 }
 
 """
@@ -415,6 +489,12 @@ The input/output is a string in RFC3339 format.
 """
 scalar DateTime
 
+enum DayOffScopeGql {
+	FULL
+	MORNING
+	AFTERNOON
+}
+
 type DeduplicationSuggestionGql {
 	"""
 	Unique suggestion identifier.
@@ -458,6 +538,17 @@ type FlushResultGql {
 }
 
 """
+A Gryzzly catalog entry exposed via GraphQL — used by the `gryzzlyTasks` query.
+"""
+type GryzzlyTaskGql {
+	gryzzlyTaskId: String!
+	name: String!
+	gryzzlyProjectId: String!
+	projectName: String!
+	customerName: String
+}
+
+"""
 GraphQL enum for half-day.
 """
 enum HalfDayGql {
@@ -495,6 +586,14 @@ A scalar that can represent any JSON value.
 """
 scalar JSON
 
+enum MappingKindGql {
+	REPO_PATH
+	BRANCH
+	MEETING_SUBJECT
+	MEETING_ORGANIZER
+	INTERNAL_PROJECT
+}
+
 type MeetingGql {
 	id: ID!
 	title: String!
@@ -526,6 +625,15 @@ Format: %Y-%m-%d
 * `2000-02-24`
 """
 scalar NaiveDate
+
+"""
+ISO 8601 combined date and time without timezone.
+
+# Examples
+
+* `2015-07-01T08:59:60.123`,
+"""
+scalar NaiveDateTime
 
 """
 Relay-style pagination info.
@@ -610,6 +718,19 @@ enum QuadrantGql {
 	IMPORTANT
 	URGENT
 	NEITHER
+}
+
+type ReconstructedDayGql {
+	date: NaiveDate!
+	status: TimesheetStatusGql!
+	targetHours: Float!
+	roundingIncrement: Float!
+	totalHours: Float!
+	dayConfidence: ConfidenceGql!
+	lines: [TimesheetLineGql!]!
+	unattributedHours: Float!
+	unresolved: [UnresolvedSignalGql!]!
+	blocks: [AttributedBlockGql!]!
 }
 
 """
@@ -709,6 +830,16 @@ Microsoft session status returned by the `session` query.
 type SessionGql {
 	authenticated: Boolean!
 	account: String
+}
+
+type SignalMappingGql {
+	id: ID!
+	kind: MappingKindGql!
+	pattern: String!
+	branchPattern: String
+	gryzzlyProjectId: String!
+	gryzzlyProjectName: String
+	isEnabled: Boolean!
 }
 
 """
@@ -860,6 +991,15 @@ type TaskGql {
 	True when this task is a generated instance of a recurrence template.
 	"""
 	isRecurring: Boolean!
+	"""
+	The assigned Gryzzly task (with project context), or null if unassigned.
+	
+	Returns `AssignedGryzzlyTaskGql` with three stale states:
+	1. `stale = false` — catalog row is active (current).
+	2. `stale = true`, `name = Some` — catalog row is soft-disabled.
+	3. `stale = true`, `name = None` — catalog row is missing (orphaned assignment).
+	"""
+	gryzzlyTask: AssignedGryzzlyTaskGql
 }
 
 """
@@ -876,6 +1016,28 @@ enum TaskStatusGql {
 	CANCELLED
 }
 
+type TimesheetLineGql {
+	gryzzlyProjectId: String
+	projectName: String
+	hours: Float!
+	isPinned: Boolean!
+	confidence: ConfidenceGql!
+	sourceRefs: [String!]!
+}
+
+input TimesheetLineInput {
+	gryzzlyProjectId: ID
+	hours: Float!
+	isPinned: Boolean!
+}
+
+enum TimesheetStatusGql {
+	DRAFT
+	VALIDATED
+	SUBMITTED
+	DAY_OFF
+}
+
 """
 GraphQL enum for task tracking state (triage workflow).
 """
@@ -883,6 +1045,12 @@ enum TrackingStateGql {
 	INBOX
 	FOLLOWED
 	DISMISSED
+}
+
+type UnresolvedSignalGql {
+	sourceRef: String!
+	label: String!
+	at: NaiveDateTime!
 }
 
 """
