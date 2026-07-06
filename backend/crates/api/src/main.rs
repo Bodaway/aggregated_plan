@@ -10,6 +10,7 @@ use tower_http::trace::TraceLayer;
 
 mod auth;
 mod graphql;
+mod jobs;
 mod state;
 
 use uuid::Uuid;
@@ -87,6 +88,18 @@ async fn main() {
     let graph_token_provider: std::sync::Arc<dyn application::services::GraphTokenProvider> =
         std::sync::Arc::new(RefreshingGraphTokenProvider::new(config_repo.clone(), oauth.clone()));
 
+    let eod_deps = jobs::EodDeps {
+        worklog_repo: worklog_repo.clone(),
+        meeting_repo: meeting_repo.clone(),
+        task_repo: task_repo.clone(),
+        catalog_repo: gryzzly_catalog_repo.clone(),
+        mapping_repo: signal_mapping_repo.clone(),
+        config_repo: config_repo.clone(),
+        git: git_connector.clone(),
+        draft_repo: timesheet_draft_repo.clone(),
+        alert_repo: alert_repo.clone(),
+    };
+
     let deps = SchemaDeps {
         task_repo,
         meeting_repo,
@@ -137,6 +150,8 @@ async fn main() {
             default_user_id,
             oauth_state: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         });
+
+    tokio::spawn(jobs::run_eod_scheduler(eod_deps, default_user_id));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
     tracing::info!("Server running on http://{}", addr);
