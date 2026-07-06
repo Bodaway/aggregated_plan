@@ -990,4 +990,80 @@ mod tests {
         // Should succeed (returns the day) without calling upsert
         assert!(result.is_ok(), "reconstruct should succeed even when draft is validated");
     }
+
+    #[tokio::test]
+    async fn reconstruct_does_not_clobber_day_off_draft() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+
+        // Draft repo that returns an already-DayOff draft
+        struct DayOffDraft;
+        #[async_trait]
+        impl TimesheetDraftRepository for DayOffDraft {
+            async fn upsert(&self, _d: &TimesheetDraft) -> Result<(), RepositoryError> {
+                panic!("upsert must NOT be called when draft is already DayOff")
+            }
+            async fn find_by_user_and_date(
+                &self,
+                _u: UserId,
+                _d: NaiveDate,
+            ) -> Result<Option<TimesheetDraft>, RepositoryError> {
+                Ok(Some(TimesheetDraft {
+                    id: Uuid::new_v4(),
+                    user_id: _u,
+                    date: _d,
+                    status: TimesheetStatus::DayOff,
+                    target_hours: 0.0,
+                    total_hours: 0.0,
+                    day_confidence: Confidence::High,
+                    blocks_json: None,
+                    lines: vec![],
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                }))
+            }
+            async fn set_status(
+                &self,
+                _u: UserId,
+                _d: NaiveDate,
+                _s: TimesheetStatus,
+            ) -> Result<(), RepositoryError> {
+                Ok(())
+            }
+        }
+
+        // Signals ARE present, so reconstruction would produce a non-empty day if it
+        // overwrote the persisted draft.
+        let task_id: TaskId = Uuid::new_v4();
+        let logged_at = chrono::DateTime::parse_from_rfc3339("2026-06-08T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let worklog_entry = WorklogEntry {
+            id: Uuid::new_v4(),
+            user_id,
+            task_id,
+            body: "work".to_string(),
+            logged_at,
+            created_at: logged_at,
+            updated_at: logged_at,
+        };
+
+        let result = reconstruct_timesheet(
+            &MemWorklog { entries: vec![worklog_entry] },
+            &MemMeeting,
+            &MemTask { task: make_task_with_project(user_id, task_id, "p1") },
+            &MemCatalog { entries: vec![make_catalog_entry(user_id, "p1")] },
+            &MemMapping,
+            &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemGit,
+            &DayOffDraft,
+            user_id,
+            date,
+        )
+        .await;
+
+        // Should succeed (returns the day) without calling upsert, i.e. the persisted
+        // DayOff draft is left untouched.
+        assert!(result.is_ok(), "reconstruct should succeed even when draft is day-off");
+    }
 }
