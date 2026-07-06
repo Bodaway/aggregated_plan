@@ -132,3 +132,8 @@ storybook-static/
 .temp/
 .aider*
 .superpowers/
+
+# SQLite runtime database + WAL sidecar files (dev/local only)
+*.db
+*.db-shm
+*.db-wal
