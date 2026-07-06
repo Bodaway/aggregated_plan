@@ -1,4 +1,6 @@
 use async_graphql::Enum;
+use application::use_cases::timesheet::DayOffScope;
+use domain::rules::reconstruction::BlockKind;
 use domain::types;
 
 /// GraphQL enum for task source.
@@ -318,5 +320,130 @@ impl From<TrackingStateGql> for types::TrackingState {
             TrackingStateGql::Followed => types::TrackingState::Followed,
             TrackingStateGql::Dismissed => types::TrackingState::Dismissed,
         }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum ConfidenceGql {
+    High,
+    Medium,
+    Low,
+}
+impl From<types::Confidence> for ConfidenceGql {
+    fn from(c: types::Confidence) -> Self {
+        match c {
+            types::Confidence::High => ConfidenceGql::High,
+            types::Confidence::Medium => ConfidenceGql::Medium,
+            types::Confidence::Low => ConfidenceGql::Low,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TimesheetStatusGql {
+    Draft,
+    Validated,
+    Submitted,
+    DayOff,
+}
+impl From<types::TimesheetStatus> for TimesheetStatusGql {
+    fn from(s: types::TimesheetStatus) -> Self {
+        match s {
+            types::TimesheetStatus::Draft => TimesheetStatusGql::Draft,
+            types::TimesheetStatus::Validated => TimesheetStatusGql::Validated,
+            types::TimesheetStatus::Submitted => TimesheetStatusGql::Submitted,
+            types::TimesheetStatus::DayOff => TimesheetStatusGql::DayOff,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum BlockKindGql {
+    Meeting,
+    Work,
+    OutOfOffice,
+}
+impl From<BlockKind> for BlockKindGql {
+    fn from(b: BlockKind) -> Self {
+        match b {
+            BlockKind::Meeting => BlockKindGql::Meeting,
+            BlockKind::Work => BlockKindGql::Work,
+            BlockKind::OutOfOffice => BlockKindGql::OutOfOffice,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum MappingKindGql {
+    RepoPath,
+    Branch,
+    MeetingSubject,
+    MeetingOrganizer,
+    InternalProject,
+}
+impl From<types::MappingKind> for MappingKindGql {
+    fn from(k: types::MappingKind) -> Self {
+        match k {
+            types::MappingKind::RepoPath => MappingKindGql::RepoPath,
+            types::MappingKind::Branch => MappingKindGql::Branch,
+            types::MappingKind::MeetingSubject => MappingKindGql::MeetingSubject,
+            types::MappingKind::MeetingOrganizer => MappingKindGql::MeetingOrganizer,
+            types::MappingKind::InternalProject => MappingKindGql::InternalProject,
+        }
+    }
+}
+impl From<MappingKindGql> for types::MappingKind {
+    fn from(k: MappingKindGql) -> Self {
+        match k {
+            MappingKindGql::RepoPath => types::MappingKind::RepoPath,
+            MappingKindGql::Branch => types::MappingKind::Branch,
+            MappingKindGql::MeetingSubject => types::MappingKind::MeetingSubject,
+            MappingKindGql::MeetingOrganizer => types::MappingKind::MeetingOrganizer,
+            MappingKindGql::InternalProject => types::MappingKind::InternalProject,
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum DayOffScopeGql {
+    Full,
+    Morning,
+    Afternoon,
+}
+impl From<DayOffScopeGql> for DayOffScope {
+    fn from(s: DayOffScopeGql) -> Self {
+        match s {
+            DayOffScopeGql::Full => DayOffScope::Full,
+            DayOffScopeGql::Morning => DayOffScope::Morning,
+            DayOffScopeGql::Afternoon => DayOffScope::Afternoon,
+        }
+    }
+}
+
+#[cfg(test)]
+mod timesheet_enum_tests {
+    use super::*;
+
+    #[test]
+    fn confidence_maps() {
+        assert_eq!(ConfidenceGql::from(types::Confidence::Low), ConfidenceGql::Low);
+    }
+    #[test]
+    fn mapping_kind_roundtrips() {
+        for k in [
+            types::MappingKind::RepoPath,
+            types::MappingKind::Branch,
+            types::MappingKind::MeetingSubject,
+            types::MappingKind::MeetingOrganizer,
+            types::MappingKind::InternalProject,
+        ] {
+            let g: MappingKindGql = k.into();
+            let back: types::MappingKind = g.into();
+            assert_eq!(back, k);
+        }
+    }
+    #[test]
+    fn day_off_scope_maps() {
+        assert!(matches!(DayOffScope::from(DayOffScopeGql::Morning), DayOffScope::Morning));
     }
 }
