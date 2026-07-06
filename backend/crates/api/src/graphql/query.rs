@@ -8,6 +8,7 @@ use uuid::Uuid;
 use application::repositories::*;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
 use application::use_cases::recurrence as recurrence_uc;
+use application::use_cases::timesheet::load_reconstruction_config;
 
 use super::types::*;
 
@@ -598,6 +599,36 @@ impl QueryRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(rows.into_iter().map(GryzzlyTaskGql::from).collect())
+    }
+
+    /// Load the persisted timesheet draft for a local date (null if none reconstructed yet).
+    async fn timesheet_draft(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+    ) -> Result<Option<ReconstructedDayGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let draft = draft_repo
+            .find_by_user_and_date(user_id, date)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(draft.map(|d| ReconstructedDayGql::from_draft(d, cfg.rounding_hours)))
+    }
+
+    /// List the current user's enabled signal→project mapping rules.
+    async fn signal_mappings(&self, ctx: &Context<'_>) -> Result<Vec<SignalMappingGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn SignalMappingRepository>>()?;
+        let rows = repo
+            .list_enabled(user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(rows.into_iter().map(SignalMappingGql::from).collect())
     }
 }
 

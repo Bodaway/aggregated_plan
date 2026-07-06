@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, MaybeUndefined, Object, Result, ID};
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate};
 use domain::types::common::{ImpactLevel, UrgencyLevel};
-use domain::types::UserId;
+use domain::types::{TimesheetStatus, UserId};
 use uuid::Uuid;
 
 use application::repositories::*;
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, gryzzly_assignment, priority, sync, task_management, worklog as worklog_uc};
 use application::use_cases::recurrence as recurrence_uc;
+use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
 use infrastructure::connectors::excel::GraphExcelClient;
 use infrastructure::connectors::gryzzly::HttpGryzzlyClient;
 use infrastructure::connectors::jira::HttpJiraClient;
@@ -917,6 +918,157 @@ impl MutationRoot {
                 .await
                 .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(TaskGql(task))
+    }
+
+    // ─── Timesheet reconstruction (Plan 2) ───
+
+    /// Reconstruct the day from ambient signals, persist the draft, return the full result.
+    async fn run_timesheet_reconstruction(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+    ) -> Result<ReconstructedDayGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let catalog_repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
+        let mapping_repo = ctx.data::<Arc<dyn SignalMappingRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let git = ctx.data::<Arc<dyn GitConnector>>()?;
+        let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
+
+        let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let day = timesheet_uc::reconstruct_timesheet(
+            worklog_repo.as_ref(),
+            meeting_repo.as_ref(),
+            task_repo.as_ref(),
+            catalog_repo.as_ref(),
+            mapping_repo.as_ref(),
+            config_repo.as_ref(),
+            git.as_ref(),
+            draft_repo.as_ref(),
+            user_id,
+            date,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        // If a validated/submitted draft already existed, reconstruct_timesheet did NOT
+        // overwrite it — return the PERSISTED draft, not the recomputed (unpersisted) `day`,
+        // so the client never sees fresh allocations mislabeled as validated.
+        let existing = draft_repo
+            .find_by_user_and_date(user_id, date)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        match existing {
+            Some(d) if matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted) => {
+                Ok(ReconstructedDayGql::from_draft(d, cfg.rounding_hours))
+            }
+            _ => Ok(ReconstructedDayGql::from_reconstructed(
+                day,
+                cfg.daily_target_hours,
+                cfg.rounding_hours,
+                TimesheetStatus::Draft,
+            )),
+        }
+    }
+
+    /// Persist user edits (pinned lines frozen; rejects pinned > target); returns the saved draft.
+    async fn save_timesheet_draft(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+        lines: Vec<TimesheetLineInput>,
+    ) -> Result<ReconstructedDayGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let edited = lines.into_iter().map(Into::into).collect();
+        timesheet_uc::save_timesheet_draft(draft_repo.as_ref(), config_repo.as_ref(), user_id, date, edited)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let draft = draft_repo
+            .find_by_user_and_date(user_id, date)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .ok_or_else(|| async_graphql::Error::new("draft missing after save"))?;
+        Ok(ReconstructedDayGql::from_draft(draft, cfg.rounding_hours))
+    }
+
+    /// Mark a day's draft validated (ready to copy into Gryzzly).
+    async fn validate_timesheet(&self, ctx: &Context<'_>, date: NaiveDate) -> Result<ReconstructedDayGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        timesheet_uc::validate_timesheet(draft_repo.as_ref(), user_id, date)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let draft = draft_repo
+            .find_by_user_and_date(user_id, date)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .ok_or_else(|| async_graphql::Error::new("no draft to validate"))?;
+        Ok(ReconstructedDayGql::from_draft(draft, cfg.rounding_hours))
+    }
+
+    /// Mark a whole/half day off (suppresses reconstruction fill).
+    async fn mark_day_off(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+        scope: DayOffScopeGql,
+    ) -> Result<ReconstructedDayGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        timesheet_uc::mark_day_off(draft_repo.as_ref(), user_id, date, scope.into())
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let draft = draft_repo
+            .find_by_user_and_date(user_id, date)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .ok_or_else(|| async_graphql::Error::new("no draft after mark_day_off"))?;
+        Ok(ReconstructedDayGql::from_draft(draft, cfg.rounding_hours))
+    }
+
+    /// Learn a signal→Gryzzly-project mapping rule (validated against the live catalog).
+    async fn learn_mapping(
+        &self,
+        ctx: &Context<'_>,
+        kind: MappingKindGql,
+        pattern: String,
+        branch_pattern: Option<String>,
+        gryzzly_project_id: ID,
+    ) -> Result<SignalMappingGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let mapping_repo = ctx.data::<Arc<dyn SignalMappingRepository>>()?;
+        let catalog_repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
+        let now = chrono::Utc::now();
+        let mapping = timesheet_uc::learn_mapping(
+            mapping_repo.as_ref(),
+            catalog_repo.as_ref(),
+            user_id,
+            kind.into(),
+            pattern,
+            branch_pattern,
+            gryzzly_project_id.to_string(),
+            now,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(SignalMappingGql::from(mapping))
     }
 }
 
