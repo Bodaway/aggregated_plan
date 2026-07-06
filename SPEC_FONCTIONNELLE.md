@@ -838,6 +838,22 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 
 ---
 
+#### US-082 : Reconstruction automatique en fin de journée
+
+> En tant que Tech Lead, je veux que ma feuille de temps soit automatiquement reconstruite à partir de mon journal d'activité (worklog) en fin de journée afin de lancer facilement ma déclaration d'heures.
+
+**Critères d'acceptation :**
+- **Déclenchement :** chaque jour à l'heure configurée (défaut : 18h00, fuseau horaire `aplan.timezone`), le système reconstruit automatiquement le brouillon de feuille de temps du jour.
+- **Garde contre les écrasements :** si la feuille de temps du jour a déjà un statut `Validée` ou `Soumise`, aucune reconstruction n'a lieu (le brouillon finalisé n'est jamais écrasé).
+- **Reconstruction idempotente :** le système utilise un watermark (`aplan.timesheet.last_auto_run`) pour éviter les exécutions redondantes. Un jour ne peut être reconstruit qu'une seule fois automatiquement.
+- **Fenêtre de rattrapage :** si le watermark est absent (premier lancement) ou remonte à plus de 7 jours, la reconstruction s'exécute pour les 7 derniers jours (bouchon configurable à 7 jours, non dépassé).
+- **Alerte passive :** une fois la reconstruction complétée, une alerte passive « Brouillon de feuille de temps prêt » (`TimesheetReady`, sévérité `Information`) est levée. Elle apparaît dans la zone des alertes du dashboard et est accessible via la requête `alerts`. Il n'existe aucune notification OS/push — l'alerte est consultée in-app via l'écran `/timesheet` ou le dashboard.
+- **Heure de déclenchement configurable :** accessible via la clé de configuration `workday.auto_reconstruct_hour` (0–23, défaut 18).
+
+**Priorité** : Should
+
+---
+
 ## 7. Règles métier
 
 ### 7.1 Granularité temporelle

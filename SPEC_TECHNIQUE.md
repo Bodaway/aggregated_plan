@@ -644,6 +644,7 @@ pub enum AlertType {
     Deadline,
     Overload,
     Conflict,
+    TimesheetReady,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -2474,6 +2475,7 @@ enum AlertType {
   DEADLINE
   OVERLOAD
   CONFLICT
+  TIMESHEET_READY
 }
 
 enum AlertSeverity {
@@ -3297,6 +3299,97 @@ Type `AssignedGryzzlyTaskGql` :
 | `stale` | `Boolean!` | Vrai si la ligne est désactivée ou absente |
 
 La résolution utilise `GryzzlyCatalogRepository::find_by_gryzzly_task_id` qui retourne la ligne **quelle que soit sa valeur de `is_active`**, permettant l'affichage des états 2 et 3 sans jamais déclencher de panique.
+
+### 10.9 End-of-Day Auto-Reconstruction Scheduler
+
+#### Architecture
+
+The end-of-day job is a background task running within the Axum server using `tokio-cron-scheduler`. It executes a daily pass (configurable hour) to automatically reconstruct the user's timesheet draft and emit a passive `TimesheetReady` alert.
+
+**Implementation location:** `api/src/jobs.rs`
+
+- `run_eod_scheduler(eod_deps: EodDeps)` — async function that spawns a tokio-cron-scheduler job and runs indefinitely. Called once at server startup from `main.rs`.
+- `run_eod_pass(eod_deps: EodDeps, user_id: UserId, now: DateTime<Utc>)` — the use case function (in `application::use_cases::timesheet`) that performs one reconstruction pass for a single user. Called by the scheduler job for each configured user.
+
+#### Configuration Keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `workday.auto_reconstruct_hour` | Integer (0-23) | `18` | Hour of day (in local timezone, `aplan.timezone`) at which the EOD job triggers. Example: 18 = 6 PM. |
+| `aplan.timesheet.last_auto_run` | Text (ISO 8601) | `null` | Watermark timestamp of the last successful auto-reconstruction pass. Used to prevent re-runs and detect catch-up scenarios. |
+| `aplan.timezone` | Text (IANA zone) | `Europe/Paris` | Timezone used to resolve the local hour for EOD trigger and to interpret worklog entry timestamps. |
+
+#### Scheduler Behavior
+
+1. **Trigger Condition:** The scheduler checks every 60 seconds whether `now.with_timezone(&tz).hour() == auto_reconstruct_hour`. When true and sufficient time has elapsed since the last run, the pass executes.
+
+2. **Watermark Logic (Idempotency):**
+   - Load `aplan.timesheet.last_auto_run` from configuration.
+   - If the watermark is on the same day as today (in local timezone), skip the pass (already ran today).
+   - If the watermark is on a previous day, proceed.
+   - After a successful pass, update `aplan.timesheet.last_auto_run` to `Utc::now()`.
+
+3. **Catch-Up Window:** If the watermark is more than 7 days old (stale), only reconstruct the last 7 days of drafts (configurable, fixed at 7 days for MVP). This prevents re-running reconstruction on very old dates.
+
+#### Reconstruction Semantics (`run_eod_pass`)
+
+The use case performs the following steps for the target date (today in local timezone):
+
+1. **Load Configuration:**
+   - Read `aplan.timezone`, `workday.auto_reconstruct_hour` from `config_repo`.
+   - Resolve today's date in the configured timezone.
+
+2. **Load Existing Timesheet Draft:**
+   - Fetch the draft timesheet for today via `timesheet_repo.find_by_date(user_id, today)`.
+   - If a draft already exists with status `Validated` or `Submitted`, **do not overwrite** — return early with no error. (Guard from R-TS-xx: never clobber a finalized draft.)
+
+3. **Reconstruct Draft:**
+   - Call `reconstruct_timesheet(...)` from the timesheet module with the exact same logic as the React surface (Plan 3):
+     - Derive time blocks from worklog entries logged after `aplan.active_since` using `derive_time_blocks(tz)` domain rule.
+     - Load all meetings and activity slots for today.
+     - Compute suggested allocations using learned mapping rules (if any) and fallback heuristics.
+     - Return a new draft with status `Draft`, lines (project→hours mappings), unattributed hours, and blocks.
+   - Persist the reconstructed draft via `timesheet_repo.save(draft)`.
+
+4. **Emit TimesheetReady Alert:**
+   - Create a passive `Alert` with:
+     - `alert_type: AlertType::TimesheetReady`
+     - `severity: AlertSeverity::Information`
+     - `message: "Feuille de temps prête pour révision"`
+     - `date: today`
+     - `related_items: []` (no specific task/meeting links)
+   - Persist via `alert_repo.save(alert)`.
+   - Emit an `alertsUpdated` subscription to notify any connected frontend clients.
+
+5. **Update Watermark:**
+   - Save `aplan.timesheet.last_auto_run` = `Utc::now()` to configuration.
+
+#### Important Guarantees
+
+- **Never auto-submits to Gryzzly:** The job only creates or updates a local draft. It does not call any Gryzzly API endpoint to submit time.
+- **Never clobbers validated/submitted drafts:** If a user has already validated or submitted a draft, the EOD pass skips that date silently.
+- **Passive alert only:** The `TimesheetReady` alert is displayed in the alerts zone of the dashboard and in the `/alerts` query. There is no OS-level push notification, no SMS, no email — only in-app visibility.
+- **Idempotent watermark:** Re-running the job on the same day (clock drift, scheduler restart) has no effect; the watermark prevents duplicate reconstruction.
+
+#### GraphQL Surface
+
+The `TimesheetReady` alert is exposed via the existing `alerts` query (no new query needed):
+
+```graphql
+query Alerts {
+  alerts {
+    id
+    alertType       # Can be DEADLINE, OVERLOAD, CONFLICT, TIMESHEET_READY
+    severity        # CRITICAL, WARNING, INFORMATION
+    message
+    date
+    resolved
+    createdAt
+  }
+}
+```
+
+Clients filter on `alertType == TIMESHEET_READY` to find end-of-day reconstruction alerts. Severity is always `INFORMATION` for this alert type.
 
 ---
 
