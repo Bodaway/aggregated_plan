@@ -53,11 +53,11 @@
 - Modify: `backend/crates/api/src/graphql/types/enums.rs`
 
 **Interfaces:**
-- Produces: `ConfidenceGql`, `TimesheetStatusGql`, `UnresolvedReasonGql`, `MappingKindGql`, `DayOffScopeGql`, `BlockKindGql` (all `#[derive(Enum)]`), each with `From` conversions to/from the domain/application enum as needed.
+- Produces: `ConfidenceGql`, `TimesheetStatusGql`, `MappingKindGql`, `DayOffScopeGql`, `BlockKindGql` (all `#[derive(Enum)]`), each with `From` conversions to/from the domain/application enum as needed. (No `UnresolvedReasonGql` — `UnresolvedSignal` has no reason field and nothing consumes it.)
 
 - [ ] **Step 1: Write the enums + conversions + failing unit test**
 
-Append to `backend/crates/api/src/graphql/types/enums.rs` (mirror the existing `HalfDayGql` pattern — `use domain::types as types;` is already imported there; add `use application::use_cases::timesheet::DayOffScope;` and `use domain::rules::reconstruction::BlockKind;` and `use domain::rules::project_mapping::UnresolvedReason;`):
+Append to `backend/crates/api/src/graphql/types/enums.rs` (mirror the existing `HalfDayGql` pattern — `use domain::types as types;` is already imported there; add `use application::use_cases::timesheet::DayOffScope;` and `use domain::rules::reconstruction::BlockKind;`):
 ```rust
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum ConfidenceGql {
@@ -105,22 +105,6 @@ impl From<BlockKind> for BlockKindGql {
             BlockKind::Meeting => BlockKindGql::Meeting,
             BlockKind::Work => BlockKindGql::Work,
             BlockKind::OutOfOffice => BlockKindGql::OutOfOffice,
-        }
-    }
-}
-
-#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
-pub enum UnresolvedReasonGql {
-    TaskNotAssigned,
-    NoRule,
-    StaleMapping,
-}
-impl From<UnresolvedReason> for UnresolvedReasonGql {
-    fn from(r: UnresolvedReason) -> Self {
-        match r {
-            UnresolvedReason::TaskNotAssigned => UnresolvedReasonGql::TaskNotAssigned,
-            UnresolvedReason::NoRule => UnresolvedReasonGql::NoRule,
-            UnresolvedReason::StaleMapping => UnresolvedReasonGql::StaleMapping,
         }
     }
 }
@@ -689,15 +673,24 @@ Add these methods inside `#[Object] impl MutationRoot` in `mutation.rs` (imports
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        // Reflect the persisted status if a validated/submitted draft blocked the overwrite.
-        let status = draft_repo
+        // If a validated/submitted draft already existed, reconstruct_timesheet did NOT
+        // overwrite it — return the PERSISTED draft, not the recomputed (unpersisted) `day`,
+        // so the client never sees fresh allocations mislabeled as validated.
+        let existing = draft_repo
             .find_by_user_and_date(user_id, date)
             .await
-            .ok()
-            .flatten()
-            .map(|d| d.status)
-            .unwrap_or(TimesheetStatus::Draft);
-        Ok(ReconstructedDayGql::from_reconstructed(day, cfg.daily_target_hours, cfg.rounding_hours, status))
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        match existing {
+            Some(d) if matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted) => {
+                Ok(ReconstructedDayGql::from_draft(d, cfg.rounding_hours))
+            }
+            _ => Ok(ReconstructedDayGql::from_reconstructed(
+                day,
+                cfg.daily_target_hours,
+                cfg.rounding_hours,
+                TimesheetStatus::Draft,
+            )),
+        }
     }
 
     /// Persist user edits (pinned lines frozen; rejects pinned > target); returns the saved draft.
@@ -936,7 +929,7 @@ async fn learn_mapping_rejects_unknown_project() {
     assert!(!res.errors.is_empty(), "expected validation error for unknown project");
 }
 ```
-Then ONE seeded happy-path test (using the `build_test_schema_with` variant): seed a `GryzzlyCatalogEntry` (project "p1"), a `Task` with `gryzzly_project_id = Some("p1")`, and a `WorklogEntry` on that task at ~09:00 local on 2026-06-08; run `runTimesheetReconstruction` and assert `totalHours ≈ 7.5` (high-signal? no — one signal → low_signal → total 7.5 with unattributed fill) OR assert `unattributedHours > 0` and a `p1` line exists. Since a single worklog is low-signal, assert: `status == DRAFT`, a line with `gryzzlyProjectId == "p1"` exists, and `unattributedHours > 0`. Then `validateTimesheet` and assert `status == VALIDATED`. Derive exact assertions from the Plan-1 low-signal semantics (project keeps ~raw hours, fill → unattributed, total == 7.5).
+Then ONE seeded happy-path test (using the `build_test_schema_with` variant): seed a `GryzzlyCatalogEntry` (project "p1"), a `Task` with `gryzzly_project_id = Some("p1")`, and a `WorklogEntry` on that task. **Timezone caution:** the stub config returns `None`, so `resolve_tz` → Europe/Paris (UTC+2 in June), NOT UTC. Timestamp the worklog's `logged_at` so it lands in the Paris morning window — e.g. `09:00:00Z` = 11:00 Paris (morning). Then run `runTimesheetReconstruction` and assert `totalHours ≈ 7.5` (high-signal? no — one signal → low_signal → total 7.5 with unattributed fill) OR assert `unattributedHours > 0` and a `p1` line exists. Since a single worklog is low-signal, assert: `status == DRAFT`, a line with `gryzzlyProjectId == "p1"` exists, and `unattributedHours > 0`. Then `validateTimesheet` and assert `status == VALIDATED`. Derive exact assertions from the Plan-1 low-signal semantics (project keeps ~raw hours, fill → unattributed, total == 7.5).
 
 - [ ] **Step 3: Run to verify RED then GREEN**
 
@@ -1027,7 +1020,12 @@ mutation LearnMapping($kind: MappingKindGql!, $pattern: String!, $branchPattern:
 
 - [ ] **Step 2: Add the derive structs to `queries.rs`**
 
-Append (mirroring the existing pattern; the `type NaiveDate = String;` and `type ID = String;` aliases already exist at the top of `queries.rs`):
+FIRST, at the top of `queries.rs` where the scalar aliases live (`type NaiveDate = String;`, `type ID = String;` already exist), ADD:
+```rust
+#[allow(non_camel_case_types)]
+type NaiveDateTime = String;
+```
+The timesheet ops select `NaiveDateTime` scalar fields (`blocks.startTime`/`endTime`, `unresolved.at`) and graphql_client needs a Rust type for every selected custom scalar — without this alias the derive fails with "cannot find type NaiveDateTime". Then append (mirroring the existing pattern):
 ```rust
 #[derive(GraphQLQuery)]
 #[graphql(schema_path = "graphql/schema.graphql", query_path = "graphql/reconstruct_timesheet.graphql", response_derives = "Debug, Clone")]
@@ -1438,3 +1436,4 @@ git commit -m "Document timesheet GraphQL API + aplan CLI (flag-driven review)"
 3. The GraphQL enum SDL names for input enums (`$kind`, `$scope`) — match the regenerated `schema.graphql` exactly in the `.graphql` op files.
 4. `StubConfigRepository` in `tests.rs` returns `None` for all keys → reconstruction uses defaults (Paris, 7.5h, 0.25). Confirm; if it panics/errs instead, use a small in-memory config returning `None`.
 5. Existing CLI integration-test harness (wiremock) location and helper — mirror it for Tasks 8-9.
+6. The GraphQL type is named `ReconstructedDayGql` in both Rust and the SDL (async-graphql keeps the `Gql` suffix, like `TaskStatusGql`/`SourceGql`). Prose in this plan sometimes says "ReconstructedDay" for brevity — the actual type/SDL name has the suffix. CLI `.graphql` ops reference query/field names (not the type name) so this doesn't affect codegen.
