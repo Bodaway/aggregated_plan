@@ -405,6 +405,102 @@ fn meeting_organizer(_m: &Meeting) -> Option<String> {
     None
 }
 
+/// The local dates the end-of-day job should (re)process on this tick, ascending.
+///
+/// - Every missed local date STRICTLY after `last_auto_run` and STRICTLY before `local_today`
+///   (catch-up for days the machine was off) — but only when a watermark exists; with no
+///   watermark we never backfill history.
+/// - Plus `local_today` itself, IFF `local_hour >= trigger_hour` AND today isn't already the
+///   watermark (so today is processed at most once per day, not every tick).
+/// - Capped to the most recent `cap` dates (avoid reconstructing months after a long absence).
+pub fn compute_target_dates(
+    last_auto_run: Option<NaiveDate>,
+    local_today: NaiveDate,
+    local_hour: u32,
+    trigger_hour: u32,
+    cap: usize,
+) -> Vec<NaiveDate> {
+    let mut dates = Vec::new();
+    if let Some(last) = last_auto_run {
+        let mut d = match last.succ_opt() {
+            Some(n) => n,
+            None => return dates,
+        };
+        while d < local_today {
+            dates.push(d);
+            d = match d.succ_opt() {
+                Some(n) => n,
+                None => break,
+            };
+        }
+    }
+    let already_ran_today = last_auto_run == Some(local_today);
+    if !already_ran_today && local_hour >= trigger_hour {
+        dates.push(local_today);
+    }
+    if dates.len() > cap {
+        dates = dates.split_off(dates.len() - cap);
+    }
+    dates
+}
+
+#[cfg(test)]
+mod eod_target_tests {
+    use super::compute_target_dates;
+    use chrono::NaiveDate;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn no_watermark_before_trigger_is_empty() {
+        assert!(compute_target_dates(None, d(2026, 6, 8), 9, 18, 7).is_empty());
+    }
+
+    #[test]
+    fn no_watermark_after_trigger_is_today_only() {
+        assert_eq!(compute_target_dates(None, d(2026, 6, 8), 18, 18, 7), vec![d(2026, 6, 8)]);
+    }
+
+    #[test]
+    fn caught_up_after_trigger_is_today() {
+        assert_eq!(
+            compute_target_dates(Some(d(2026, 6, 7)), d(2026, 6, 8), 20, 18, 7),
+            vec![d(2026, 6, 8)]
+        );
+    }
+
+    #[test]
+    fn missed_days_are_caught_up_plus_today() {
+        assert_eq!(
+            compute_target_dates(Some(d(2026, 6, 5)), d(2026, 6, 8), 20, 18, 7),
+            vec![d(2026, 6, 6), d(2026, 6, 7), d(2026, 6, 8)]
+        );
+    }
+
+    #[test]
+    fn missed_days_caught_up_even_before_trigger_but_not_today() {
+        assert_eq!(
+            compute_target_dates(Some(d(2026, 6, 5)), d(2026, 6, 8), 9, 18, 7),
+            vec![d(2026, 6, 6), d(2026, 6, 7)]
+        );
+    }
+
+    #[test]
+    fn already_ran_today_is_empty() {
+        assert!(compute_target_dates(Some(d(2026, 6, 8)), d(2026, 6, 8), 20, 18, 7).is_empty());
+    }
+
+    #[test]
+    fn catch_up_is_capped_to_most_recent() {
+        let out = compute_target_dates(Some(d(2026, 5, 1)), d(2026, 6, 8), 20, 18, 7);
+        assert_eq!(out.len(), 7);
+        assert_eq!(*out.last().unwrap(), d(2026, 6, 8));
+        assert_eq!(*out.first().unwrap(), d(2026, 6, 2)); // last 7: Jun 2..Jun 8
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
