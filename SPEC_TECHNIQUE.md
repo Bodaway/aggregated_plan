@@ -2593,6 +2593,39 @@ type SyncStatus {
   errorMessage: String
 }
 
+# --- Timesheet Enums ---
+
+enum TimesheetStatusGql {
+  DRAFT
+  VALIDATED
+  SUBMITTED
+}
+
+enum ConfidenceGql {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum BlockKindGql {
+  MEETING
+  ACTIVITY
+  UNTRACKED
+}
+
+enum MappingKindGql {
+  REPOSITORY
+  SUBJECT
+  ORGANIZER
+  INTERNAL_PROJECT
+}
+
+enum DayOffScopeGql {
+  FULL_DAY
+  MORNING
+  AFTERNOON
+}
+
 # --- Composite Types ---
 
 type DailyDashboard {
@@ -2639,6 +2672,61 @@ type DeduplicationSuggestion {
   titleSimilarity: Float!
   assigneeMatch: Boolean!
   projectMatch: Boolean!
+}
+
+# --- Timesheet Types ---
+
+type ReconstructedDayGql {
+  date: Date!
+  status: TimesheetStatusGql!
+  targetHours: Float!
+  roundingIncrement: Float!
+  totalHours: Float!
+  dayConfidence: ConfidenceGql!
+  lines: [EditedLineGql!]!
+  unattributedHours: Float!
+  unresolved: [UnresolvedGql!]!
+  blocks: [BlockGql!]!
+}
+
+type EditedLineGql {
+  gryzzlyProjectId: String!
+  projectName: String!
+  hours: Float!
+  isPinned: Boolean!
+}
+
+type UnresolvedGql {
+  blockId: String!
+  kind: BlockKindGql!
+  title: String
+  confidence: ConfidenceGql!
+  hours: Float!
+}
+
+type BlockGql {
+  blockId: String!
+  kind: BlockKindGql!
+  title: String
+  startTime: DateTime
+  endTime: DateTime
+  confidence: ConfidenceGql!
+}
+
+type MappingSignalGql {
+  id: String!
+  kind: MappingKindGql!
+  pattern: String!
+  branchPattern: String
+  gryzzlyProjectId: String!
+  projectName: String!
+  usageCount: Int!
+}
+
+input TimesheetLineInputGql {
+  gryzzlyProjectId: String!
+  hours: Float!
+  isPinned: Boolean
 }
 
 # --- Microsoft Sign-In Gate ---
@@ -2828,6 +2916,10 @@ type Query {
   # v2
   teamView(filter: TeamFilter): [TeamMemberView!]!
   weeklyRetrospective(weekStart: Date!): WeeklyRetrospective!
+  
+  # Timesheet operations
+  timesheetDraft(date: Date!): ReconstructedDayGql!
+  signalMappings: [MappingSignalGql!]!
 }
 
 # --- Mutations ---
@@ -2884,6 +2976,13 @@ type Mutation {
 
   # Microsoft Sign-In Gate — efface les jetons stockés (déconnexion)
   signOut: Boolean!
+
+  # Timesheet operations
+  runTimesheetReconstruction(date: Date!): ReconstructedDayGql!
+  saveTimesheetDraft(date: Date!, lines: [TimesheetLineInputGql!]!): ReconstructedDayGql!
+  validateTimesheet(date: Date!): ReconstructedDayGql!
+  markDayOff(date: Date!, scope: DayOffScopeGql!): ReconstructedDayGql!
+  learnMapping(kind: MappingKindGql!, pattern: String!, branchPattern: String, gryzzlyProjectId: String!): Boolean!
 }
 
 # --- Subscriptions ---
@@ -2908,6 +3007,26 @@ type Subscription {
   alertsUpdated: [Alert!]!
 }
 ```
+
+### 8.2 GraphQL Schema Codegen (SDL Regeneration)
+
+After any changes to the GraphQL schema (types, queries, mutations, enums), the exported SDL must be regenerated to keep the CLI's committed `schema.graphql` file in sync with the backend.
+
+**Command:**
+
+```bash
+cd backend
+cargo run -p api -- export-schema > crates/cli/graphql/schema.graphql
+```
+
+This exports the complete GraphQL SDL from the async-graphql schema introspection and writes it to the CLI's schema file. The CLI's `build.rs` uses this committed schema to perform compile-time validation of GraphQL operations (via `graphql_client`'s codegen).
+
+**When to regenerate:**
+- After adding, modifying, or removing any GraphQL type, query, mutation, subscription, or enum
+- Before committing backend code that changes the API surface
+- Before running CLI tests or builds to avoid stale-schema errors
+
+**Important:** The regeneration must happen **before** any CLI code that uses the new schema is committed, to avoid breaking the CLI build.
 
 ---
 

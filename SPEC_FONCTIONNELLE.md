@@ -793,6 +793,49 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 **Priorité** : Must (MVP v1)
 
+### 6.9 Feuille de temps (Timesheet) et déclaration d'activité pour Gryzzly
+
+#### US-080 : Consultation et réconciliation de la feuille de temps
+
+> En tant que Tech Lead, je veux consulter et réconcilier ma feuille de temps journalière (reconstruction à partir du journal d'activité) avant de la déclarer à Gryzzly afin de m'assurer que le temps est correctement affecté par projet.
+
+**Critères d'acceptation :**
+- L'utilisateur peut afficher la feuille de temps d'un jour donné via `aplan timesheet [--date YYYY-MM-DD]` (par défaut : aujourd'hui).
+- La feuille de temps affiche :
+  - Un **tableau heures×projet** listant chaque projet Gryzzly avec les heures affectées (heures épinglées depuis le journal d'activité et heures non attribuées)
+  - Une **chronologie ASCII** montrant les blocs d'activité de la journée (réunions, créneaux d'activité, créneaux non trackés)
+  - Un **récapitulatif** : heures totales, heures non attribuées, confiance globale (HIGH/MEDIUM/LOW)
+  - Les **blocs non résolus** : créneaux sans affectation projet clair, avec suggestion basée sur les apprentissages précédents
+- Les sous-commandes permettent d'éditer la feuille de temps **sans REPL interactif** (voir ci-dessous) :
+  - `aplan timesheet set <projet> <heures>` — épingle des heures pour un projet (surcharge le calcul auto)
+  - `aplan timesheet validate [--date YYYY-MM-DD]` — valide la feuille de temps
+  - `aplan timesheet off [--am|--pm] [--date YYYY-MM-DD]` — marque une demi-journée (ou la journée complète) comme indisponible
+- La feuille de temps est sauvegardée automatiquement lors des modifications.
+
+**Décision d'architecture — CLI flag-driven (pas de REPL) :**
+
+La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-commande explicite et synchrone (`set`, `off`, `validate`), avec résultat immédiat. Il n'existe **aucun mode REPL ou interactif** pour éditer la feuille de temps en ligne.
+
+*Justification :* L'édition interactive riche (glisser-déposer de blocs, suggestions en temps réel, interface timeline visuelle) relève de l'écran React dédiée au timesheet (Surface B, Plan 3). La CLI sert les cas d'usage non-interactifs : automatisation, scripting Claude, appels par workflows externes. Les deux interfaces opèrent sur le même modèle de données GraphQL.
+
+**Priorité** : Should (v2)
+
+#### US-081 : Apprentissage de règles de mappage (Mapping)
+
+> En tant que Tech Lead, je veux enseigner au système à associer automatiquement certains contextes (dépôt git, branche, organisateur de réunion, etc.) à un projet Gryzzly spécifique afin d'accélérer la déclaration de temps.
+
+**Critères d'acceptation :**
+- L'utilisateur peut créer une règle de mappage via `aplan map add <kind> <pattern> [--branch <pattern>] <gryzzly-project-id>` où :
+  - `<kind>` : type de sélecteur (`repository`, `subject`, `organizer`, `internal_project`)
+  - `<pattern>` : motif à matcher (regex ou substring selon le kind)
+  - `--branch <pattern>` : motif de branche (pour kind=`repository` uniquement)
+  - `<gryzzly-project-id>` : identifiant Gryzzly cible
+- L'utilisateur peut consulter les règles existantes via `aplan map list [--kind <kind>]`
+- Les règles apprises sont persistées et utilisées pour suggérer des affectations lors de la reconstruction de feuille de temps.
+- Lors du mappage, les signaux sont priorisés dans cet ordre (premier match gagne) : (1) dépôt (`repository`), (2) sujet de réunion (`subject`), (3) organisateur (`organizer`), (4) projet interne/aplan (`internal_project`). **Note importante** : `aplan map add` ne rejette pas encore de sélecteurs simultanés — cette logique de priorité sera affinée dans une future itération.
+
+**Priorité** : Should (v2)
+
 ---
 
 ## 7. Règles métier
@@ -1113,6 +1156,17 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | D4 | Priorité Jira ≠ Priorité de l'outil | L'outil a sa propre matrice impact/urgence, indépendante de la priorité Jira |
 | D5 | Le journal d'activité est pour usage personnel uniquement | Pas d'export automatique ni de partage |
 | D6 | Architecture multi-user ready (`user_id` sur toutes les tables, middleware d'authentification) | Prépare le déploiement futur en tant qu'application Microsoft Teams. Utilisateur unique en MVP — utilisateur par défaut créé automatiquement. |
+| D7 | CLI timesheet flag-driven, sans mode REPL | L'édition interactive riche se fait dans l'interface React (Surface B, Plan 3) ; la CLI sert l'automatisation et l'intégration. |
+
+### 11.4 Limitations connues (Timesheet)
+
+Les fonctionnalités de timesheet (Plan 2) ont les limitations suivantes, à améliorer dans des itérations futures :
+
+| Limitation | Détail |
+|-----------|--------|
+| **Scope demi-journée non appliqué à `markDayOff`** | La mutation `markDayOff(date, scope)` et la sous-commande CLI `aplan timesheet off [--am\|--pm]` ignorent actuellement le scope : une demi-journée marquée (AM/PM) indisponible marque la **journée complète** comme off. Affinement futur : émettre le scope à la base et refléter ce découpage dans la reconstruction de feuille de temps. |
+| **Pas de commande pour vider le bucket non-attribué** | Il n'existe pas de verbe CLI dédié pour affecter en masse les heures non attribuées d'un jour à un projet. Solution actuelle : épingler des heures projet par projet via `aplan timesheet set <projet> <heures>` jusqu'à atteindre le total, ou créer des règles de mappage via `aplan map add` pour suggérer automatiquement. |
+| **`aplan map add` n'applique pas de priorité de sélecteurs** | La commande `aplan map add` accepte actuellement une seule règle (kind + pattern + gryzzlyProjectId) mais ne rejetse pas les collisions de sélecteurs distincts (p. ex., deux règles `repository` avec patterns différents). La logique de priorité (repository > subject > organizer > internal_project) sera appliquée et documentée dans une prochaine version afin de traiter élégamment les cas d'ambiguïté. |
 
 ---
 
