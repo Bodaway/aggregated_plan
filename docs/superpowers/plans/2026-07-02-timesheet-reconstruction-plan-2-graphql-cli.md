@@ -1197,23 +1197,36 @@ pub fn timesheet_validate(api_url: &str, json: bool, date: Option<&str>) -> Exit
 }
 
 /// `aplan timesheet set <project> <hours>` — pin one project to an exact number of hours.
-/// Reconstructs to obtain the current lines, replaces/sets the target project's hours (pinned),
-/// carries the other lines forward, and saves.
+/// Loads the current lines from the PERSISTED draft (preserving prior pins), sets/pins the
+/// target project, carries the other lines forward, and saves.
+///
+/// IMPORTANT (bug avoided): do NOT load lines by calling `runTimesheetReconstruction` — for a
+/// non-validated day that upserts a FRESH draft and wipes any previously saved pins, so two
+/// consecutive `set` commands would lose the first pin. Read `timesheetDraft(date)` instead
+/// (it preserves `isPinned`); only reconstruct when no draft exists yet.
 pub fn timesheet_set(api_url: &str, json: bool, date: Option<&str>, project: &str, hours: f64) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let date = date.map(String::from).unwrap_or_else(today);
-    // Load current lines from a fresh reconstruction (persists a draft too).
-    let day = match client.run::<ReconstructTimesheet>(reconstruct_timesheet::Variables { date: date.clone() }) {
-        Ok(r) => r.data.run_timesheet_reconstruction,
-        Err(e) => { eprintln!("error: {e}"); return ExitCode::Generic; }
-    };
-    let mut lines: Vec<save_timesheet_draft::TimesheetLineInput> = day.lines.iter().map(|l| {
-        save_timesheet_draft::TimesheetLineInput {
-            gryzzly_project_id: l.gryzzly_project_id.clone(),
-            hours: l.hours,
-            is_pinned: l.is_pinned,
-        }
-    }).collect();
+    // Prefer the persisted draft (keeps prior pins); reconstruct once only if it's null.
+    let mut lines: Vec<save_timesheet_draft::TimesheetLineInput> =
+        match client.run::<TimesheetDraft>(timesheet_draft::Variables { date: date.clone() }) {
+            Ok(r) => match r.data.timesheet_draft {
+                Some(d) => d.lines.iter().map(|l| save_timesheet_draft::TimesheetLineInput {
+                    gryzzly_project_id: l.gryzzly_project_id.clone(),
+                    hours: l.hours,
+                    is_pinned: l.is_pinned,
+                }).collect(),
+                None => match client.run::<ReconstructTimesheet>(reconstruct_timesheet::Variables { date: date.clone() }) {
+                    Ok(rr) => rr.data.run_timesheet_reconstruction.lines.iter().map(|l| save_timesheet_draft::TimesheetLineInput {
+                        gryzzly_project_id: l.gryzzly_project_id.clone(),
+                        hours: l.hours,
+                        is_pinned: l.is_pinned,
+                    }).collect(),
+                    Err(e) => { eprintln!("error: {e}"); return ExitCode::Generic; }
+                },
+            },
+            Err(e) => { eprintln!("error: {e}"); return ExitCode::Generic; }
+        };
     match lines.iter_mut().find(|l| l.gryzzly_project_id.as_deref() == Some(project)) {
         Some(l) => { l.hours = hours; l.is_pinned = true; }
         None => lines.push(save_timesheet_draft::TimesheetLineInput {
