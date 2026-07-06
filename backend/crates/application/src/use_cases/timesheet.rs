@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use domain::rules::project_mapping::{resolve_signal_project, ProjectResolution, RawSignal};
 use domain::rules::reconstruction::{
     reconstruct_day, renormalize_lines, DayInputs, EditedLine, MeetingBlock, MeetingKind,
@@ -11,9 +11,9 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::repositories::{
-    ConfigRepository, GryzzlyCatalogRepository, MeetingRepository, SignalMappingRepository,
-    TaskRepository, TimesheetDraftRepository, WorklogFilter, WorklogRepository,
-    WORKLOG_FILTER_MAX_LIMIT,
+    AlertRepository, ConfigRepository, GryzzlyCatalogRepository, MeetingRepository,
+    SignalMappingRepository, TaskRepository, TimesheetDraftRepository, WorklogFilter,
+    WorklogRepository, WORKLOG_FILTER_MAX_LIMIT,
 };
 use crate::services::git_connector::{jira_key_in, GitConnector};
 use crate::time::{local_day_bounds, resolve_tz, to_local};
@@ -444,6 +444,114 @@ pub fn compute_target_dates(
     dates
 }
 
+const EOD_CATCHUP_CAP: usize = 7;
+const DEFAULT_AUTO_RECONSTRUCT_HOUR: u32 = 18;
+
+/// One end-of-day pass for `user_id` as of `now_utc`. Reconstructs each due local day
+/// (persisting a draft; never clobbering validated/submitted), raises/settles a
+/// TimesheetReady alert, and advances the `aplan.timesheet.last_auto_run` watermark.
+/// Returns the dates processed. NEVER submits to Gryzzly.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_eod_pass(
+    worklog_repo: &dyn WorklogRepository,
+    meeting_repo: &dyn MeetingRepository,
+    task_repo: &dyn TaskRepository,
+    catalog_repo: &dyn GryzzlyCatalogRepository,
+    mapping_repo: &dyn SignalMappingRepository,
+    config_repo: &dyn ConfigRepository,
+    git: &dyn GitConnector,
+    draft_repo: &dyn TimesheetDraftRepository,
+    alert_repo: &dyn AlertRepository,
+    user_id: UserId,
+    now_utc: DateTime<Utc>,
+) -> Result<Vec<NaiveDate>, AppError> {
+    let tz = resolve_tz(config_repo.get(user_id, "aplan.timezone").await?);
+    let local_now = to_local(now_utc, tz);
+    let local_today = local_now.date();
+    let local_hour = local_now.time().hour();
+    let trigger_hour = config_repo
+        .get(user_id, "workday.auto_reconstruct_hour")
+        .await?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_AUTO_RECONSTRUCT_HOUR);
+    let last_auto_run = config_repo
+        .get(user_id, "aplan.timesheet.last_auto_run")
+        .await?
+        .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok());
+
+    let targets = compute_target_dates(last_auto_run, local_today, local_hour, trigger_hour, EOD_CATCHUP_CAP);
+
+    for date in &targets {
+        reconstruct_timesheet(
+            worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo,
+            git, draft_repo, user_id, *date,
+        )
+        .await?;
+        upsert_timesheet_ready_alert(alert_repo, draft_repo, user_id, *date, now_utc).await?;
+    }
+
+    if let Some(max) = targets.last() {
+        config_repo
+            .set(user_id, "aplan.timesheet.last_auto_run", &max.format("%Y-%m-%d").to_string())
+            .await?;
+    }
+
+    Ok(targets)
+}
+
+/// Raise a single passive TimesheetReady alert for a day with a non-empty draft (deduped),
+/// or resolve any stale one if the day is now validated/submitted or empty.
+async fn upsert_timesheet_ready_alert(
+    alert_repo: &dyn AlertRepository,
+    draft_repo: &dyn TimesheetDraftRepository,
+    user_id: UserId,
+    date: NaiveDate,
+    now_utc: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let draft = draft_repo.find_by_user_and_date(user_id, date).await?;
+    let mut existing: Vec<Alert> = alert_repo
+        .find_by_user(user_id, Some(false))
+        .await?
+        .into_iter()
+        .filter(|a| a.alert_type == AlertType::TimesheetReady && a.date == date)
+        .collect();
+
+    let should_alert = matches!(
+        &draft,
+        Some(d) if d.total_hours > 0.0
+            && !matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted)
+    );
+
+    if should_alert {
+        if existing.is_empty() {
+            let d = draft.expect("checked Some above");
+            let project_count = d.lines.iter().filter(|l| l.gryzzly_project_id.is_some()).count();
+            let alert = Alert {
+                id: Uuid::new_v4(),
+                user_id,
+                alert_type: AlertType::TimesheetReady,
+                severity: AlertSeverity::Information,
+                message: format!(
+                    "Timesheet draft ready for {date} ({:.1}h across {project_count} project(s)) — review and copy into Gryzzly",
+                    d.total_hours
+                ),
+                related_items: vec![],
+                date,
+                resolved: false,
+                created_at: now_utc,
+            };
+            alert_repo.save(&alert).await?;
+        }
+    } else {
+        // Day is validated/submitted/empty → settle any stale ready-alert.
+        for a in existing.iter_mut() {
+            a.resolved = true;
+            alert_repo.update(a).await?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod eod_target_tests {
     use super::compute_target_dates;
@@ -561,15 +669,23 @@ mod tests {
     #[async_trait]
     impl TimesheetDraftRepository for MemDraft {
         async fn upsert(&self, d: &TimesheetDraft) -> Result<(), RepositoryError> {
-            self.saved.lock().unwrap().push(d.clone());
+            let mut g = self.saved.lock().unwrap();
+            g.retain(|existing| !(existing.user_id == d.user_id && existing.date == d.date));
+            g.push(d.clone());
             Ok(())
         }
         async fn find_by_user_and_date(
             &self,
-            _u: UserId,
-            _d: NaiveDate,
+            u: UserId,
+            d: NaiveDate,
         ) -> Result<Option<TimesheetDraft>, RepositoryError> {
-            Ok(None)
+            Ok(self
+                .saved
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|existing| existing.user_id == u && existing.date == d)
+                .cloned())
         }
         async fn set_status(
             &self,
@@ -815,10 +931,70 @@ mod tests {
         }
     }
 
+    // ── Mock AlertRepository ──────────────────────────────────────────────────
+
+    #[derive(Default)]
+    struct MemAlert {
+        saved: Mutex<Vec<Alert>>,
+    }
+    #[async_trait]
+    impl AlertRepository for MemAlert {
+        async fn find_by_id(&self, _id: domain::types::AlertId) -> Result<Option<Alert>, RepositoryError> {
+            Ok(None)
+        }
+        async fn find_unresolved(&self, _u: UserId) -> Result<Vec<Alert>, RepositoryError> {
+            Ok(self.saved.lock().unwrap().iter().filter(|a| !a.resolved).cloned().collect())
+        }
+        async fn find_by_user(&self, _u: UserId, resolved: Option<bool>) -> Result<Vec<Alert>, RepositoryError> {
+            let all = self.saved.lock().unwrap().clone();
+            Ok(match resolved {
+                Some(r) => all.into_iter().filter(|a| a.resolved == r).collect(),
+                None => all,
+            })
+        }
+        async fn save(&self, a: &Alert) -> Result<(), RepositoryError> {
+            self.saved.lock().unwrap().push(a.clone());
+            Ok(())
+        }
+        async fn save_batch(&self, alerts: &[Alert]) -> Result<(), RepositoryError> {
+            self.saved.lock().unwrap().extend_from_slice(alerts);
+            Ok(())
+        }
+        async fn update(&self, a: &Alert) -> Result<(), RepositoryError> {
+            let mut g = self.saved.lock().unwrap();
+            if let Some(slot) = g.iter_mut().find(|x| x.id == a.id) {
+                *slot = a.clone();
+            }
+            Ok(())
+        }
+        async fn delete_resolved(&self, _u: UserId) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn make_user_id() -> UserId {
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+    }
+
+    fn utc(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, y, m, d, h, 0, 0).unwrap()
+    }
+
+    /// Empty-seeded Plan-1 mocks for the EOD job tests, in `run_eod_pass` arg order.
+    #[allow(clippy::type_complexity)]
+    fn eod_mocks() -> (MemWorklog, MemMeeting, MemTask, MemCatalog, MemMapping, MemConfig, MemGit, MemDraft) {
+        (
+            MemWorklog { entries: vec![] },
+            MemMeeting,
+            MemTask { task: make_task_with_project(make_user_id(), Uuid::new_v4(), "unused") },
+            MemCatalog { entries: vec![] },
+            MemMapping,
+            MemConfig::default(),
+            MemGit,
+            MemDraft::default(),
+        )
     }
 
     fn make_task_with_project(user_id: UserId, task_id: TaskId, project_id: &str) -> Task {
@@ -1161,5 +1337,133 @@ mod tests {
         // Should succeed (returns the day) without calling upsert, i.e. the persisted
         // DayOff draft is left untouched.
         assert!(result.is_ok(), "reconstruct should succeed even when draft is day-off");
+    }
+
+    // ── run_eod_pass ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn eod_before_trigger_processes_nothing() {
+        // 09:00 UTC = 11:00 Paris, before the default 18:00 trigger, no watermark.
+        let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
+        let alert = MemAlert::default();
+        let processed = run_eod_pass(
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            make_user_id(), utc(2026, 6, 8, 9),
+        )
+        .await
+        .unwrap();
+        assert!(processed.is_empty());
+        assert!(alert.saved.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn eod_after_trigger_processes_today_and_advances_watermark() {
+        // 20:00 UTC = 22:00 Paris, after trigger. Empty signals → draft total 0 → NO alert, but watermark advances.
+        let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
+        let alert = MemAlert::default();
+        let processed = run_eod_pass(
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            make_user_id(), utc(2026, 6, 8, 20),
+        )
+        .await
+        .unwrap();
+        assert_eq!(processed.len(), 1);
+        // watermark set to the local date (2026-06-08 Paris)
+        assert_eq!(
+            config.get(make_user_id(), "aplan.timesheet.last_auto_run").await.unwrap().as_deref(),
+            Some("2026-06-08")
+        );
+        // empty day → no alert (total 0)
+        assert!(alert.saved.lock().unwrap().is_empty());
+    }
+
+    // ── upsert_timesheet_ready_alert ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn upsert_timesheet_ready_alert_creates_alert_once() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let draft_repo = MemDraft::default();
+        let alert_repo = MemAlert::default();
+        let now = Utc::now();
+
+        let draft = TimesheetDraft {
+            id: Uuid::new_v4(),
+            user_id,
+            date,
+            status: TimesheetStatus::Draft,
+            target_hours: 7.5,
+            total_hours: 7.5,
+            day_confidence: Confidence::High,
+            blocks_json: None,
+            lines: vec![TimesheetDraftLine {
+                id: Uuid::new_v4(),
+                gryzzly_project_id: Some("p1".to_string()),
+                project_name: None,
+                hours: 7.5,
+                is_pinned: false,
+                confidence: Confidence::High,
+                source_refs: vec![],
+            }],
+            created_at: now,
+            updated_at: now,
+        };
+        draft_repo.upsert(&draft).await.unwrap();
+
+        upsert_timesheet_ready_alert(&alert_repo, &draft_repo, user_id, date, now)
+            .await
+            .unwrap();
+        assert_eq!(alert_repo.saved.lock().unwrap().len(), 1, "expected exactly one alert");
+
+        // Second call is deduped: no duplicate alert for the same unresolved day.
+        upsert_timesheet_ready_alert(&alert_repo, &draft_repo, user_id, date, now)
+            .await
+            .unwrap();
+        assert_eq!(alert_repo.saved.lock().unwrap().len(), 1, "must not duplicate the alert");
+    }
+
+    #[tokio::test]
+    async fn upsert_timesheet_ready_alert_resolves_stale_alert_for_validated_day() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let draft_repo = MemDraft::default();
+        let alert_repo = MemAlert::default();
+        let now = Utc::now();
+
+        let draft = TimesheetDraft {
+            id: Uuid::new_v4(),
+            user_id,
+            date,
+            status: TimesheetStatus::Validated,
+            target_hours: 7.5,
+            total_hours: 7.5,
+            day_confidence: Confidence::High,
+            blocks_json: None,
+            lines: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        draft_repo.upsert(&draft).await.unwrap();
+
+        let stale = Alert {
+            id: Uuid::new_v4(),
+            user_id,
+            alert_type: AlertType::TimesheetReady,
+            severity: AlertSeverity::Information,
+            message: "stale".to_string(),
+            related_items: vec![],
+            date,
+            resolved: false,
+            created_at: now,
+        };
+        alert_repo.save(&stale).await.unwrap();
+
+        upsert_timesheet_ready_alert(&alert_repo, &draft_repo, user_id, date, now)
+            .await
+            .unwrap();
+
+        let saved = alert_repo.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1, "no new alert should be created for a validated day");
+        assert!(saved[0].resolved, "the stale alert must be resolved");
     }
 }
