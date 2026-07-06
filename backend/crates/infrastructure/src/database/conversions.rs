@@ -42,6 +42,12 @@ mod tests {
         assert_eq!(source_to_str(Source::Gryzzly), "gryzzly");
         assert_eq!(source_from_str("gryzzly"), Source::Gryzzly);
     }
+
+    #[test]
+    fn alert_type_timesheet_ready_roundtrips() {
+        assert_eq!(alert_type_to_str(AlertType::TimesheetReady), "timesheet_ready");
+        assert_eq!(alert_type_from_str("timesheet_ready"), AlertType::TimesheetReady);
+    }
 }
 
 // --- TaskStatus ---
@@ -123,6 +129,7 @@ pub fn alert_type_to_str(a: AlertType) -> &'static str {
         AlertType::Deadline => "deadline",
         AlertType::Overload => "overload",
         AlertType::Conflict => "conflict",
+        AlertType::TimesheetReady => "timesheet_ready",
     }
 }
 
@@ -131,6 +138,7 @@ pub fn alert_type_from_str(s: &str) -> AlertType {
         "deadline" => AlertType::Deadline,
         "overload" => AlertType::Overload,
         "conflict" => AlertType::Conflict,
+        "timesheet_ready" => AlertType::TimesheetReady,
         _ => AlertType::Conflict,
     }
 }

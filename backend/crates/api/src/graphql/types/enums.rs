@@ -199,6 +199,7 @@ pub enum AlertTypeGql {
     Deadline,
     Overload,
     Conflict,
+    TimesheetReady,
 }
 
 impl From<types::AlertType> for AlertTypeGql {
@@ -207,6 +208,7 @@ impl From<types::AlertType> for AlertTypeGql {
             types::AlertType::Deadline => AlertTypeGql::Deadline,
             types::AlertType::Overload => AlertTypeGql::Overload,
             types::AlertType::Conflict => AlertTypeGql::Conflict,
+            types::AlertType::TimesheetReady => AlertTypeGql::TimesheetReady,
         }
     }
 }

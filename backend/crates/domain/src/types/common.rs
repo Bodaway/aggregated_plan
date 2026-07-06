@@ -59,6 +59,7 @@ pub enum AlertType {
     Deadline,
     Overload,
     Conflict,
+    TimesheetReady,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
