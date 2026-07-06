@@ -103,7 +103,10 @@ pub fn timesheet_validate(api_url: &str, json: bool, date: Option<&str>) -> Exit
     match client.run::<ValidateTimesheet>(validate_timesheet::Variables { date: date.clone() }) {
         Ok(r) => {
             if json {
-                let _ = print_json(&r.raw);
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
                 return ExitCode::Success;
             }
             println!("\u{2713} {} validated \u{2014} copy into Gryzzly", date);
@@ -191,7 +194,10 @@ pub fn timesheet_set(
     }) {
         Ok(r) => {
             if json {
-                let _ = print_json(&r.raw);
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
                 return ExitCode::Success;
             }
             println!("\u{270e} pinned {project} = {hours:.2}h; other lines rebalanced to target");
@@ -224,7 +230,10 @@ pub fn timesheet_off(api_url: &str, json: bool, date: Option<&str>, am: bool, pm
     }) {
         Ok(r) => {
             if json {
-                let _ = print_json(&r.raw);
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
                 return ExitCode::Success;
             }
             println!("\u{23f8} {} marked off", date);
