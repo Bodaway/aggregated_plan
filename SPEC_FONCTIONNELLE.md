@@ -859,59 +859,59 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 > En tant que Tech Lead, je veux revoir visuellement ma feuille de temps du jour (répartition des heures par projet, calendrier des réunions et blocs de travail) et la modifier avant de la valider, afin de maîtriser exactement comment je déclare mon temps à Gryzzly.
 
 **Critères d'acceptation :**
-- L'écran `/timesheet` est accessible depuis la navigation principale et affiche la revue d'une journée (sélectionnable via navigation temporelle).
+- L'écran `/timesheet` est accessible depuis la navigation principale et affiche la revue d'une journée (sélectionnable via navigation temporelle avec boutons « jour précédent / aujourd'hui / jour suivant »).
 - **Zone 1 — Chronologie (Timeline) :**
   - Affiche les événements de la journée sur un axe temporel horizontal, divisé en deux demi-journées (matin 08:00–12:00, après-midi 13:00–17:00).
   - Les réunions Outlook (importées) sont affichées en grisé hachuré (pattern visuel indicant « verrouillé »), non éditables.
-  - Les blocs de travail (créneaux d'activité du journal) sont affichés en rectangles colorés, la couleur déterminée par le projet associé (code couleur partagé avec la matrice de priorités).
-  - Chaque bloc affiche le titre de la tâche, la durée, le projet et, si disponible, le nombre d'heures épinglées associées.
+  - Les blocs de travail (créneaux d'activité du journal) sont affichés en rectangles colorés, la couleur déterminée par le projet Gryzzly associé (palette stable, même code couleur qu'ailleurs dans l'outil).
+  - Les créneaux non affectés à un projet sont grisés (« hors bureau »).
+  - La timeline est **en lecture seule** : aucune édition par glisser-déposer, aucun clic pour modifier un bloc. Les modifications se font exclusivement via le sidebar.
   - Les espaces libres dans la timeline sont visuellement apparents (arrière-plan blanc/clair).
 
 - **Zone 2 — Sidebar « Heures par projet » (Hours by Project) :**
-  - Liste chaque projet Gryzzly avec le total des heures affectées ce jour.
-  - Colonne 1 : nom du projet, couleur associée.
-  - Colonne 2 : total des heures épinglées (issues du journal + éditions manuelles).
-  - Colonne 3 : total planifié (auto-calculé depuis la timeline pour ce projet).
-  - Colonne 4 : écart/validation visuelle (ex. badge vert si cohérent, jaune si discordance).
-  - À côté de chaque ligne projet : bouton « Éditer » qui :
-    - Ouvre un champ numérique + contrôle d'épinglage (pin icon).
-    - Permet de saisir/modifier le nombre d'heures déclarées pour ce projet.
-    - Un clic sur le pin épingle la valeur (gelée jusqu'à dépinglage explicite, indiquant que cette valeur résiste à une reconstruction future).
-  - Ligne « Non attribué » en bas affichant les heures du journal non associées à un projet Gryzzly.
-  - Total général : somme des heures tous projets.
+  - Liste chaque projet Gryzzly avec ses heures affectées ce jour, plus une ligne « Non attribué » en bas (surlignée en amber).
+  - Chaque ligne affiche : pastille de couleur (code projet) + libellé du projet + champ numérique d'heures **directement éditable en ligne** (sans bouton « Éditer ») + indicateur ▲ si confiance basse.
+  - Le champ numérique accepte les décimales (pas de valeur négative).
+  - Sous les lignes de projets, affichage du **total des heures** vs **cible configurable** (défaut : 7,5 h) :
+    - Badge « ✓ balanced » en vert si le total égale la cible (à ±0.01 h près).
+    - Badge montrant l'écart signé (ex. « +1.50h », « -0.50h ») en orange sinon.
+  - Affichage du **statut** (DRAFT, VALIDATED, SUBMITTED, DAY_OFF) en petit badge en haut du sidebar.
 
-- **Actions disponibles (Boutons en bas d'écran ou header) :**
+- **Actions disponibles (Boutons en bas du sidebar, masqués si jour validé/soumis) :**
 
-  1. **Valider & Verrouiller** (« Validate & Lock »)
-     - Valide la feuille de temps du jour (statut → `VALIDATED`).
-     - Une fois verrouillée, la journée devient en lecture seule : la timeline et le sidebar deviennent inéditables.
-     - Les actions « Éditer heures », « Reconstruire » et « Jour off » deviennent désactivées/masquées.
-     - Un badge « ✓ Validée » apparaît dans le header du jour.
-     - Note limitée : une journée verrouillée ne peut pas être réouverte depuis l'UI actuelle (futur : `reopenTimesheet` mutation).
+  1. **Enregistrer** (« Save »)
+     - Enregistre les valeurs d'heures saisies dans le sidebar pour ce jour.
+     - Les lignes modifiées reçoivent le marqueur « épinglé » (`isPinned = true`) : elles conservent les valeurs manuelles lors d'une reconstruction future.
+     - Les changements ne sont persistés que lors d'un clic sur « Save » — **il n'y a pas de sauvegarde automatique**.
 
-  2. **Reconstruire depuis les signaux** (« Reconstruct from Signals »)
+  2. **Valider & Verrouiller** (« Validate & lock »)
+     - Valide la feuille de temps du jour (statut → `VALIDATED`) et la verrouille.
+     - Une fois verrouillée, la timeline et le sidebar deviennent inéditables (tous les champs désactivés).
+     - Les boutons « Save », « Refresh from signals » et « Day off » sont masqués.
+     - Un badge « VALIDATED » apparaît en vert dans le header du sidebar.
+     - Note limitée : une journée verrouillée ne peut pas être réouverte depuis l'UI actuelle (futur : mutation `reopenTimesheet`).
+
+  3. **Reconstruire depuis les signaux** (« Refresh from signals »)
+     - Demande une confirmation : « Reconstruct from signals? This overwrites unsaved manual edits for this day. »
      - Re-exécute la logique de reconstruction : relit le journal d'activité et les règles de mappage, réaffecte les heures aux projets Gryzzly.
-     - Affiche un dialogue de confirmation : « Reconstruire écrasera vos éditions manuelles. Continuer ? »
-     - Une fois confirmé, déverrouille les heures épinglées et remplit les blocs/affectations depuis la logique par défaut.
-     - Utile après avoir ajouté des règles de mappage ou pour réinitialiser après des éditions incorrectes.
+     - Déverrouille les heures épinglées et remplit les affectations depuis la logique par défaut.
+     - Utile après avoir ajouté des règles de mappage ou pour recommencer après des éditions incorrectes.
      - Non disponible si le jour est validé.
 
-  3. **Marquer jour off / Marquer jour normal** (« Mark as off-day » / « Mark as available »)
-     - Marque la journée entière comme indisponible (statut → `FULL` scope, le jour compte comme congé/absence).
+  4. **Jour off** (« Day off »)
+     - Marque la journée entière comme indisponible (statut → `DAY_OFF`, scope `FULL`).
      - Masque la timeline et le sidebar (affiche « Jour off »).
      - Les heures épinglées/affectées sont conservées en arrière-plan mais non visibles.
-     - Un clic ultérieur sur « Marquer jour normal » rétablit l'affichage normal.
-     - Note limitée : actuellement `scope` est toujours `FULL` (demi-journée AM/PM non encore supportées) ; voir R-11.4.
+     - Note limitée : `scope` est toujours `FULL` (demi-journée AM/PM non encore supportées).
 
-- **Comportement interactif :**
-  - Les changements dans le sidebar (édition d'heures, épinglage) sont persistés automatiquement (pas de bouton « Enregistrer »).
-  - La timeline se met à jour visuellement en temps réel lors de modifications d'affectation.
-  - Validation en temps réel : si le total des heures dépasse la durée théorique de la journée (ex. 8 heures), un avertissement visuel apparaît (badge orange).
-  - La navigation temporelle (jour précédent/suivant) fonctionne normalement ; les modifications sont sauvegardées implicitement lors du passage au jour suivant.
+- **Comportement de navigation et édition :**
+  - Les modifications saisies dans le sidebar (champs numérique) restent **en mémoire locale** jusqu'à un clic sur « Save ». Aucune sauvegarde implicite n'a lieu.
+  - La navigation temporelle (jour précédent/suivant) **ne sauvegarde pas** les éditions en cours : changer de jour sans avoir cliqué « Save » **perd les modifications locales**.
+  - Après un clic sur « Save », les données sont persistées et les marqueurs d'édition sont nettoyés.
 
-- **Statuts et résumé en header :**
-  - Affiche la date, le nombre total d'heures, le statut de validation (« Brouillon », « Validée »).
-  - Affiche un indicateur de confiance global (HIGH/MEDIUM/LOW) basé sur le degré de couverture : toutes les heures sont affectées (HIGH), certains blocs sans projet clair (MEDIUM), peu d'information (LOW).
+- **En-tête du jour :**
+  - Affiche la date sélectionnée, boutons de navigation, et un bouton de rafraîchissement.
+  - Affiche également le statut du jour (DRAFT, VALIDATED, SUBMITTED, DAY_OFF) sous forme de badge.
 
 - **Intégration avec le CLI `aplan timesheet` (Surface A) :**
   - La représentation visuelle est le pendant interactif du CLI. Les commandes `aplan timesheet set <projet> <heures>` et `aplan timesheet off` modifient la même base de données.
@@ -920,7 +920,7 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 **Limitations actuelles (documentées pour v2+) :**
 - **Scope demi-journée non appliqué** : le bouton « Jour off » marque la journée *entière* comme indisponible (`FULL`), pas la possibilité de marquer juste le matin ou l'après-midi. Voir R-11.4.
 - **Pas de ré-ouverture depuis l'UI** : une journée validée (`VALIDATED`) ne peut être rouverte que via une future mutation `reopenTimesheet` (en dehors du périmètre Plan 3). Un utilisateur qui valide par erreur doit utiliser la CLI ou la base de données pour annuler.
-- **Pas de glisser-déposer de blocs** : l'assignation des heures se fait via édition numérique (colonne sidebar), pas par déplacement visuel de blocs sur la timeline (déferred per design).
+- **Pas d'édition par glisser-déposer** : l'assignation des heures se fait exclusivement via édition numérique inline dans le sidebar. La timeline est en lecture seule.
 
 **Priorité** : Must (Plan 3)
 
