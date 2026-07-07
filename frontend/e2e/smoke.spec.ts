@@ -27,6 +27,13 @@ test.describe('Smoke Tests', () => {
     await expect(page).toHaveURL(/activity/);
   });
 
+  test('can navigate to timesheet', async ({ page }) => {
+    await page.goto('/dashboard');
+    await page.getByRole('link', { name: /timesheet/i }).click();
+    await expect(page).toHaveURL(/timesheet/);
+    await expect(page.getByText(/hours × project|reconstructing/i)).toBeVisible();
+  });
+
   test('can navigate to settings', async ({ page }) => {
     await page.goto('/dashboard');
     await page.getByRole('link', { name: /settings/i }).click();
