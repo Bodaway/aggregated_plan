@@ -900,8 +900,7 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 
   4. **Jour off** (« Day off »)
      - Marque la journée entière comme indisponible (statut → `DAY_OFF`, scope `FULL`).
-     - Masque la timeline et le sidebar (affiche « Jour off »).
-     - Les heures épinglées/affectées sont conservées en arrière-plan mais non visibles.
+     - Le statut passe à `DAY_OFF` (badge dans le header) et la journée est enregistrée à 0 h : timeline vide, aucune ligne projet. La timeline et le sidebar restent affichés (pas de masquage dédié dans cette version).
      - Note limitée : `scope` est toujours `FULL` (demi-journée AM/PM non encore supportées).
 
 - **Comportement de navigation et édition :**
