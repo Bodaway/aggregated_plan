@@ -3,11 +3,12 @@ import { useState } from 'react';
 import { ProjectSummarySidebar } from '@/components/timesheet/ProjectSummarySidebar';
 import { TimesheetTimeline } from '@/components/timesheet/TimesheetTimeline';
 import { formatDisplayDate, getNextDay, getPrevDay } from '@/lib/date-utils';
-import { useTimesheet } from '@/hooks/use-timesheet';
+import { useGryzzlyProjects, useTimesheet } from '@/hooks/use-timesheet';
 
 export function TimesheetPage() {
   const [date, setDate] = useState<Date>(new Date());
   const { day, loading, error, reconstruct, saveLines, validate, markOff, refetch } = useTimesheet(date);
+  const { projects } = useGryzzlyProjects();
 
   const onRefresh = () => {
     if (window.confirm('Reconstruct from signals? This overwrites unsaved manual edits for this day.')) {
@@ -40,6 +41,7 @@ export function TimesheetPage() {
           </div>
           <ProjectSummarySidebar
             day={day}
+            projects={projects}
             onSaveLines={saveLines}
             onValidate={validate}
             onMarkOff={markOff}

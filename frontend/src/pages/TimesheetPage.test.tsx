@@ -11,6 +11,7 @@ vi.mock('@/hooks/use-timesheet', () => ({
     day, loading: false, error: null,
     reconstruct: vi.fn(), saveLines: vi.fn(), validate: vi.fn(), markOff: vi.fn(), refetch: vi.fn(),
   }),
+  useGryzzlyProjects: () => ({ projects: [], loading: false, error: undefined }),
 }));
 
 import { TimesheetPage } from './TimesheetPage';

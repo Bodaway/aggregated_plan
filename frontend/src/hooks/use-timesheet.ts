@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useMutation, useQuery } from 'urql';
 
 import { formatDate } from '@/lib/date-utils';
@@ -47,6 +47,24 @@ export interface TimesheetLineInput {
   isPinned: boolean;
 }
 
+// Minimal error shape surfaced to components, so callers never import urql types.
+export interface MutationError {
+  message: string;
+}
+
+// A deduped Gryzzly project, ready to feed a <select>.
+export interface ProjectOption {
+  id: string;
+  label: string;
+}
+
+// Raw catalog row from the gryzzlyTasks query (many rows per project).
+export interface GryzzlyProjectRow {
+  gryzzlyProjectId: string;
+  projectName: string;
+  customerName: string | null;
+}
+
 // Shared selection set for every op that returns a ReconstructedDay.
 const DAY_FIELDS = `
   date status targetHours roundingIncrement totalHours dayConfidence unattributedHours
@@ -60,8 +78,30 @@ const RECONSTRUCT_MUTATION = `mutation RunReconstruction($date: NaiveDate!) { ru
 const SAVE_DRAFT_MUTATION = `mutation SaveDraft($date: NaiveDate!, $lines: [TimesheetLineInput!]!) { saveTimesheetDraft(date: $date, lines: $lines) { ${DAY_FIELDS} } }`;
 const VALIDATE_MUTATION = `mutation Validate($date: NaiveDate!) { validateTimesheet(date: $date) { ${DAY_FIELDS} } }`;
 const MARK_DAY_OFF_MUTATION = `mutation MarkDayOff($date: NaiveDate!, $scope: DayOffScopeGql!) { markDayOff(date: $date, scope: $scope) { ${DAY_FIELDS} } }`;
+const GRYZZLY_PROJECTS_QUERY = `query GryzzlyProjects { gryzzlyTasks(limit: 500) { gryzzlyProjectId projectName customerName } }`;
 
 interface DraftData { timesheetDraft: ReconstructedDay | null; }
+interface GryzzlyProjectsData { gryzzlyTasks: GryzzlyProjectRow[]; }
+
+// Catalog of distinct Gryzzly projects for the reassignment dropdown.
+// The gryzzlyTasks query returns one row per task, so we dedupe by project id.
+export function useGryzzlyProjects() {
+  const [result] = useQuery<GryzzlyProjectsData>({ query: GRYZZLY_PROJECTS_QUERY });
+
+  const projects = useMemo<ProjectOption[]>(() => {
+    const byId = new Map<string, { id: string; projectName: string; label: string }>();
+    for (const row of result.data?.gryzzlyTasks ?? []) {
+      if (!row.gryzzlyProjectId || byId.has(row.gryzzlyProjectId)) continue;
+      const label = row.customerName ? `${row.projectName} — ${row.customerName}` : row.projectName;
+      byId.set(row.gryzzlyProjectId, { id: row.gryzzlyProjectId, projectName: row.projectName, label });
+    }
+    return [...byId.values()]
+      .sort((a, b) => a.projectName.localeCompare(b.projectName) || a.label.localeCompare(b.label))
+      .map(({ id, label }) => ({ id, label }));
+  }, [result.data]);
+
+  return { projects, loading: result.fetching, error: result.error ?? null };
+}
 
 export function useTimesheet(date: Date) {
   const dateStr = formatDate(date);
@@ -85,9 +125,13 @@ export function useTimesheet(date: Date) {
   }, [execReconstruct, dateStr, refetch]);
 
   const saveLines = useCallback(
-    async (lines: TimesheetLineInput[]) => {
+    async (lines: TimesheetLineInput[]): Promise<MutationError | null> => {
       const res = await execSave({ date: dateStr, lines });
-      if (!res.error) refetch();
+      if (res.error) {
+        return { message: res.error.graphQLErrors[0]?.message ?? res.error.message };
+      }
+      refetch();
+      return null;
     },
     [execSave, dateStr, refetch],
   );

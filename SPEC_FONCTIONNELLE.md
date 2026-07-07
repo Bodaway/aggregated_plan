@@ -870,8 +870,9 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 
 - **Zone 2 — Sidebar « Heures par projet » (Hours by Project) :**
   - Liste chaque projet Gryzzly avec ses heures affectées ce jour, plus une ligne « Non attribué » en bas (surlignée en amber).
-  - Chaque ligne affiche : pastille de couleur (code projet) + libellé du projet + champ numérique d'heures **directement éditable en ligne** (sans bouton « Éditer ») + indicateur ▲ si confiance basse.
+  - Chaque ligne affiche : pastille de couleur (code projet) + **sélecteur de projet Gryzzly** (liste déroulante) + champ numérique d'heures **directement éditable en ligne** (sans bouton « Éditer ») + indicateur ▲ si confiance basse.
   - Le champ numérique accepte les décimales (pas de valeur négative).
+  - **Sélecteur de projet (réaffectation) :** chaque ligne — en particulier la ligne « Non attribué » — porte une liste déroulante permettant de réaffecter ses heures à un projet Gryzzly du catalogue (option « — Non attribué — » pour repasser en non-attribué). Les options proviennent du catalogue Gryzzly (`gryzzlyTasks`, dédoublonné par projet, libellé « projet — client »). Réaffecter une ligne la marque comme éditée : à l'enregistrement, elle est **épinglée** (`isPinned = true`). Lors de l'enregistrement, les lignes visant le même projet sont **fusionnées** (heures additionnées), et toutes les lignes non-attribuées sont regroupées en une seule.
   - Sous les lignes de projets, affichage du **total des heures** vs **cible configurable** (défaut : 7,5 h) :
     - Badge « ✓ balanced » en vert si le total égale la cible (à ±0.01 h près).
     - Badge montrant l'écart signé (ex. « +1.50h », « -0.50h ») en orange sinon.
@@ -881,8 +882,9 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 
   1. **Enregistrer** (« Save »)
      - Enregistre les valeurs d'heures saisies dans le sidebar pour ce jour.
-     - Les lignes modifiées reçoivent le marqueur « épinglé » (`isPinned = true`) : elles conservent les valeurs manuelles lors d'une reconstruction future.
+     - Les lignes modifiées (heures **ou** projet réaffecté) reçoivent le marqueur « épinglé » (`isPinned = true`) : elles conservent les valeurs manuelles lors d'une reconstruction future.
      - Les changements ne sont persistés que lors d'un clic sur « Save » — **il n'y a pas de sauvegarde automatique**.
+     - **Erreurs d'enregistrement affichées :** si le backend refuse l'enregistrement (ex. total des heures épinglées > cible journalière — message « pinned hours (X) exceed the daily target (Y) »), le message est affiché en rouge dans le sidebar et **aucune donnée n'est écrasée** (les saisies locales sont conservées). Auparavant, ces erreurs étaient avalées silencieusement.
 
   2. **Valider & Verrouiller** (« Validate & lock »)
      - Valide la feuille de temps du jour (statut → `VALIDATED`) et la verrouille.
@@ -920,6 +922,8 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 - **Scope demi-journée non appliqué** : le bouton « Jour off » marque la journée *entière* comme indisponible (`FULL`), pas la possibilité de marquer juste le matin ou l'après-midi. Voir R-11.4.
 - **Pas de ré-ouverture depuis l'UI** : une journée validée (`VALIDATED`) ne peut être rouverte que via une future mutation `reopenTimesheet` (en dehors du périmètre Plan 3). Un utilisateur qui valide par erreur doit utiliser la CLI ou la base de données pour annuler.
 - **Pas d'édition par glisser-déposer** : l'assignation des heures se fait exclusivement via édition numérique inline dans le sidebar. La timeline est en lecture seule.
+- **Réaffectation non durable entre les jours** : le sélecteur de projet mémorise le choix dans le **brouillon du jour** uniquement (persistant aux rechargements, mais pas aux jours suivants ni à un « Refresh from signals »). Rendre l'attribution durable exige de rattacher le projet à la **tâche** source ; or la ligne « Non attribué » ne conserve pas ses `source_refs`, donc l'écran ne peut pas remonter aux tâches. Hors périmètre de cette itération.
+- **Rappel — un signal de journal (worklog) ne s'attribue à un projet que via le `gryzzly_project_id` de sa tâche** (les règles de mappage `aplan map` ne s'appliquent qu'aux commits et réunions). Une journée dont les tâches n'ont pas de projet Gryzzly est donc entièrement « Non attribué » jusqu'à réaffectation manuelle via le sélecteur.
 
 **Priorité** : Must (Plan 3)
 
