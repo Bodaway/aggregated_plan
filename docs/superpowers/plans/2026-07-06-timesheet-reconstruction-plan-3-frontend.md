@@ -270,10 +270,12 @@ import { render, screen } from '@testing-library/react';
 import { TimesheetTimeline } from './TimesheetTimeline';
 import type { AttributedBlock } from '@/hooks/use-timesheet';
 
+// NOTE: bare local NaiveDateTime (no `Z`/offset) — exactly the wire format the backend
+// emits — so new Date(iso).getHours() is deterministic in any test-runner timezone.
 const blocks: AttributedBlock[] = [
-  { startTime: '2026-06-08T08:00:00Z', endTime: '2026-06-08T10:00:00Z', gryzzlyProjectId: 'p1', kind: 'WORK', hours: 2, sourceRefs: [] },
-  { startTime: '2026-06-08T09:00:00Z', endTime: '2026-06-08T10:00:00Z', gryzzlyProjectId: null, kind: 'MEETING', hours: 1, sourceRefs: [] },
-  { startTime: '2026-06-08T14:00:00Z', endTime: '2026-06-08T16:00:00Z', gryzzlyProjectId: 'p1', kind: 'WORK', hours: 2, sourceRefs: [] },
+  { startTime: '2026-06-08T08:00:00', endTime: '2026-06-08T10:00:00', gryzzlyProjectId: 'p1', kind: 'WORK', hours: 2, sourceRefs: [] },
+  { startTime: '2026-06-08T09:00:00', endTime: '2026-06-08T10:00:00', gryzzlyProjectId: null, kind: 'MEETING', hours: 1, sourceRefs: [] },
+  { startTime: '2026-06-08T14:00:00', endTime: '2026-06-08T16:00:00', gryzzlyProjectId: 'p1', kind: 'WORK', hours: 2, sourceRefs: [] },
 ];
 
 describe('TimesheetTimeline', () => {
@@ -373,7 +375,7 @@ export function TimesheetTimeline({ blocks }: { blocks: AttributedBlock[] }) {
   );
 }
 ```
-> **Timezone note:** `new Date(iso).getHours()` renders in the browser's local zone. The backend emits block times in the user's local wall-clock already (Plan-1 reconstructs in local time, serialized without offset as `NaiveDateTime`). Confirm the serialized `startTime` has no `Z`/offset (it is a bare `YYYY-MM-DDTHH:MM:SS`); if it does carry `Z`, use UTC getters (`getUTCHours`) to avoid a double shift — check one real payload and pick the matching getter. (Mirror whatever `ActivityTimeline` does — it uses `getHours()`.)
+> **Timezone (confirmed):** the backend types these as `NaiveDateTime`, and async-graphql serializes them BARE — `2026-06-08T08:00:00`, no `Z`/offset (verified against the SDL scalar + `api/src/graphql/types/timesheet.rs`). So `new Date(iso).getHours()` (browser-local, matching `ActivityTimeline`) is correct — do NOT use `getUTCHours`. Test fixtures use bare datetimes for the same reason.
 
 - [ ] **Step 4: Run test + typecheck; commit**
 
@@ -531,7 +533,7 @@ export function ProjectSummarySidebar({ day, onSaveLines, onValidate, onMarkOff,
               min={0}
               value={r.hours}
               disabled={locked || busy}
-              onChange={(e) => setHours(i, parseFloat(e.target.value) || 0)}
+              onChange={(e) => setHours(i, Math.max(0, parseFloat(e.target.value) || 0))}
               className="w-16 text-right text-sm border border-gray-300 rounded px-1 py-0.5 disabled:bg-gray-100"
             />
             <span className="text-xs text-gray-400">h</span>
@@ -600,7 +602,7 @@ vi.mock('@/hooks/use-timesheet', () => ({
   }),
 }));
 
-import TimesheetPage from './TimesheetPage';
+import { TimesheetPage } from './TimesheetPage';
 
 describe('TimesheetPage', () => {
   it('renders the day summary and timeline heading', () => {
@@ -622,7 +624,7 @@ import { TimesheetTimeline } from '@/components/timesheet/TimesheetTimeline';
 import { formatDisplayDate, getNextDay, getPrevDay } from '@/lib/date-utils';
 import { useTimesheet } from '@/hooks/use-timesheet';
 
-export default function TimesheetPage() {
+export function TimesheetPage() {
   const [date, setDate] = useState<Date>(new Date());
   const { day, loading, error, reconstruct, saveLines, validate, markOff, refetch } = useTimesheet(date);
 
@@ -688,7 +690,7 @@ git commit -m "Add TimesheetPage (day nav + timeline + project sidebar wiring)"
 
 - [ ] **Step 1: Add the route**
 
-In `frontend/src/App.tsx`, import `TimesheetPage` (`import TimesheetPage from '@/pages/TimesheetPage';` — match the file's existing import style, relative or alias) and add, alongside the other `<Route>`s, wrapped in `<PageLayout title="Timesheet">` exactly like the neighbouring routes:
+In `frontend/src/App.tsx`, import `TimesheetPage` as a NAMED import — `import { TimesheetPage } from '@/pages/TimesheetPage';` — to match the file's convention (all pages are named imports; confirm alias vs relative against the existing lines). Add, alongside the other `<Route>`s, wrapped in `<PageLayout title="Timesheet">` exactly like the neighbouring routes:
 ```tsx
 <Route path="/timesheet" element={<PageLayout title="Timesheet"><TimesheetPage /></PageLayout>} />
 ```
@@ -785,5 +787,10 @@ git commit -m "Document the /timesheet review screen (Surface B)"
 1. `Sidebar.tsx` `navItems` real field names (`path`/`label`/`iconPath` vs `to`/`name`/`icon`) — copy a sibling verbatim.
 2. `App.tsx` route wrapper (`PageLayout` prop name `title`) + import style (alias vs relative).
 3. `@testing-library/react` version supports `renderHook` (Task 1) — else wrap in a component.
-4. Block `startTime` serialization: bare local `NaiveDateTime` (no `Z`) → `getHours()`; if it carries `Z`/offset, switch the timeline to `getUTCHours()`. Check one real `runTimesheetReconstruction` payload.
+4. Block `startTime` serialization: **CONFIRMED bare local `NaiveDateTime` (no `Z`)** → use `getHours()` (matches `ActivityTimeline`); test fixtures use bare datetimes. Do NOT switch to `getUTCHours()`.
 5. `formatDate`/`formatDisplayDate`/`getPrevDay`/`getNextDay` exist in `@/lib/date-utils` (confirmed by recon).
+
+**Deferred follow-ups (documented, out of Plan 3 scope — need backend or later work):**
+- **Validated-day recovery:** once a day is `VALIDATED`/`SUBMITTED` the sidebar actions hide (by design — locked) and there is no un-validate mutation, so a mistaken validate can only be undone via CLI/DB. Follow-up: add a backend `reopenTimesheet(date)` mutation + a "Re-open" button. (Day-nav still works; only that day is locked — not a whole-app dead-end.)
+- **Half-day off:** the UI exposes only `FULL` because the backend `mark_day_off` currently ignores `scope` (Plan-1 limitation). Expose `MORNING`/`AFTERNOON` once the backend honors scope.
+- **Signal-mapping manager UI** (learnMapping/signalMappings): the CLI `aplan map` covers rule management; a visual manager is a later addition.
