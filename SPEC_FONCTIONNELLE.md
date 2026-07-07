@@ -854,6 +854,78 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 
 ---
 
+#### US-083 : Écran interactif de revue et édition de feuille de temps
+
+> En tant que Tech Lead, je veux revoir visuellement ma feuille de temps du jour (répartition des heures par projet, calendrier des réunions et blocs de travail) et la modifier avant de la valider, afin de maîtriser exactement comment je déclare mon temps à Gryzzly.
+
+**Critères d'acceptation :**
+- L'écran `/timesheet` est accessible depuis la navigation principale et affiche la revue d'une journée (sélectionnable via navigation temporelle).
+- **Zone 1 — Chronologie (Timeline) :**
+  - Affiche les événements de la journée sur un axe temporel horizontal, divisé en deux demi-journées (matin 08:00–12:00, après-midi 13:00–17:00).
+  - Les réunions Outlook (importées) sont affichées en grisé hachuré (pattern visuel indicant « verrouillé »), non éditables.
+  - Les blocs de travail (créneaux d'activité du journal) sont affichés en rectangles colorés, la couleur déterminée par le projet associé (code couleur partagé avec la matrice de priorités).
+  - Chaque bloc affiche le titre de la tâche, la durée, le projet et, si disponible, le nombre d'heures épinglées associées.
+  - Les espaces libres dans la timeline sont visuellement apparents (arrière-plan blanc/clair).
+
+- **Zone 2 — Sidebar « Heures par projet » (Hours by Project) :**
+  - Liste chaque projet Gryzzly avec le total des heures affectées ce jour.
+  - Colonne 1 : nom du projet, couleur associée.
+  - Colonne 2 : total des heures épinglées (issues du journal + éditions manuelles).
+  - Colonne 3 : total planifié (auto-calculé depuis la timeline pour ce projet).
+  - Colonne 4 : écart/validation visuelle (ex. badge vert si cohérent, jaune si discordance).
+  - À côté de chaque ligne projet : bouton « Éditer » qui :
+    - Ouvre un champ numérique + contrôle d'épinglage (pin icon).
+    - Permet de saisir/modifier le nombre d'heures déclarées pour ce projet.
+    - Un clic sur le pin épingle la valeur (gelée jusqu'à dépinglage explicite, indiquant que cette valeur résiste à une reconstruction future).
+  - Ligne « Non attribué » en bas affichant les heures du journal non associées à un projet Gryzzly.
+  - Total général : somme des heures tous projets.
+
+- **Actions disponibles (Boutons en bas d'écran ou header) :**
+
+  1. **Valider & Verrouiller** (« Validate & Lock »)
+     - Valide la feuille de temps du jour (statut → `VALIDATED`).
+     - Une fois verrouillée, la journée devient en lecture seule : la timeline et le sidebar deviennent inéditables.
+     - Les actions « Éditer heures », « Reconstruire » et « Jour off » deviennent désactivées/masquées.
+     - Un badge « ✓ Validée » apparaît dans le header du jour.
+     - Note limitée : une journée verrouillée ne peut pas être réouverte depuis l'UI actuelle (futur : `reopenTimesheet` mutation).
+
+  2. **Reconstruire depuis les signaux** (« Reconstruct from Signals »)
+     - Re-exécute la logique de reconstruction : relit le journal d'activité et les règles de mappage, réaffecte les heures aux projets Gryzzly.
+     - Affiche un dialogue de confirmation : « Reconstruire écrasera vos éditions manuelles. Continuer ? »
+     - Une fois confirmé, déverrouille les heures épinglées et remplit les blocs/affectations depuis la logique par défaut.
+     - Utile après avoir ajouté des règles de mappage ou pour réinitialiser après des éditions incorrectes.
+     - Non disponible si le jour est validé.
+
+  3. **Marquer jour off / Marquer jour normal** (« Mark as off-day » / « Mark as available »)
+     - Marque la journée entière comme indisponible (statut → `FULL` scope, le jour compte comme congé/absence).
+     - Masque la timeline et le sidebar (affiche « Jour off »).
+     - Les heures épinglées/affectées sont conservées en arrière-plan mais non visibles.
+     - Un clic ultérieur sur « Marquer jour normal » rétablit l'affichage normal.
+     - Note limitée : actuellement `scope` est toujours `FULL` (demi-journée AM/PM non encore supportées) ; voir R-11.4.
+
+- **Comportement interactif :**
+  - Les changements dans le sidebar (édition d'heures, épinglage) sont persistés automatiquement (pas de bouton « Enregistrer »).
+  - La timeline se met à jour visuellement en temps réel lors de modifications d'affectation.
+  - Validation en temps réel : si le total des heures dépasse la durée théorique de la journée (ex. 8 heures), un avertissement visuel apparaît (badge orange).
+  - La navigation temporelle (jour précédent/suivant) fonctionne normalement ; les modifications sont sauvegardées implicitement lors du passage au jour suivant.
+
+- **Statuts et résumé en header :**
+  - Affiche la date, le nombre total d'heures, le statut de validation (« Brouillon », « Validée »).
+  - Affiche un indicateur de confiance global (HIGH/MEDIUM/LOW) basé sur le degré de couverture : toutes les heures sont affectées (HIGH), certains blocs sans projet clair (MEDIUM), peu d'information (LOW).
+
+- **Intégration avec le CLI `aplan timesheet` (Surface A) :**
+  - La représentation visuelle est le pendant interactif du CLI. Les commandes `aplan timesheet set <projet> <heures>` et `aplan timesheet off` modifient la même base de données.
+  - Une édition via le CLI est immédiatement reflétée si l'écran `/timesheet` était ouvert (optionnel : polling ou SSE abonnement).
+
+**Limitations actuelles (documentées pour v2+) :**
+- **Scope demi-journée non appliqué** : le bouton « Jour off » marque la journée *entière* comme indisponible (`FULL`), pas la possibilité de marquer juste le matin ou l'après-midi. Voir R-11.4.
+- **Pas de ré-ouverture depuis l'UI** : une journée validée (`VALIDATED`) ne peut être rouverte que via une future mutation `reopenTimesheet` (en dehors du périmètre Plan 3). Un utilisateur qui valide par erreur doit utiliser la CLI ou la base de données pour annuler.
+- **Pas de glisser-déposer de blocs** : l'assignation des heures se fait via édition numérique (colonne sidebar), pas par déplacement visuel de blocs sur la timeline (déferred per design).
+
+**Priorité** : Must (Plan 3)
+
+---
+
 ## 7. Règles métier
 
 ### 7.1 Granularité temporelle
