@@ -4,6 +4,7 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { PriorityMatrixPage } from '@/pages/PriorityMatrixPage';
 import { WorkloadPage } from '@/pages/WorkloadPage';
 import { ActivityJournalPage } from '@/pages/ActivityJournalPage';
+import { TimesheetPage } from '@/pages/TimesheetPage';
 import { WorklogPage } from '@/pages/WorklogPage';
 import { DeduplicationPage } from '@/pages/DeduplicationPage';
 import { AlertsPage } from '@/pages/AlertsPage';
@@ -54,6 +55,14 @@ export function App() {
           element={
             <PageLayout title="Activity Journal">
               <ActivityJournalPage />
+            </PageLayout>
+          }
+        />
+        <Route
+          path="/timesheet"
+          element={
+            <PageLayout title="Timesheet">
+              <TimesheetPage />
             </PageLayout>
           }
         />
