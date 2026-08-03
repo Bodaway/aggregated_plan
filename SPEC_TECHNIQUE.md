@@ -165,6 +165,13 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
 - **Worklog CLI verbs:**
   - `aplan log [--task <TASK>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
   - `aplan flush [--json] <TASK>` — materializes closed activity slots from pending worklog entries (entries whose `logged_at` falls after `aplan.active_since`), grouped by day and half-day via `derive_time_blocks`. Does **not** clear the active-task pointer (`aplan.active_task_id`). Calls the `flushWorklogTime` GraphQL mutation internally. Used by the `SessionEnd` hook.
+- **Verbe de mémoire du démarrage :**
+  - `aplan brief [--morning] [--project <P>] [--date AAAA-MM-JJ]` — imprime le brief de session
+    (échéances, engagements ouverts, décisions actives, file de tri, vétusté de la consolidation),
+    **plafonné à 40 lignes** (R55). Destiné au hook `SessionStart`, où il **s'ajoute** à la liste des
+    tâches suivies sans la remplacer (R56) : cette liste alimente le sélecteur de tâche du hook.
+    La CLI imprime les lignes rendues par `domain::rules::brief` telle quelles — un seul rendu, donc
+    le plafond ne peut pas être contourné côté client. `--json` émet `data.brief` brut.
 
 The CLI is a third client alongside the React frontend and the existing `aggregated-plan-mcp` MCP server. The MCP server talks directly to SQLite via the application/infrastructure crates; the CLI deliberately goes over HTTP so it can never race on the database file and shares one source of truth with the frontend.
 
@@ -256,6 +263,7 @@ aggregated-plan/
 |       |       |   +-- recall.rs     # R47-R48: FTS5 query building, recall scoring
 |       |       |   +-- memory_import.rs    # R54: frontmatter parsing, type mapping
 |       |       |   +-- memory_lifecycle.rs # R50-R53: accept/reject/merge/supersede
+|       |       |   +-- brief.rs        # R55-R57: brief composition, 40-line cap, rendering
 |       |       +-- errors.rs         # Domain error types
 |       |
 |       +-- application/              # Use cases and trait definitions
@@ -291,6 +299,7 @@ aggregated-plan/
 |       |       |   +-- alerts.rs
 |       |       |   +-- configuration.rs
 |       |       |   +-- memory.rs     # remember / get / search / queue / import / supersede
+|       |       |   +-- brief.rs      # R55-R57: fetches for `aplan brief` (no rules here)
 |       |       +-- dto.rs            # Data transfer objects for use cases
 |       |       +-- errors.rs         # Application error types
 |       |
@@ -358,6 +367,8 @@ aggregated-plan/
 |       |       |       +-- workload.rs
 |       |       |       +-- priority.rs
 |       |       |       +-- sync.rs
+|       |       |       +-- memory.rs     # MemoryGql, ScoredMemoryGql, inbox results
+|       |       |       +-- brief.rs      # BriefGql (`lines` + structured sections)
 |       |       +-- middleware/
 |       |       |   +-- mod.rs
 |       |       |   +-- auth.rs       # Auth middleware (no-op locally)
@@ -379,7 +390,7 @@ aggregated-plan/
 |               +-- queries.rs        # GraphQLQuery derives, custom scalar mappings
 |               +-- commands.rs       # One fn per subcommand
 |               +-- timesheet_cmd.rs  # `aplan timesheet` / `aplan map` subcommands
-|               +-- memory_cmd.rs     # `aplan remember` / `aplan recall` subcommands
+|               +-- memory_cmd.rs     # `aplan remember` / `recall` / `inbox` / `memory` / `brief`
 |
 +-- frontend/                         # React application
 |   +-- package.json
@@ -1298,6 +1309,58 @@ Deux variantes d'erreur dédiées dans `DomainError` : `MemoryAlreadyInvalidated
 `MemorySupersessionCycle { old, new }` — plus précises qu'un `ValidationError` et directement
 testables.
 
+#### 5.1.8 Règles du brief (`rules/brief.rs`) — R55-R57
+
+Tout est pur : `compose_brief(&BriefInput) -> Brief` choisit et ordonne, `render_brief(&Brief) ->
+Vec<String>` produit le texte. L'appelant se contente de lire la base et d'imprimer les lignes. Le
+plafond vit **ici** et non dans la CLI, parce que c'est ici qu'il est testable — et parce qu'un
+rendu non borné entre dans le contexte du modèle à chaque session.
+
+| Constante | Valeur | Rôle |
+|---|---|---|
+| `BRIEF_MAX_LINES` | 40 | plafond dur du rendu, vérifié sur une entrée pathologique |
+| `BRIEF_MAX_LINE_CHARS` | 140 | plafond par ligne : sans lui, un titre de 500 caractères passerait pour « une ligne » |
+| `CONSOLIDATION_STALE_AFTER_DAYS` | 3 | seuil de l'avertissement de vétusté |
+| `MAX_DEADLINE_ENTRIES` / `MAX_COMMITMENT_ENTRIES` / `MAX_DECISION_ENTRIES` | 6 / 8 / 6 | plafonds par section |
+| `MEMORY_REF_MIN_CHARS` | 3 | longueur de départ de la référence courte (`m:7c1`) |
+
+**Sélection** (`select_deadlines`, `select_commitments`, `select_decisions`) :
+
+- échéances : tâches ouvertes non `dismissed` portant une échéance, hors fixtures de test
+  (`is_test_fixture_title` : premier mot `test` ou `fixture`), **dédoublonnées par titre normalisé**
+  (une récurrence matérialisée 17 fois n'occupe qu'une ligne, la plus proche), triées par
+  **proximité d'aujourd'hui** — clé `(|jours|, jours, titre)`, donc le retard passe devant à
+  distance égale. Trier par date pure remplirait la section de tâches en retard de 250 jours
+  (le store réel en contient) en chassant l'échéance de la semaine ;
+- engagements : `kind = commitment`, `is_recallable()`, **les plus anciens d'abord** ;
+- décisions : `kind = decision`, `is_recallable()`, **les plus récentes d'abord**, restreintes au
+  projet en focus s'il y en a un ; sinon toutes, une section vide n'apprenant rien. `fact` et
+  `preference` n'entrent jamais dans le brief : ils se récupèrent à la demande.
+
+Le filtre dur de R45 est **ré-appliqué ici** sur chaque souvenir, quoi qu'ait fourni l'appelant : un
+brief ne doit pas pouvoir porter un fait supersédé, même par accident.
+
+**Budget de lignes.** `compose_brief` réserve d'abord les lignes fixes (en-tête, section échéances,
+ligne de file, avertissement, pied de page), puis sert les engagements et enfin les décisions avec ce
+qui reste — la troncature part donc de la section la moins utile. `render_brief` applique en dernier
+recours `enforce_line_cap`, qui coupe et **annonce** la coupe ; il ne devrait jamais se déclencher,
+mais un dépassement silencieux serait une fuite que personne ne remarquerait.
+
+**Références courtes.** `memory_reference(id, n)` coupe l'UUID **hyphéné** (et non la forme
+compacte) : un préfixe de la référence reste ainsi un préfixe de la valeur stockée au-delà du
+huitième caractère, ce qui rend `find_by_id_prefix` correct pour toute longueur.
+`memory_reference_width` élargit la référence jusqu'à ce que toutes celles d'un même brief soient
+distinctes. `parse_memory_reference` accepte `[m:7c1]`, `m:7c1`, `7c1` et l'UUID complet, refuse tout
+ce qui n'est pas hexadécimal ou tiret — donc rien de ce qui vient de la ligne de commande n'atteint
+un motif `LIKE`.
+
+**`use_cases/brief.rs`** ne fait que rassembler : tâches ouvertes, souvenirs `active` et `pending`
+(limite `BRIEF_SCAN_LIMIT` = 200 — les compteurs affichés sont donc exacts jusqu'à ce nombre), projet
+de la tâche suivie via `ActivitySlotRepository::find_active`, et horodatage
+`memory.consolidation.last_run` dans `configuration`. Une clé absente, une valeur invalide **ou un
+dépôt de configuration en erreur** se lisent tous comme « jamais exécutée » : le brief rend la panne
+visible sans tomber avec elle.
+
 ### 5.2 Application Layer (`crates/application`)
 
 The application layer defines **repository traits** (interfaces) and **use case functions**. It depends only on the domain layer.
@@ -1768,9 +1831,38 @@ pub async fn supersede_memory(/* repo, user_id, old_id, successor_id, now */)
     -> Result<SupersedeOutcome, AppError>;
 ```
 
-Traits associés : `repositories::MemoryRepository` (`create` / `find_by_id` / `list` /
-`update` / `apply_merge` / `apply_supersession` / `existing_source_refs` /
-`supersession_chain`), `services::MemoryRetriever` (`search(user_id, RecallQuery, now)`) et
+Brief et références courtes (lot 4) :
+
+```rust
+pub enum MemoryLookup { Found(Memory), NotFound, Ambiguous(Vec<Memory>) }
+
+/// Résout un UUID complet OU la référence courte du brief (`m:7c1`, `[m:7c1]`, `7c1`).
+/// Un préfixe qui correspond à plusieurs souvenirs retourne `Ambiguous` : deviner
+/// reviendrait à déplier un souvenir que le lecteur ne visait pas.
+pub async fn resolve_memory(
+    memory_repo: &dyn MemoryRepository, user_id: UserId, token: &str,
+) -> Result<MemoryLookup, AppError>;
+
+// use_cases/brief.rs
+pub const CONSOLIDATION_LAST_RUN_KEY: &str = "memory.consolidation.last_run";
+pub const BRIEF_SCAN_LIMIT: u32 = 200;
+
+pub struct BriefRequest { /* variant, project_id, today, now */ }
+
+pub async fn build_brief(
+    task_repo: &dyn TaskRepository,
+    memory_repo: &dyn MemoryRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    config_repo: &dyn ConfigRepository,
+    user_id: UserId,
+    request: BriefRequest,
+) -> Result<Brief, AppError>;
+```
+
+Traits associés : `repositories::MemoryRepository` (`create` / `find_by_id` /
+`find_by_id_prefix` / `list` / `update` / `apply_merge` / `apply_supersession` /
+`existing_source_refs` / `supersession_chain`), `services::MemoryRetriever`
+(`search(user_id, RecallQuery, now)`) et
 `services::MemoryFileSource` (`list(directory)`, **lecture seule** par contrat).
 `now` est injecté pour que la décroissance de récence reste déterministe en test.
 Bornes : `MEMORY_LIST_DEFAULT_LIMIT` 50 / `MEMORY_LIST_MAX_LIMIT` 500,
@@ -1779,6 +1871,10 @@ La résolution de ces bornes est portée par `MemoryListFilter::effective_limit(
 `RecallQuery::effective_limit()` (`0` → défaut, au-delà du plafond → plafond) : les
 implémentations lient **cette** valeur, jamais le champ `limit` brut. Un filtre construit
 par `Default` porte `limit: 0`, et un `LIMIT 0` renvoie une liste vide **sans erreur**.
+
+`find_by_id_prefix` porte une **implémentation par défaut qui échoue explicitement**, afin que les
+doubles de test qui ne résolvent jamais de référence continuent de compiler sans qu'un préfixe non
+implémenté puisse retourner « rien trouvé » en silence.
 
 #### 5.2.4 Application Errors
 
@@ -1916,6 +2012,10 @@ fn task_to_row(task: &Task) -> TaskRow { /* ... */ }
   finie, pas une requête qui ne rend jamais la main.
 - `existing_source_refs` échappe les métacaractères `LIKE` (`%`, `_`, `\`) avec
   `ESCAPE '\'` — un préfixe contenant `_` matcherait sinon n'importe quel caractère.
+- `find_by_id_prefix` (référence courte du brief) fait `WHERE id LIKE ? ESCAPE '\'` sur le préfixe
+  **échappé et minuscule**, borné par `limit.max(1)` — un `LIMIT 0` renverrait « non trouvé » au
+  lieu du souvenir. Les tests couvrent `%`, `_` et `7%` : un métacaractère saisi ne doit jamais
+  remonter toute la table.
 - `connectors/memory_files/` — `FsMemoryFileSource` lit le dossier de mémoire du harness via
   `tokio::fs` : uniquement les `*.md`, sous-dossiers exclus, triés par nom (l'ordre de `read_dir`
   est indéfini), et un fichier illisible est ignoré avec un avertissement plutôt que de faire
@@ -3264,6 +3364,8 @@ type Query {
   signalMappings: [MappingSignalGql!]!
 
   # Semantic memory
+  # `id` accepte un UUID complet OU la référence courte du brief (`m:7c1`, `7c1`).
+  # Un préfixe ambigu est une ERREUR, jamais un souvenir choisi au hasard.
   memory(id: ID!): MemoryGql
   # `q` est de la saisie BRUTE : `AP-1234` et `Cartier : certificat` sont sûrs ici.
   recall(
@@ -3275,6 +3377,14 @@ type Query {
     limit: Int! = 10
   ): [ScoredMemoryGql!]!
   pendingMemories(limit: Int! = 50, offset: Int! = 0): [MemoryGql!]!
+  # Brief de démarrage de session. `lines` porte le rendu déjà plafonné à 40 lignes ;
+  # les champs structurés servent les clients qui veulent leur propre mise en forme.
+  # S'AJOUTE à la liste des tâches suivies, ne la remplace pas.
+  brief(
+    variant: BriefVariantGql! = SESSION
+    projectId: ID
+    date: NaiveDate
+  ): BriefGql!
 }
 
 # --- Mutations ---

@@ -156,6 +156,17 @@ fn main() -> ExitCode {
                 output::ExitCode::PreconditionFailed
             }
         },
+        cli::Commands::Brief {
+            morning,
+            project,
+            date,
+        } => memory_cmd::brief(
+            &args.api_url,
+            args.json,
+            morning,
+            project.as_deref(),
+            date.as_deref(),
+        ),
         cli::Commands::Inbox { cmd, limit } => match cmd {
             None => memory_cmd::inbox_list(&args.api_url, args.json, limit),
             Some(cli::InboxCmd::Accept { id, kind, force }) => {

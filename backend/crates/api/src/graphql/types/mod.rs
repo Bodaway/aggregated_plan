@@ -17,6 +17,7 @@ pub mod pagination;
 pub mod worklog_entry;
 pub mod timesheet;
 pub mod memory;
+pub mod brief;
 
 pub use gryzzly::*;
 pub use task::*;
@@ -37,3 +38,4 @@ pub use pagination::*;
 pub use worklog_entry::*;
 pub use timesheet::*;
 pub use memory::*;
+pub use brief::*;

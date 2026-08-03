@@ -6,19 +6,23 @@ use crate::client::{Client, ClientError};
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    get_memory, inbox_accept, inbox_merge, inbox_reject, list_projects, memory_import,
-    memory_supersede, pending_memories, recall_memories, remember as remember_op, GetMemory,
-    InboxAccept, InboxMerge, InboxReject, ListProjects, MemoryImport, MemorySupersede,
-    PendingMemories, RecallMemories, Remember,
+    brief as brief_query, get_memory, inbox_accept, inbox_merge, inbox_reject, list_projects,
+    memory_import, memory_supersede, pending_memories, recall_memories, remember as remember_op,
+    Brief as BriefQuery, GetMemory, InboxAccept, InboxMerge, InboxReject, ListProjects,
+    MemoryImport, MemorySupersede, PendingMemories, RecallMemories, Remember,
 };
 
 /// Map a transport/GraphQL failure onto the exit-code contract.
 ///
 /// GraphQL carries no error code, only a message, so a missing id is recognised
-/// by the `AppError::NotFound` prefix the API renders. Everything else is generic.
+/// by the `AppError::NotFound` prefix the API renders, and an ambiguous short
+/// reference by the wording of the resolver. Everything else is generic.
 fn exit_code_for(error: &ClientError) -> ExitCode {
     match error {
         ClientError::Graphql(message) if message.contains("Not found:") => ExitCode::NotFound,
+        ClientError::Graphql(message) if message.contains("Ambiguous memory reference") => {
+            ExitCode::Ambiguous
+        }
         _ => ExitCode::Generic,
     }
 }
@@ -164,14 +168,16 @@ pub fn remember(
     }
 }
 
-/// `aplan recall <id>` — expand one memory.
+/// `aplan recall <id>` — expand one memory. `<id>` is a full UUID or the short
+/// reference the brief renders (`m:7c1`); an ambiguous prefix exits 3 rather than
+/// expanding a memory the reader did not mean.
 pub fn recall_one(api_url: &str, json: bool, id: &str) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let result = match client.run::<GetMemory>(get_memory::Variables { id: id.to_string() }) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::Generic;
+            return exit_code_for(&e);
         }
     };
 
@@ -466,6 +472,62 @@ pub fn supersede(api_url: &str, json: bool, old: &str, by: &str) -> ExitCode {
             );
             println!("  now true      : {}", outcome.successor.title);
             println!("  both rows survive; `aplan recall --q \"…\" --history` shows the old one");
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            exit_code_for(&e)
+        }
+    }
+}
+
+/// `aplan brief [--morning] [--project P] [--date YYYY-MM-DD]`
+///
+/// The rendering is produced by `domain::rules::brief` and arrives already capped
+/// at 40 lines: printing it here rather than re-formatting keeps one renderer, so
+/// the ceiling cannot be bypassed by the CLI.
+pub fn brief(
+    api_url: &str,
+    json: bool,
+    morning: bool,
+    project: Option<&str>,
+    date: Option<&str>,
+) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+
+    let project_id = match project {
+        None => None,
+        Some(token) => match resolve_project(&client, token) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return e.exit_code();
+            }
+        },
+    };
+
+    let vars = brief_query::Variables {
+        variant: if morning {
+            brief_query::BriefVariantGql::MORNING
+        } else {
+            brief_query::BriefVariantGql::SESSION
+        },
+        project_id,
+        date: date.map(String::from),
+    };
+
+    match client.run::<BriefQuery>(vars) {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+            for line in &r.data.brief.lines {
+                println!("{line}");
+            }
             ExitCode::Success
         }
         Err(e) => {

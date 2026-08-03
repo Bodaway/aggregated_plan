@@ -116,6 +116,90 @@ enum BlockKindGql {
 }
 
 """
+How long since the consolidation job last ran.
+"""
+type BriefConsolidationGql {
+	"""
+	`null` when no run was ever recorded — the normal case until lot 5 lands.
+	"""
+	daysAgo: Int
+	"""
+	Whether the brief warns about it. Never-run counts as stale.
+	"""
+	stale: Boolean!
+}
+
+"""
+A task deadline as the brief shows it.
+"""
+type BriefDeadlineGql {
+	title: String!
+	"""
+	Days from today. Negative means overdue.
+	"""
+	daysUntil: Int!
+}
+
+"""
+The session brief.
+
+`lines` is the rendering, capped at 40 lines by `domain::rules::brief` — the
+cap lives there because that is where it can be tested. Clients that want to
+lay it out themselves read the structured fields instead.
+"""
+type BriefGql {
+	variant: BriefVariantGql!
+	date: NaiveDate!
+	lines: [String!]!
+	deadlines: [BriefDeadlineGql!]!
+	"""
+	How many deadlines qualified, before the section cap.
+	"""
+	deadlineTotal: Int!
+	commitments: [BriefMemoryGql!]!
+	commitmentTotal: Int!
+	decisions: [BriefMemoryGql!]!
+	decisionTotal: Int!
+	"""
+	Whether the decisions were narrowed to the project in focus.
+	"""
+	decisionsScopedToProject: Boolean!
+	"""
+	Memory candidates waiting in the validation queue.
+	"""
+	pendingCount: Int!
+	consolidation: BriefConsolidationGql!
+}
+
+"""
+A memory the brief points at.
+"""
+type BriefMemoryGql {
+	id: ID!
+	"""
+	The short handle rendered in the brief (`m:7c1`). `recall` accepts it.
+	"""
+	reference: String!
+	title: String!
+	stakeholders: [String!]!
+	occurredOn: NaiveDate!
+}
+
+"""
+Which brief was asked for.
+"""
+enum BriefVariantGql {
+	"""
+	The SessionStart injection: everything, with drill-down hints.
+	"""
+	SESSION
+	"""
+	The 08:30 notification: today's deadlines, open commitments, queue size.
+	"""
+	MORNING
+}
+
+"""
 Combined mutation root that merges the base MutationRoot with future module roots.
 """
 type CombinedMutation {
@@ -448,8 +532,24 @@ type CombinedQuery {
 	signalMappings: [SignalMappingGql!]!
 	"""
 	Deep recall of a single memory by id (`aplan recall <id>`).
+	
+	`id` accepts a full UUID **or** the short reference the brief renders
+	(`m:7c1`, `7c1`) — that reference is the whole drill-down mechanism, so it
+	has to resolve here. An ambiguous prefix is an error, never a guess:
+	expanding the wrong memory is worse than asking for more characters.
 	"""
 	memory(id: ID!): MemoryGql
+	"""
+	The session brief (`aplan brief`): today's deadlines, open commitments,
+	active decisions, the size of the validation queue, and a warning when the
+	consolidation job has gone quiet.
+	
+	`lines` carries the rendering, capped at 40 lines. This **adds to** the
+	session's followed-task list, it does not replace it: the deadline set and
+	the followed set are different sets, and the task list feeds the start-up
+	task picker.
+	"""
+	brief(variant: BriefVariantGql! = SESSION, projectId: ID, date: NaiveDate): BriefGql!
 	"""
 	Search memories from raw user input (`aplan recall --q "…"`), best-first.
 	

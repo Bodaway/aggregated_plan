@@ -345,3 +345,11 @@ pub struct MemorySupersede;
     response_derives = "Debug, Clone"
 )]
 pub struct MemoryImport;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/brief.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct Brief;

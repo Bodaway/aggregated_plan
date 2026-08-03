@@ -973,7 +973,13 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 **Critères d'acceptation :**
 - `aplan recall <id>` affiche un souvenir en détail : type, titre, contexte, date de survenue,
   statut, personnes concernées, projet et tâche rattachés. Un identifiant inconnu retourne le
-  code de sortie « non trouvé » (2).
+  code de sortie « non trouvé » (2). `--history`, `--project` et `--limit` étant réservés à la
+  recherche (le souvenir ciblé est affiché quel que soit son statut), les passer avec un
+  identifiant est **refusé à l'analyse des arguments** plutôt qu'ignoré en silence.
+- **L'identifiant accepte la référence courte affichée par le brief** : `m:7c1`, `[m:7c1]`, `7c1`
+  ou l'UUID complet. C'est ce qui rend le forage possible depuis le brief. Un préfixe qui
+  correspond à **plusieurs** souvenirs retourne le code « ambigu » (3) avec la liste des
+  candidats — jamais un souvenir choisi au hasard.
 - `aplan recall --q "<texte>" [--history] [--project <projet>] [--limit N]` effectue une
   recherche plein texte, résultats du plus pertinent au moins pertinent.
 - **Le vocabulaire quotidien ne fait jamais échouer la recherche** : `AP-1234`,
@@ -1076,8 +1082,51 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 
 **Priorité** : Must (lot 3)
 
-**Hors périmètre à ce stade** (livré ultérieurement) : `aplan brief` et l'enrichissement du hook
-de démarrage (lot 4), puis la consolidation planifiée de 17h30 (lot 5).
+#### US-095 : Recevoir un brief au démarrage de session
+
+> En tant que Tech Lead, je veux qu'une session Claude démarre en connaissant mes échéances, mes
+> engagements ouverts et les décisions actives du projet courant, afin de ne pas avoir à les
+> rappeler moi-même à chaque fois.
+
+**Critères d'acceptation :**
+- `aplan brief [--morning] [--project <projet>] [--date AAAA-MM-JJ]` affiche, en français :
+  les **échéances**, les **engagements ouverts** (avec les personnes concernées), les **décisions
+  actives** du projet courant, le **nombre de candidats mémoire à trier**, et un
+  **avertissement de vétusté** de la consolidation.
+- **Le brief S'AJOUTE à la liste des tâches suivies de la session, il ne la remplace jamais** :
+  cette liste alimente le sélecteur « Choisir une autre tâche » du hook de démarrage, et
+  l'ensemble « échéances + engagements » n'est pas l'ensemble « tâches suivies ».
+- **Plafond de 40 lignes**, vérifié par un test : cette sortie entre dans le contexte du modèle à
+  chaque session. Chaque ligne est bornée à 140 caractères. La troncature est **toujours visible** :
+  l'en-tête de section indique le total et le nombre affiché (`Échéances (8, 6 affichés) :`).
+- **Chaque souvenir affiché porte sa référence courte** (`[m:7c1]`), directement réutilisable :
+  `aplan recall m:7c1`. Sans référence, le brief serait une impasse. La longueur de la référence
+  s'allonge automatiquement si deux souvenirs du même brief partagent un préfixe.
+- **Les fixtures de test sont filtrées** (`Test uppercase kind`, `Test recurring enum`, `test`) et
+  les **titres en doublon sont fusionnés** — une tâche récurrente matérialisée en 17 occurrences
+  n'occupe qu'une ligne, celle dont l'échéance est la plus proche.
+- Les échéances sont classées **par proximité d'aujourd'hui**, le retard passant devant à distance
+  égale. Une tâche en retard de huit mois ne doit pas chasser l'échéance de la semaine.
+- Les tâches `Done`, `Cancelled` et `dismissed` sont exclues ; les tâches non triées (`inbox`) sont
+  **conservées** — une tâche non triée dont l'échéance est demain est précisément ce qu'il faut voir.
+- Seuls les souvenirs `ACTIVE` et non invalidés apparaissent (le filtre dur de R45 s'applique aussi
+  ici), et seuls les types `commitment` et `decision` : un `fact` ou une `preference` se récupère à
+  la demande, pas à chaque démarrage.
+- L'**avertissement de consolidation** n'apparaît qu'au-delà de 3 jours sans passage, ou si aucun
+  passage n'a jamais été enregistré (« jamais exécutée »). La date du dernier passage est lue dans
+  la table `configuration` ; une clé absente, illisible ou une valeur invalide ne fait **jamais
+  échouer** le brief.
+- `--morning` produit la variante de la notification de 8h30 : échéances **du jour** (et retards),
+  engagements ouverts, candidats à trier. Ni décisions, ni rappels de commandes.
+- Une base sans rien à signaler affiche « Rien à signaler. » plutôt qu'un en-tête nu.
+- `--json` émet la charge utile brute `data.brief`, qui contient à la fois le rendu (`lines`) et
+  les données structurées.
+
+**Priorité** : Must (lot 4)
+
+**Hors périmètre à ce stade** (livré ultérieurement) : la consolidation planifiée de 17h30 et la
+notification de 8h30 (lot 5). `aplan brief --morning` existe et produit la bonne sortie ; c'est
+sa planification qui reste à faire.
 
 ---
 
@@ -1180,6 +1229,9 @@ de démarrage (lot 4), puis la consolidation planifiée de 17h30 (lot 5).
 | **R47** | **La saisie utilisateur n'atteint jamais l'index telle quelle** : elle est découpée **sur les espaces uniquement**, et chaque groupe devient **une phrase entre guillemets, ponctuation interne conservée** (l'adjacence est donc préservée : `AP-1234` reste une expression exacte). Les groupes purement alphabétiques de 4 caractères ou plus sont étendus par préfixe ; ceux de 5 caractères ou plus finissant par `s` ou `x` reçoivent en plus une variante dépluralisée entre parenthèses. Les groupes sont joints par un `AND` explicite. Une saisie sans aucun caractère alphanumérique (`""`, `*`, ponctuation seule) est refusée avec une erreur de validation. Conséquence : `AP-1234` et `Cartier : certificat` — le vocabulaire quotidien — ne peuvent plus faire échouer la recherche. |
 | **R48** | **Score de rappel** = somme pondérée de quatre signaux normalisés : pertinence textuelle (BM25), bonus d'entité (projet / tâche / personne du contexte courant), décroissance de récence sur `occurredAt` (demi-vie 90 jours), poids par type (`decision` = `commitment` > `fact` > `preference`). Pas de fusion par rangs (RRF) : il n'y a qu'une seule liste classée en v1. |
 | **R49** | **Indexation atomique** : le souvenir et sa ligne d'index plein texte sont écrits dans la même transaction. Un souvenir enregistré est donc toujours retrouvable, ou pas enregistré du tout. |
+| **R55** | **Budget du brief** : le rendu de `aplan brief` est plafonné à **40 lignes** et chaque ligne à **140 caractères**, plafonds appliqués dans le domaine et vérifiés par un test sur une entrée pathologique. Cette sortie entre dans le contexte du modèle à chaque session : un rendu non borné est une fuite de tokens permanente, pas un défaut cosmétique. La troncature est **toujours annoncée** (`(8, 6 affichés)`) et s'applique de la section la moins utile vers la plus utile : les décisions cèdent avant les engagements, qui cèdent avant les échéances. |
+| **R56** | **Composition du brief** : sont retenus les souvenirs `commitment` (les plus anciens d'abord — un engagement pris il y a trois mois est celui qu'on a oublié) et `decision` (les plus récents d'abord — la question est « où en est le projet »), filtrés par R45. Le projet courant est celui de la tâche en cours de suivi, sauf `--project` explicite ; sans projet en focus, toutes les décisions actives sont montrées plutôt qu'une section vide. Les échéances sont classées par proximité d'aujourd'hui, dédoublonnées par titre, et purgées des fixtures de test. **Chaque souvenir affiché porte une référence courte réutilisable par `aplan recall`** : c'est tout le mécanisme de récupération à la demande. |
+| **R57** | **Visibilité de la panne de consolidation** : le brief affiche l'âge du dernier passage de consolidation dès qu'il dépasse **3 jours**, et « jamais exécutée » si aucun passage n'est enregistré. L'horodatage vit dans la table `configuration` (clé `memory.consolidation.last_run`) et non dans `sync_status`, dont la colonne `source` est sous une contrainte `CHECK` fermée. Une clé absente ou invalide se lit comme « jamais exécutée » : le brief rend la panne visible, il ne tombe pas avec elle. |
 
 ---
 

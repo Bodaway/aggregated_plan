@@ -414,6 +414,32 @@ impl MemoryRepository for SqliteMemoryRepository {
         Ok(())
     }
 
+    async fn find_by_id_prefix(
+        &self,
+        user_id: UserId,
+        prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Memory>, RepositoryError> {
+        // Ids are stored hyphenated and lowercase, which is also the form the
+        // brief's `m:7c1` reference is cut from — so a plain prefix LIKE matches
+        // at any width. `escape_like` keeps a `%` in the token literal.
+        let rows = sqlx::query(
+            "SELECT * FROM memories
+             WHERE user_id = ? AND id LIKE ? ESCAPE '\\'
+             ORDER BY occurred_at DESC LIMIT ?",
+        )
+        .bind(user_id.to_string())
+        .bind(format!("{}%", escape_like(&prefix.to_lowercase())))
+        .bind(limit.max(1) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        let mut memories: Vec<Memory> = rows.iter().map(map_row).collect::<Result<Vec<_>, _>>()?;
+        attach_stakeholders(&self.pool, &mut memories).await?;
+        Ok(memories)
+    }
+
     async fn existing_source_refs(
         &self,
         user_id: UserId,
@@ -444,17 +470,17 @@ impl MemoryRepository for SqliteMemoryRepository {
         // Bounded and visited-checked: a loop already in the data must not hang
         // the request, it must surface as a finite chain.
         while chain.len() < SUPERSESSION_CHAIN_MAX {
-            let rows = sqlx::query(
+            let found = sqlx::query(
                 "SELECT superseded_by FROM memories WHERE id = ? AND user_id = ? LIMIT 1",
             )
             .bind(cursor.to_string())
             .bind(user_id.to_string())
-            .fetch_all(&self.pool)
+            .fetch_optional(&self.pool)
             .await
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
 
-            let Some(row) = rows.first() else { break };
-            let Some(next) = parse_opt_uuid(Row::get(row, "superseded_by"))? else {
+            let Some(row) = found else { break };
+            let Some(next) = parse_opt_uuid(Row::get(&row, "superseded_by"))? else {
                 break;
             };
             if next == from || chain.contains(&next) {
@@ -890,6 +916,125 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(rows.len(), 1, "`limit: 0` must mean the default, not LIMIT 0");
+    }
+
+    // ─── Short references from the brief (lot 4) ──────────────────────────────
+
+    /// Store a memory under a chosen id, so its `m:7c1` reference is predictable.
+    async fn stored_with_id(
+        repo: &SqliteMemoryRepository,
+        uid: Uuid,
+        id: &str,
+        title: &str,
+    ) -> Uuid {
+        let mut m = memory(uid, MemoryKind::Decision, title, None);
+        m.id = Uuid::parse_str(id).expect("valid fixture uuid");
+        repo.create(&m).await.expect("create");
+        m.id
+    }
+
+    /// The brief renders `[m:7c1]`; this is the lookup that makes it usable. Run
+    /// against real SQLite because the escaping and the stored id format are what
+    /// is under test, and a pure test cannot see either.
+    #[tokio::test]
+    async fn a_reference_prefix_finds_its_memory() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        let id = stored_with_id(
+            &repo,
+            uid,
+            "7c1e4b2a-0000-0000-0000-000000000000",
+            "Wave 0 limitée",
+        )
+        .await;
+
+        for prefix in ["7c1", "7c1e", "7c1e4b2a-0", &id.to_string()] {
+            let found = repo
+                .find_by_id_prefix(uid, prefix, 10)
+                .await
+                .expect("prefix lookup");
+            assert_eq!(found.len(), 1, "prefix {prefix} found {}", found.len());
+            assert_eq!(found[0].id, id);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reference_prefix_returns_every_collision() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        stored_with_id(&repo, uid, "7c1a0000-0000-0000-0000-000000000000", "choix A").await;
+        stored_with_id(&repo, uid, "7c1b0000-0000-0000-0000-000000000000", "choix B").await;
+
+        let found = repo.find_by_id_prefix(uid, "7c1", 10).await.expect("lookup");
+        assert_eq!(found.len(), 2, "the caller decides, so it needs both");
+        let single = repo
+            .find_by_id_prefix(uid, "7c1b", 10)
+            .await
+            .expect("lookup");
+        assert_eq!(single.len(), 1);
+    }
+
+    /// A `%` in the token must match a literal `%`, not every row: the reference
+    /// comes from a command line.
+    #[tokio::test]
+    async fn a_wildcard_in_a_reference_matches_nothing() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        stored_with_id(&repo, uid, "7c1e4b2a-0000-0000-0000-000000000000", "un choix").await;
+        for token in ["%", "7%", "_c1"] {
+            assert!(
+                repo.find_by_id_prefix(uid, token, 10)
+                    .await
+                    .expect("lookup")
+                    .is_empty(),
+                "token {token} leaked a wildcard"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reference_lookup_is_scoped_to_its_user_and_carries_stakeholders() {
+        let (pool, uid) = pool_with_user().await;
+        let other = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, email, created_at) VALUES (?, 'O', ?, ?)")
+            .bind(other.to_string())
+            .bind(format!("{other}@example.test"))
+            .bind(Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .expect("seed other user");
+        let repo = SqliteMemoryRepository::new(pool);
+
+        let mut m = memory(uid, MemoryKind::Commitment, "Répondre à Pierre", None);
+        m.id = Uuid::parse_str("7c1e4b2a-0000-0000-0000-000000000000").expect("valid");
+        m.stakeholders = vec!["Pierre".into()];
+        repo.create(&m).await.expect("create");
+
+        let found = repo.find_by_id_prefix(uid, "7c1", 10).await.expect("lookup");
+        assert_eq!(found[0].stakeholders, vec!["Pierre".to_string()]);
+        assert!(
+            repo.find_by_id_prefix(other, "7c1", 10)
+                .await
+                .expect("lookup")
+                .is_empty(),
+            "another user must not resolve it"
+        );
+    }
+
+    /// A zero limit must not become `LIMIT 0` — the failure mode already fixed
+    /// twice in this feature.
+    #[tokio::test]
+    async fn a_zero_limit_reference_lookup_still_returns_a_row() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        stored_with_id(&repo, uid, "7c1e4b2a-0000-0000-0000-000000000000", "un choix").await;
+        assert_eq!(
+            repo.find_by_id_prefix(uid, "7c1", 0)
+                .await
+                .expect("lookup")
+                .len(),
+            1
+        );
     }
 
     // ─── Retriever ───────────────────────────────────────────────────────────

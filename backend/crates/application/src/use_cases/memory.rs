@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
+use domain::rules::brief::parse_memory_reference;
 use domain::rules::memory_import::{
     import_source_ref, kind_for_metadata_type, parse_memory_file, IMPORT_SOURCE_REF_PREFIX,
 };
@@ -9,6 +10,7 @@ use domain::rules::recall::{
     build_match_query, build_match_query_any, RecallContext, RecallWeights, ScoredMemory,
 };
 use domain::types::*;
+use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::repositories::{
@@ -82,6 +84,52 @@ pub async fn get_memory(
     id: MemoryId,
 ) -> Result<Option<Memory>, AppError> {
     Ok(memory_repo.find_by_id(id, user_id).await?)
+}
+
+/// How many candidates a reference lookup reports back when it is ambiguous.
+const REFERENCE_MATCH_LIMIT: u32 = 10;
+
+/// What a reference resolved to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemoryLookup {
+    Found(Memory),
+    NotFound,
+    /// Several memories share the prefix. Picking one would be a guess, and a
+    /// guess here means expanding the wrong memory — so the caller is asked.
+    Ambiguous(Vec<Memory>),
+}
+
+/// Resolve what a reader typed — a full id, or the short `m:7c1` reference the
+/// brief renders — into one memory.
+///
+/// This is what makes the brief's references usable: the rendering shows a
+/// three-character handle, and `aplan recall m:7c1` has to find it again.
+pub async fn resolve_memory(
+    memory_repo: &dyn MemoryRepository,
+    user_id: UserId,
+    token: &str,
+) -> Result<MemoryLookup, AppError> {
+    // Nothing usable in the token is a miss, not an error: the caller already
+    // owns the not-found exit code.
+    let Some(prefix) = parse_memory_reference(token) else {
+        return Ok(MemoryLookup::NotFound);
+    };
+
+    if let Ok(id) = Uuid::parse_str(&prefix) {
+        return Ok(match memory_repo.find_by_id(id, user_id).await? {
+            Some(memory) => MemoryLookup::Found(memory),
+            None => MemoryLookup::NotFound,
+        });
+    }
+
+    let mut matches = memory_repo
+        .find_by_id_prefix(user_id, &prefix, REFERENCE_MATCH_LIMIT)
+        .await?;
+    Ok(match matches.len() {
+        0 => MemoryLookup::NotFound,
+        1 => MemoryLookup::Found(matches.remove(0)),
+        _ => MemoryLookup::Ambiguous(matches),
+    })
 }
 
 /// Search memories from RAW user input (`aplan recall --q "…"`).
@@ -498,6 +546,23 @@ mod tests {
             Ok(())
         }
 
+        async fn find_by_id_prefix(
+            &self,
+            user_id: UserId,
+            prefix: &str,
+            limit: u32,
+        ) -> Result<Vec<Memory>, RepositoryError> {
+            Ok(self
+                .rows
+                .lock()
+                .expect("lock")
+                .iter()
+                .filter(|m| m.user_id == user_id && m.id.to_string().starts_with(prefix))
+                .take(limit as usize)
+                .cloned()
+                .collect())
+        }
+
         async fn existing_source_refs(
             &self,
             user_id: UserId,
@@ -696,6 +761,96 @@ mod tests {
         assert!(
             get_memory(&repo, Uuid::new_v4(), m.id).await.unwrap().is_none(),
             "another user must not read it"
+        );
+    }
+
+    // ─── Resolving the brief's short references (lot 4) ───────────────────
+
+    /// A memory with a chosen id, so a reference prefix is predictable.
+    async fn remembered_with_id(
+        repo: &InMemoryMemoryRepository,
+        user_id: UserId,
+        id: &str,
+        title: &str,
+    ) -> Memory {
+        let mut memory = remembered(repo, user_id, MemoryKind::Decision, title, true).await;
+        let wanted = Uuid::parse_str(id).expect("valid fixture uuid");
+        {
+            let mut rows = repo.rows.lock().expect("lock");
+            let slot = rows
+                .iter_mut()
+                .find(|m| m.id == memory.id)
+                .expect("the row just written");
+            slot.id = wanted;
+        }
+        memory.id = wanted;
+        memory
+    }
+
+    #[tokio::test]
+    async fn a_short_reference_from_the_brief_resolves_to_its_memory() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let m = remembered_with_id(
+            &repo,
+            uid,
+            "7c1e4b2a-0000-0000-0000-000000000000",
+            "Wave 0 limitée",
+        )
+        .await;
+
+        for token in ["m:7c1", "[m:7c1]", "7c1", "M:7C1", &m.id.to_string()] {
+            match resolve_memory(&repo, uid, token).await.expect("resolves") {
+                MemoryLookup::Found(found) => assert_eq!(found.id, m.id, "for token {token}"),
+                other => panic!("token {token} gave {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_unusable_reference_is_a_miss_not_an_error() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        remembered_with_id(&repo, uid, "7c1e4b2a-0000-0000-0000-000000000000", "un choix").await;
+        for token in ["fff", "", "%", "m:", "'; DROP"] {
+            assert_eq!(
+                resolve_memory(&repo, uid, token).await.expect("resolves"),
+                MemoryLookup::NotFound,
+                "for token {token:?}"
+            );
+        }
+    }
+
+    /// A three-character reference can collide with a memory the brief never
+    /// rendered. Expanding the wrong memory would be worse than saying so.
+    #[tokio::test]
+    async fn a_colliding_reference_reports_the_ambiguity_instead_of_guessing() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        remembered_with_id(&repo, uid, "7c1a0000-0000-0000-0000-000000000000", "choix A").await;
+        remembered_with_id(&repo, uid, "7c1b0000-0000-0000-0000-000000000000", "choix B").await;
+
+        match resolve_memory(&repo, uid, "m:7c1").await.expect("resolves") {
+            MemoryLookup::Ambiguous(candidates) => assert_eq!(candidates.len(), 2),
+            other => panic!("expected an ambiguity, got {other:?}"),
+        }
+        // A longer prefix disambiguates.
+        assert!(matches!(
+            resolve_memory(&repo, uid, "m:7c1b").await.expect("resolves"),
+            MemoryLookup::Found(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_reference_is_scoped_to_its_user() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        remembered_with_id(&repo, uid, "7c1e4b2a-0000-0000-0000-000000000000", "un choix").await;
+        assert_eq!(
+            resolve_memory(&repo, Uuid::new_v4(), "m:7c1")
+                .await
+                .expect("resolves"),
+            MemoryLookup::NotFound
         );
     }
 

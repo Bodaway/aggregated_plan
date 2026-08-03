@@ -85,6 +85,26 @@ pub trait MemoryRepository: Send + Sync {
         successor: &Memory,
     ) -> Result<(), RepositoryError>;
 
+    /// Memories whose id starts with `prefix`, newest first, at most `limit`.
+    ///
+    /// Backs the short reference the brief renders (`[m:7c1]`): without a prefix
+    /// lookup that reference is unusable, and the brief becomes a dead end.
+    ///
+    /// A default is provided so repository doubles that never resolve a reference
+    /// keep compiling. It fails loudly instead of returning an empty list — a
+    /// lookup that silently finds nothing is the exact failure class this feature
+    /// keeps producing.
+    async fn find_by_id_prefix(
+        &self,
+        _user_id: UserId,
+        _prefix: &str,
+        _limit: u32,
+    ) -> Result<Vec<Memory>, RepositoryError> {
+        Err(RepositoryError::Database(
+            "find_by_id_prefix is not implemented by this repository".into(),
+        ))
+    }
+
     /// The `source_ref` values already stored for this user that start with
     /// `prefix`. Backs import idempotency without loading whole memories.
     async fn existing_source_refs(

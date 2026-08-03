@@ -254,11 +254,28 @@ pub enum Commands {
         #[arg(long, requires = "q", conflicts_with = "id")]
         history: bool,
         /// Restrict the search context to a project: UUID or (fuzzy) name.
-        #[arg(long, requires = "q")]
+        /// Search-only, and refused rather than ignored next to an id.
+        #[arg(long, requires = "q", conflicts_with = "id")]
         project: Option<String>,
-        /// Max results.
-        #[arg(long, default_value_t = 10, requires = "q")]
+        /// Max results. Search-only, same reason.
+        #[arg(long, default_value_t = 10, requires = "q", conflicts_with = "id")]
         limit: i64,
+    },
+    /// Print the session brief: deadlines, open commitments, active decisions,
+    /// the memory queue, and a warning when consolidation has gone quiet.
+    /// Capped at 40 lines. It ADDS to the session's task list, never replaces it.
+    Brief {
+        /// The 08:30 notification variant: today's deadlines, open commitments,
+        /// candidates to triage. No decisions, no drill-down hints.
+        #[arg(long)]
+        morning: bool,
+        /// Project in focus: UUID or (fuzzy) name. Defaults to the project of the
+        /// task currently tracked.
+        #[arg(long)]
+        project: Option<String>,
+        /// Date to build the brief for (YYYY-MM-DD). Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
     },
     /// The memory validation queue. With no subcommand, lists pending candidates.
     Inbox {
@@ -406,4 +423,127 @@ pub enum ConfigCmd {
     Get { key: Option<String> },
     /// Set KEY to VALUE.
     Set { key: String, value: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    /// `requires = "q"` alone is waived by clap as soon as the conflicting `id` is
+    /// present — so a search-only flag typed next to an id used to be **silently
+    /// discarded**. Every one of them must now be refused at parse time.
+    #[test]
+    fn a_search_only_flag_next_to_an_id_is_refused_not_ignored() {
+        for flag in [
+            vec!["--history"],
+            vec!["--project", "pernod"],
+            vec!["--limit", "3"],
+        ] {
+            let mut args = vec!["aplan", "recall", "7c1"];
+            args.extend_from_slice(&flag);
+            let err = parse(&args)
+                .expect_err(&format!("{flag:?} must not be accepted beside an id"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag:?} gave {:?}",
+                err.kind()
+            );
+        }
+    }
+
+    /// The conflict must not fire on the *default* value of `--limit`, or the
+    /// plain id form would stop working altogether.
+    #[test]
+    fn expanding_one_memory_by_id_still_parses() {
+        let cli = parse(&["aplan", "recall", "m:7c1"]).expect("the id form must parse");
+        match cli.command {
+            Commands::Recall {
+                id,
+                q,
+                history,
+                project,
+                limit,
+            } => {
+                assert_eq!(id.as_deref(), Some("m:7c1"));
+                assert_eq!(q, None);
+                assert!(!history);
+                assert_eq!(project, None);
+                assert_eq!(limit, 10, "the default is still applied");
+            }
+            other => panic!("expected Recall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_search_flag_is_accepted_next_to_a_query() {
+        let cli = parse(&[
+            "aplan", "recall", "--q", "engagements", "--history", "--project", "pernod", "--limit",
+            "3",
+        ])
+        .expect("the search form must parse");
+        match cli.command {
+            Commands::Recall {
+                id,
+                q,
+                history,
+                project,
+                limit,
+            } => {
+                assert_eq!(id, None);
+                assert_eq!(q.as_deref(), Some("engagements"));
+                assert!(history);
+                assert_eq!(project.as_deref(), Some("pernod"));
+                assert_eq!(limit, 3);
+            }
+            other => panic!("expected Recall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_brief_defaults_to_the_session_variant() {
+        match parse(&["aplan", "brief"]).expect("parses").command {
+            Commands::Brief {
+                morning,
+                project,
+                date,
+            } => {
+                assert!(!morning);
+                assert_eq!(project, None);
+                assert_eq!(date, None);
+            }
+            other => panic!("expected Brief, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_morning_brief_takes_a_project_and_a_date() {
+        match parse(&[
+            "aplan",
+            "brief",
+            "--morning",
+            "--project",
+            "pernod",
+            "--date",
+            "2026-08-03",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Brief {
+                morning,
+                project,
+                date,
+            } => {
+                assert!(morning);
+                assert_eq!(project.as_deref(), Some("pernod"));
+                assert_eq!(date.as_deref(), Some("2026-08-03"));
+            }
+            other => panic!("expected Brief, got {other:?}"),
+        }
+    }
 }

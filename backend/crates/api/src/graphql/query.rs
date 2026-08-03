@@ -8,6 +8,7 @@ use uuid::Uuid;
 use application::repositories::*;
 use application::services::MemoryRetriever;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
+use application::use_cases::brief as brief_uc;
 use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::timesheet::load_reconstruction_config;
@@ -634,15 +635,74 @@ impl QueryRoot {
     }
 
     /// Deep recall of a single memory by id (`aplan recall <id>`).
+    ///
+    /// `id` accepts a full UUID **or** the short reference the brief renders
+    /// (`m:7c1`, `7c1`) — that reference is the whole drill-down mechanism, so it
+    /// has to resolve here. An ambiguous prefix is an error, never a guess:
+    /// expanding the wrong memory is worse than asking for more characters.
     async fn memory(&self, ctx: &Context<'_>, id: ID) -> Result<Option<MemoryGql>> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
-        let memory_id = Uuid::parse_str(&id)
-            .map_err(|e| async_graphql::Error::new(format!("Invalid memory ID: {e}")))?;
-        let found = memory_uc::get_memory(repo.as_ref(), user_id, memory_id)
+        let lookup = memory_uc::resolve_memory(repo.as_ref(), user_id, &id)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(found.map(MemoryGql::from))
+        match lookup {
+            memory_uc::MemoryLookup::Found(memory) => Ok(Some(MemoryGql::from(memory))),
+            memory_uc::MemoryLookup::NotFound => Ok(None),
+            memory_uc::MemoryLookup::Ambiguous(candidates) => {
+                let listed = candidates
+                    .iter()
+                    .map(|m| format!("{} {}", m.id, m.title))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                Err(async_graphql::Error::new(format!(
+                    "Ambiguous memory reference `{}`: {} matches ({listed})",
+                    id.as_str(),
+                    candidates.len()
+                )))
+            }
+        }
+    }
+
+    /// The session brief (`aplan brief`): today's deadlines, open commitments,
+    /// active decisions, the size of the validation queue, and a warning when the
+    /// consolidation job has gone quiet.
+    ///
+    /// `lines` carries the rendering, capped at 40 lines. This **adds to** the
+    /// session's followed-task list, it does not replace it: the deadline set and
+    /// the followed set are different sets, and the task list feeds the start-up
+    /// task picker.
+    async fn brief(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default_with = "BriefVariantGql::Session")] variant: BriefVariantGql,
+        // `projectId` defaults to the project of the task being tracked;
+        // `date` defaults to today.
+        project_id: Option<ID>,
+        date: Option<NaiveDate>,
+    ) -> Result<BriefGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let memory_repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let now = chrono::Utc::now();
+        let brief = brief_uc::build_brief(
+            task_repo.as_ref(),
+            memory_repo.as_ref(),
+            activity_repo.as_ref(),
+            config_repo.as_ref(),
+            user_id,
+            brief_uc::BriefRequest {
+                variant: variant.into(),
+                project_id: parse_opt_id(project_id, "project")?,
+                today: date.unwrap_or_else(|| now.date_naive()),
+                now,
+            },
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(BriefGql::from(brief))
     }
 
     /// Search memories from raw user input (`aplan recall --q "…"`), best-first.

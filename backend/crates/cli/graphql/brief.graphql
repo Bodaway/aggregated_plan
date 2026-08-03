@@ -1,0 +1,34 @@
+query Brief($variant: BriefVariantGql!, $projectId: ID, $date: NaiveDate) {
+  brief(variant: $variant, projectId: $projectId, date: $date) {
+    variant
+    date
+    lines
+    deadlines {
+      title
+      daysUntil
+    }
+    deadlineTotal
+    commitments {
+      id
+      reference
+      title
+      stakeholders
+      occurredOn
+    }
+    commitmentTotal
+    decisions {
+      id
+      reference
+      title
+      stakeholders
+      occurredOn
+    }
+    decisionTotal
+    decisionsScopedToProject
+    pendingCount
+    consolidation {
+      daysAgo
+      stale
+    }
+  }
+}
