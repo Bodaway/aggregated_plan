@@ -16,4 +16,8 @@ pub enum DomainError {
     InvalidDateRange { start: String, end: String },
     #[error("Validation error: {0}")]
     ValidationError(String),
+    #[error("Memory {0} is already invalidated; supersede the head of its chain instead")]
+    MemoryAlreadyInvalidated(MemoryId),
+    #[error("Superseding memory {old} by {new} would create a cycle in the supersession chain")]
+    MemorySupersessionCycle { old: MemoryId, new: MemoryId },
 }

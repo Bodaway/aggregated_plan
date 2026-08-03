@@ -8,3 +8,6 @@ pub mod meeting;
 pub mod worklog_time;
 pub mod project_mapping;
 pub mod reconstruction;
+pub mod recall;
+pub mod memory_import;
+pub mod memory_lifecycle;

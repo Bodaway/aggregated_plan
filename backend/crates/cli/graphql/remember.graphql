@@ -1,0 +1,15 @@
+mutation Remember($input: RememberInputGql!) {
+  remember(input: $input) {
+    id
+    kind
+    title
+    body
+    occurredAt
+    recordedAt
+    status
+    source
+    projectId
+    taskId
+    stakeholders
+  }
+}

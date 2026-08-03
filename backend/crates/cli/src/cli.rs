@@ -215,6 +215,138 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: MapCmd,
     },
+    /// Record a memory: a decision, a commitment, a fact or a preference.
+    /// Lands in the validation queue unless --confirm is passed.
+    Remember {
+        /// What is retained, in one sentence.
+        title: String,
+        #[arg(long, value_enum, default_value = "fact")]
+        kind: MemoryKindArg,
+        /// The context: why, alternatives dropped. Never a deadline — that lives on the task.
+        #[arg(long)]
+        why: Option<String>,
+        /// Attach to a project: UUID or (fuzzy) name.
+        #[arg(long)]
+        project: Option<String>,
+        /// Person the commitment is towards. Repeat for several.
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Attach to a task: UUID, Jira-style key, fuzzy title, or @current.
+        #[arg(long)]
+        task: Option<String>,
+        /// Skip the validation queue and store as active.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Recall memories: by id, or by search with --q.
+    Recall {
+        /// Memory id to expand.
+        #[arg(required_unless_present = "q", conflicts_with = "q")]
+        id: Option<String>,
+        /// Free-text search. Jira keys and `Client : subject` labels are safe.
+        #[arg(long, short)]
+        q: Option<String>,
+        /// Include invalidated and not-yet-validated memories.
+        #[arg(long)]
+        history: bool,
+        /// Restrict the search context to a project: UUID or (fuzzy) name.
+        #[arg(long, requires = "q")]
+        project: Option<String>,
+        /// Max results.
+        #[arg(long, default_value_t = 10, requires = "q")]
+        limit: i64,
+    },
+    /// The memory validation queue. With no subcommand, lists pending candidates.
+    Inbox {
+        #[command(subcommand)]
+        cmd: Option<InboxCmd>,
+        /// Max candidates to list.
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Manage stored memories outside the validation queue.
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum InboxCmd {
+    /// Accept a candidate. Refused if it looks like an existing memory, unless --force.
+    Accept {
+        id: String,
+        /// Re-type the candidate on the way in.
+        #[arg(long, value_enum)]
+        kind: Option<MemoryKindArg>,
+        /// Accept despite near-duplicates (an explicit add, never a silent one).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Same fact, better wording: fold the candidate into an existing memory.
+    /// One row survives — this ERASES history. Use `supersede` if the fact changed.
+    Merge {
+        id: String,
+        /// The active memory that keeps its identity and receives the new wording.
+        #[arg(long)]
+        into: String,
+    },
+    /// The fact CHANGED: this candidate replaces an active memory. Both rows
+    /// survive; the old one is marked no longer true.
+    Supersede {
+        id: String,
+        /// The active memory this candidate makes obsolete.
+        #[arg(long)]
+        replaces: String,
+    },
+    /// Reject a candidate. Kept as a tombstone so it is never re-proposed.
+    Reject { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryCmd {
+    /// One-shot import of a directory of markdown memory files. Idempotent, and
+    /// never writes to the directory.
+    Import { dir: String },
+    /// Revise an already-active memory: OLD becomes no longer true, replaced by
+    /// --by. Both rows survive.
+    Supersede {
+        old: String,
+        #[arg(long)]
+        by: String,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+#[value(rename_all = "snake_case")]
+pub enum MemoryKindArg {
+    Decision,
+    Commitment,
+    Fact,
+    Preference,
+}
+
+impl MemoryKindArg {
+    pub fn as_graphql(&self) -> crate::queries::remember::MemoryKindGql {
+        use crate::queries::remember::MemoryKindGql;
+        match self {
+            MemoryKindArg::Decision => MemoryKindGql::DECISION,
+            MemoryKindArg::Commitment => MemoryKindGql::COMMITMENT,
+            MemoryKindArg::Fact => MemoryKindGql::FACT,
+            MemoryKindArg::Preference => MemoryKindGql::PREFERENCE,
+        }
+    }
+
+    /// The codegen mints one enum per operation, so `inbox accept` needs its own.
+    pub fn as_graphql_accept(&self) -> crate::queries::inbox_accept::MemoryKindGql {
+        use crate::queries::inbox_accept::MemoryKindGql;
+        match self {
+            MemoryKindArg::Decision => MemoryKindGql::DECISION,
+            MemoryKindArg::Commitment => MemoryKindGql::COMMITMENT,
+            MemoryKindArg::Fact => MemoryKindGql::FACT,
+            MemoryKindArg::Preference => MemoryKindGql::PREFERENCE,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

@@ -927,6 +927,158 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 
 **Priorité** : Must (Plan 3)
 
+### 6.10 Mémoire sémantique (souvenirs)
+
+Là où `tasks` répond à « qu'est-ce que je dois **faire** ? » et `worklog_entries` à
+« qu'est-ce qui **s'est passé** ? », les **souvenirs** (`memories`) répondent à
+« qu'est-ce que je dois **savoir** ? » : décisions prises, engagements pris, faits appris,
+préférences exprimées. Un souvenir ne porte **jamais** d'échéance ni de statut d'avancement —
+ces informations vivent sur la tâche, sous peine d'avoir deux moteurs de rappel divergents.
+
+Un souvenir est **bi-temporel** : `occurredAt` dit quand la chose est devenue vraie,
+`invalidatedAt` quand elle a cessé de l'être, et `supersededBy` par quoi elle a été remplacée.
+Une décision annulée n'est pas une ligne supprimée : c'est une décision avec une fin de
+validité et un successeur. Rappeler une décision périmée est le pire mode d'échec du système,
+d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invalidés sont rappelés.
+
+#### US-090 : Enregistrer un souvenir
+
+> En tant que Tech Lead, je veux enregistrer en une commande une décision, un engagement, un fait
+> ou une préférence, afin que Claude puisse me le rappeler plus tard avec son contexte.
+
+**Critères d'acceptation :**
+- L'utilisateur enregistre un souvenir via
+  `aplan remember "<titre>" [--kind decision|commitment|fact|preference] [--why "<contexte>"] [--project <projet>] [--to <personne>] [--task <tâche>] [--confirm]`.
+  `--kind` vaut `fact` par défaut ; `--to` est répétable.
+- `--project` accepte un UUID **ou** un nom de projet (correspondance exacte puis
+  sous-chaîne, insensible à la casse). `--task` accepte les mêmes formes que les autres
+  commandes : UUID, clé Jira (`AP-123`), titre approximatif, ou `@current`.
+- Aucune tâche n'est requise : une discussion d'architecture sans tâche associée produit
+  quand même un souvenir (`projectId` et `taskId` sont facultatifs).
+- Le souvenir atterrit dans la **file de validation** (`status = PENDING`) sauf si
+  `--confirm` est passé, qui l'enregistre directement en `ACTIVE`.
+- Un titre vide ou uniquement composé d'espaces est refusé. Le titre est limité à
+  500 caractères, le contexte (`--why`) à 10 000.
+- Le souvenir est **immédiatement retrouvable** par recherche : l'index plein texte est
+  écrit dans la même transaction que le souvenir.
+- `--json` émet la charge utile brute `data.remember`.
+
+**Priorité** : Must (lot 1)
+
+#### US-091 : Rappeler un souvenir
+
+> En tant que Tech Lead, je veux retrouver une décision et son contexte à partir de quelques mots,
+> afin de ne pas rejouer un arbitrage déjà tranché.
+
+**Critères d'acceptation :**
+- `aplan recall <id>` affiche un souvenir en détail : type, titre, contexte, date de survenue,
+  statut, personnes concernées, projet et tâche rattachés. Un identifiant inconnu retourne le
+  code de sortie « non trouvé » (2).
+- `aplan recall --q "<texte>" [--history] [--project <projet>] [--limit N]` effectue une
+  recherche plein texte, résultats du plus pertinent au moins pertinent.
+- **Le vocabulaire quotidien ne fait jamais échouer la recherche** : `AP-1234`,
+  `Cartier : certificat`, `wave 0`, `*`, `NOT` sont acceptés tels quels — la saisie est
+  convertie en requête sûre avant d'atteindre l'index.
+- Les accents sont ignorés à la comparaison (`limitee` retrouve « limitée »).
+- Les pluriels fonctionnent **dans les deux sens** : les mots de 4 caractères et plus sont
+  étendus par préfixe (`engagement` retrouve « engagements »), et ceux de 5 caractères et plus
+  finissant par `s` ou `x` reçoivent en plus une variante dépluralisée (`engagements` retrouve
+  « engagement », `travaux` retrouve « travau… »). L'étoile seule ne pouvant que rallonger le
+  mot saisi, les deux variantes sont nécessaires.
+- **L'adjacence est respectée** : un identifiant reste une expression exacte. `AP-1234` ne
+  retrouve pas un souvenir qui mentionne `AP` et `1234` à vingt mots d'intervalle.
+- Tous les mots saisis restent **obligatoires** : chercher `Cartier engagements` ne retourne
+  que les souvenirs contenant les deux notions, la variante dépluralisée n'élargissant jamais
+  la requête aux autres mots.
+- Par défaut, seuls les souvenirs `ACTIVE` et non invalidés sont retournés. `--history`
+  lève ce filtre et affiche aussi les souvenirs périmés (marqués d'un ⚠) et non validés.
+- Le classement combine quatre signaux : pertinence textuelle, correspondance d'entité
+  (projet / tâche / personne du contexte courant), décroissance de récence sur `occurredAt`
+  (demi-vie 90 jours), et poids par type (`decision` et `commitment` devant `fact` et
+  `preference`).
+- Une recherche sans résultat n'est pas une erreur (code de sortie 0).
+- `--json` émet la charge utile brute (`data.memory` ou `data.recall`).
+
+**Priorité** : Must (lot 1)
+
+#### US-092 : Importer le corpus de souvenirs existant
+
+> En tant que Tech Lead, je veux importer en une commande les notes de mémoire déjà écrites par
+> le harness, afin d'avoir un corpus réel dès le premier usage plutôt qu'une base vide.
+
+**Critères d'acceptation :**
+- `aplan memory import <dossier>` importe **tous** les fichiers markdown du dossier — le nombre
+  de fichiers n'est jamais figé dans le code, le corpus grossit avec le temps.
+- Le type déclaré dans l'entête du fichier (`metadata.type`) détermine le type du souvenir :
+  `feedback` et `user` → `preference` ; `project` et `reference` → `fact`. Un type inconnu ou
+  absent retombe sur `fact` — un import ne peut jamais promouvoir une note en `decision`.
+- Le titre du souvenir est la ligne `description` de l'entête (à défaut, `name`) ; le corps du
+  fichier devient le contexte. La provenance est `manual`.
+- Les souvenirs importés sont directement **actifs** : ce sont les notes de l'utilisateur, il n'y a
+  rien à valider. Ils sont donc immédiatement rappelables.
+- La date de survenue est celle de l'entête (`metadata.modified`) si présente, sinon la date de
+  modification du fichier.
+- **L'import est idempotent** : chaque souvenir importé retient une référence stable dérivée du
+  `name` du fichier, et un fichier déjà importé est ignoré. Relancer la commande n'importe rien.
+- Un fichier sans entête (le fichier d'index `MEMORY.md`, par exemple) est **ignoré avec un
+  motif**, sans faire échouer l'import des autres.
+- La commande **n'écrit jamais** dans le dossier : celui-ci a déjà un écrivain (le mécanisme
+  d'auto-mémoire du harness), et deux écrivains sur un fichier généré divergent.
+- Le rapport indique le nombre d'importés, le nombre d'ignorés et le motif de chaque exclusion.
+
+**Priorité** : Must (lot 2)
+
+#### US-093 : Trier les souvenirs candidats
+
+> En tant que Tech Lead, je veux trier les candidats proposés — accepter, reformuler, réviser ou
+> rejeter — afin que la mémoire ne se remplisse pas de doublons et de bruit.
+
+**Critères d'acceptation :**
+- `aplan inbox` liste les candidats en attente (`pending`).
+- `aplan inbox accept <id> [--kind <type>]` valide un candidat : il devient `active` et donc
+  rappelable. `--kind` permet de le retyper au passage.
+- **Jamais d'ajout muet** : si le candidat ressemble à un souvenir déjà actif, l'acceptation est
+  **refusée**, rien n'est écrit, et les sosies sont affichés avec les trois issues possibles —
+  fusionner, superséder, ou accepter explicitement via `--force`.
+- `aplan inbox merge <id> --into <id>` : *même fait, meilleure formulation*. Une seule ligne
+  survit — celle de la cible, qui conserve son identité et ses dates et reçoit la nouvelle
+  formulation. Les personnes concernées des deux lignes sont conservées. **Cette opération efface
+  l'historique** et n'est donc pas le choix par défaut.
+- `aplan inbox supersede <id> --replaces <id>` : *le fait a changé*. **Les deux lignes
+  survivent** ; l'ancienne reçoit sa fin de validité et un pointeur vers la nouvelle.
+- `aplan inbox reject <id>` : le candidat devient `rejected` et **la ligne est conservée** comme
+  pierre tombale, afin que la consolidation ne le re-propose pas chaque soir.
+- Un identifiant inconnu retourne le code de sortie « non trouvé » (2) ; une acceptation bloquée
+  par un quasi-doublon retourne « précondition non satisfaite » (4).
+
+**Priorité** : Must (lot 3)
+
+#### US-094 : Réviser un souvenir déjà actif
+
+> En tant que Tech Lead, je veux enregistrer qu'une décision n'est plus valable et par quoi elle a
+> été remplacée, afin que Claude ne me rappelle jamais une décision annulée, tout en gardant la
+> trace de ce qui avait été décidé et pourquoi cela a changé.
+
+**Critères d'acceptation :**
+- `aplan memory supersede <ancien> --by <nouveau>` révise un souvenir déjà actif, hors file.
+- L'ancien souvenir **disparaît du rappel** immédiatement, et **réapparaît avec `--history`**,
+  marqué comme n'étant plus vrai, avec la référence de son successeur.
+- Les **chaînes sont légales** : A remplacé par B, puis B remplacé par C. Chaque révision porte
+  sur le souvenir actif en tête de chaîne.
+- Un souvenir **ne peut pas se remplacer lui-même**, et une révision qui **refermerait un cycle**
+  est refusée.
+- Un souvenir **déjà invalidé ne peut pas être re-supersédé** : il a déjà un successeur, et
+  écraser ce lien ferait perdre l'historique que le modèle existe précisément pour conserver. Le
+  message d'erreur indique de viser la tête de chaîne.
+- Un souvenir rejeté ou déjà invalidé ne peut pas devenir la nouvelle vérité.
+- La supersession (en file ou hors file) est le **seul chemin** qui marque un souvenir comme
+  n'étant plus vrai. Ni l'enregistrement, ni la recherche, ni aucun automatisme ne le fait.
+
+**Priorité** : Must (lot 3)
+
+**Hors périmètre à ce stade** (livré ultérieurement) : `aplan brief` et l'enrichissement du hook
+de démarrage (lot 4), puis la consolidation planifiée de 17h30 (lot 5).
+
 ---
 
 ## 7. Règles métier
@@ -1011,6 +1163,23 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 | **R40** | **Édition par occurrence** : le statut, les dates planifiées (`plannedStart`, `plannedEnd`), la deadline, les notes, l'état de suivi (`trackingState`) et les overrides d'heures (`remainingHoursOverride`, `estimatedHoursOverride`) sont modifiables sur une occurrence individuelle via `updateTask` sans affecter la série. Les champs de modèle (titre, description, urgence, impact, estimation de base, projet, tags) doivent être modifiés via `updateRecurringTask`. |
 | **R41** | **Worklog partagé** : les entrées de worklog d'une série récurrente sont visibles sur toutes ses occurrences via le filtre `recurrenceId`. Chaque entrée affiche la date de l'occurrence concernée (`occurrenceDate`) sous forme d'étiquette formatée. |
 | **R42** | **Changement de statut rapide** : le statut d'une tâche (récurrente ou non) est modifiable en un clic depuis la carte de tâche via un menu déroulant intégré (`StatusMenu`), sans ouvrir le panneau d'édition. |
+
+### 7.9 Mémoire sémantique et rappel
+
+| Règle | Description |
+|-------|-------------|
+| **R43** | **Frontière des trois tables** : `tasks` porte l'actionnable (statut, échéance, alertes), `worklog_entries` l'épisodique (ce qui s'est passé, horodaté), `memories` le sémantique (ce qu'il faut savoir). Un engagement produit **les deux** : une tâche pour la partie actionnable, et un souvenir pour le fait qu'un engagement a été pris, envers qui et en quels termes. Il est interdit d'écrire une date d'échéance dans un souvenir. |
+| **R44** | **Deux axes de cycle de vie, distincts** : `status` (`pending` / `active` / `rejected`) gouverne la **file de validation** ; `invalidatedAt` + `supersededBy` gouvernent la **vérité** (bi-temporel). `rejected` est une pierre tombale : un candidat rejeté ne doit plus être re-proposé. |
+| **R45** | **Filtre dur du rappel** : le rappel ne retourne que les souvenirs vérifiant `invalidatedAt IS NULL AND status = 'active'`, sauf demande explicite d'historique (`--history`). Non négociable : rappeler une décision annulée est pire que ne rien rappeler. |
+| **R46** | **Écrivains de `invalidatedAt`** : uniquement les commandes de supersession (`aplan inbox supersede`, `aplan memory supersede`), toutes passant par une validation humaine. Ni `remember`, ni l'import, ni la recherche, ni aucun automatisme ne peut périmer un souvenir. |
+| **R50** | **Fusion ≠ supersession**. `merge` = « même fait, mieux écrit » : une seule ligne survit, celle de la cible, qui garde son identité et ses dates et reçoit la nouvelle formulation ; **l'historique est écrasé**. `supersede` = « le fait a changé » : les deux lignes survivent, l'ancienne recevant sa fin de validité et un pointeur vers la nouvelle ; **l'historique est conservé**. Confondre les deux fait disparaître la réponse à « pourquoi a-t-on changé d'avis ». Les deux opérations sont appliquées en **une seule transaction** : une fusion à moitié faite laisserait le candidat en file avec sa formulation déjà recopiée, une supersession à moitié faite laisserait soit un fait masqué sans successeur, soit deux vérités contradictoires actives. |
+| **R51** | **Chaînes légales, cycles interdits**. Une chaîne de supersessions (A → B → C) est valide, chaque révision portant sur le souvenir actif en tête. Un souvenir ne peut pas se superséder lui-même, une révision qui refermerait un cycle est refusée, et un souvenir déjà invalidé ne peut pas être re-supersédé (il faut viser la tête de chaîne). Un souvenir rejeté ou invalidé ne peut pas devenir la nouvelle vérité. |
+| **R52** | **Jamais d'ajout muet**. À l'acceptation, un contrôle de quasi-doublon compare le candidat aux souvenirs **actifs** : l'index plein texte présélectionne (correspondance sur **n'importe quel** mot du titre — une correspondance sur *tous* les mots manquerait justement les reformulations), puis une règle de similarité pure tranche. Au-delà du seuil, rien n'est écrit et les trois issues sont proposées : fusionner, superséder, ou accepter explicitement. Distinguer une reformulation d'une contradiction est un jugement sémantique : le backend n'a aucun modèle, c'est donc l'humain qui tranche. |
+| **R53** | **Le rejet est une pierre tombale**, pas une suppression : la ligne est conservée en `rejected` afin que la consolidation ne re-propose pas indéfiniment un candidat déjà écarté. Le rejet est un verdict de file, il n'écrit **pas** `invalidatedAt`. |
+| **R54** | **Import idempotent et en lecture seule**. Chaque souvenir importé porte une référence de provenance stable dérivée du `name` de son fichier ; un fichier dont la référence existe déjà est ignoré. Relancer l'import n'écrit rien. Le dossier source n'est jamais modifié : il a déjà un écrivain. Un fichier sans entête est ignoré avec un motif, sans faire échouer l'import des autres. |
+| **R47** | **La saisie utilisateur n'atteint jamais l'index telle quelle** : elle est découpée **sur les espaces uniquement**, et chaque groupe devient **une phrase entre guillemets, ponctuation interne conservée** (l'adjacence est donc préservée : `AP-1234` reste une expression exacte). Les groupes purement alphabétiques de 4 caractères ou plus sont étendus par préfixe ; ceux de 5 caractères ou plus finissant par `s` ou `x` reçoivent en plus une variante dépluralisée entre parenthèses. Les groupes sont joints par un `AND` explicite. Une saisie sans aucun caractère alphanumérique (`""`, `*`, ponctuation seule) est refusée avec une erreur de validation. Conséquence : `AP-1234` et `Cartier : certificat` — le vocabulaire quotidien — ne peuvent plus faire échouer la recherche. |
+| **R48** | **Score de rappel** = somme pondérée de quatre signaux normalisés : pertinence textuelle (BM25), bonus d'entité (projet / tâche / personne du contexte courant), décroissance de récence sur `occurredAt` (demi-vie 90 jours), poids par type (`decision` = `commitment` > `fact` > `preference`). Pas de fusion par rangs (RRF) : il n'y a qu'une seule liste classée en v1. |
+| **R49** | **Indexation atomique** : le souvenir et sa ligne d'index plein texte sont écrits dans la même transaction. Un souvenir enregistré est donc toujours retrouvable, ou pas enregistré du tout. |
 
 ---
 
@@ -1104,6 +1273,27 @@ L'entité centrale de l'outil. Une tâche peut provenir de plusieurs sources.
 | id | Identifiant unique | Oui | Généré par l'outil |
 | nom | Texte | Oui | Nom du tag (ex : #revue-code) |
 | couleur | Texte | Non | Couleur d'affichage |
+
+#### Souvenir (mémoire sémantique)
+
+Ce qu'il faut **savoir** : une décision, un engagement, un fait ou une préférence. Voir R43 à R49.
+
+| Attribut | Type | Obligatoire | Description |
+|----------|------|-------------|-------------|
+| id | Identifiant unique | Oui | Généré par l'outil |
+| type | Enum | Oui | `decision`, `commitment`, `fact`, `preference`. Pas de `procedure` : le procédural est couvert par `CLAUDE.md` et les skills. |
+| titre | Texte (≤ 500) | Oui | Une phrase : ce qu'on retient |
+| contexte | Texte (≤ 10 000) | Non | Le « pourquoi », les alternatives écartées. **Jamais** une date d'échéance. |
+| survenuLe | Date/heure | Oui | Quand la chose a été décidée / promise (base de la décroissance de récence) |
+| enregistréLe | Date/heure | Oui | Quand aplan l'a su |
+| invalidéLe | Date/heure | Non | `null` = encore vrai. Écrit uniquement par la supersession. |
+| remplacéPar | Référence Souvenir | Non | Le souvenir qui l'a remplacé |
+| provenance | Enum | Oui | `claude_session`, `manual`, `dreaming` |
+| référenceProvenance | Texte | Non | Identifiant d'entrée de worklog ou de session. Sans contrainte d'intégrité : une chaîne de provenance pendante est préférée à un souvenir supprimé. |
+| statut | Enum | Oui | `pending` (file de validation), `active`, `rejected` (pierre tombale) |
+| projet | Référence Projet | Non | Rattachement. La suppression du projet **n'efface pas** le souvenir (mise à `null`). |
+| tâche | Référence Tâche | Non | Rattachement. La suppression de la tâche **n'efface pas** le souvenir (mise à `null`). |
+| personnes | Liste de textes | Non | « Envers qui », « avec qui » — permet de répondre à « quels engagements ai-je pris envers X ? » |
 
 ### 8.2 Données de configuration
 
@@ -1281,3 +1471,8 @@ Les fonctionnalités de timesheet (Plan 2) ont les limitations suivantes, à am�
 | **Créneau horaire** | Plage horaire définie par une heure de début et une heure de fin, utilisée pour planifier tâches et réunions |
 | **Estimation** | Durée estimée d'une tâche en heures, déterminant sa taille visuelle dans les vues planning |
 | **Semaine** | Période du lundi au vendredi (5 jours ouvrés). Le lundi est le premier jour de la semaine. |
+| **Souvenir** | Entrée de mémoire sémantique : une décision, un engagement, un fait ou une préférence. Répond à « qu'est-ce que je dois savoir ? », par opposition à la tâche (« que dois-je faire ? ») et au journal (« que s'est-il passé ? ») |
+| **Bi-temporel** | Modèle où chaque fait porte à la fois la date à laquelle il est devenu vrai (`survenuLe`) et celle à laquelle il a cessé de l'être (`invalidéLe`), plutôt qu'une suppression |
+| **Supersession** | Remplacement d'un souvenir par un autre : l'ancien reçoit une fin de validité et un successeur, les deux lignes survivent. À distinguer de la fusion, qui écrase l'historique |
+| **File de validation** | Ensemble des souvenirs candidats en statut `pending`, en attente d'acceptation, de fusion, de supersession ou de rejet par l'utilisateur |
+| **Rappel (recall)** | Récupération d'un souvenir, par identifiant ou par recherche plein texte classée |

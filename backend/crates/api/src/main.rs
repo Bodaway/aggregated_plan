@@ -75,6 +75,13 @@ async fn main() {
         Arc::new(SqliteTimesheetDraftRepository::new(db_pool.clone()));
     let signal_mapping_repo: Arc<dyn application::repositories::SignalMappingRepository> =
         Arc::new(SqliteSignalMappingRepository::new(db_pool.clone()));
+    let memory_repo: Arc<dyn application::repositories::MemoryRepository> =
+        Arc::new(SqliteMemoryRepository::new(db_pool.clone()));
+    let memory_retriever: Arc<dyn application::services::MemoryRetriever> =
+        Arc::new(SqliteMemoryRetriever::new(db_pool.clone()));
+    let memory_file_source: Arc<dyn application::services::MemoryFileSource> = Arc::new(
+        infrastructure::connectors::memory_files::FsMemoryFileSource::new(),
+    );
     let git_connector: Arc<dyn application::services::git_connector::GitConnector> =
         Arc::new(infrastructure::connectors::git::ShellGitConnector::new());
 
@@ -115,6 +122,9 @@ async fn main() {
         gryzzly_catalog_repo,
         timesheet_draft_repo,
         signal_mapping_repo,
+        memory_repo,
+        memory_retriever,
+        memory_file_source,
         git_connector,
         graph_token_provider: graph_token_provider.clone(),
     };

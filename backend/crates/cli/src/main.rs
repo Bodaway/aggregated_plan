@@ -6,6 +6,7 @@ mod cli;
 mod client;
 mod commands;
 mod lookup;
+mod memory_cmd;
 mod output;
 mod queries;
 mod timesheet_cmd;
@@ -114,6 +115,70 @@ fn main() -> ExitCode {
                 &project,
             ),
             cli::MapCmd::List => timesheet_cmd::map_list(&args.api_url, args.json),
+        },
+        cli::Commands::Remember {
+            title,
+            kind,
+            why,
+            project,
+            to,
+            task,
+            confirm,
+        } => memory_cmd::remember(
+            &args.api_url,
+            args.json,
+            &title,
+            &kind,
+            why.as_deref(),
+            project.as_deref(),
+            &to,
+            task.as_deref(),
+            confirm,
+        ),
+        cli::Commands::Recall {
+            id,
+            q,
+            history,
+            project,
+            limit,
+        } => match (id, q) {
+            (_, Some(query)) => memory_cmd::recall_search(
+                &args.api_url,
+                args.json,
+                &query,
+                history,
+                project.as_deref(),
+                limit,
+            ),
+            (Some(id), None) => memory_cmd::recall_one(&args.api_url, args.json, &id),
+            (None, None) => {
+                eprintln!("error: pass a memory id or --q <query>");
+                output::ExitCode::PreconditionFailed
+            }
+        },
+        cli::Commands::Inbox { cmd, limit } => match cmd {
+            None => memory_cmd::inbox_list(&args.api_url, args.json, limit),
+            Some(cli::InboxCmd::Accept { id, kind, force }) => {
+                memory_cmd::inbox_accept(&args.api_url, args.json, &id, kind.as_ref(), force)
+            }
+            Some(cli::InboxCmd::Reject { id }) => {
+                memory_cmd::inbox_reject(&args.api_url, args.json, &id)
+            }
+            Some(cli::InboxCmd::Merge { id, into }) => {
+                memory_cmd::inbox_merge(&args.api_url, args.json, &id, &into)
+            }
+            // `inbox supersede <new> --replaces <old>`: the candidate is the successor.
+            Some(cli::InboxCmd::Supersede { id, replaces }) => {
+                memory_cmd::supersede(&args.api_url, args.json, &replaces, &id)
+            }
+        },
+        cli::Commands::Memory { cmd } => match cmd {
+            cli::MemoryCmd::Import { dir } => {
+                memory_cmd::memory_import(&args.api_url, args.json, &dir)
+            }
+            cli::MemoryCmd::Supersede { old, by } => {
+                memory_cmd::supersede(&args.api_url, args.json, &old, &by)
+            }
         },
     };
     code.into()

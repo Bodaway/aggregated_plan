@@ -245,6 +245,7 @@ aggregated-plan/
 |       |       |   +-- tag.rs
 |       |       |   +-- user.rs
 |       |       |   +-- common.rs     # Source, HalfDay, etc.
+|       |       |   +-- memory.rs     # R43-R44: semantic memory (migration 012)
 |       |       +-- rules/            # Business rules as pure functions
 |       |       |   +-- mod.rs
 |       |       |   +-- urgency.rs    # R10-R15: urgency calculation
@@ -252,6 +253,9 @@ aggregated-plan/
 |       |       |   +-- workload.rs   # R01-R03: capacity, half-day consumption
 |       |       |   +-- alerts.rs     # R16-R19: alert detection
 |       |       |   +-- dedup.rs      # R08-R09: similarity scoring
+|       |       |   +-- recall.rs     # R47-R48: FTS5 query building, recall scoring
+|       |       |   +-- memory_import.rs    # R54: frontmatter parsing, type mapping
+|       |       |   +-- memory_lifecycle.rs # R50-R53: accept/reject/merge/supersede
 |       |       +-- errors.rs         # Domain error types
 |       |
 |       +-- application/              # Use cases and trait definitions
@@ -268,11 +272,14 @@ aggregated-plan/
 |       |       |   +-- tag_repository.rs
 |       |       |   +-- sync_status_repository.rs
 |       |       |   +-- config_repository.rs
+|       |       |   +-- memory_repository.rs
 |       |       +-- services/         # External service trait definitions
 |       |       |   +-- mod.rs
 |       |       |   +-- jira_client.rs
 |       |       |   +-- outlook_client.rs
 |       |       |   +-- excel_client.rs
+|       |       |   +-- memory_retriever.rs  # Recall service (FTS5-backed)
+|       |       |   +-- memory_file_source.rs # Harness memory dir reader (READ-ONLY)
 |       |       +-- use_cases/        # Application use case functions
 |       |       |   +-- mod.rs
 |       |       |   +-- dashboard.rs
@@ -283,6 +290,7 @@ aggregated-plan/
 |       |       |   +-- deduplication.rs
 |       |       |   +-- alerts.rs
 |       |       |   +-- configuration.rs
+|       |       |   +-- memory.rs     # remember / get / search / queue / import / supersede
 |       |       +-- dto.rs            # Data transfer objects for use cases
 |       |       +-- errors.rs         # Application error types
 |       |
@@ -301,6 +309,7 @@ aggregated-plan/
 |       |       |   +-- tag_repo.rs
 |       |       |   +-- sync_status_repo.rs
 |       |       |   +-- config_repo.rs
+|       |       |   +-- memory_repo.rs # SqliteMemoryRepository + SqliteMemoryRetriever (FTS5)
 |       |       +-- connectors/       # External API clients
 |       |       |   +-- mod.rs
 |       |       |   +-- jira/
@@ -314,10 +323,12 @@ aggregated-plan/
 |       |       |   |   +-- types.rs
 |       |       |   |   +-- mapper.rs
 |       |       |   +-- excel/
+|       |       |   |   +-- mod.rs
+|       |       |   |   +-- client.rs
+|       |       |   |   +-- types.rs
+|       |       |   |   +-- mapper.rs
+|       |       |   +-- memory_files/  # FsMemoryFileSource (local dir, READ-ONLY)
 |       |       |       +-- mod.rs
-|       |       |       +-- client.rs
-|       |       |       +-- types.rs
-|       |       |       +-- mapper.rs
 |       |       +-- sync/             # Synchronization engine
 |       |       |   +-- mod.rs
 |       |       |   +-- engine.rs
@@ -367,6 +378,8 @@ aggregated-plan/
 |               +-- output.rs         # Exit codes, JSON helper
 |               +-- queries.rs        # GraphQLQuery derives, custom scalar mappings
 |               +-- commands.rs       # One fn per subcommand
+|               +-- timesheet_cmd.rs  # `aplan timesheet` / `aplan map` subcommands
+|               +-- memory_cmd.rs     # `aplan remember` / `aplan recall` subcommands
 |
 +-- frontend/                         # React application
 |   +-- package.json
@@ -465,6 +478,8 @@ aggregated-plan/
 +-- migrations/                       # Database migrations (sqlx)
 |   +-- sqlite/
 |   |   +-- 001_initial.sql
+|   |   +-- ...                       # 002-011: recurrence, worklog, Gryzzly, timesheet, mappings
+|   |   +-- 012_create_memories.sql   # Semantic memory + standalone FTS5 index
 |   +-- postgres/
 |       +-- 001_initial.sql
 |
@@ -1157,6 +1172,132 @@ pub enum DomainError {
 pub type DomainResult<T> = Result<T, DomainError>;
 ```
 
+#### 5.1.5 Règles de rappel (`rules/recall.rs`) — mémoire sémantique
+
+Deux responsabilités, toutes deux **pures** (aucune I/O, testables sans base) :
+
+**1. Construction de requête FTS5 — `build_match_query(user_input) -> Result<String, DomainError>`**
+
+La saisie brute ne doit **jamais** atteindre `MATCH` : `-`, `:` et `*` font partie de la syntaxe
+de requête FTS5, donc le vocabulaire quotidien fait *échouer* la recherche, pas seulement la
+manquer. Mesuré sur le SQLite embarqué :
+
+| Requête brute | Résultat |
+|---|---|
+| `MATCH 'AP-1234'` | `no such column: 1234` |
+| `MATCH 'Cartier: certificat'` | `no such column: Cartier` |
+| `MATCH '*'` | `unknown special query` |
+| `MATCH 'NOT'` | `fts5: syntax error near "NOT"` |
+| `MATCH 'engagements'` / `'engagement*'` | **0** ligne / 1 ligne |
+
+Algorithme :
+
+1. **découpage sur les espaces uniquement** (`split_whitespace`), puis rejet des groupes sans
+   aucun caractère alphanumérique ;
+2. **chaque groupe devient UNE phrase entre guillemets, ponctuation interne conservée**. Une
+   chaîne FTS5 entre guillemets est une phrase littérale : rien à l'intérieur n'est interprété
+   comme opérateur, et le tokenizer y découpe quand même des tokens **positionnés**. Un
+   guillemet saisi est échappé en le doublant (`a"b` → `"a""b"`), sinon il refermerait la phrase
+   et le reste du groupe atteindrait le parseur ;
+3. sur les groupes **purement alphabétiques** :
+   - suffixe `*` à partir de 4 caractères (`PREFIX_EXPANSION_MIN_LEN`) ;
+   - et, à partir de 5 caractères (`DEPLURALIZATION_MIN_LEN`) quand le groupe finit par `s` ou
+     `x`, **branche OR dépluralisée** : `("engagements"* OR "engagement"*)` ;
+4. **jointure par un `AND` explicite**.
+
+Une saisie sans aucun caractère alphanumérique retourne `DomainError::ValidationError`.
+
+Exemples : `AP-1234` → `"AP-1234"` · `Cartier : certificat` → `"Cartier"* AND "certificat"*` ·
+`wave 0` → `"wave"* AND "0"` · `engagements` → `("engagements"* OR "engagement"*)` ·
+`NOT` → `"NOT"` (littéral inoffensif).
+
+> **Pourquoi une seule phrase par groupe.** `"AP-1234"` exige que `AP` soit **immédiatement
+> suivi** de `1234`. Découper en `"AP" "1234"` produirait un AND **non positionné**, qui
+> matcherait un souvenir mentionnant `AP` et `1234` à vingt mots d'intervalle. Test de garde :
+> `a_jira_key_query_requires_adjacency`.
+
+> **Pourquoi les deux branches d'expansion.** Le suffixe `*` ne peut que *rallonger* le mot
+> saisi : `engagement*` retrouve « engagements », mais `engagements*` ne retrouve **pas**
+> « engagement » — or c'est ce second sens qui a été mesuré lors du spike. La branche OR
+> dépluralisée couvre donc le sens manquant. Une lemmatisation reste exclue (`porter` est un
+> stemmer anglais) et le tokenizer `trigram` n'est pas nécessaire.
+
+> ⚠️ **Le `AND` doit être explicite, et la branche OR parenthésée.** Deux pièges vérifiés contre
+> le SQLite embarqué :
+> 1. le AND **implicite** de FTS5 (simple espace) n'est défini qu'**entre phrases** ; dès qu'un
+>    groupe est un OR parenthésé, `"wave"* ("engagements"* OR …)` lève
+>    `fts5: syntax error near "("`. D'où la jointure par ` AND `
+>    (test `groups_are_joined_by_an_explicit_and`) ;
+> 2. FTS5 lie `AND` plus fort que `OR`, donc sans les parenthèses `a AND b* OR c*` se lirait
+>    `(a AND b*) OR c*` — la branche dépluralisée élargirait la requête au lieu de la préciser
+>    (test `a_depluralized_branch_still_requires_the_other_groups`).
+
+Une élision reste dans son groupe (`décision d'archi` → `"décision"* AND "d'archi"`) : le
+tokenizer y voit les tokens adjacents `d` + `archi`.
+
+**2. Scoring — `score()` / `rank()`**
+
+Somme pondérée de quatre signaux normalisés (pas de RRF : il n'y a qu'une liste classée en v1) :
+
+| Signal | Calcul |
+|---|---|
+| pertinence | `relevance_from_bm25(bm25)` = `(-bm25).max(0) / (1 + (-bm25).max(0))` |
+| bonus d'entité | projet 0,5 + tâche 0,3 + personne 0,2, plafonné à 1,0 |
+| récence | `0.5 ^ (âge_jours / 90)` sur `occurred_at`, plafonné à 1,0 dans le futur |
+| poids par type | `decision` = `commitment` 1,0 > `fact` 0,6 > `preference` 0,5 |
+
+> ⚠️ **`bm25()` retourne des valeurs NÉGATIVES et plus c'est négatif, meilleure est la
+> correspondance** (mesuré : `-0.000001`). La pertinence est donc `-bm25(…)`. Traiter bm25 comme
+> un score croissant **inverse le classement** : les meilleurs résultats sortent derniers. Le
+> signe est verrouillé par un test d'ordre explicite
+> (`better_bm25_match_ranks_first`), et les valeurs non négatives sont ramenées à zéro —
+> c'est précisément ce qui rend une erreur de signe détectable par ce test plutôt que
+> silencieuse.
+
+`rank()` trie par score décroissant avec un tri **stable** (les ex æquo gardent l'ordre d'entrée).
+
+`build_match_query_any()` est la même construction jointe par `OR` : utilisée par la détection de
+quasi-doublons, qui interroge avec un titre entier. Un `AND` y exigerait la présence de *tous* les
+mots du titre et manquerait donc exactement les reformulations qu'elle doit attraper ; la précision
+revient par le seuil de similarité.
+
+#### 5.1.6 Règles d'import (`rules/memory_import.rs`)
+
+- `parse_memory_file(contents)` — lecteur d'entête **ligne à ligne**, volontairement sans
+  dépendance YAML (le crate `domain` n'en prend aucune, et la forme de ces fichiers est fixe :
+  scalaires plats plus un bloc `metadata:` indenté). Retourne `name`, `description`,
+  `metadata.type`, `metadata.modified` et le corps markdown. Le découpage `clé: valeur` se fait sur
+  le **premier** deux-points, et une paire de guillemets est retirée. Absence d'entête →
+  `ValidationError`, que l'appelant traduit en « ignoré », jamais en échec global (`MEMORY.md`,
+  l'index du harness, est exactement ce cas).
+- `kind_for_metadata_type(t)` — `feedback` | `user` → `Preference` ; `project` | `reference` →
+  `Fact` ; inconnu ou absent → `Fact`. Jamais `Decision` ni `Commitment` : un import ne se promeut
+  pas lui-même.
+- `import_source_ref(name, file_name)` — `memory-file:<name>` (repli sur le nom de fichier). C'est
+  la **clé d'idempotence** : stable d'un run à l'autre, et insensible au renommage du fichier.
+
+#### 5.1.7 Règles de cycle de vie (`rules/memory_lifecycle.rs`)
+
+Transitions pures : chaque fonction reçoit les lignes concernées et retourne de **nouvelles**
+valeurs, si bien que tout le chemin d'écriture est testable sans base.
+
+| Fonction | Effet | Garde-fous |
+|---|---|---|
+| `accept(candidate, kind_override)` | `pending` → `active`, retypage facultatif | le candidat doit être `pending` ; les dates ne bougent pas |
+| `reject(candidate)` | `pending` → `rejected` (pierre tombale) | idem ; n'écrit **pas** `invalidated_at` |
+| `merge(candidate, target)` | **une** ligne survit : la cible garde identité et dates, prend la formulation du candidat, union des personnes | candidat `pending`, cible `active` et non invalidée, ids distincts, même utilisateur |
+| `supersede(old, successor, chain_from_successor, now)` | **deux** lignes survivent : `old` reçoit `invalidated_at` + `superseded_by` ; `successor` passe `active` | pas d'auto-supersession, pas de cycle, `old` actif et non invalidé, `successor` ni invalidé ni rejeté, même utilisateur |
+| `title_similarity(a, b)` | max(recouvrement de jetons, Levenshtein normalisé) | le recouvrement attrape la réécriture par réordonnancement, Levenshtein la faute de frappe ; aucun filtre de longueur, sinon `wave 0` et `wave 1` deviendraient identiques |
+| `near_duplicates(title, candidates)` | les candidats au-delà de `NEAR_DUPLICATE_THRESHOLD` (0,6), plus similaires d'abord | ne tente **pas** de distinguer reformulation et contradiction : jugement sémantique, laissé à l'humain |
+
+**La détection de cycle prend la chaîne en paramètre.** Parcourir `superseded_by` est une opération
+d'I/O ; le domaine ne fait que vérifier que `old` n'y figure pas. C'est le use case qui résout la
+chaîne via `MemoryRepository::supersession_chain`.
+
+Deux variantes d'erreur dédiées dans `DomainError` : `MemoryAlreadyInvalidated(id)` et
+`MemorySupersessionCycle { old, new }` — plus précises qu'un `ValidationError` et directement
+testables.
+
 ### 5.2 Application Layer (`crates/application`)
 
 The application layer defines **repository traits** (interfaces) and **use case functions**. It depends only on the domain layer.
@@ -1565,6 +1706,76 @@ pub async fn sync_excel(
 pub async fn sync_all(/* ... */) -> Result<Vec<SyncResult>, AppError> { /* ... */ }
 ```
 
+**`use_cases/memory.rs` — mémoire sémantique**
+
+```rust
+pub struct RememberInput { /* kind, title, body, occurred_at, source, source_ref,
+                             confirmed, project_id, task_id, stakeholders */ }
+
+pub async fn remember(
+    memory_repo: &dyn MemoryRepository,
+    user_id: UserId,
+    input: RememberInput,
+    now: DateTime<Utc>,
+) -> Result<Memory, AppError>;
+
+pub async fn get_memory(
+    memory_repo: &dyn MemoryRepository, user_id: UserId, id: MemoryId,
+) -> Result<Option<Memory>, AppError>;
+
+/// Reçoit la saisie BRUTE et la convertit via `domain::rules::recall::build_match_query`.
+/// C'est le seul point de conversion : une erreur ici signifie « rien de recherchable »,
+/// jamais « FTS5 a planté ».
+pub async fn search_memories(
+    retriever: &dyn MemoryRetriever,
+    user_id: UserId,
+    raw_query: &str,
+    context: RecallContext,
+    include_history: bool,
+    limit: u32,
+    now: DateTime<Utc>,
+) -> Result<Vec<ScoredMemory>, AppError>;
+
+pub async fn list_pending_memories(
+    memory_repo: &dyn MemoryRepository, user_id: UserId, limit: u32, offset: u32,
+) -> Result<Vec<Memory>, AppError>;
+```
+
+Import et cycle de vie (lots 2 et 3) :
+
+```rust
+/// Idempotent : ignore tout fichier dont la référence de provenance existe déjà.
+pub async fn import_memories(
+    memory_repo: &dyn MemoryRepository,
+    file_source: &dyn MemoryFileSource,
+    user_id: UserId,
+    directory: &str,
+    now: DateTime<Utc>,
+) -> Result<MemoryImportOutcome, AppError>;
+
+pub enum AcceptOutcome { Accepted(Memory), NearDuplicates { candidate: Memory, duplicates: Vec<Memory> } }
+
+/// Refuse l'ajout muet : sans `force`, un quasi-doublon actif renvoie
+/// `NearDuplicates` et **rien n'est écrit**.
+pub async fn accept_candidate(/* repo, retriever, user_id, id, kind_override, force, now */)
+    -> Result<AcceptOutcome, AppError>;
+pub async fn reject_candidate(/* repo, user_id, id */) -> Result<Memory, AppError>;
+pub async fn merge_candidate(/* repo, user_id, candidate_id, into_id */)
+    -> Result<MergeOutcome, AppError>;
+/// Sert `aplan inbox supersede` ET `aplan memory supersede`. Seul chemin qui
+/// écrit `invalidated_at`.
+pub async fn supersede_memory(/* repo, user_id, old_id, successor_id, now */)
+    -> Result<SupersedeOutcome, AppError>;
+```
+
+Traits associés : `repositories::MemoryRepository` (`create` / `find_by_id` / `list` /
+`update` / `apply_merge` / `apply_supersession` / `existing_source_refs` /
+`supersession_chain`), `services::MemoryRetriever` (`search(user_id, RecallQuery, now)`) et
+`services::MemoryFileSource` (`list(directory)`, **lecture seule** par contrat).
+`now` est injecté pour que la décroissance de récence reste déterministe en test.
+Bornes : `MEMORY_LIST_DEFAULT_LIMIT` 50 / `MEMORY_LIST_MAX_LIMIT` 500,
+`RECALL_DEFAULT_LIMIT` 10 / `RECALL_MAX_LIMIT` 100, `DUPLICATE_SCAN_LIMIT` 25.
+
 #### 5.2.4 Application Errors
 
 ```rust
@@ -1671,6 +1882,40 @@ fn task_row_to_domain(row: TaskRow) -> Task { /* ... */ }
 /// Map a domain Task to database values. Pure function.
 fn task_to_row(task: &Task) -> TaskRow { /* ... */ }
 ```
+
+**`database/memory_repo.rs` — `SqliteMemoryRepository` + `SqliteMemoryRetriever`**
+
+- `create` ouvre **une seule transaction** pour les trois écritures : `memories`,
+  `memory_stakeholders`, puis `memories_fts`. La table FTS est autonome et sans triggers : sans
+  cette atomicité, un souvenir pourrait exister sans jamais être retrouvable (§ 7.2).
+- La recherche joint l'index et la table :
+  `SELECT m.*, bm25(memories_fts) AS bm25_score FROM memories_fts JOIN memories m ON m.id = memories_fts.memory_id WHERE memories_fts MATCH ? AND m.user_id = ?`,
+  plus `AND m.invalidated_at IS NULL AND m.status = 'active'` sauf `include_history`,
+  puis `ORDER BY bm25_score ASC` (le plus négatif d'abord) `LIMIT ?`.
+- **Le SQL ne produit qu'une fenêtre de candidats**, pas le classement final : BM25 ignore les
+  bonus d'entité et de récence, donc le dépôt sur-échantillonne (`CANDIDATE_OVERFETCH = 5`,
+  plafond `CANDIDATE_MAX = 500`), puis délègue le tri à `domain::rules::recall::rank` et tronque
+  à la limite demandée.
+- Les personnes concernées sont chargées en **une** requête (`WHERE memory_id IN (…)`) **avant**
+  le scoring, faute de quoi le bonus d'entité lirait une liste vide.
+- Les pools de test activent `foreign_keys(true)` avec `max_connections(1)` (§ 7.2).
+- **Chaque chemin d'écriture réécrit la ligne FTS dans sa propre transaction.** Aucun trigger
+  n'existe : `update` fait `DELETE` + `INSERT` sur `memories_fts` (sinon un souvenir retitré
+  resterait trouvable sous son ancienne formulation, et introuvable sous la nouvelle), et tout
+  chemin de suppression doit effacer la ligne d'index à la main — **aucune clé étrangère ne la
+  relie** à `memories`.
+- `apply_merge` et `apply_supersession` sont chacun **une seule transaction** (R50).
+  `apply_supersession` écrit le **successeur d'abord** : `memories.superseded_by` est une vraie
+  clé étrangère, la ligne pointée doit donc satisfaire la contrainte dans la même transaction.
+- `supersession_chain` parcourt `superseded_by` avec un ensemble de visités et un plafond
+  (`SUPERSESSION_CHAIN_MAX` = 100) : une boucle déjà présente en base doit produire une chaîne
+  finie, pas une requête qui ne rend jamais la main.
+- `existing_source_refs` échappe les métacaractères `LIKE` (`%`, `_`, `\`) avec
+  `ESCAPE '\'` — un préfixe contenant `_` matcherait sinon n'importe quel caractère.
+- `connectors/memory_files/` — `FsMemoryFileSource` lit le dossier de mémoire du harness via
+  `tokio::fs` : uniquement les `*.md`, sous-dossiers exclus, triés par nom (l'ordre de `read_dir`
+  est indéfini), et un fichier illisible est ignoré avec un avertissement plutôt que de faire
+  échouer l'import entier. **Aucun appel d'écriture** : le dossier a déjà un écrivain (§ 7.2).
 
 #### 5.3.3 External API Clients
 
@@ -2430,8 +2675,84 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 |-----------|---------|-------------|
 | 002–007 | (voir `migrations/sqlite/`) | Récurrence, worklog, CLI, recherche, etc. |
 | **008** | `008_add_delegated_to.sql` | `ALTER TABLE tasks ADD COLUMN delegated_to TEXT;` — champ délégation (texte libre, user-owned, jamais écrasé par la sync). |
+| 009–011 | (voir `migrations/sqlite/`) | Catalogue Gryzzly, brouillons de feuille de temps, règles de mappage de signaux. |
+| **012** | `012_create_memories.sql` | Mémoire sémantique : `memories`, `memory_stakeholders`, table FTS5 autonome `memories_fts`, et `ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT` (filigrane de consolidation par entrée). Voir § 7.2. |
 
-### 7.2 Notes
+### 7.2 Migration `012_create_memories.sql` — mémoire sémantique
+
+```sql
+CREATE TABLE memories (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL,     -- decision | commitment | fact | preference
+  title          TEXT NOT NULL,
+  body           TEXT,
+
+  -- bi-temporel
+  occurred_at    TEXT NOT NULL,     -- quand ça a été décidé / promis
+  recorded_at    TEXT NOT NULL,     -- quand aplan l'a su
+  invalidated_at TEXT,              -- NULL = encore vrai
+  superseded_by  TEXT REFERENCES memories(id) ON DELETE SET NULL,
+
+  -- provenance
+  source         TEXT NOT NULL,     -- claude_session | manual | dreaming
+  source_ref     TEXT,              -- id d'entrée worklog / de session. PAS de FK.
+  status         TEXT NOT NULL,     -- pending | active | rejected
+
+  -- entity linking (par jointure)
+  project_id     TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  task_id        TEXT REFERENCES tasks(id)    ON DELETE SET NULL
+);
+
+CREATE TABLE memory_stakeholders (
+  memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  person    TEXT NOT NULL,
+  PRIMARY KEY (memory_id, person)
+);
+
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  memory_id UNINDEXED,
+  title,
+  body,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
+ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT;
+```
+
+**Choix de conception, et pourquoi ils ne doivent pas être « simplifiés » :**
+
+- **Table FTS5 autonome, pas `content='memories'`.** Vérifié sur le SQLite réellement embarqué
+  par `sqlx 0.8` : avec une table à contenu externe et sans triggers, après un `INSERT` dans la
+  table source, `MATCH` renvoie **0 ligne** tandis que `SELECT count(*) FROM …_fts` renvoie **1**.
+  Le contrôle d'intégrité le plus naturel masque donc la panne. La table autonome est écrite par
+  le dépôt **dans la même transaction** que la ligne `memories` — d'où l'absence de triggers.
+  Corollaire de test : **tout test d'indexation doit interroger par `MATCH`, jamais par `count(*)`.**
+- **`tokenize = 'unicode61 remove_diacritics 2'` explicite.** Le tokenizer plie les accents
+  (`limitee` retrouve « limitée »), mais ne fait **aucune lemmatisation** : `engagements` ne
+  retrouve pas « engagement ». D'où l'extension par préfixe côté domaine (voir § 5, `rules/recall.rs`).
+  `porter` est exclu : c'est un stemmer anglais, il dégraderait du texte français.
+- **`ON DELETE SET NULL` sur `project_id` / `task_id`** : supprimer une tâche ne doit pas effacer
+  le souvenir de la décision qui l'a produite. Corollaire assumé : `source_ref` ne porte **pas**
+  de FK (les `worklog_entries` disparaissent en CASCADE avec leur tâche), une chaîne de provenance
+  pendante étant préférable à un souvenir supprimé.
+- **Pas de colonne `confidence`** : remplacée par la porte de validation humaine (`status`).
+- **`consolidated_at` est un marqueur par entrée, pas un curseur global.** Un curseur horodaté
+  sauterait définitivement toute entrée insérée tardivement avec un `logged_at` antérieur, et
+  `sync_status` ne peut pas porter ce filigrane (`CHECK (source IN ('jira','outlook','excel','obsidian'))`,
+  et SQLite ne sait pas `ALTER` une contrainte `CHECK`).
+- **Les pools de test doivent activer `foreign_keys(true)`.** Le pool de production l'active
+  (`infrastructure/src/database/connection.rs`) mais un `SqlitePool::connect("sqlite::memory:")` nu
+  ne l'active pas : sans cela une violation de FK reste verte en TDD et n'apparaît qu'en runtime.
+  Les tests de `memory_repo.rs` construisent leur pool via `SqliteConnectOptions … .foreign_keys(true)`
+  avec `max_connections(1)` (une base en mémoire par connexion, sinon).
+- **Garde d'environnement** : `memory_repo.rs` porte un module de tests
+  `fts5_environment_guard` qui vérifie que FTS5 est créable avec ce tokenizer, que `bm25()` est
+  **négatif** (mesuré : `-0.000001`) et que l'ordre `ASC` place bien la meilleure correspondance
+  en tête. Une montée de version de `sqlx` qui perdrait FTS5 échouera ici, bruyamment, au lieu
+  de vider silencieusement tous les rappels.
+
+### 7.3 Notes
 
 - All IDs are UUIDs stored as TEXT (both SQLite and Postgres support this).
 - All datetimes are stored as ISO 8601 TEXT in SQLite. For the PostgreSQL migration, these become `TIMESTAMPTZ` columns.
@@ -2922,6 +3243,19 @@ type Query {
   # Timesheet operations
   timesheetDraft(date: Date!): ReconstructedDayGql!
   signalMappings: [MappingSignalGql!]!
+
+  # Semantic memory
+  memory(id: ID!): MemoryGql
+  # `q` est de la saisie BRUTE : `AP-1234` et `Cartier : certificat` sont sûrs ici.
+  recall(
+    q: String!
+    projectId: ID
+    taskId: ID
+    stakeholders: [String!]
+    includeHistory: Boolean! = false
+    limit: Int! = 10
+  ): [ScoredMemoryGql!]!
+  pendingMemories(limit: Int! = 50, offset: Int! = 0): [MemoryGql!]!
 }
 
 # --- Mutations ---
@@ -2985,6 +3319,88 @@ type Mutation {
   validateTimesheet(date: Date!): ReconstructedDayGql!
   markDayOff(date: Date!, scope: DayOffScopeGql!): ReconstructedDayGql!
   learnMapping(kind: MappingKindGql!, pattern: String!, branchPattern: String, gryzzlyProjectId: String!): Boolean!
+
+  # Semantic memory
+  remember(input: RememberInputGql!): MemoryGql!
+
+  # Validation queue. `accepted` est null quand `nearDuplicates` est non vide :
+  # rien n'a été écrit, l'appelant doit choisir merge/supersede ou forcer.
+  acceptMemory(id: ID!, kind: MemoryKindGql, force: Boolean! = false): AcceptMemoryResultGql!
+  rejectMemory(id: ID!): MemoryGql!
+  # Une seule ligne survit — efface l'historique.
+  mergeMemory(id: ID!, into: ID!): MergeMemoryResultGql!
+  # Les deux lignes survivent. SEUL chemin qui écrit invalidatedAt.
+  supersedeMemory(old: ID!, by: ID!): SupersedeMemoryResultGql!
+  # Import one-shot, idempotent, lecture seule sur le dossier.
+  importMemories(directory: String!): MemoryImportResultGql!
+}
+
+type AcceptMemoryResultGql {
+  accepted: MemoryGql          # null si bloqué par un quasi-doublon
+  nearDuplicates: [MemoryGql!]!
+}
+
+type MergeMemoryResultGql {
+  survivor: MemoryGql!
+  discardedId: ID!
+}
+
+type SupersedeMemoryResultGql {
+  invalidated: MemoryGql!      # porte invalidatedAt + supersededBy
+  successor: MemoryGql!
+}
+
+type SkippedMemoryFileGql {
+  fileName: String!
+  reason: String!              # already_imported | no_frontmatter | no_title
+}
+
+type MemoryImportResultGql {
+  imported: [MemoryGql!]!
+  skipped: [SkippedMemoryFileGql!]!
+  importedCount: Int!
+  skippedCount: Int!
+}
+
+# --- Semantic memory (migration 012) ---
+
+enum MemoryKindGql { DECISION COMMITMENT FACT PREFERENCE }
+enum MemorySourceGql { CLAUDE_SESSION MANUAL DREAMING }
+enum MemoryStatusGql { PENDING ACTIVE REJECTED }
+
+type MemoryGql {
+  id: ID!
+  kind: MemoryKindGql!
+  title: String!
+  body: String
+  occurredAt: DateTime!
+  recordedAt: DateTime!
+  invalidatedAt: DateTime      # null = encore vrai
+  supersededBy: ID
+  source: MemorySourceGql!
+  sourceRef: String
+  status: MemoryStatusGql!
+  projectId: ID
+  taskId: ID
+  stakeholders: [String!]!
+}
+
+type ScoredMemoryGql {
+  memory: MemoryGql!
+  score: Float!
+}
+
+input RememberInputGql {
+  kind: MemoryKindGql!
+  title: String!
+  body: String
+  occurredAt: DateTime
+  source: MemorySourceGql      # défaut : CLAUDE_SESSION
+  sourceRef: String
+  confirmed: Boolean           # défaut : false → status = PENDING
+  projectId: ID
+  taskId: ID
+  stakeholders: [String!]
 }
 
 # --- Subscriptions ---

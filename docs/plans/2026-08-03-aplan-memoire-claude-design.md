@@ -402,20 +402,70 @@ test doit fixer ce signe (deux souvenirs, celui qui matche le mieux en tête).
 
 Les deux-points et le tiret font partie de la syntaxe de requête FTS5. Ce sont les identifiants
 Jira et les libellés « Client : sujet » — c'est-à-dire le vocabulaire quotidien — qui font donc
-**planter** la recherche. Il faut une **fonction pure de construction de requête, en `domain`** :
-découpage sur les non-alphanumériques, mise entre guillemets de chaque unité (les guillemets FTS5
-produisent une requête de phrase, donc `"AP-1234"` matche bien `AP` suivi de `1234`), rejet des
-unités vides. Table de cas de test : `AP-1234`, `Cartier : certificat`, `wave 0`, chaîne vide,
-guillemet seul, `*`, `NOT`, `OR`.
+**planter** la recherche. Il faut une **fonction pure de construction de requête, en `domain`**.
 
-**3. Le tokenizer ne fait aucune lemmatisation — les pluriels français échouent.** Mesuré : un
-souvenir contenant « engagement pris envers Pierre » interrogé avec `engagements` renvoie **0
-ligne** ; avec `engagement*`, **1**. C'est un mode d'échec quotidien pour un secrétaire francophone
-(« mes engagements », « les décisions »). Correctif : la fonction ci-dessus **suffixe `*`** aux
-unités purement alphabétiques de ≥ 4 caractères (le seuil évite l'explosion de faux positifs sur les
-mots courts). Les accents, eux, sont bien pliés par `unicode61` — cette inquiétude était infondée.
-Si l'expansion par préfixe s'avère insuffisante, le repli documenté est le tokenizer `trigram`
-(coût : index nettement plus gros, et pas de requêtes par préfixe).
+**Découpage : sur les blancs, pas sur les non-alphanumériques.** Chaque groupe délimité par des
+blancs est émis comme **une seule phrase entre guillemets**, ponctuation interne comprise —
+`"AP-1234"`. FTS5 tokenise l'intérieur des guillemets et traite le tout comme une phrase, ce qui
+**préserve l'adjacence** : `AP` immédiatement suivi de `1234`. Découper sur les non-alphanumériques
+donnerait `"AP" "1234"`, soit un simple ET sans contrainte de position, qui matcherait un souvenir
+mentionnant `AP` et `1234` à vingt mots d'écart. Les groupes vides après nettoyage sont rejetés ; une
+entrée entièrement vide ou entièrement ponctuation renvoie une erreur de domaine plutôt qu'une
+requête vide.
+
+Table de cas de test : `AP-1234`, `Cartier : certificat`, `wave 0`, `engagements`, chaîne vide,
+guillemet seul, ponctuation seule, `*`, `NOT`, `OR`.
+
+**3. Le tokenizer ne fait aucune lemmatisation — les pluriels français échouent, et l'expansion par
+préfixe seule NE LES CORRIGE PAS.** C'est le correctif que la v2 avait annoncé à tort ; mesures à
+l'appui :
+
+| Souvenir indexé | Requête | Résultat |
+|---|---|---|
+| « engagement pris envers Pierre » | `engagements*` | **0** ← le cas réel |
+| « les engagements du trimestre » | `engagement*` | 1 |
+| « engagement pris envers Pierre » | `"engagements"* OR "engagement"*` | **1** |
+
+**`*` n'allonge que vers l'avant.** Or l'utilisateur tape naturellement le pluriel (« mes
+engagements », « les décisions ») contre des souvenirs rédigés au singulier : c'est précisément la
+direction que le préfixe ne couvre pas. La mesure du lot 0 (`engagement*` trouvant un document
+singulier) était un préfixe exact et ne prouvait rien sur ce cas. **Le repli `trigram` échoue pour la
+même raison** : une recherche par sous-chaîne ne trouve pas non plus un terme plus court que la
+requête.
+
+**Correctif retenu : dé-pluralisation côté requête.** Pour chaque groupe purement alphabétique de
+≥ 5 caractères se terminant par `s` ou `x`, la fonction émet les deux branches en `OR` :
+`("engagements"* OR "engagement"*)`. Les groupes plus courts ou non alphabétiques ne reçoivent que
+l'expansion par préfixe (≥ 4 caractères), le seuil évitant l'explosion de faux positifs sur les mots
+courts. Vérifié : ramène bien le souvenir au singulier sur une requête au pluriel.
+
+Les accents, eux, sont bien pliés par `unicode61 remove_diacritics 2` — cette inquiétude était
+infondée, et c'est le seul point du lot 0 qui n'a pas nécessité de correctif.
+
+**4. L'`AND` implicite de FTS5 ne franchit pas une parenthèse.** Découvert pendant
+l'implémentation du lot 1, et conséquence directe du correctif n° 3 : dès qu'une branche `OR`
+parenthésée apparaît, le simple espace entre groupes cesse d'être accepté. Mesuré :
+
+| Requête | Résultat |
+|---|---|
+| `"wave"* ("engagements"* OR "engagement"*)` | `fts5: syntax error near "("` |
+| `"wave"* AND ("engagements"* OR "engagement"*)` | 1 ligne |
+
+Les groupes doivent donc être joints par un ` AND ` **explicite**. Corollaire : les guillemets
+présents dans l'entrée utilisateur doivent être doublés, la ponctuation restant désormais à
+l'intérieur de la phrase.
+
+### Principe de test qui découle de ces quatre pièges
+
+Les pièges 1 à 3 étaient détectables par mesure a priori ; le piège 4 ne l'était pas, et il a
+échappé au design comme à la revue adversariale. La raison est structurelle : **un test pur qui
+compare des chaînes de sortie ne peut pas voir un rejet du parseur.** `build_match_query` peut
+produire exactement la chaîne attendue et cette chaîne être refusée par FTS5.
+
+D'où la règle : toute évolution du constructeur de requête doit être couverte **à deux niveaux** —
+un test pur en `domain` pour la forme de la chaîne, **et** un test en `infrastructure` qui exécute
+réellement le `MATCH` contre SQLite. Le second n'est pas une redondance du premier : il teste
+l'acceptation par le moteur, ce que le premier ne peut structurellement pas faire.
 
 **Pas de Reciprocal Rank Fusion en v1.** Le RRF fusionne *plusieurs listes classées* ; en v1 il n'y
 en a qu'une (BM25). Une somme pondérée de signaux normalisés suffit et se débogue. Le RRF est
@@ -491,7 +541,7 @@ la matière à afficher.
 | Index FTS vide et invisible | **élevé** | table FTS5 autonome, écrite dans la même transaction ; test qui interroge par `MATCH`, jamais par `count(*)` |
 | Recherche qui plante sur le vocabulaire quotidien | **élevé** | fonction pure de construction de requête + table de cas (`AP-1234`, `Client : sujet`, `*`, `NOT`, vide) |
 | Classement inversé par le signe de `bm25()` | moyen | `-bm25(...)`, signe fixé par un test d'ordre |
-| Pluriels français non trouvés | moyen | expansion par préfixe ≥ 4 caractères ; repli `trigram` |
+| Pluriels français non trouvés | moyen | **dé-pluralisation côté requête** (`OR` des deux branches) ; l'expansion par préfixe seule ne suffit pas, et `trigram` non plus (§ 7.1) |
 | ~~FTS5 absent du SQLite embarqué par `sqlx 0.8`~~ | **levé** | lot 0 exécuté : FTS5 et le tokenizer retenu fonctionnent sur la cible réelle (§ 11.4) |
 | Consolidation morte silencieusement (API arrêtée) | moyen | garde de joignabilité + âge du dernier passage affiché dans le brief + `systemd --user` |
 | Session planifiée bloquée par le hook interactif | moyen | prérequis du lot 5 : détection des sessions non interactives |

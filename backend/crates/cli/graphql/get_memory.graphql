@@ -1,0 +1,18 @@
+query GetMemory($id: ID!) {
+  memory(id: $id) {
+    id
+    kind
+    title
+    body
+    occurredAt
+    recordedAt
+    invalidatedAt
+    supersededBy
+    status
+    source
+    sourceRef
+    projectId
+    taskId
+    stakeholders
+  }
+}

@@ -1,0 +1,16 @@
+mutation InboxAccept($id: ID!, $kind: MemoryKindGql, $force: Boolean!) {
+  acceptMemory(id: $id, kind: $kind, force: $force) {
+    accepted {
+      id
+      kind
+      title
+      status
+    }
+    nearDuplicates {
+      id
+      kind
+      title
+      occurredAt
+    }
+  }
+}

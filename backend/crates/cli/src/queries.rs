@@ -265,3 +265,83 @@ pub struct SignalMappings;
     response_derives = "Debug, Clone"
 )]
 pub struct GryzzlyProjects;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/remember.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct Remember;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/get_memory.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct GetMemory;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/recall_memories.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct RecallMemories;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/list_projects.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ListProjects;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/pending_memories.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct PendingMemories;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/inbox_accept.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct InboxAccept;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/inbox_reject.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct InboxReject;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/inbox_merge.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct InboxMerge;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/memory_supersede.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct MemorySupersede;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/memory_import.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct MemoryImport;

@@ -4,6 +4,8 @@ pub mod excel_client;
 pub mod graph_token_provider;
 pub mod gryzzly_client;
 pub mod git_connector;
+pub mod memory_retriever;
+pub mod memory_file_source;
 
 pub use jira_client::*;
 pub use outlook_client::*;
@@ -11,3 +13,5 @@ pub use excel_client::*;
 pub use graph_token_provider::*;
 pub use gryzzly_client::*;
 pub use git_connector::*;
+pub use memory_retriever::*;
+pub use memory_file_source::*;

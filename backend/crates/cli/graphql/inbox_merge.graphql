@@ -1,0 +1,11 @@
+mutation InboxMerge($id: ID!, $into: ID!) {
+  mergeMemory(id: $id, into: $into) {
+    survivor {
+      id
+      kind
+      title
+      status
+    }
+    discardedId
+  }
+}

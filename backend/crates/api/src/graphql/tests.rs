@@ -721,6 +721,214 @@ impl application::services::git_connector::GitConnector for StubGitConnector {
     }
 }
 
+// ---- In-memory semantic-memory store (repository + retriever) ----
+
+/// Backs both `MemoryRepository` and `MemoryRetriever` off one Vec, so a resolver
+/// test can `remember` then `recall`.
+///
+/// `search` approximates FTS5: it pulls the quoted phrases out of the MATCH
+/// expression and substring-matches them, ignoring AND/OR structure. The real
+/// FTS semantics (adjacency, prefix expansion, de-pluralization) are covered by
+/// `infrastructure::database::memory_repo` against real SQLite — this stub only
+/// exists so the resolver plumbing is exercisable.
+#[derive(Default)]
+struct InMemoryMemoryStore {
+    rows: Mutex<Vec<Memory>>,
+}
+
+impl InMemoryMemoryStore {
+    /// Insert a row directly, for states the `remember` resolver cannot produce
+    /// (already invalidated, already rejected). Everything else goes through the
+    /// mutation.
+    fn seed(&self, memory: Memory) {
+        self.rows.lock().unwrap().push(memory);
+    }
+}
+
+#[async_trait]
+impl MemoryRepository for InMemoryMemoryStore {
+    async fn create(&self, memory: &Memory) -> Result<(), RepositoryError> {
+        self.rows.lock().unwrap().push(memory.clone());
+        Ok(())
+    }
+
+    async fn find_by_id(
+        &self,
+        id: MemoryId,
+        user_id: UserId,
+    ) -> Result<Option<Memory>, RepositoryError> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|m| m.id == id && m.user_id == user_id)
+            .cloned())
+    }
+
+    async fn list(
+        &self,
+        user_id: UserId,
+        filter: &MemoryListFilter,
+    ) -> Result<Vec<Memory>, RepositoryError> {
+        let rows = self.rows.lock().unwrap();
+        let mut found: Vec<Memory> = rows
+            .iter()
+            .filter(|m| m.user_id == user_id)
+            .filter(|m| match &filter.status {
+                None => true,
+                Some(wanted) => wanted.contains(&m.status),
+            })
+            .filter(|m| filter.include_invalidated || m.invalidated_at.is_none())
+            .cloned()
+            .collect();
+        found.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at));
+        Ok(found
+            .into_iter()
+            .skip(filter.offset as usize)
+            .take(filter.limit as usize)
+            .collect())
+    }
+
+    async fn update(&self, memory: &Memory) -> Result<(), RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|m| m.id == memory.id && m.user_id == memory.user_id)
+        {
+            *row = memory.clone();
+        }
+        Ok(())
+    }
+
+    async fn apply_merge(
+        &self,
+        survivor: &Memory,
+        discarded: MemoryId,
+        user_id: UserId,
+    ) -> Result<(), RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|m| m.id == survivor.id && m.user_id == survivor.user_id)
+        {
+            *row = survivor.clone();
+        }
+        rows.retain(|m| !(m.id == discarded && m.user_id == user_id));
+        Ok(())
+    }
+
+    async fn apply_supersession(
+        &self,
+        invalidated: &Memory,
+        successor: &Memory,
+    ) -> Result<(), RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        for updated in [invalidated, successor] {
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|m| m.id == updated.id && m.user_id == updated.user_id)
+            {
+                *row = updated.clone();
+            }
+        }
+        Ok(())
+    }
+
+    async fn existing_source_refs(
+        &self,
+        user_id: UserId,
+        prefix: &str,
+    ) -> Result<Vec<String>, RepositoryError> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.user_id == user_id)
+            .filter_map(|m| m.source_ref.clone())
+            .filter(|source_ref| source_ref.starts_with(prefix))
+            .collect())
+    }
+
+    async fn supersession_chain(
+        &self,
+        user_id: UserId,
+        from: MemoryId,
+    ) -> Result<Vec<MemoryId>, RepositoryError> {
+        let rows = self.rows.lock().unwrap();
+        let mut chain: Vec<MemoryId> = Vec::new();
+        let mut cursor = from;
+        // Stop on an already-seen id so a loop in the stored data terminates.
+        while let Some(next) = rows
+            .iter()
+            .find(|m| m.id == cursor && m.user_id == user_id)
+            .and_then(|m| m.superseded_by)
+        {
+            if next == from || chain.contains(&next) {
+                break;
+            }
+            chain.push(next);
+            cursor = next;
+        }
+        Ok(chain)
+    }
+}
+
+#[async_trait]
+impl application::services::MemoryRetriever for InMemoryMemoryStore {
+    async fn search(
+        &self,
+        user_id: UserId,
+        query: &application::services::RecallQuery,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<domain::rules::recall::ScoredMemory>, RepositoryError> {
+        let needles: Vec<String> = query
+            .match_query
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(|phrase| phrase.to_lowercase())
+            .collect();
+
+        let rows = self.rows.lock().unwrap();
+        let candidates: Vec<(Memory, f64)> = rows
+            .iter()
+            .filter(|m| m.user_id == user_id)
+            .filter(|m| query.include_history || m.is_recallable())
+            .filter(|m| {
+                let haystack =
+                    format!("{} {}", m.title, m.body.clone().unwrap_or_default()).to_lowercase();
+                needles.iter().any(|n| haystack.contains(n))
+            })
+            .cloned()
+            .map(|m| (m, -1.0))
+            .collect();
+
+        let mut ranked =
+            domain::rules::recall::rank(candidates, &query.context, now, &query.weights);
+        ranked.truncate(query.limit as usize);
+        Ok(ranked)
+    }
+}
+
+/// Memory-file source double. Empty by default; `files` can be seeded to exercise
+/// the `importMemories` resolver without touching a real directory.
+#[derive(Default)]
+struct StubMemoryFileSource {
+    files: Vec<application::services::MemoryFile>,
+}
+
+#[async_trait]
+impl application::services::MemoryFileSource for StubMemoryFileSource {
+    async fn list(
+        &self,
+        _directory: &str,
+    ) -> Result<Vec<application::services::MemoryFile>, application::errors::AppError> {
+        Ok(self.files.clone())
+    }
+}
+
 // ─── Test schema builder ───
 
 type TestSchema = Schema<CombinedQuery, CombinedMutation, EmptySubscription>;
@@ -733,6 +941,25 @@ fn build_test_schema_with(
     task_repo: Arc<dyn TaskRepository>,
     gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository>,
     timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository>,
+) -> TestSchema {
+    build_test_schema_with_memory(
+        worklog_repo,
+        task_repo,
+        gryzzly_catalog_repo,
+        timesheet_draft_repo,
+        Arc::new(InMemoryMemoryStore::default()),
+    )
+}
+
+/// Same as `build_test_schema_with`, plus an explicit semantic-memory store, so a
+/// memory test can keep a handle on it and seed rows the resolvers cannot produce
+/// (already invalidated, already rejected).
+fn build_test_schema_with_memory(
+    worklog_repo: Arc<dyn application::repositories::WorklogRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository>,
+    timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository>,
+    memory_store: Arc<InMemoryMemoryStore>,
 ) -> TestSchema {
     let default_user_id: UserId =
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
@@ -753,6 +980,11 @@ fn build_test_schema_with(
         Arc::new(InMemorySignalMappingRepository::new());
     let git_connector: Arc<dyn application::services::git_connector::GitConnector> =
         Arc::new(StubGitConnector);
+    // One store behind both traits, so `remember` is visible to `recall`.
+    let memory_repo: Arc<dyn MemoryRepository> = memory_store.clone();
+    let memory_retriever: Arc<dyn application::services::MemoryRetriever> = memory_store;
+    let memory_file_source: Arc<dyn application::services::MemoryFileSource> =
+        Arc::new(StubMemoryFileSource::default());
 
     Schema::build(
         CombinedQuery(QueryRoot),
@@ -773,6 +1005,9 @@ fn build_test_schema_with(
     .data(gryzzly_catalog_repo)
     .data(timesheet_draft_repo)
     .data(signal_mapping_repo)
+    .data(memory_repo)
+    .data(memory_retriever)
+    .data(memory_file_source)
     .data(git_connector)
     .data(graph_token_provider)
     .data(default_user_id)
@@ -786,6 +1021,19 @@ fn build_test_schema() -> TestSchema {
         Arc::new(InMemoryGryzzlyCatalogRepository::new()),
         Arc::new(InMemoryTimesheetDraftRepository::new()),
     )
+}
+
+/// Default dependencies, with the semantic-memory store handed back for seeding.
+fn build_memory_test_schema() -> (TestSchema, Arc<InMemoryMemoryStore>) {
+    let memory_store = Arc::new(InMemoryMemoryStore::default());
+    let schema = build_test_schema_with_memory(
+        Arc::new(InMemoryWorklogRepository::new()),
+        Arc::new(InMemoryTaskRepository::new()),
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+        memory_store.clone(),
+    );
+    (schema, memory_store)
 }
 
 // ─── Tests ───
@@ -2181,4 +2429,461 @@ async fn run_reconstruction_with_seeded_worklog_produces_project_line_and_fill()
     assert!(validate_res.errors.is_empty(), "errors: {:?}", validate_res.errors);
     let validate_data = validate_res.data.into_json().unwrap();
     assert_eq!(validate_data["validateTimesheet"]["status"], "VALIDATED");
+}
+
+// ─── Semantic Memory Tests (remember / recall / pendingMemories) ───
+
+/// The user the API injects into every resolver in tests. Seeded rows must carry
+/// it, otherwise the resolvers filter them out as another user's memories.
+fn memory_test_user() -> UserId {
+    Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID")
+}
+
+/// A memory in a state `remember` cannot return: rejected, or already invalidated.
+fn seeded_memory(
+    title: &str,
+    status: MemoryStatus,
+    invalidated_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Memory {
+    let mut memory = Memory::new(
+        memory_test_user(),
+        NewMemory {
+            kind: MemoryKind::Decision,
+            title: title.to_string(),
+            body: None,
+            occurred_at: None,
+            source: MemorySource::Manual,
+            source_ref: None,
+            status,
+            project_id: None,
+            task_id: None,
+            stakeholders: vec![],
+        },
+        chrono::Utc::now(),
+    )
+    .expect("valid fixture memory");
+    memory.invalidated_at = invalidated_at;
+    memory
+}
+
+/// Titles of the memories a `recall` document returned, best-first.
+fn recall_titles(hits: &serde_json::Value) -> Vec<&str> {
+    hits.as_array()
+        .expect("recall returns a list")
+        .iter()
+        .map(|hit| hit["memory"]["title"].as_str().expect("a title"))
+        .collect()
+}
+
+#[tokio::test]
+async fn remember_mutation_returns_the_memory_it_recorded() {
+    let schema = build_test_schema();
+    let result = schema
+        .execute(
+            r#"
+            mutation {
+                remember(input: {
+                    kind: DECISION
+                    title: "Wave 0 limitee au perimetre Microsoft AI"
+                    body: "Alternative ecartee: ouvrir la wave aux clients hors Microsoft"
+                    occurredAt: "2026-06-12T14:00:00Z"
+                    source: MANUAL
+                    sourceRef: "session-42"
+                    confirmed: true
+                }) {
+                    id
+                    kind
+                    title
+                    body
+                    occurredAt
+                    recordedAt
+                    invalidatedAt
+                    supersededBy
+                    source
+                    sourceRef
+                    status
+                    projectId
+                    taskId
+                    stakeholders
+                }
+            }
+        "#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let memory = &data["remember"];
+
+    assert_eq!(memory["kind"], "DECISION");
+    assert_eq!(memory["title"], "Wave 0 limitee au perimetre Microsoft AI");
+    assert_eq!(
+        memory["body"],
+        "Alternative ecartee: ouvrir la wave aux clients hors Microsoft"
+    );
+    assert_eq!(memory["source"], "MANUAL");
+    assert_eq!(memory["sourceRef"], "session-42");
+    assert!(
+        Uuid::parse_str(memory["id"].as_str().expect("an id")).is_ok(),
+        "id must be a UUID, got {:?}",
+        memory["id"]
+    );
+
+    // Compare instants, not the wire format of the datetime scalar.
+    let expected_occurred = chrono::DateTime::parse_from_rfc3339("2026-06-12T14:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let occurred: chrono::DateTime<chrono::Utc> = memory["occurredAt"]
+        .as_str()
+        .expect("occurredAt")
+        .parse()
+        .expect("occurredAt is a datetime");
+    assert_eq!(
+        occurred, expected_occurred,
+        "an explicitly backdated occurredAt must be kept"
+    );
+    let recorded: chrono::DateTime<chrono::Utc> = memory["recordedAt"]
+        .as_str()
+        .expect("recordedAt")
+        .parse()
+        .expect("recordedAt is a datetime");
+    assert!(
+        recorded > expected_occurred,
+        "recordedAt is when aplan learned it, so it must be later than the backdated occurredAt"
+    );
+
+    // A fresh memory is never part of the truth history and links nothing.
+    assert!(memory["invalidatedAt"].is_null());
+    assert!(memory["supersededBy"].is_null());
+    assert!(memory["projectId"].is_null());
+    assert!(memory["taskId"].is_null());
+    assert_eq!(memory["stakeholders"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn remember_records_stakeholders_and_recall_returns_them() {
+    let schema = build_test_schema();
+    let result = schema
+        .execute(
+            r#"
+            mutation {
+                remember(input: {
+                    kind: COMMITMENT
+                    title: "Certificat promis a Pierre pour la revue trimestrielle"
+                    stakeholders: ["Pierre", "Sophie"]
+                    confirmed: true
+                }) {
+                    kind
+                    stakeholders
+                }
+            }
+        "#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["remember"]["kind"], "COMMITMENT");
+    let people: Vec<&str> = data["remember"]["stakeholders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert_eq!(people, vec!["Pierre", "Sophie"]);
+
+    // The stakeholder side-table is a separate write path: check it survives a read.
+    let recalled = schema
+        .execute(r#"{ recall(q: "certificat") { memory { stakeholders } } }"#)
+        .await;
+    assert!(recalled.errors.is_empty(), "Errors: {:?}", recalled.errors);
+    let recalled_data = recalled.data.into_json().unwrap();
+    let hits = recalled_data["recall"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "expected the memory back, got {hits:?}");
+    let recalled_people: Vec<&str> = hits[0]["memory"]["stakeholders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert_eq!(recalled_people, vec!["Pierre", "Sophie"]);
+}
+
+#[tokio::test]
+async fn remember_links_a_project_and_leaves_the_task_unset() {
+    let schema = build_test_schema();
+    let project_id = Uuid::new_v4();
+    let query = format!(
+        r#"mutation {{
+            remember(input: {{
+                kind: FACT
+                title: "Le canal de distribution passe par le partenaire local"
+                projectId: "{project_id}"
+                confirmed: true
+            }}) {{ projectId taskId }}
+        }}"#
+    );
+    let result = schema.execute(&query).await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+
+    assert_eq!(data["remember"]["projectId"], project_id.to_string());
+    assert!(data["remember"]["taskId"].is_null());
+}
+
+#[tokio::test]
+async fn remember_rejects_a_malformed_project_id() {
+    let schema = build_test_schema();
+    let result = schema
+        .execute(
+            r#"mutation {
+                remember(input: { kind: FACT, title: "un fait", projectId: "not-a-uuid" }) { id }
+            }"#,
+        )
+        .await;
+    assert!(
+        !result.errors.is_empty(),
+        "an unparseable project ID must not be silently dropped"
+    );
+}
+
+/// The pending/active gate the whole "Claude proposes, the user validates" design
+/// rests on: no `confirmed` flag means the memory is a CANDIDATE, so it must be
+/// queued and must not be readable through the ordinary recall path.
+#[tokio::test]
+async fn remember_defaults_to_the_validation_queue_and_stays_out_of_recall() {
+    let schema = build_test_schema();
+    let result = schema
+        .execute(
+            r#"mutation {
+                remember(input: {
+                    kind: DECISION
+                    title: "Certificat Cartier a produire avant la livraison"
+                }) { status }
+            }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(
+        data["remember"]["status"], "PENDING",
+        "an unconfirmed memory must land in the queue, never straight into the facts"
+    );
+
+    let recalled = schema
+        .execute(r#"{ recall(q: "certificat") { memory { title } } }"#)
+        .await;
+    assert!(recalled.errors.is_empty(), "Errors: {:?}", recalled.errors);
+    let recalled_data = recalled.data.into_json().unwrap();
+    assert!(
+        recall_titles(&recalled_data["recall"]).is_empty(),
+        "a not-yet-validated memory must not surface in the default recall path, got {:?}",
+        recalled_data["recall"]
+    );
+}
+
+#[tokio::test]
+async fn remember_with_confirmed_skips_the_queue_and_is_recallable() {
+    let schema = build_test_schema();
+    let result = schema
+        .execute(
+            r#"mutation {
+                remember(input: {
+                    kind: DECISION
+                    title: "Certificat Cartier a produire avant la livraison"
+                    confirmed: true
+                }) { status }
+            }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["remember"]["status"], "ACTIVE");
+
+    let recalled = schema
+        .execute(r#"{ recall(q: "certificat") { memory { title status } } }"#)
+        .await;
+    assert!(recalled.errors.is_empty(), "Errors: {:?}", recalled.errors);
+    let recalled_data = recalled.data.into_json().unwrap();
+    assert_eq!(
+        recall_titles(&recalled_data["recall"]),
+        vec!["Certificat Cartier a produire avant la livraison"]
+    );
+}
+
+#[tokio::test]
+async fn recall_returns_nothing_for_a_term_absent_from_the_corpus() {
+    let schema = build_test_schema();
+    let stored = schema
+        .execute(
+            r#"mutation {
+                remember(input: {
+                    kind: DECISION
+                    title: "Certificat Cartier a produire avant la livraison"
+                    confirmed: true
+                }) { id }
+            }"#,
+        )
+        .await;
+    assert!(stored.errors.is_empty(), "Errors: {:?}", stored.errors);
+
+    let recalled = schema
+        .execute(r#"{ recall(q: "chiffrage") { memory { title } } }"#)
+        .await;
+    assert!(recalled.errors.is_empty(), "Errors: {:?}", recalled.errors);
+    let recalled_data = recalled.data.into_json().unwrap();
+    assert!(
+        recall_titles(&recalled_data["recall"]).is_empty(),
+        "an unrelated term must return nothing, got {:?}",
+        recalled_data["recall"]
+    );
+}
+
+/// `includeHistory` is the hard filter of the retrieval semantics seen from the
+/// API: by default a superseded memory is invisible, so the caller cannot answer
+/// today's question with yesterday's truth.
+#[tokio::test]
+async fn recall_hides_invalidated_memories_unless_history_is_requested() {
+    let (schema, store) = build_memory_test_schema();
+    store.seed(seeded_memory(
+        "Certificat delivre par le canal historique",
+        MemoryStatus::Active,
+        Some(chrono::Utc::now()),
+    ));
+    store.seed(seeded_memory(
+        "Certificat delivre par le nouveau canal",
+        MemoryStatus::Active,
+        None,
+    ));
+
+    let default_recall = schema
+        .execute(r#"{ recall(q: "certificat") { memory { title invalidatedAt } } }"#)
+        .await;
+    assert!(
+        default_recall.errors.is_empty(),
+        "Errors: {:?}",
+        default_recall.errors
+    );
+    let default_data = default_recall.data.into_json().unwrap();
+    assert_eq!(
+        recall_titles(&default_data["recall"]),
+        vec!["Certificat delivre par le nouveau canal"],
+        "the invalidated memory must be filtered out by default"
+    );
+    assert!(default_data["recall"][0]["memory"]["invalidatedAt"].is_null());
+
+    let with_history = schema
+        .execute(
+            r#"{ recall(q: "certificat", includeHistory: true) { memory { title invalidatedAt } } }"#,
+        )
+        .await;
+    assert!(
+        with_history.errors.is_empty(),
+        "Errors: {:?}",
+        with_history.errors
+    );
+    let history_data = with_history.data.into_json().unwrap();
+    let titles = recall_titles(&history_data["recall"]);
+    assert_eq!(titles.len(), 2, "includeHistory must lift the filter");
+    assert!(
+        titles.contains(&"Certificat delivre par le canal historique"),
+        "the invalidated memory must be reachable on demand, got {titles:?}"
+    );
+    assert!(
+        history_data["recall"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"]["invalidatedAt"].is_string()),
+        "the invalidation timestamp must be exposed so the caller can date the change"
+    );
+}
+
+/// Guards the limit default at the API boundary: an omitted `limit` must mean
+/// "the usual page", never "no rows at all".
+#[tokio::test]
+async fn recall_without_an_explicit_limit_returns_rows() {
+    let schema = build_test_schema();
+    for title in &[
+        "Certificat Cartier a produire avant la livraison",
+        "Certificat exige par le service juridique",
+        "Certificat archive dans l espace partage",
+    ] {
+        let query = format!(
+            r#"mutation {{ remember(input: {{ kind: FACT, title: "{title}", confirmed: true }}) {{ id }} }}"#
+        );
+        let stored = schema.execute(&query).await;
+        assert!(stored.errors.is_empty(), "Errors: {:?}", stored.errors);
+    }
+
+    let recalled = schema
+        .execute(r#"{ recall(q: "certificat") { memory { title } score } }"#)
+        .await;
+    assert!(recalled.errors.is_empty(), "Errors: {:?}", recalled.errors);
+    let recalled_data = recalled.data.into_json().unwrap();
+    assert_eq!(
+        recall_titles(&recalled_data["recall"]).len(),
+        3,
+        "every matching memory must come back when no limit is given, got {:?}",
+        recalled_data["recall"]
+    );
+}
+
+#[tokio::test]
+async fn recall_honours_an_explicit_limit() {
+    let schema = build_test_schema();
+    for title in &[
+        "Certificat Cartier a produire avant la livraison",
+        "Certificat exige par le service juridique",
+    ] {
+        let query = format!(
+            r#"mutation {{ remember(input: {{ kind: FACT, title: "{title}", confirmed: true }}) {{ id }} }}"#
+        );
+        let stored = schema.execute(&query).await;
+        assert!(stored.errors.is_empty(), "Errors: {:?}", stored.errors);
+    }
+
+    let recalled = schema
+        .execute(r#"{ recall(q: "certificat", limit: 1) { memory { title } } }"#)
+        .await;
+    assert!(recalled.errors.is_empty(), "Errors: {:?}", recalled.errors);
+    let recalled_data = recalled.data.into_json().unwrap();
+    assert_eq!(recall_titles(&recalled_data["recall"]).len(), 1);
+}
+
+#[tokio::test]
+async fn pending_memories_returns_only_the_queue() {
+    let (schema, store) = build_memory_test_schema();
+    store.seed(seeded_memory(
+        "candidat refuse par l utilisateur",
+        MemoryStatus::Rejected,
+        None,
+    ));
+    store.seed(seeded_memory(
+        "fait deja valide",
+        MemoryStatus::Active,
+        None,
+    ));
+    let stored = schema
+        .execute(
+            r#"mutation {
+                remember(input: { kind: DECISION, title: "candidat en attente" }) { id }
+            }"#,
+        )
+        .await;
+    assert!(stored.errors.is_empty(), "Errors: {:?}", stored.errors);
+
+    // No explicit limit: the default page must not be empty either.
+    let result = schema
+        .execute("{ pendingMemories { id title status } }")
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let rows = data["pendingMemories"].as_array().unwrap();
+
+    let titles: Vec<&str> = rows.iter().map(|m| m["title"].as_str().unwrap()).collect();
+    assert_eq!(
+        titles,
+        vec!["candidat en attente"],
+        "only pending candidates belong in the validation queue"
+    );
+    assert_eq!(rows[0]["status"], "PENDING");
 }

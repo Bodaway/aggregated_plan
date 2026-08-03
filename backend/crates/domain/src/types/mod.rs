@@ -12,6 +12,7 @@ pub mod recurrence;
 pub mod gryzzly;
 pub mod signal_mapping;
 pub mod timesheet;
+pub mod memory;
 
 pub use common::*;
 pub use task::*;
@@ -27,3 +28,4 @@ pub use recurrence::*;
 pub use gryzzly::*;
 pub use signal_mapping::*;
 pub use timesheet::*;
+pub use memory::*;

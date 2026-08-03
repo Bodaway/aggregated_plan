@@ -406,6 +406,88 @@ impl From<MappingKindGql> for types::MappingKind {
     }
 }
 
+/// What kind of thing a memory records.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum MemoryKindGql {
+    Decision,
+    Commitment,
+    Fact,
+    Preference,
+}
+impl From<types::MemoryKind> for MemoryKindGql {
+    fn from(k: types::MemoryKind) -> Self {
+        match k {
+            types::MemoryKind::Decision => MemoryKindGql::Decision,
+            types::MemoryKind::Commitment => MemoryKindGql::Commitment,
+            types::MemoryKind::Fact => MemoryKindGql::Fact,
+            types::MemoryKind::Preference => MemoryKindGql::Preference,
+        }
+    }
+}
+impl From<MemoryKindGql> for types::MemoryKind {
+    fn from(k: MemoryKindGql) -> Self {
+        match k {
+            MemoryKindGql::Decision => types::MemoryKind::Decision,
+            MemoryKindGql::Commitment => types::MemoryKind::Commitment,
+            MemoryKindGql::Fact => types::MemoryKind::Fact,
+            MemoryKindGql::Preference => types::MemoryKind::Preference,
+        }
+    }
+}
+
+/// Where a memory came from.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum MemorySourceGql {
+    ClaudeSession,
+    Manual,
+    Dreaming,
+}
+impl From<types::MemorySource> for MemorySourceGql {
+    fn from(s: types::MemorySource) -> Self {
+        match s {
+            types::MemorySource::ClaudeSession => MemorySourceGql::ClaudeSession,
+            types::MemorySource::Manual => MemorySourceGql::Manual,
+            types::MemorySource::Dreaming => MemorySourceGql::Dreaming,
+        }
+    }
+}
+impl From<MemorySourceGql> for types::MemorySource {
+    fn from(s: MemorySourceGql) -> Self {
+        match s {
+            MemorySourceGql::ClaudeSession => types::MemorySource::ClaudeSession,
+            MemorySourceGql::Manual => types::MemorySource::Manual,
+            MemorySourceGql::Dreaming => types::MemorySource::Dreaming,
+        }
+    }
+}
+
+/// Validation-queue status of a memory. Distinct from the truth lifecycle
+/// carried by `invalidatedAt` / `supersededBy`.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum MemoryStatusGql {
+    Pending,
+    Active,
+    Rejected,
+}
+impl From<types::MemoryStatus> for MemoryStatusGql {
+    fn from(s: types::MemoryStatus) -> Self {
+        match s {
+            types::MemoryStatus::Pending => MemoryStatusGql::Pending,
+            types::MemoryStatus::Active => MemoryStatusGql::Active,
+            types::MemoryStatus::Rejected => MemoryStatusGql::Rejected,
+        }
+    }
+}
+impl From<MemoryStatusGql> for types::MemoryStatus {
+    fn from(s: MemoryStatusGql) -> Self {
+        match s {
+            MemoryStatusGql::Pending => types::MemoryStatus::Pending,
+            MemoryStatusGql::Active => types::MemoryStatus::Active,
+            MemoryStatusGql::Rejected => types::MemoryStatus::Rejected,
+        }
+    }
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DayOffScopeGql {
     Full,
@@ -447,5 +529,50 @@ mod timesheet_enum_tests {
     #[test]
     fn day_off_scope_maps() {
         assert!(matches!(DayOffScope::from(DayOffScopeGql::Morning), DayOffScope::Morning));
+    }
+}
+
+#[cfg(test)]
+mod memory_enum_tests {
+    use super::*;
+
+    #[test]
+    fn memory_kind_roundtrips() {
+        for k in [
+            types::MemoryKind::Decision,
+            types::MemoryKind::Commitment,
+            types::MemoryKind::Fact,
+            types::MemoryKind::Preference,
+        ] {
+            let g: MemoryKindGql = k.into();
+            let back: types::MemoryKind = g.into();
+            assert_eq!(back, k);
+        }
+    }
+
+    #[test]
+    fn memory_source_roundtrips() {
+        for s in [
+            types::MemorySource::ClaudeSession,
+            types::MemorySource::Manual,
+            types::MemorySource::Dreaming,
+        ] {
+            let g: MemorySourceGql = s.into();
+            let back: types::MemorySource = g.into();
+            assert_eq!(back, s);
+        }
+    }
+
+    #[test]
+    fn memory_status_roundtrips() {
+        for s in [
+            types::MemoryStatus::Pending,
+            types::MemoryStatus::Active,
+            types::MemoryStatus::Rejected,
+        ] {
+            let g: MemoryStatusGql = s.into();
+            let back: types::MemoryStatus = g.into();
+            assert_eq!(back, s);
+        }
     }
 }

@@ -1,0 +1,14 @@
+query PendingMemories($limit: Int!) {
+  pendingMemories(limit: $limit) {
+    id
+    kind
+    title
+    body
+    occurredAt
+    recordedAt
+    source
+    projectId
+    taskId
+    stakeholders
+  }
+}

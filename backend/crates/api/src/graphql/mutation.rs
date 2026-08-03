@@ -7,8 +7,10 @@ use domain::types::{TimesheetStatus, UserId};
 use uuid::Uuid;
 
 use application::repositories::*;
+use application::services::{MemoryFileSource, MemoryRetriever};
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, gryzzly_assignment, priority, sync, task_management, worklog as worklog_uc};
+use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
 use infrastructure::connectors::excel::GraphExcelClient;
@@ -955,15 +957,16 @@ impl MutationRoot {
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        // If a validated/submitted draft already existed, reconstruct_timesheet did NOT
+        // If a validated/submitted/day-off draft already existed, reconstruct_timesheet did NOT
         // overwrite it — return the PERSISTED draft, not the recomputed (unpersisted) `day`,
-        // so the client never sees fresh allocations mislabeled as validated.
+        // so the client never sees fresh allocations mislabeled as validated or as a plain Draft
+        // on a day off.
         let existing = draft_repo
             .find_by_user_and_date(user_id, date)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         match existing {
-            Some(d) if matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted) => {
+            Some(d) if matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted | TimesheetStatus::DayOff) => {
                 Ok(ReconstructedDayGql::from_draft(d, cfg.rounding_hours))
             }
             _ => Ok(ReconstructedDayGql::from_reconstructed(
@@ -1070,6 +1073,174 @@ impl MutationRoot {
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(SignalMappingGql::from(mapping))
     }
+
+    /// Record a semantic memory (`aplan remember`).
+    ///
+    /// Lands in the validation queue (`PENDING`) unless `confirmed` is true.
+    /// Writes `memories` and its FTS row in one transaction, so the memory is
+    /// searchable as soon as this returns.
+    async fn remember(&self, ctx: &Context<'_>, input: RememberInputGql) -> Result<MemoryGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+
+        let project_id = match input.project_id {
+            None => None,
+            Some(id) => Some(
+                Uuid::parse_str(&id)
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid project ID: {e}")))?,
+            ),
+        };
+        let task_id = match input.task_id {
+            None => None,
+            Some(id) => Some(
+                Uuid::parse_str(&id)
+                    .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?,
+            ),
+        };
+
+        let memory = memory_uc::remember(
+            repo.as_ref(),
+            user_id,
+            memory_uc::RememberInput {
+                kind: input.kind.into(),
+                title: input.title,
+                body: input.body,
+                occurred_at: input.occurred_at,
+                source: input
+                    .source
+                    .map(Into::into)
+                    .unwrap_or(domain::types::MemorySource::ClaudeSession),
+                source_ref: input.source_ref,
+                confirmed: input.confirmed.unwrap_or(false),
+                project_id,
+                task_id,
+                stakeholders: input.stakeholders.unwrap_or_default(),
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(MemoryGql::from(memory))
+    }
+
+    /// Accept a pending candidate (`aplan inbox accept`).
+    ///
+    /// Refuses a silent add: if the candidate looks like an existing active
+    /// memory, nothing is written and the look-alikes come back in
+    /// `nearDuplicates` so the caller can choose `mergeMemory` or
+    /// `supersedeMemory`. `force` accepts anyway.
+    async fn accept_memory(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        kind: Option<MemoryKindGql>,
+        #[graphql(default = false)] force: bool,
+    ) -> Result<AcceptMemoryResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let retriever = ctx.data::<Arc<dyn MemoryRetriever>>()?;
+        let outcome = memory_uc::accept_candidate(
+            repo.as_ref(),
+            retriever.as_ref(),
+            user_id,
+            parse_memory_id(&id, "memory")?,
+            kind.map(Into::into),
+            force,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(AcceptMemoryResultGql::from(outcome))
+    }
+
+    /// Reject a pending candidate (`aplan inbox reject`). The row is kept as a
+    /// tombstone so the consolidation job cannot re-propose it.
+    async fn reject_memory(&self, ctx: &Context<'_>, id: ID) -> Result<MemoryGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let rejected =
+            memory_uc::reject_candidate(repo.as_ref(), user_id, parse_memory_id(&id, "memory")?)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(MemoryGql::from(rejected))
+    }
+
+    /// Merge a pending candidate into an active memory (`aplan inbox merge`):
+    /// same fact, better wording. ONE row survives — this ERASES history. Use
+    /// `supersedeMemory` when the fact itself changed.
+    async fn merge_memory(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        into: ID,
+    ) -> Result<MergeMemoryResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let outcome = memory_uc::merge_candidate(
+            repo.as_ref(),
+            user_id,
+            parse_memory_id(&id, "memory")?,
+            parse_memory_id(&into, "target memory")?,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(MergeMemoryResultGql::from(outcome))
+    }
+
+    /// Supersede an active memory by another (`aplan inbox supersede`,
+    /// `aplan memory supersede`): the fact CHANGED. BOTH rows survive, the old
+    /// one carrying `invalidatedAt` and `supersededBy`.
+    ///
+    /// This is the ONLY path that writes `invalidatedAt`.
+    async fn supersede_memory(
+        &self,
+        ctx: &Context<'_>,
+        old: ID,
+        by: ID,
+    ) -> Result<SupersedeMemoryResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let outcome = memory_uc::supersede_memory(
+            repo.as_ref(),
+            user_id,
+            parse_memory_id(&old, "memory")?,
+            parse_memory_id(&by, "successor memory")?,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(SupersedeMemoryResultGql::from(outcome))
+    }
+
+    /// One-shot import of the harness memory files (`aplan memory import <dir>`).
+    ///
+    /// Idempotent: a file already imported is skipped, so re-running imports
+    /// nothing. Read-only — aplan never writes into that directory.
+    async fn import_memories(
+        &self,
+        ctx: &Context<'_>,
+        directory: String,
+    ) -> Result<MemoryImportResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let source = ctx.data::<Arc<dyn MemoryFileSource>>()?;
+        let outcome = memory_uc::import_memories(
+            repo.as_ref(),
+            source.as_ref(),
+            user_id,
+            &directory,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(MemoryImportResultGql::from(outcome))
+    }
+}
+
+/// Parse a GraphQL `ID` into a memory UUID, naming the argument in the error.
+fn parse_memory_id(id: &ID, label: &str) -> Result<Uuid> {
+    Uuid::parse_str(id).map_err(|e| async_graphql::Error::new(format!("Invalid {label} ID: {e}")))
 }
 
 // ─── Recurrence conversion helpers ───────────────────────────────────────────

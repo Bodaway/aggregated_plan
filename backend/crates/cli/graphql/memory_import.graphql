@@ -1,0 +1,15 @@
+mutation MemoryImport($directory: String!) {
+  importMemories(directory: $directory) {
+    importedCount
+    skippedCount
+    imported {
+      id
+      kind
+      title
+    }
+    skipped {
+      fileName
+      reason
+    }
+  }
+}

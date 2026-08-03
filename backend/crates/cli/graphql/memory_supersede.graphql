@@ -1,0 +1,15 @@
+mutation MemorySupersede($old: ID!, $by: ID!) {
+  supersedeMemory(old: $old, by: $by) {
+    invalidated {
+      id
+      title
+      invalidatedAt
+      supersededBy
+    }
+    successor {
+      id
+      title
+      status
+    }
+  }
+}

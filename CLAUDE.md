@@ -140,7 +140,9 @@ Key mutations: `createTask`, `updateTask`, `deleteTask`, `updatePriority`, `star
 
 SQLite with migrations at `migrations/sqlite/`. All IDs are UUID strings (`TEXT`). Dates stored as ISO 8601 `TEXT`. Enums as lowercase `TEXT`. Booleans as `INTEGER` (0/1).
 
-11 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration.
+21 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, signal_project_mappings, memories, memory_stakeholders, memories_fts.
+
+Semantic memory (migration `012`): `memories` is bi-temporal (`occurred_at` / `invalidated_at` / `superseded_by`) with stakeholders in the junction table `memory_stakeholders`, and `memories_fts` is a **standalone** FTS5 index (no `content=`, no triggers) that the repository writes in the same transaction as the memory row.
 
 ## Key Domain Concepts
 

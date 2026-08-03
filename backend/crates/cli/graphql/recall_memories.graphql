@@ -1,0 +1,27 @@
+query RecallMemories(
+  $q: String!
+  $projectId: ID
+  $includeHistory: Boolean!
+  $limit: Int!
+) {
+  recall(
+    q: $q
+    projectId: $projectId
+    includeHistory: $includeHistory
+    limit: $limit
+  ) {
+    score
+    memory {
+      id
+      kind
+      title
+      body
+      occurredAt
+      invalidatedAt
+      status
+      projectId
+      taskId
+      stakeholders
+    }
+  }
+}

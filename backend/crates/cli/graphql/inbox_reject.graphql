@@ -1,0 +1,7 @@
+mutation InboxReject($id: ID!) {
+  rejectMemory(id: $id) {
+    id
+    title
+    status
+  }
+}

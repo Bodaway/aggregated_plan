@@ -40,6 +40,9 @@ pub struct SchemaDeps {
     pub gryzzly_catalog_repo: Arc<dyn GryzzlyCatalogRepository>,
     pub timesheet_draft_repo: Arc<dyn TimesheetDraftRepository>,
     pub signal_mapping_repo: Arc<dyn SignalMappingRepository>,
+    pub memory_repo: Arc<dyn MemoryRepository>,
+    pub memory_retriever: Arc<dyn application::services::MemoryRetriever>,
+    pub memory_file_source: Arc<dyn application::services::MemoryFileSource>,
     pub git_connector: Arc<dyn application::services::git_connector::GitConnector>,
     pub graph_token_provider: Arc<dyn application::services::GraphTokenProvider>,
 }
@@ -61,6 +64,9 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
         gryzzly_catalog_repo,
         timesheet_draft_repo,
         signal_mapping_repo,
+        memory_repo,
+        memory_retriever,
+        memory_file_source,
         git_connector,
         graph_token_provider,
     } = deps;
@@ -87,6 +93,9 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     .data(gryzzly_catalog_repo)
     .data(timesheet_draft_repo)
     .data(signal_mapping_repo)
+    .data(memory_repo)
+    .data(memory_retriever)
+    .data(memory_file_source)
     .data(git_connector)
     .data(graph_token_provider)
     .data(default_user_id)

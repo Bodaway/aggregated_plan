@@ -1,3 +1,16 @@
+"""
+Result of `acceptMemory`.
+
+When `accepted` is null, `nearDuplicates` is non-empty: the candidate looks
+like an existing active memory and was NOT added. The caller must choose
+`mergeMemory` (a rewording) or `supersedeMemory` (the fact changed), or retry
+with `force: true` — an add is never silent.
+"""
+type AcceptMemoryResultGql {
+	accepted: MemoryGql
+	nearDuplicates: [MemoryGql!]!
+}
+
 type ActivitySlotGql {
 	id: ID!
 	taskId: ID
@@ -282,6 +295,49 @@ type CombinedMutation {
 	Learn a signal→Gryzzly-project mapping rule (validated against the live catalog).
 	"""
 	learnMapping(kind: MappingKindGql!, pattern: String!, branchPattern: String, gryzzlyProjectId: ID!): SignalMappingGql!
+	"""
+	Record a semantic memory (`aplan remember`).
+	
+	Lands in the validation queue (`PENDING`) unless `confirmed` is true.
+	Writes `memories` and its FTS row in one transaction, so the memory is
+	searchable as soon as this returns.
+	"""
+	remember(input: RememberInputGql!): MemoryGql!
+	"""
+	Accept a pending candidate (`aplan inbox accept`).
+	
+	Refuses a silent add: if the candidate looks like an existing active
+	memory, nothing is written and the look-alikes come back in
+	`nearDuplicates` so the caller can choose `mergeMemory` or
+	`supersedeMemory`. `force` accepts anyway.
+	"""
+	acceptMemory(id: ID!, kind: MemoryKindGql, force: Boolean! = false): AcceptMemoryResultGql!
+	"""
+	Reject a pending candidate (`aplan inbox reject`). The row is kept as a
+	tombstone so the consolidation job cannot re-propose it.
+	"""
+	rejectMemory(id: ID!): MemoryGql!
+	"""
+	Merge a pending candidate into an active memory (`aplan inbox merge`):
+	same fact, better wording. ONE row survives — this ERASES history. Use
+	`supersedeMemory` when the fact itself changed.
+	"""
+	mergeMemory(id: ID!, into: ID!): MergeMemoryResultGql!
+	"""
+	Supersede an active memory by another (`aplan inbox supersede`,
+	`aplan memory supersede`): the fact CHANGED. BOTH rows survive, the old
+	one carrying `invalidatedAt` and `supersededBy`.
+	
+	This is the ONLY path that writes `invalidatedAt`.
+	"""
+	supersedeMemory(old: ID!, by: ID!): SupersedeMemoryResultGql!
+	"""
+	One-shot import of the harness memory files (`aplan memory import <dir>`).
+	
+	Idempotent: a file already imported is skipped, so re-running imports
+	nothing. Read-only — aplan never writes into that directory.
+	"""
+	importMemories(directory: String!): MemoryImportResultGql!
 }
 
 """
@@ -390,6 +446,23 @@ type CombinedQuery {
 	List the current user's enabled signal→project mapping rules.
 	"""
 	signalMappings: [SignalMappingGql!]!
+	"""
+	Deep recall of a single memory by id (`aplan recall <id>`).
+	"""
+	memory(id: ID!): MemoryGql
+	"""
+	Search memories from raw user input (`aplan recall --q "…"`), best-first.
+	
+	`q` is raw text: `AP-1234` and `Cartier : certificat` are safe here, they
+	are turned into a quoted FTS5 expression before touching the index.
+	`includeHistory` lifts the hard filter that hides invalidated and
+	not-yet-validated memories.
+	"""
+	recall(q: String!, projectId: ID, taskId: ID, stakeholders: [String!], includeHistory: Boolean! = false, limit: Int! = 10): [ScoredMemoryGql!]!
+	"""
+	Memory candidates awaiting validation (`status = PENDING`).
+	"""
+	pendingMemories(limit: Int! = 50, offset: Int! = 0): [MemoryGql!]!
 }
 
 enum ConfidenceGql {
@@ -617,6 +690,84 @@ type MeetingGql {
 }
 
 """
+A semantic memory: what must be known. Bi-temporal — `occurredAt` is when it
+became true, `invalidatedAt` when it stopped being true.
+"""
+type MemoryGql {
+	id: ID!
+	kind: MemoryKindGql!
+	title: String!
+	"""
+	The "why": context and dropped alternatives. Never a deadline.
+	"""
+	body: String
+	occurredAt: DateTime!
+	recordedAt: DateTime!
+	"""
+	`null` = still true. Written only by the supersede path.
+	"""
+	invalidatedAt: DateTime
+	supersededBy: ID
+	source: MemorySourceGql!
+	sourceRef: String
+	status: MemoryStatusGql!
+	projectId: ID
+	taskId: ID
+	"""
+	"Towards whom" / "with whom".
+	"""
+	stakeholders: [String!]!
+}
+
+"""
+Result of `importMemories`.
+"""
+type MemoryImportResultGql {
+	imported: [MemoryGql!]!
+	skipped: [SkippedMemoryFileGql!]!
+	importedCount: Int!
+	skippedCount: Int!
+}
+
+"""
+What kind of thing a memory records.
+"""
+enum MemoryKindGql {
+	DECISION
+	COMMITMENT
+	FACT
+	PREFERENCE
+}
+
+"""
+Where a memory came from.
+"""
+enum MemorySourceGql {
+	CLAUDE_SESSION
+	MANUAL
+	DREAMING
+}
+
+"""
+Validation-queue status of a memory. Distinct from the truth lifecycle
+carried by `invalidatedAt` / `supersededBy`.
+"""
+enum MemoryStatusGql {
+	PENDING
+	ACTIVE
+	REJECTED
+}
+
+"""
+Result of `mergeMemory`: ONE row survives, the other is gone. History is not
+preserved — that is what distinguishes a merge from a supersession.
+"""
+type MergeMemoryResultGql {
+	survivor: MemoryGql!
+	discardedId: ID!
+}
+
+"""
 ISO 8601 calendar date without timezone.
 Format: %Y-%m-%d
 
@@ -813,6 +964,49 @@ type RelatedItemGql {
 	itemId: ID!
 }
 
+"""
+Input for the `remember` mutation.
+"""
+input RememberInputGql {
+	kind: MemoryKindGql!
+	"""
+	One sentence: what is retained.
+	"""
+	title: String!
+	"""
+	The context: why, alternatives dropped (`--why` on the CLI).
+	"""
+	body: String
+	"""
+	When it was decided / promised. Defaults to now.
+	"""
+	occurredAt: DateTime
+	"""
+	Defaults to `CLAUDE_SESSION`.
+	"""
+	source: MemorySourceGql
+	"""
+	Worklog entry id, session id — free-form, no foreign key.
+	"""
+	sourceRef: String
+	"""
+	Skip the validation queue and store as `ACTIVE`.
+	"""
+	confirmed: Boolean
+	projectId: ID
+	taskId: ID
+	stakeholders: [String!]
+}
+
+"""
+A recall hit: the memory plus the score it obtained. Results come back
+best-first, so `score` is for debugging the ranking, not for re-sorting.
+"""
+type ScoredMemoryGql {
+	memory: MemoryGql!
+	score: Float!
+}
+
 type SearchableTaskGql {
 	id: ID!
 	title: String!
@@ -844,6 +1038,17 @@ type SignalMappingGql {
 }
 
 """
+A file the import did not turn into a memory, and why.
+"""
+type SkippedMemoryFileGql {
+	fileName: String!
+	"""
+	`already_imported` | `no_frontmatter` | `no_title`.
+	"""
+	reason: String!
+}
+
+"""
 GraphQL enum for task source.
 """
 enum SourceGql {
@@ -853,6 +1058,15 @@ enum SourceGql {
 	PERSONAL
 	OUTLOOK
 	GRYZZLY
+}
+
+"""
+Result of `supersedeMemory`: BOTH rows survive. `invalidated` carries the end
+of its validity and a pointer to `successor`.
+"""
+type SupersedeMemoryResultGql {
+	invalidated: MemoryGql!
+	successor: MemoryGql!
 }
 
 """

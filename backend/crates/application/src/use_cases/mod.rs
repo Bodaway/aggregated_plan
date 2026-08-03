@@ -11,3 +11,4 @@ pub mod worklog;
 pub mod recurrence;
 pub mod gryzzly_assignment;
 pub mod timesheet;
+pub mod memory;

@@ -6,7 +6,9 @@ use domain::types::UserId;
 use uuid::Uuid;
 
 use application::repositories::*;
+use application::services::MemoryRetriever;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
+use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::timesheet::load_reconstruction_config;
 
@@ -629,6 +631,86 @@ impl QueryRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(rows.into_iter().map(SignalMappingGql::from).collect())
+    }
+
+    /// Deep recall of a single memory by id (`aplan recall <id>`).
+    async fn memory(&self, ctx: &Context<'_>, id: ID) -> Result<Option<MemoryGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let memory_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid memory ID: {e}")))?;
+        let found = memory_uc::get_memory(repo.as_ref(), user_id, memory_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(found.map(MemoryGql::from))
+    }
+
+    /// Search memories from raw user input (`aplan recall --q "…"`), best-first.
+    ///
+    /// `q` is raw text: `AP-1234` and `Cartier : certificat` are safe here, they
+    /// are turned into a quoted FTS5 expression before touching the index.
+    /// `includeHistory` lifts the hard filter that hides invalidated and
+    /// not-yet-validated memories.
+    #[allow(clippy::too_many_arguments)]
+    async fn recall(
+        &self,
+        ctx: &Context<'_>,
+        q: String,
+        project_id: Option<ID>,
+        task_id: Option<ID>,
+        stakeholders: Option<Vec<String>>,
+        #[graphql(default = false)] include_history: bool,
+        #[graphql(default = 10)] limit: i32,
+    ) -> Result<Vec<ScoredMemoryGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let retriever = ctx.data::<Arc<dyn MemoryRetriever>>()?;
+        let context = domain::rules::recall::RecallContext {
+            project_id: parse_opt_id(project_id, "project")?,
+            task_id: parse_opt_id(task_id, "task")?,
+            stakeholders: stakeholders.unwrap_or_default(),
+        };
+        let hits = memory_uc::search_memories(
+            retriever.as_ref(),
+            user_id,
+            &q,
+            context,
+            include_history,
+            limit.max(0) as u32,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(hits.into_iter().map(ScoredMemoryGql::from).collect())
+    }
+
+    /// Memory candidates awaiting validation (`status = PENDING`).
+    async fn pending_memories(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 50)] limit: i32,
+        #[graphql(default = 0)] offset: i32,
+    ) -> Result<Vec<MemoryGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let rows = memory_uc::list_pending_memories(
+            repo.as_ref(),
+            user_id,
+            limit.max(0) as u32,
+            offset.max(0) as u32,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(rows.into_iter().map(MemoryGql::from).collect())
+    }
+}
+
+/// Parse an optional GraphQL `ID` into a UUID, naming the field in the error.
+fn parse_opt_id(id: Option<ID>, label: &str) -> Result<Option<Uuid>> {
+    match id {
+        None => Ok(None),
+        Some(raw) => Uuid::parse_str(&raw)
+            .map(Some)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid {label} ID: {e}"))),
     }
 }
 
