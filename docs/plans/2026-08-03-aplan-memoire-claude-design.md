@@ -471,7 +471,7 @@ la matière à afficher.
 
 | Lot | Contenu | Valeur livrée |
 |---|---|---|
-| **0** | **Spike FTS5** : `CREATE VIRTUAL TABLE … USING fts5` avec le SQLite embarqué par `sqlx 0.8`. Repli : `LIKE` + index, ou activation de la feature | lève le seul risque bloquant |
+| **0** | ~~**Spike FTS5**~~ — **FAIT, concluant** (§ 11.4) | risque bloquant levé, aucun repli nécessaire |
 | **1** | Migration `012` + domaine + **construction de requête FTS5 (fonction pure)** + règles de scoring **avec le signe de bm25 fixé par un test** (TDD) + repo (écriture FTS dans la même transaction, `foreign_keys(true)` dans les pools de test) + GraphQL + CLI `remember` / `recall` | le store existe et se cherche |
 | **2** | Import des 4 souvenirs actuels | corpus réel pour tester la récupération |
 | **3** | `aplan inbox` (accept / merge / **supersede** / reject) + `aplan memory supersede` | **l'invalidation existe** — sans ce lot, le bi-temporel est décoratif |
@@ -492,7 +492,7 @@ la matière à afficher.
 | Recherche qui plante sur le vocabulaire quotidien | **élevé** | fonction pure de construction de requête + table de cas (`AP-1234`, `Client : sujet`, `*`, `NOT`, vide) |
 | Classement inversé par le signe de `bm25()` | moyen | `-bm25(...)`, signe fixé par un test d'ordre |
 | Pluriels français non trouvés | moyen | expansion par préfixe ≥ 4 caractères ; repli `trigram` |
-| FTS5 absent du SQLite embarqué par `sqlx 0.8` | bloquant mais improbable | lot 0. FTS5 est présent dans le `sqlite3` du système, ce qui rend le passage probable |
+| ~~FTS5 absent du SQLite embarqué par `sqlx 0.8`~~ | **levé** | lot 0 exécuté : FTS5 et le tokenizer retenu fonctionnent sur la cible réelle (§ 11.4) |
 | Consolidation morte silencieusement (API arrêtée) | moyen | garde de joignabilité + âge du dernier passage affiché dans le brief + `systemd --user` |
 | Session planifiée bloquée par le hook interactif | moyen | prérequis du lot 5 : détection des sessions non interactives |
 | Qualité du prompt d'extraction de la consolidation | moyen | composant le plus incertain, mais hors chemin critique grâce au chemin 1 déterministe |
@@ -567,4 +567,28 @@ et les deux prérequis hors dépôt du lot 5.
   bonne frontière.
 - **La dégradation gracieuse chemin 1 / chemin 2** — réelle, une fois le constat n° 2 corrigé.
 - **Ne pas écrire dans `~/.claude/.../memory/`** — deux écrivains sur `MEMORY.md` divergeraient.
-- **Le lot 0 comme spike** — bon marché, et probablement concluant.
+- **Le lot 0 comme spike** — bon marché, et concluant (§ 11.4).
+
+### 11.4 Lot 0 — résultat du spike (exécuté le 2026-08-03)
+
+Exécuté contre le SQLite **réellement embarqué par `sqlx 0.8`**, et non contre le `sqlite3` du
+système. Les six constats de la revue sont reproduits sur la cible réelle, plus deux cas
+d'échappement supplémentaires.
+
+| Vérification | Résultat |
+|---|---|
+| `CREATE VIRTUAL TABLE … USING fts5(…)` | **OK — FTS5 est présent** |
+| `tokenize = 'unicode61 remove_diacritics 2'` | OK |
+| Accents pliés (doc « limitée », requête `limitee`) | 1 ligne → l'inquiétude sur les accents est bien infondée |
+| `MATCH 'engagements'` / `MATCH 'engagement*'` | **0** / 1 |
+| `bm25()` | **−0.000001** |
+| `MATCH 'AP-1234'` | `no such column: 1234` |
+| `MATCH 'Cartier: certificat'` | `no such column: Cartier` |
+| `MATCH '*'` | `unknown special query` |
+| `MATCH 'NOT'` | `fts5: syntax error near "NOT"` |
+| Contenu externe sans triggers | `MATCH` → **0**, `count(*)` → 1 |
+
+**Conséquences** : aucun repli `LIKE` nécessaire ; le tokenizer de § 5.2 est retenu tel quel ; la
+table de cas du query-builder (§ 7.1) doit inclure `*` et `NOT` en plus des cas déjà listés. Le spike
+était jetable et a été supprimé — ses assertions sont à reprendre comme tests permanents dans le
+lot 1 (garde d'environnement : FTS5 disponible, `bm25()` négatif).
