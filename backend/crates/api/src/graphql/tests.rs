@@ -835,6 +835,26 @@ impl MemoryRepository for InMemoryMemoryStore {
         Ok(())
     }
 
+    /// Mirrors the SQLite implementation: the user's memories whose id starts with
+    /// `prefix`, newest first, no status filter. The absence of that filter is the
+    /// point — a prefix unique among pending candidates but shared with an active
+    /// memory must still come back as two matches.
+    async fn find_by_id_prefix(
+        &self,
+        user_id: UserId,
+        prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<Memory>, RepositoryError> {
+        let rows = self.rows.lock().unwrap();
+        let mut found: Vec<Memory> = rows
+            .iter()
+            .filter(|m| m.user_id == user_id && m.id.to_string().starts_with(prefix))
+            .cloned()
+            .collect();
+        found.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at));
+        Ok(found.into_iter().take(limit as usize).collect())
+    }
+
     async fn existing_source_refs(
         &self,
         user_id: UserId,
@@ -2466,6 +2486,28 @@ fn seeded_memory(
     memory
 }
 
+/// A memory with a CHOSEN id, so a test can build two ids that share a prefix
+/// (ambiguity) or pin the short reference a verb is called with.
+fn seeded_memory_with_id(id: &str, title: &str, status: MemoryStatus) -> Memory {
+    let mut memory = seeded_memory(title, status, None);
+    memory.id = Uuid::parse_str(id).expect("valid fixture UUID");
+    memory
+}
+
+/// Read one seeded row back out of the store, to assert what a mutation wrote —
+/// or, for the rejection paths, that it wrote nothing.
+fn stored_memory(store: &InMemoryMemoryStore, id: &str) -> Memory {
+    let wanted = Uuid::parse_str(id).expect("valid fixture UUID");
+    store
+        .rows
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|m| m.id == wanted)
+        .cloned()
+        .expect("the seeded memory is still in the store")
+}
+
 /// Titles of the memories a `recall` document returned, best-first.
 fn recall_titles(hits: &serde_json::Value) -> Vec<&str> {
     hits.as_array()
@@ -2886,4 +2928,246 @@ async fn pending_memories_returns_only_the_queue() {
         "only pending candidates belong in the validation queue"
     );
     assert_eq!(rows[0]["status"], "PENDING");
+}
+
+// ─── Short references on the mutating verbs ───
+//
+// `brief` prints `[m:7c1]` and `inbox` lists candidates: a short handle is the
+// only id a user ever sees. A verb that reads with it but refuses it to WRITE
+// forces a 36-character UUID to be retyped on the commands run several times a
+// morning — so every id argument resolves the same way `memory(id:)` does.
+
+#[tokio::test]
+async fn accept_memory_takes_the_short_reference_the_inbox_displays() {
+    let (schema, store) = build_memory_test_schema();
+    let id = "7c1a0000-0000-0000-0000-000000000001";
+    store.seed(seeded_memory_with_id(
+        id,
+        "Certificat Cartier a produire avant la livraison",
+        MemoryStatus::Pending,
+    ));
+
+    let result = schema
+        .execute(r#"mutation { acceptMemory(id: "m:7c1") { accepted { id status } } }"#)
+        .await;
+
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["acceptMemory"]["accepted"]["id"], id);
+    assert_eq!(data["acceptMemory"]["accepted"]["status"], "ACTIVE");
+    assert_eq!(stored_memory(&store, id).status, MemoryStatus::Active);
+}
+
+#[tokio::test]
+async fn reject_memory_takes_a_short_reference() {
+    let (schema, store) = build_memory_test_schema();
+    let id = "7c1b0000-0000-0000-0000-000000000001";
+    store.seed(seeded_memory_with_id(
+        id,
+        "Suggestion sans interet a ecarter",
+        MemoryStatus::Pending,
+    ));
+
+    let result = schema
+        .execute(r#"mutation { rejectMemory(id: "7c1b") { id status } }"#)
+        .await;
+
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["rejectMemory"]["id"], id);
+    assert_eq!(data["rejectMemory"]["status"], "REJECTED");
+    assert_eq!(stored_memory(&store, id).status, MemoryStatus::Rejected);
+}
+
+#[tokio::test]
+async fn merge_memory_resolves_a_short_reference_on_both_arguments() {
+    let (schema, store) = build_memory_test_schema();
+    let candidate = "aa1a0000-0000-0000-0000-000000000001";
+    let target = "bb1b0000-0000-0000-0000-000000000001";
+    store.seed(seeded_memory_with_id(
+        candidate,
+        "Le certificat passe par le canal partenaire",
+        MemoryStatus::Pending,
+    ));
+    store.seed(seeded_memory_with_id(
+        target,
+        "Certificat via partenaire",
+        MemoryStatus::Active,
+    ));
+
+    let result = schema
+        .execute(r#"mutation { mergeMemory(id: "aa1a", into: "m:bb1b") { survivor { id title } discardedId } }"#)
+        .await;
+
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(
+        data["mergeMemory"]["survivor"]["id"], target,
+        "the target keeps its identity; both short references must have resolved"
+    );
+    assert_eq!(
+        data["mergeMemory"]["survivor"]["title"],
+        "Le certificat passe par le canal partenaire"
+    );
+    assert_eq!(data["mergeMemory"]["discardedId"], candidate);
+}
+
+#[tokio::test]
+async fn supersede_memory_resolves_a_short_reference_on_both_arguments() {
+    let (schema, store) = build_memory_test_schema();
+    let old = "cc1c0000-0000-0000-0000-000000000001";
+    let successor = "dd1d0000-0000-0000-0000-000000000001";
+    store.seed(seeded_memory_with_id(
+        old,
+        "Livraison prevue en juin",
+        MemoryStatus::Active,
+    ));
+    store.seed(seeded_memory_with_id(
+        successor,
+        "Livraison reportee en septembre",
+        MemoryStatus::Pending,
+    ));
+
+    let result = schema
+        .execute(
+            r#"mutation { supersedeMemory(old: "cc1c", by: "m:dd1d") {
+                invalidated { id invalidatedAt supersededBy }
+                successor { id status }
+            } }"#,
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["supersedeMemory"]["invalidated"]["id"], old);
+    assert!(data["supersedeMemory"]["invalidated"]["invalidatedAt"].is_string());
+    assert_eq!(
+        data["supersedeMemory"]["invalidated"]["supersededBy"],
+        successor
+    );
+    assert_eq!(data["supersedeMemory"]["successor"]["status"], "ACTIVE");
+}
+
+/// The half-write that would corrupt the bitemporal chain: both references are
+/// resolved BEFORE anything is written, so a bad second argument leaves the first
+/// row untouched.
+#[tokio::test]
+async fn supersede_memory_writes_nothing_when_the_successor_reference_is_unknown() {
+    let (schema, store) = build_memory_test_schema();
+    let old = "ee1e0000-0000-0000-0000-000000000001";
+    store.seed(seeded_memory_with_id(
+        old,
+        "Livraison prevue en juin",
+        MemoryStatus::Active,
+    ));
+
+    let result = schema
+        .execute(r#"mutation { supersedeMemory(old: "ee1e", by: "fff9") { successor { id } } }"#)
+        .await;
+
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("Not found:"),
+        "an unknown reference must be reported as not found (exit code 2), got {message:?}"
+    );
+    let untouched = stored_memory(&store, old);
+    assert!(
+        untouched.invalidated_at.is_none() && untouched.superseded_by.is_none(),
+        "the old row must not be invalidated when the successor could not be resolved"
+    );
+}
+
+#[tokio::test]
+async fn merge_memory_writes_nothing_when_the_target_reference_is_unknown() {
+    let (schema, store) = build_memory_test_schema();
+    let candidate = "1a2a0000-0000-0000-0000-000000000001";
+    store.seed(seeded_memory_with_id(
+        candidate,
+        "Reformulation d un fait connu",
+        MemoryStatus::Pending,
+    ));
+
+    let result = schema
+        .execute(r#"mutation { mergeMemory(id: "1a2a", into: "9f9f") { survivor { id } } }"#)
+        .await;
+
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("Not found:"),
+        "an unknown merge target must be reported as not found, got {message:?}"
+    );
+    assert_eq!(
+        stored_memory(&store, candidate).status,
+        MemoryStatus::Pending,
+        "the candidate must still be waiting in the queue"
+    );
+}
+
+/// Ambiguity is decided against the WHOLE store, not just the queue: a prefix
+/// that is unique among pending candidates today would otherwise start pointing
+/// somewhere else the day an older memory shares it.
+#[tokio::test]
+async fn accept_memory_refuses_an_ambiguous_reference_and_names_every_candidate() {
+    let (schema, store) = build_memory_test_schema();
+    let candidate = "ab010000-0000-0000-0000-000000000001";
+    let unrelated_active = "ab010000-0000-0000-0000-000000000002";
+    store.seed(seeded_memory_with_id(
+        candidate,
+        "Candidat en attente de tri",
+        MemoryStatus::Pending,
+    ));
+    store.seed(seeded_memory_with_id(
+        unrelated_active,
+        "Fait deja valide qui partage le prefixe",
+        MemoryStatus::Active,
+    ));
+
+    let result = schema
+        .execute(r#"mutation { acceptMemory(id: "ab01") { accepted { id } } }"#)
+        .await;
+
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("Ambiguous memory reference"),
+        "an ambiguous reference must be refused (exit code 3), got {message:?}"
+    );
+    assert!(
+        message.contains(candidate) && message.contains(unrelated_active),
+        "the candidates must be named so the caller can pick one, got {message:?}"
+    );
+    assert_eq!(
+        stored_memory(&store, candidate).status,
+        MemoryStatus::Pending,
+        "an ambiguous reference must not accept anything"
+    );
+}
+
+#[tokio::test]
+async fn reject_memory_reports_an_unknown_reference_as_not_found() {
+    let (schema, _store) = build_memory_test_schema();
+    let result = schema
+        .execute(r#"mutation { rejectMemory(id: "9ab9") { id } }"#)
+        .await;
+
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("Not found:"),
+        "an unknown id must be a not-found (exit code 2), never a generic failure, got {message:?}"
+    );
 }

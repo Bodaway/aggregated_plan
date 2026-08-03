@@ -132,6 +132,69 @@ pub async fn resolve_memory(
     })
 }
 
+/// How many candidates an ambiguity message names before it stops listing.
+const AMBIGUITY_LISTED: usize = 5;
+
+/// Resolve a reference that MUST designate exactly one memory — the form every
+/// verb that WRITES needs.
+///
+/// [`resolve_memory`] reports three outcomes and a mutation can act on only one
+/// of them, so the other two become errors here, before any write. Sharing this
+/// with the read path is the whole point: the brief prints `[m:7c1]` and the inbox
+/// lists candidates, so a short handle is the only id a user ever sees. A verb
+/// that accepts one to read but demands a 36-character UUID to act would make
+/// every accept, reject, merge and supersede a copy-paste exercise.
+pub async fn resolve_memory_id(
+    memory_repo: &dyn MemoryRepository,
+    user_id: UserId,
+    token: &str,
+) -> Result<MemoryId, AppError> {
+    match resolve_memory(memory_repo, user_id, token).await? {
+        MemoryLookup::Found(memory) => Ok(memory.id),
+        MemoryLookup::NotFound => Err(AppError::NotFound(format!("memory `{token}`"))),
+        MemoryLookup::Ambiguous(candidates) => Err(AppError::Ambiguous(
+            describe_ambiguous_memory(token, &candidates),
+        )),
+    }
+}
+
+/// Resolve the two references a verb that touches two memories was given, BEFORE
+/// either is used.
+///
+/// A merge deletes a row and a supersession writes the invalidation link, so
+/// resolving lazily — first reference, first write, then discover the second
+/// reference is unusable — would leave a half-applied change: a memory hidden
+/// with no successor, or a candidate erased into nothing.
+pub async fn resolve_memory_id_pair(
+    memory_repo: &dyn MemoryRepository,
+    user_id: UserId,
+    first: &str,
+    second: &str,
+) -> Result<(MemoryId, MemoryId), AppError> {
+    let first_id = resolve_memory_id(memory_repo, user_id, first).await?;
+    let second_id = resolve_memory_id(memory_repo, user_id, second).await?;
+    Ok((first_id, second_id))
+}
+
+/// One wording for "this reference matches several memories", shared by the read
+/// and the write paths so a reader never has to learn two.
+///
+/// One candidate per line, ids in full: the caller is being asked to pick, and it
+/// can only pick from something it can copy. Capped at [`AMBIGUITY_LISTED`] so a
+/// one-character prefix cannot flood a terminal.
+pub fn describe_ambiguous_memory(token: &str, candidates: &[Memory]) -> String {
+    let listed = candidates
+        .iter()
+        .take(AMBIGUITY_LISTED)
+        .map(|memory| format!("  - {} {}", memory.id, memory.title))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Ambiguous memory reference `{token}`: {} matches; please add more characters\n{listed}",
+        candidates.len()
+    )
+}
+
 /// Search memories from RAW user input (`aplan recall --q "…"`).
 ///
 /// This is the only place the raw string is turned into an FTS5 expression: a
@@ -851,6 +914,143 @@ mod tests {
                 .await
                 .expect("resolves"),
             MemoryLookup::NotFound
+        );
+    }
+
+    // ─── Resolving for the verbs that WRITE ───────────────────────────────
+
+    /// Same as `remembered_with_id`, but the row stays in the validation queue.
+    async fn pending_with_id(
+        repo: &InMemoryMemoryRepository,
+        user_id: UserId,
+        id: &str,
+        title: &str,
+    ) -> Memory {
+        let mut queued = remembered_with_id(repo, user_id, id, title).await;
+        queued.status = MemoryStatus::Pending;
+        repo.update(&queued).await.expect("requeues the row");
+        queued
+    }
+
+    #[tokio::test]
+    async fn a_short_reference_resolves_for_a_verb_that_writes() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let m = remembered_with_id(
+            &repo,
+            uid,
+            "7c1e4b2a-0000-0000-0000-000000000000",
+            "Wave 0 limitée",
+        )
+        .await;
+
+        for token in ["m:7c1", "[m:7c1]", "7c1", "M:7C1", &m.id.to_string()] {
+            assert_eq!(
+                resolve_memory_id(&repo, uid, token)
+                    .await
+                    .unwrap_or_else(|e| panic!("token {token} failed: {e}")),
+                m.id,
+                "for token {token}"
+            );
+        }
+    }
+
+    /// The exit-code contract: an id nobody has is "not found" (2), never a
+    /// generic failure (1) — and that holds for a garbage token too, which is a
+    /// reference that matches nothing rather than a broken command.
+    #[tokio::test]
+    async fn an_unknown_reference_is_a_not_found_for_a_verb_that_writes() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        remembered_with_id(&repo, uid, "7c1e4b2a-0000-0000-0000-000000000000", "un choix").await;
+
+        for token in ["fff", "", "%", "m:", "'; DROP", &Uuid::new_v4().to_string()] {
+            let err = resolve_memory_id(&repo, uid, token)
+                .await
+                .expect_err("must not resolve");
+            assert!(
+                matches!(err, AppError::NotFound(_)),
+                "token {token:?} gave {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_reference_names_its_candidates_instead_of_writing() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let a =
+            remembered_with_id(&repo, uid, "7c1a0000-0000-0000-0000-000000000000", "choix A").await;
+        let b =
+            remembered_with_id(&repo, uid, "7c1b0000-0000-0000-0000-000000000000", "choix B").await;
+
+        let err = resolve_memory_id(&repo, uid, "m:7c1")
+            .await
+            .expect_err("an ambiguous reference must not resolve");
+        let AppError::Ambiguous(message) = &err else {
+            panic!("expected an ambiguity, got {err:?}");
+        };
+        assert!(
+            message.contains(&a.id.to_string()) && message.contains(&b.id.to_string()),
+            "both candidates must be named so the caller can pick one: {message}"
+        );
+        assert!(
+            message.contains("choix A") && message.contains("choix B"),
+            "an id alone does not say which memory it is: {message}"
+        );
+
+        // A longer prefix disambiguates, and then the write may proceed.
+        assert_eq!(
+            resolve_memory_id(&repo, uid, "m:7c1b")
+                .await
+                .expect("a longer prefix resolves"),
+            b.id
+        );
+    }
+
+    /// Ambiguity is decided against the WHOLE store. Were it decided against the
+    /// queue only, a prefix unique among today's candidates would silently start
+    /// pointing at a different memory as soon as one was accepted.
+    #[tokio::test]
+    async fn ambiguity_is_decided_against_the_whole_store_not_just_the_queue() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        pending_with_id(&repo, uid, "ab010000-0000-0000-0000-000000000001", "candidat").await;
+        remembered_with_id(&repo, uid, "ab010000-0000-0000-0000-000000000002", "fait actif").await;
+
+        let err = resolve_memory_id(&repo, uid, "ab01")
+            .await
+            .expect_err("the active memory shares the prefix");
+        assert!(
+            matches!(err, AppError::Ambiguous(_)),
+            "a prefix shared with an already-active memory is ambiguous, got {err:?}"
+        );
+    }
+
+    /// A verb that touches two memories resolves both first: the second reference
+    /// failing must stop the whole thing, not leave a half-applied change.
+    #[tokio::test]
+    async fn a_pair_of_references_resolves_only_when_both_are_usable() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let old =
+            remembered_with_id(&repo, uid, "cc1c0000-0000-0000-0000-000000000000", "juin").await;
+        let new =
+            pending_with_id(&repo, uid, "dd1d0000-0000-0000-0000-000000000000", "septembre").await;
+
+        assert_eq!(
+            resolve_memory_id_pair(&repo, uid, "cc1c", "m:dd1d")
+                .await
+                .expect("both references resolve"),
+            (old.id, new.id)
+        );
+
+        let err = resolve_memory_id_pair(&repo, uid, "cc1c", "fff9")
+            .await
+            .expect_err("an unusable second reference must fail the pair");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "expected a not-found, got {err:?}"
         );
     }
 

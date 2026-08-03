@@ -1054,6 +1054,17 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
   survivent** ; l'ancienne reçoit sa fin de validité et un pointeur vers la nouvelle.
 - `aplan inbox reject <id>` : le candidat devient `rejected` et **la ligne est conservée** comme
   pierre tombale, afin que la consolidation ne le re-propose pas chaque soir.
+- **Tous ces identifiants acceptent la référence courte affichée** (`m:7c1`, `[m:7c1]`, `7c1`) au
+  même titre que l'UUID complet — y compris `--into` et `--replaces`. Le brief et l'inbox
+  n'affichent qu'une référence courte : c'est le seul identifiant que l'utilisateur voit passer, et
+  ces commandes sont celles qu'il lance plusieurs fois par matinée. Un identifiant qui se lit mais
+  ne s'utilise pas obligerait à recopier 36 caractères à la main.
+- Un préfixe qui correspond à **plusieurs** souvenirs retourne le code « ambigu » (3) et **liste
+  les candidats**, sans rien écrire. L'ambiguïté est évaluée sur **l'ensemble des souvenirs**, pas
+  seulement sur la file : un préfixe unique parmi les candidats du jour ne doit pas se mettre à
+  désigner un autre souvenir dès qu'un candidat est accepté.
+- Pour les commandes à **deux identifiants** (`merge`, `supersede`), les deux sont résolus **avant
+  toute écriture** : une résolution paresseuse laisserait une opération à moitié appliquée.
 - Un identifiant inconnu retourne le code de sortie « non trouvé » (2) ; une acceptation bloquée
   par un quasi-doublon retourne « précondition non satisfaite » (4).
 
@@ -1067,6 +1078,10 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 
 **Critères d'acceptation :**
 - `aplan memory supersede <ancien> --by <nouveau>` révise un souvenir déjà actif, hors file.
+- **Les deux identifiants acceptent la référence courte** (`m:7c1`, `7c1`) ou l'UUID complet, et
+  sont **tous les deux résolus avant toute écriture** : une supersession à moitié appliquée
+  masquerait un fait sans successeur. Inconnu → code 2 ; ambigu → code 3 avec la liste des
+  candidats, rien n'étant écrit.
 - L'ancien souvenir **disparaît du rappel** immédiatement, et **réapparaît avec `--history`**,
   marqué comme n'étant plus vrai, avec la référence de son successeur.
 - Les **chaînes sont légales** : A remplacé par B, puis B remplacé par C. Chaque révision porte
@@ -1231,6 +1246,7 @@ sa planification qui reste à faire.
 | **R49** | **Indexation atomique** : le souvenir et sa ligne d'index plein texte sont écrits dans la même transaction. Un souvenir enregistré est donc toujours retrouvable, ou pas enregistré du tout. |
 | **R55** | **Budget du brief** : le rendu de `aplan brief` est plafonné à **40 lignes** et chaque ligne à **140 caractères**, plafonds appliqués dans le domaine et vérifiés par un test sur une entrée pathologique. Cette sortie entre dans le contexte du modèle à chaque session : un rendu non borné est une fuite de tokens permanente, pas un défaut cosmétique. La troncature est **toujours annoncée** (`(8, 6 affichés)`) et s'applique de la section la moins utile vers la plus utile : les décisions cèdent avant les engagements, qui cèdent avant les échéances. |
 | **R56** | **Composition du brief** : sont retenus les souvenirs `commitment` (les plus anciens d'abord — un engagement pris il y a trois mois est celui qu'on a oublié) et `decision` (les plus récents d'abord — la question est « où en est le projet »), filtrés par R45. Le projet courant est celui de la tâche en cours de suivi, sauf `--project` explicite ; sans projet en focus, toutes les décisions actives sont montrées plutôt qu'une section vide. Les échéances sont classées par proximité d'aujourd'hui, dédoublonnées par titre, et purgées des fixtures de test. **Chaque souvenir affiché porte une référence courte réutilisable par `aplan recall`** : c'est tout le mécanisme de récupération à la demande. |
+| **R58** | **Un seul résolveur d'identifiant de souvenir**. Tout argument d'identifiant — en lecture (`recall`) comme en écriture (`inbox accept`/`reject`/`merge --into`/`supersede --replaces`, `memory supersede --by`) — accepte l'UUID complet **ou** la référence courte affichée (`m:7c1`, `[m:7c1]`, `7c1`), et passe par la **même** résolution. Sans cette règle, le produit affiche une référence courte, laisse *lire* avec elle, puis la refuse dès qu'on veut *agir* : les commandes les plus fréquentes deviennent des recopies de 36 caractères. Un préfixe ambigu est refusé (code 3, candidats listés) et l'ambiguïté est évaluée sur **tout le magasin**, pas sur la seule file — sinon un préfixe unique aujourd'hui désignerait un autre souvenir demain. Un identifiant introuvable est un « non trouvé » (code 2), jamais une erreur générique. Les verbes à deux identifiants résolvent **les deux avant d'écrire** (corollaire de R50). |
 | **R57** | **Visibilité de la panne de consolidation** : le brief affiche l'âge du dernier passage de consolidation dès qu'il dépasse **3 jours**, et « jamais exécutée » si aucun passage n'est enregistré. L'horodatage vit dans la table `configuration` (clé `memory.consolidation.last_run`) et non dans `sync_status`, dont la colonne `source` est sous une contrainte `CHECK` fermée. Une clé absente ou invalide se lit comme « jamais exécutée » : le brief rend la panne visible, il ne tombe pas avec elle. |
 
 ---

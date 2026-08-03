@@ -1843,6 +1843,27 @@ pub async fn resolve_memory(
     memory_repo: &dyn MemoryRepository, user_id: UserId, token: &str,
 ) -> Result<MemoryLookup, AppError>;
 
+/// Même résolution, pour les verbes qui ÉCRIVENT : les deux issues sur lesquelles
+/// une mutation ne peut pas agir deviennent des erreurs, avant toute écriture.
+/// Inconnu -> `AppError::NotFound` (code 2) ; ambigu -> `AppError::Ambiguous`
+/// (code 3) portant la liste des candidats. Résolveur UNIQUE, partagé avec le
+/// chemin de lecture : la référence courte est le seul identifiant affiché, donc
+/// tout verbe qui prend un identifiant doit l'accepter.
+pub async fn resolve_memory_id(
+    memory_repo: &dyn MemoryRepository, user_id: UserId, token: &str,
+) -> Result<MemoryId, AppError>;
+
+/// Les DEUX références d'un verbe qui touche deux souvenirs, résolues avant que
+/// l'une d'elles ne serve : une supersession à moitié appliquée masquerait un fait
+/// sans successeur, et une fusion effacerait un candidat dans le vide.
+pub async fn resolve_memory_id_pair(
+    memory_repo: &dyn MemoryRepository, user_id: UserId, first: &str, second: &str,
+) -> Result<(MemoryId, MemoryId), AppError>;
+
+/// Formulation UNIQUE de l'ambiguïté (un candidat par ligne, identifiants
+/// complets, plafonnée à 5), partagée par la lecture et l'écriture.
+pub fn describe_ambiguous_memory(token: &str, candidates: &[Memory]) -> String;
+
 // use_cases/brief.rs
 pub const CONSOLIDATION_LAST_RUN_KEY: &str = "memory.consolidation.last_run";
 pub const BRIEF_SCAN_LIMIT: u32 = 200;
@@ -1897,6 +1918,16 @@ pub enum AppError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    /// Une référence courte correspond à plusieurs lignes : agir dessus serait
+    /// deviner. Porte le message complet, candidats compris — l'appelant l'affiche
+    /// tel quel (le CLI l'affiche sur stderr et sort en code 3). Pas de préfixe
+    /// dans le rendu : le message EST le contrat inter-couches.
+    #[error("{0}")]
+    Ambiguous(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -3454,6 +3485,13 @@ type Mutation {
 
   # Validation queue. `accepted` est null quand `nearDuplicates` est non vide :
   # rien n'a été écrit, l'appelant doit choisir merge/supersede ou forcer.
+  #
+  # TOUT argument d'identifiant ci-dessous accepte un UUID complet OU la référence
+  # courte affichée par le brief et l'inbox (`m:7c1`, `7c1`) : c'est le seul
+  # identifiant que l'utilisateur voit passer. Même résolution que `memory(id:)`
+  # (application::use_cases::memory::resolve_memory_id). Inconnu -> « Not found »,
+  # ambigu -> erreur listant les candidats. Pour les verbes à DEUX identifiants,
+  # les deux sont résolus AVANT toute écriture.
   acceptMemory(id: ID!, kind: MemoryKindGql, force: Boolean! = false): AcceptMemoryResultGql!
   rejectMemory(id: ID!): MemoryGql!
   # Une seule ligne survit — efface l'historique.

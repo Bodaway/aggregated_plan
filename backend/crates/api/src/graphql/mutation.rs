@@ -1130,6 +1130,9 @@ impl MutationRoot {
     /// memory, nothing is written and the look-alikes come back in
     /// `nearDuplicates` so the caller can choose `mergeMemory` or
     /// `supersedeMemory`. `force` accepts anyway.
+    ///
+    /// `id` takes a full UUID **or** the short reference the brief and the inbox
+    /// display (`m:7c1`, `7c1`) — see [`resolve_memory_arg`].
     async fn accept_memory(
         &self,
         ctx: &Context<'_>,
@@ -1140,11 +1143,12 @@ impl MutationRoot {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
         let retriever = ctx.data::<Arc<dyn MemoryRetriever>>()?;
+        let candidate_id = resolve_memory_arg(repo.as_ref(), user_id, &id).await?;
         let outcome = memory_uc::accept_candidate(
             repo.as_ref(),
             retriever.as_ref(),
             user_id,
-            parse_memory_id(&id, "memory")?,
+            candidate_id,
             kind.map(Into::into),
             force,
             chrono::Utc::now(),
@@ -1156,19 +1160,24 @@ impl MutationRoot {
 
     /// Reject a pending candidate (`aplan inbox reject`). The row is kept as a
     /// tombstone so the consolidation job cannot re-propose it.
+    ///
+    /// `id` takes a full UUID or a short reference.
     async fn reject_memory(&self, ctx: &Context<'_>, id: ID) -> Result<MemoryGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
-        let rejected =
-            memory_uc::reject_candidate(repo.as_ref(), user_id, parse_memory_id(&id, "memory")?)
-                .await
-                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let candidate_id = resolve_memory_arg(repo.as_ref(), user_id, &id).await?;
+        let rejected = memory_uc::reject_candidate(repo.as_ref(), user_id, candidate_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(MemoryGql::from(rejected))
     }
 
     /// Merge a pending candidate into an active memory (`aplan inbox merge`):
     /// same fact, better wording. ONE row survives — this ERASES history. Use
     /// `supersedeMemory` when the fact itself changed.
+    ///
+    /// Both arguments take a full UUID or a short reference, and BOTH are resolved
+    /// before the merge is applied.
     async fn merge_memory(
         &self,
         ctx: &Context<'_>,
@@ -1177,14 +1186,14 @@ impl MutationRoot {
     ) -> Result<MergeMemoryResultGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
-        let outcome = memory_uc::merge_candidate(
-            repo.as_ref(),
-            user_id,
-            parse_memory_id(&id, "memory")?,
-            parse_memory_id(&into, "target memory")?,
-        )
-        .await
-        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let (candidate_id, target_id) =
+            memory_uc::resolve_memory_id_pair(repo.as_ref(), user_id, &id, &into)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let outcome =
+            memory_uc::merge_candidate(repo.as_ref(), user_id, candidate_id, target_id)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(MergeMemoryResultGql::from(outcome))
     }
 
@@ -1193,6 +1202,10 @@ impl MutationRoot {
     /// one carrying `invalidatedAt` and `supersededBy`.
     ///
     /// This is the ONLY path that writes `invalidatedAt`.
+    ///
+    /// Both arguments take a full UUID or a short reference, and BOTH are resolved
+    /// before anything is written: half a supersession would either hide a fact
+    /// with no successor, or leave two contradictory truths active.
     async fn supersede_memory(
         &self,
         ctx: &Context<'_>,
@@ -1201,11 +1214,15 @@ impl MutationRoot {
     ) -> Result<SupersedeMemoryResultGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let (old_id, successor_id) =
+            memory_uc::resolve_memory_id_pair(repo.as_ref(), user_id, &old, &by)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         let outcome = memory_uc::supersede_memory(
             repo.as_ref(),
             user_id,
-            parse_memory_id(&old, "memory")?,
-            parse_memory_id(&by, "successor memory")?,
+            old_id,
+            successor_id,
             chrono::Utc::now(),
         )
         .await
@@ -1238,9 +1255,16 @@ impl MutationRoot {
     }
 }
 
-/// Parse a GraphQL `ID` into a memory UUID, naming the argument in the error.
-fn parse_memory_id(id: &ID, label: &str) -> Result<Uuid> {
-    Uuid::parse_str(id).map_err(|e| async_graphql::Error::new(format!("Invalid {label} ID: {e}")))
+/// Resolve a memory-reference argument into a concrete id, BEFORE any write.
+///
+/// Delegates to the one resolver the read path uses, so a mutation accepts
+/// exactly what `memory(id:)` accepts: a full UUID, or the short reference the
+/// brief renders. Unknown reports "Not found", ambiguous reports every candidate
+/// — the CLI turns those two messages into exit codes 2 and 3.
+async fn resolve_memory_arg(repo: &dyn MemoryRepository, user_id: UserId, id: &ID) -> Result<Uuid> {
+    memory_uc::resolve_memory_id(repo, user_id, id.as_str())
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))
 }
 
 // ─── Recurrence conversion helpers ───────────────────────────────────────────

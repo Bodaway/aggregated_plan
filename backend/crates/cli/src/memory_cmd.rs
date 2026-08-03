@@ -583,6 +583,38 @@ mod tests {
         assert_eq!(date_part(""), "");
     }
 
+    /// The exit-code contract, seen from the CLI. GraphQL carries no error code —
+    /// only a message — so these two wordings ARE the contract between the API and
+    /// the skill: they are what `AppError::NotFound` and `AppError::Ambiguous`
+    /// render for a memory reference that resolved to nothing, or to several
+    /// memories. If either drifts, `aplan inbox accept 7c1` starts exiting 1 and
+    /// the caller can no longer tell "no such memory" from "which one did you
+    /// mean".
+    #[test]
+    fn a_reference_that_fails_to_resolve_maps_onto_the_exit_code_contract() {
+        assert_eq!(
+            exit_code_for(&ClientError::Graphql(
+                "Not found: memory `9ab9`".to_string()
+            )),
+            ExitCode::NotFound
+        );
+        assert_eq!(
+            exit_code_for(&ClientError::Graphql(
+                "Ambiguous memory reference `ab01`: 2 matches; please add more characters\n  \
+                 - ab010000-0000-0000-0000-000000000001 candidat\n  \
+                 - ab010000-0000-0000-0000-000000000002 fait actif"
+                    .to_string()
+            )),
+            ExitCode::Ambiguous
+        );
+        assert_eq!(
+            exit_code_for(&ClientError::Unreachable {
+                url: "http://127.0.0.1:3001/graphql".to_string()
+            }),
+            ExitCode::Generic
+        );
+    }
+
     /// The codegen'd enums are SCREAMING_CASE; the display form is lowercase.
     #[test]
     fn enum_label_lowercases_the_graphql_variant() {

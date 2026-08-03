@@ -649,18 +649,11 @@ impl QueryRoot {
         match lookup {
             memory_uc::MemoryLookup::Found(memory) => Ok(Some(MemoryGql::from(memory))),
             memory_uc::MemoryLookup::NotFound => Ok(None),
-            memory_uc::MemoryLookup::Ambiguous(candidates) => {
-                let listed = candidates
-                    .iter()
-                    .map(|m| format!("{} {}", m.id, m.title))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                Err(async_graphql::Error::new(format!(
-                    "Ambiguous memory reference `{}`: {} matches ({listed})",
-                    id.as_str(),
-                    candidates.len()
-                )))
-            }
+            // Same wording the mutating verbs produce: one ambiguity message for
+            // the whole feature, so a reader never has to learn two.
+            memory_uc::MemoryLookup::Ambiguous(candidates) => Err(async_graphql::Error::new(
+                memory_uc::describe_ambiguous_memory(id.as_str(), &candidates),
+            )),
         }
     }
 

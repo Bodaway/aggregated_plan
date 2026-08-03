@@ -21,6 +21,12 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// A short reference matched several rows, so acting on it would be a guess.
+    /// Carries the whole "which one did you mean" message, candidates included,
+    /// because callers surface it verbatim — the CLI prints it and exits 3.
+    #[error("{0}")]
+    Ambiguous(String),
+
     #[error("Validation error: {0}")]
     Validation(String),
 }

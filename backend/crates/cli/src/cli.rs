@@ -296,6 +296,7 @@ pub enum Commands {
 pub enum InboxCmd {
     /// Accept a candidate. Refused if it looks like an existing memory, unless --force.
     Accept {
+        /// Candidate: full UUID or the short reference displayed (`m:7c1`, `7c1`).
         id: String,
         /// Re-type the candidate on the way in.
         #[arg(long, value_enum)]
@@ -307,21 +308,27 @@ pub enum InboxCmd {
     /// Same fact, better wording: fold the candidate into an existing memory.
     /// One row survives — this ERASES history. Use `supersede` if the fact changed.
     Merge {
+        /// Candidate: full UUID or short reference.
         id: String,
-        /// The active memory that keeps its identity and receives the new wording.
+        /// The active memory that keeps its identity and receives the new wording:
+        /// full UUID or short reference.
         #[arg(long)]
         into: String,
     },
     /// The fact CHANGED: this candidate replaces an active memory. Both rows
     /// survive; the old one is marked no longer true.
     Supersede {
+        /// Candidate: full UUID or short reference.
         id: String,
-        /// The active memory this candidate makes obsolete.
+        /// The active memory this candidate makes obsolete: full UUID or short reference.
         #[arg(long)]
         replaces: String,
     },
     /// Reject a candidate. Kept as a tombstone so it is never re-proposed.
-    Reject { id: String },
+    Reject {
+        /// Candidate: full UUID or short reference.
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -332,7 +339,9 @@ pub enum MemoryCmd {
     /// Revise an already-active memory: OLD becomes no longer true, replaced by
     /// --by. Both rows survive.
     Supersede {
+        /// The memory that is no longer true: full UUID or short reference (`m:7c1`).
         old: String,
+        /// The memory that replaces it: full UUID or short reference.
         #[arg(long)]
         by: String,
     },
