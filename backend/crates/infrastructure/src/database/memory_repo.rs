@@ -281,16 +281,16 @@ impl MemoryRepository for SqliteMemoryRepository {
         id: MemoryId,
         user_id: UserId,
     ) -> Result<Option<Memory>, RepositoryError> {
-        let rows = sqlx::query("SELECT * FROM memories WHERE id = ? AND user_id = ? LIMIT 1")
+        let found_row = sqlx::query("SELECT * FROM memories WHERE id = ? AND user_id = ? LIMIT 1")
             .bind(id.to_string())
             .bind(user_id.to_string())
-            .fetch_all(&self.pool)
+            .fetch_optional(&self.pool)
             .await
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
-        let Some(row) = rows.first() else {
+        let Some(row) = found_row else {
             return Ok(None);
         };
-        let mut found = vec![map_row(row)?];
+        let mut found = vec![map_row(&row)?];
         attach_stakeholders(&self.pool, &mut found).await?;
         Ok(found.into_iter().next())
     }
@@ -325,8 +325,10 @@ impl MemoryRepository for SqliteMemoryRepository {
         if let Some(pid) = filter.project_id {
             q = q.bind(pid.to_string());
         }
+        // `effective_limit()`, never `filter.limit`: a default-constructed filter
+        // carries `0`, and `LIMIT 0` returns an empty list without erroring.
         let rows = q
-            .bind(filter.limit as i64)
+            .bind(filter.effective_limit() as i64)
             .bind(filter.offset as i64)
             .fetch_all(&self.pool)
             .await
@@ -483,18 +485,22 @@ impl MemoryRetriever for SqliteMemoryRetriever {
         );
         if !query.include_history {
             // Hard filter: recalling a superseded decision is worse than recalling nothing.
-            sql.push_str(" AND m.invalidated_at IS NULL AND m.status = 'active'");
+            sql.push_str(" AND m.invalidated_at IS NULL AND m.status = ?");
         }
         sql.push_str(" ORDER BY bm25_score ASC LIMIT ?");
 
-        let candidate_limit = query
-            .limit
-            .saturating_mul(CANDIDATE_OVERFETCH)
-            .min(CANDIDATE_MAX);
+        // `effective_limit()`, never `query.limit`: a raw `0` would size the
+        // candidate window to nothing and return no rows without erroring.
+        let limit = query.effective_limit();
+        let candidate_limit = limit.saturating_mul(CANDIDATE_OVERFETCH).min(CANDIDATE_MAX);
 
-        let rows = sqlx::query(&sql)
+        let mut q = sqlx::query(&sql)
             .bind(&query.match_query)
-            .bind(user_id.to_string())
+            .bind(user_id.to_string());
+        if !query.include_history {
+            q = q.bind(MemoryStatus::Active.as_str());
+        }
+        let rows = q
             .bind(candidate_limit as i64)
             .fetch_all(&self.pool)
             .await
@@ -512,7 +518,7 @@ impl MemoryRetriever for SqliteMemoryRetriever {
             .collect();
 
         let mut ranked = rank(candidates, &query.context, now, &query.weights);
-        ranked.truncate(query.limit as usize);
+        ranked.truncate(limit as usize);
         Ok(ranked)
     }
 }

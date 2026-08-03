@@ -247,7 +247,11 @@ pub enum Commands {
         #[arg(long, short)]
         q: Option<String>,
         /// Include invalidated and not-yet-validated memories.
-        #[arg(long)]
+        /// Search-only: the id path expands one row whatever its status.
+        // `conflicts_with = "id"` carries the enforcement: `requires = "q"` alone
+        // is waived by clap as soon as `id` — which conflicts with `q` — is
+        // present, which is exactly the case where the flag was being ignored.
+        #[arg(long, requires = "q", conflicts_with = "id")]
         history: bool,
         /// Restrict the search context to a project: UUID or (fuzzy) name.
         #[arg(long, requires = "q")]

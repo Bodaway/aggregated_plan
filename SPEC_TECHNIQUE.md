@@ -1775,6 +1775,10 @@ Traits associés : `repositories::MemoryRepository` (`create` / `find_by_id` / `
 `now` est injecté pour que la décroissance de récence reste déterministe en test.
 Bornes : `MEMORY_LIST_DEFAULT_LIMIT` 50 / `MEMORY_LIST_MAX_LIMIT` 500,
 `RECALL_DEFAULT_LIMIT` 10 / `RECALL_MAX_LIMIT` 100, `DUPLICATE_SCAN_LIMIT` 25.
+La résolution de ces bornes est portée par `MemoryListFilter::effective_limit()` et
+`RecallQuery::effective_limit()` (`0` → défaut, au-delà du plafond → plafond) : les
+implémentations lient **cette** valeur, jamais le champ `limit` brut. Un filtre construit
+par `Default` porte `limit: 0`, et un `LIMIT 0` renvoie une liste vide **sans erreur**.
 
 #### 5.2.4 Application Errors
 
@@ -2704,11 +2708,19 @@ CREATE TABLE memories (
   task_id        TEXT REFERENCES tasks(id)    ON DELETE SET NULL
 );
 
+-- Prédicat de `list` (user_id + status + project_id optionnel) et tri « du plus
+-- récent au plus ancien » de la file de validation et de l'historique.
+CREATE INDEX idx_memories_user_status ON memories(user_id, status, project_id);
+CREATE INDEX idx_memories_occurred_at ON memories(user_id, occurred_at DESC);
+
 CREATE TABLE memory_stakeholders (
   memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
   person    TEXT NOT NULL,
   PRIMARY KEY (memory_id, person)
 );
+-- « Quels engagements envers Pierre ? » est une question de premier ordre, et la
+-- PRIMARY KEY n'indexe que (memory_id, person) : la recherche inverse a son index.
+CREATE INDEX idx_memory_stakeholders_person ON memory_stakeholders(person);
 
 CREATE VIRTUAL TABLE memories_fts USING fts5(
   memory_id UNINDEXED,
@@ -2728,6 +2740,13 @@ ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT;
   Le contrôle d'intégrité le plus naturel masque donc la panne. La table autonome est écrite par
   le dépôt **dans la même transaction** que la ligne `memories` — d'où l'absence de triggers.
   Corollaire de test : **tout test d'indexation doit interroger par `MATCH`, jamais par `count(*)`.**
+- **Risque d'orphelin FTS.** Une table virtuelle n'accepte **aucune clé étrangère** : `memory_id`
+  n'est pas contraint et supprimer une ligne `memories` **ne cascade pas** vers `memories_fts`.
+  Chaque chemin d'écriture entretient l'index à la main, dans la transaction de l'appelant :
+  insertion → `INSERT` (`create`), reformulation → `DELETE` + `INSERT` (`update`, sinon le souvenir
+  ne reste trouvable que sous son ANCIEN libellé), suppression → `DELETE` d'abord (`apply_merge`
+  sur la ligne écartée). Un `DELETE` oublié laisse un orphelin qui continue de répondre à `MATCH`
+  pour un souvenir disparu : la jointure l'écarte et la recherche sous-retourne silencieusement.
 - **`tokenize = 'unicode61 remove_diacritics 2'` explicite.** Le tokenizer plie les accents
   (`limitee` retrouve « limitée »), mais ne fait **aucune lemmatisation** : `engagements` ne
   retrouve pas « engagement ». D'où l'extension par préfixe côté domaine (voir § 5, `rules/recall.rs`).
