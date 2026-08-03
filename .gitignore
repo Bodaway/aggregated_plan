@@ -137,3 +137,6 @@ storybook-static/
 *.db
 *.db-shm
 *.db-wal
+
+# Sauvegardes de base locales (jamais versionnées)
+*.db.bak-*
