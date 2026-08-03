@@ -1,0 +1,14 @@
+query UnconsolidatedEntries($limit: Int!) {
+  unconsolidatedWorklogEntries(limit: $limit) {
+    id
+    taskId
+    body
+    loggedAt
+    task {
+      id
+      title
+      projectId
+      sourceId
+    }
+  }
+}

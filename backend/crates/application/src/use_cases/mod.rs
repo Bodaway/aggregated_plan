@@ -13,3 +13,4 @@ pub mod gryzzly_assignment;
 pub mod timesheet;
 pub mod memory;
 pub mod brief;
+pub mod consolidation;

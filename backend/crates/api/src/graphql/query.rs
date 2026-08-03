@@ -9,6 +9,7 @@ use application::repositories::*;
 use application::services::MemoryRetriever;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
 use application::use_cases::brief as brief_uc;
+use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::timesheet::load_reconstruction_config;
@@ -734,6 +735,33 @@ impl QueryRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(hits.into_iter().map(ScoredMemoryGql::from).collect())
+    }
+
+    /// The worklog entries the consolidation job has not read yet
+    /// (`consolidated_at IS NULL`), **oldest first**.
+    ///
+    /// This is the read side of a per-entry watermark, not a timestamp cursor: an
+    /// entry inserted late but dated early would be permanently skipped by a
+    /// cursor, and nothing would report the loss (§6.2 of the design).
+    ///
+    /// Oldest first because the job is a catch-up — after a day off, a page that
+    /// truncates leaves the most recent entries for the next run rather than the
+    /// ones already overdue.
+    async fn unconsolidated_worklog_entries(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 200)] limit: i32,
+    ) -> Result<Vec<WorklogEntryGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let entries = consolidation_uc::list_unconsolidated_entries(
+            repo.as_ref(),
+            user_id,
+            limit.max(0) as u32,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(entries.into_iter().map(WorklogEntryGql).collect())
     }
 
     /// Memory candidates awaiting validation (`status = PENDING`).

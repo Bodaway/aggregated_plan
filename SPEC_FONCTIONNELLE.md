@@ -548,6 +548,7 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - **R-WL-09** : le temps est enregistré en créneaux **fermés** (granularité demi-journée) dérivés des horodatages des entrées de worklog, jamais via un créneau ouvert. Les créneaux sont matérialisés à `aplan stop`, `aplan done`, ou en fin de session (hook `SessionEnd`).
 - **R-WL-10** : le fuseau horaire `aplan.timezone` (défaut `Europe/Paris`) définit les bornes de journée et de demi-journée utilisées pour dériver les créneaux à partir des horodatages UTC des entrées.
 - **R-WL-11** : le lien session→tâche est le pointeur de configuration `aplan.active_task_id` (défini par `aplan start`, effacé par `aplan stop`/`aplan done`). Il n'existe aucun créneau d'activité ouvert associé à ce pointeur.
+- **R-WL-12** : chaque entrée porte un **filigrane de consolidation** (`consolidatedAt`, nul par défaut) qui dit si la consolidation mémoire l'a déjà lue (US-096, R59). Ce marqueur n'est ni saisi ni affiché par l'utilisateur : il n'appartient qu'au dispositif de mémoire, et le supprimer ferait re-proposer chaque soir l'intégralité du journal.
 
 **Priorité** : Must (MVP v1)
 
@@ -948,8 +949,13 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 
 **Critères d'acceptation :**
 - L'utilisateur enregistre un souvenir via
-  `aplan remember "<titre>" [--kind decision|commitment|fact|preference] [--why "<contexte>"] [--project <projet>] [--to <personne>] [--task <tâche>] [--confirm]`.
+  `aplan remember "<titre>" [--kind decision|commitment|fact|preference] [--why "<contexte>"] [--project <projet>] [--to <personne>] [--task <tâche>] [--source-ref <réf>] [--confirm]`.
   `--kind` vaut `fact` par défaut ; `--to` est répétable.
+- `--source-ref` note **d'où vient** le souvenir : un identifiant d'entrée de journal, un
+  identifiant de session. Champ libre, sans clé étrangère (les entrées de journal disparaissent
+  en cascade avec leur tâche, une provenance pendante est acceptée explicitement). C'est la
+  consolidation planifiée (US-096) qui s'en sert : sans lui, un candidat étrange ne peut pas être
+  rapproché de l'entrée de journal qui l'a produit.
 - `--project` accepte un UUID **ou** un nom de projet (correspondance exacte puis
   sous-chaîne, insensible à la casse). `--task` accepte les mêmes formes que les autres
   commandes : UUID, clé Jira (`AP-123`), titre approximatif, ou `@current`.
@@ -1139,9 +1145,53 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 
 **Priorité** : Must (lot 4)
 
-**Hors périmètre à ce stade** (livré ultérieurement) : la consolidation planifiée de 17h30 et la
-notification de 8h30 (lot 5). `aplan brief --morning` existe et produit la bonne sortie ; c'est
-sa planification qui reste à faire.
+#### US-096 : Consolider le journal de bord en souvenirs candidats
+
+> En tant que Tech Lead, je veux qu'une relecture quotidienne de mon journal de bord me propose les
+> faits, préférences et décisions que je n'ai pas pensé à enregistrer, afin que la mémoire se
+> remplisse sans que j'y pense — mais sans que rien n'y entre sans mon accord.
+
+La consolidation elle-même est une **session Claude Code planifiée**, pas du code backend : le
+backend ne contient aucun client de modèle, aucune clé d'API et aucun *prompt*. Ce qui est livré
+ici est la **machinerie déterministe** que cette session pilote, plus son jeu d'instructions
+(`docs/prompts/consolidation-memoire.md`), modifiable sans recompiler.
+
+**Critères d'acceptation :**
+- `aplan consolidate pending [--limit N]` liste les entrées de journal **jamais consolidées**
+  (`consolidatedAt` nul), **de la plus ancienne à la plus récente**. La commande est en lecture
+  seule : elle ne marque rien, et sert donc aussi de **sonde de joignabilité**.
+- `aplan consolidate mark <id>…` pose le filigrane sur les entrées traitées. Idempotent : une
+  entrée déjà marquée ne bouge pas et ce n'est **pas** une erreur — la sortie annonce
+  `marqué/demandé` afin que l'écart soit visible. Marquer sans identifiant est refusé à l'analyse
+  des arguments : un passage qui a oublié de collecter ses identifiants ne doit pas ressembler à un
+  passage propre.
+- `aplan consolidate record-run` enregistre la date du passage dans la table `configuration`
+  (clé `memory.consolidation.last_run`), celle-là même que lit le brief (R57).
+- Les trois verbes acceptent `--json`, condition pour qu'une session planifiée les pilote.
+- **Le filigrane est posé APRÈS les écritures réussies.** Un doublon se rejette et devient une
+  pierre tombale ; une entrée marquée qui n'a jamais produit de souvenir est perdue sans que rien ne
+  le signale.
+- **Si l'API n'est pas joignable, la session ne fait rien du tout** et ne pose aucun filigrane :
+  l'exécution suivante rattrape l'intégralité du retard.
+- Tout ce que la session propose est écrit en `PENDING` (jamais `--confirm`, jamais `--force`) :
+  la porte de validation humaine est le seul chemin vers `ACTIVE`.
+- La session **ne re-propose pas** ce qui est déjà `ACTIVE`, `PENDING` ou `REJECTED` — les pierres
+  tombales existent précisément pour faire converger la boucle (R53).
+- Pour un candidat de type `decision`, la session le compare aux **décisions actives du même
+  projet** et, s'il en contredit une, le soumet comme **supersession en nommant l'ancien
+  identifiant**. Elle ne l'applique jamais : `invalidatedAt` n'a que trois écrivains, tous passant
+  par une validation humaine (R46).
+- Les entrées consignées après l'heure du passage sont reprises au passage suivant, sans perte :
+  l'horaire n'est donc pas critique.
+
+**Priorité** : Must (lot 5)
+
+**Hors périmètre à ce stade** (livré ultérieurement) : la **planification** elle-même (déclenchement
+à 17h30 de la session de consolidation, notification bureau de 8h30 adossée à
+`aplan brief --morning`) vit hors du dépôt et reste à installer. Les deux prérequis hors dépôt de
+la conception restent à valider : le hook `SessionStart` doit détecter une session non interactive
+plutôt que d'exiger une question, et l'API doit tourner en service (`systemd --user`) pour que la
+garde de joignabilité rende une panne visible au lieu d'être la panne.
 
 ---
 
@@ -1248,6 +1298,10 @@ sa planification qui reste à faire.
 | **R56** | **Composition du brief** : sont retenus les souvenirs `commitment` (les plus anciens d'abord — un engagement pris il y a trois mois est celui qu'on a oublié) et `decision` (les plus récents d'abord — la question est « où en est le projet »), filtrés par R45. Le projet courant est celui de la tâche en cours de suivi, sauf `--project` explicite ; sans projet en focus, toutes les décisions actives sont montrées plutôt qu'une section vide. Les échéances sont classées par proximité d'aujourd'hui, dédoublonnées par titre, et purgées des fixtures de test. **Chaque souvenir affiché porte une référence courte réutilisable par `aplan recall`** : c'est tout le mécanisme de récupération à la demande. |
 | **R58** | **Un seul résolveur d'identifiant de souvenir**. Tout argument d'identifiant — en lecture (`recall`) comme en écriture (`inbox accept`/`reject`/`merge --into`/`supersede --replaces`, `memory supersede --by`) — accepte l'UUID complet **ou** la référence courte affichée (`m:7c1`, `[m:7c1]`, `7c1`), et passe par la **même** résolution. Sans cette règle, le produit affiche une référence courte, laisse *lire* avec elle, puis la refuse dès qu'on veut *agir* : les commandes les plus fréquentes deviennent des recopies de 36 caractères. Un préfixe ambigu est refusé (code 3, candidats listés) et l'ambiguïté est évaluée sur **tout le magasin**, pas sur la seule file — sinon un préfixe unique aujourd'hui désignerait un autre souvenir demain. Un identifiant introuvable est un « non trouvé » (code 2), jamais une erreur générique. Les verbes à deux identifiants résolvent **les deux avant d'écrire** (corollaire de R50). |
 | **R57** | **Visibilité de la panne de consolidation** : le brief affiche l'âge du dernier passage de consolidation dès qu'il dépasse **3 jours**, et « jamais exécutée » si aucun passage n'est enregistré. L'horodatage vit dans la table `configuration` (clé `memory.consolidation.last_run`) et non dans `sync_status`, dont la colonne `source` est sous une contrainte `CHECK` fermée. Une clé absente ou invalide se lit comme « jamais exécutée » : le brief rend la panne visible, il ne tombe pas avec elle. |
+| **R59** | **Filigrane de consolidation PAR ENTRÉE, jamais curseur horodaté**. Une entrée de journal porte son propre marqueur (`worklog_entries.consolidated_at`) ; la consolidation lit exactement les entrées dont il est nul, de la plus ancienne à la plus récente. Un curseur horodaté sauterait **définitivement** toute entrée insérée tardivement avec un `loggedAt` antérieur au curseur, et rien ne signalerait la perte. Le marqueur est **idempotent** (`consolidated_at IS NULL` fait partie de la condition de mise à jour, le premier marquage gagne) et **posé après les écritures réussies** : un souvenir en double se rejette (R53), une entrée marquée sans souvenir est perdue. Marquer un lot est **atomique** (une transaction), pour qu'un lot ne puisse pas être marqué à moitié. |
+| **R60** | **Garde de joignabilité de la consolidation** : la session planifiée vérifie que l'API répond **avant toute autre chose** et, si elle ne répond pas, **ne fait rien et ne pose aucun marqueur** — l'exécution suivante rattrape tout. La CLI étant un client GraphQL, sans cette garde une API arrêtée produirait une suite d'échecs silencieux. Corollaire : une consolidation à moitié faite n'existe pas ; soit le lot est traité et marqué, soit rien ne bouge. |
+| **R61** | **La consolidation propose, elle n'applique jamais**. Tout ce qu'elle écrit est `PENDING` ; elle n'exécute aucun verbe de la file (`accept`, `merge`, `supersede`, `reject`) et n'emploie ni `--confirm` ni `--force`. Pour une décision qui contredit une décision active du même projet, elle **soumet une supersession en nommant l'ancien identifiant** et laisse l'utilisateur trancher entre supersession (le fait a changé) et fusion (même fait, mieux écrit) — cette distinction est un jugement sémantique, et le backend n'a aucun modèle (R50, R52). |
+| **R62** | **Code de sortie 4 pour une précondition refusée**. Un état que le magasin refuse de quitter — candidat déjà `ACTIVE` ou `REJECTED`, cible de fusion non active, souvenir déjà invalidé, cycle de supersession, saisie sans rien de recherchable — sort en **4**, jamais en 1. Le 1 est réservé à « l'appel n'a pas abouti » (réseau, base). Un appelant automatisé doit distinguer les deux : le premier se saute, le second impose de reprendre tout le passage sans poser de marqueur. |
 
 ---
 
@@ -1382,6 +1436,7 @@ Ce qu'il faut **savoir** : une décision, un engagement, un fait ou une préfér
 | aplan.active_task_id | Texte (UUID) | — | Identifiant de la tâche liée à la session Claude courante (pointeur de configuration, défini par `aplan start`, effacé par `aplan stop`/`aplan done`) |
 | aplan.active_since | Texte (ISO 8601) | — | Horodatage du début du suivi de la tâche active (utilisé comme borne de début pour la matérialisation des créneaux) |
 | aplan.timezone | Texte (IANA) | `Europe/Paris` | Fuseau horaire utilisé pour convertir les horodatages UTC des entrées de worklog en bornes de journée/demi-journée |
+| memory.consolidation.last_run | Texte (ISO 8601) | — | Date du dernier passage de la consolidation, écrite par `aplan consolidate record-run` et lue par le brief (R57, R59). Absente, illisible ou invalide → « jamais exécutée », sans faire échouer le brief. Stockée ici et non dans `sync_status`, dont la colonne `source` est sous contrainte `CHECK` fermée. |
 | excelSharepointPath | Texte | — | Chemin du fichier Excel sur SharePoint |
 | excelMappingConfig | Objet | — | Mapping colonnes Excel → champs de l'outil |
 | obsidianVaultPath | Texte | — | Chemin du vault Obsidian (v2) |
@@ -1544,3 +1599,5 @@ Les fonctionnalités de timesheet (Plan 2) ont les limitations suivantes, à am�
 | **Supersession** | Remplacement d'un souvenir par un autre : l'ancien reçoit une fin de validité et un successeur, les deux lignes survivent. À distinguer de la fusion, qui écrase l'historique |
 | **File de validation** | Ensemble des souvenirs candidats en statut `pending`, en attente d'acceptation, de fusion, de supersession ou de rejet par l'utilisateur |
 | **Rappel (recall)** | Récupération d'un souvenir, par identifiant ou par recherche plein texte classée |
+| **Consolidation** | Relecture planifiée du journal de bord qui en extrait des souvenirs candidats. Assurée par une session Claude Code planifiée, pas par le backend : le dépôt ne contient aucun client de modèle. Ne propose que du `pending` |
+| **Filigrane de consolidation** | Marqueur porté par **chaque** entrée de journal (`consolidatedAt`), qui dit si la consolidation l'a déjà lue. Distinct d'un curseur horodaté, qui sauterait définitivement une entrée insérée tardivement mais datée du passé (R59) |

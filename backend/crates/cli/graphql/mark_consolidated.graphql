@@ -1,0 +1,7 @@
+mutation MarkConsolidated($ids: [ID!]!) {
+  markWorklogEntriesConsolidated(ids: $ids) {
+    requested
+    marked
+    consolidatedAt
+  }
+}

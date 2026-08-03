@@ -15,16 +15,39 @@ use crate::queries::{
 /// Map a transport/GraphQL failure onto the exit-code contract.
 ///
 /// GraphQL carries no error code, only a message, so a missing id is recognised
-/// by the `AppError::NotFound` prefix the API renders, and an ambiguous short
-/// reference by the wording of the resolver. Everything else is generic.
+/// by the `AppError::NotFound` prefix the API renders, an ambiguous short
+/// reference by the wording of the resolver, and a refused precondition by
+/// [`is_precondition_failure`]. Everything else is generic.
 fn exit_code_for(error: &ClientError) -> ExitCode {
     match error {
         ClientError::Graphql(message) if message.contains("Not found:") => ExitCode::NotFound,
         ClientError::Graphql(message) if message.contains("Ambiguous memory reference") => {
             ExitCode::Ambiguous
         }
+        ClientError::Graphql(message) if is_precondition_failure(message) => {
+            ExitCode::PreconditionFailed
+        }
         _ => ExitCode::Generic,
     }
+}
+
+/// Does this message describe a state the store refuses to leave, rather than a
+/// failure to reach it?
+///
+/// Exit 4 exists for exactly this: an automated caller — the scheduled
+/// consolidation is the one this feature has — must tell "this candidate is
+/// already active, skip it" from "the network broke, retry the whole run and write
+/// no watermark". Both used to exit 1, which made them indistinguishable.
+///
+/// Matching on the rendered message is the established contract of this surface
+/// (see [`exit_code_for`]): async-graphql carries no error code. These substrings
+/// are therefore load-bearing — they are what `AppError::Validation`,
+/// `DomainError::ValidationError`, `MemoryAlreadyInvalidated` and
+/// `MemorySupersessionCycle` render, and the tests pin them verbatim.
+fn is_precondition_failure(message: &str) -> bool {
+    message.contains("Validation error:")
+        || message.contains("is already invalidated")
+        || message.contains("would create a cycle in the supersession chain")
 }
 
 /// Resolve a `--project` token into a project id: a UUID passes through, anything
@@ -84,7 +107,8 @@ fn date_part(timestamp: &str) -> String {
     timestamp.chars().take(10).collect()
 }
 
-/// `aplan remember <title> [--kind K] [--why TEXT] [--project P] [--to PERSON] [--task T] [--confirm]`
+/// `aplan remember <title> [--kind K] [--why TEXT] [--project P] [--to PERSON]
+/// [--task T] [--source-ref REF] [--confirm]`
 #[allow(clippy::too_many_arguments)]
 pub fn remember(
     api_url: &str,
@@ -95,6 +119,7 @@ pub fn remember(
     project: Option<&str>,
     to: &[String],
     task: Option<&str>,
+    source_ref: Option<&str>,
     confirm: bool,
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
@@ -128,7 +153,7 @@ pub fn remember(
             body: why.map(String::from),
             occurred_at: None,
             source: Some(remember_op::MemorySourceGql::CLAUDE_SESSION),
-            source_ref: None,
+            source_ref: source_ref.map(String::from),
             confirmed: Some(confirm),
             project_id,
             task_id,
@@ -163,7 +188,9 @@ pub fn remember(
         }
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::Generic
+            // Same mapping as every other memory verb: a title the domain refuses
+            // is a precondition failure (4), not an unexplained one (1).
+            exit_code_for(&e)
         }
     }
 }
@@ -283,7 +310,9 @@ pub fn recall_search(
         }
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::Generic
+            // A query with nothing searchable in it (`""`, `*`, punctuation only) is
+            // a refused precondition, not a transport failure.
+            exit_code_for(&e)
         }
     }
 }
@@ -612,6 +641,89 @@ mod tests {
                 url: "http://127.0.0.1:3001/graphql".to_string()
             }),
             ExitCode::Generic
+        );
+    }
+
+    /// Exit 4, not 1, for a precondition the store refuses.
+    ///
+    /// The scheduled consolidation job is exactly the automated caller that must
+    /// tell "this candidate is already active" from "the network broke": the first
+    /// is a normal outcome to skip, the second means the whole run must be retried
+    /// with no marker written. Collapsing both onto 1 makes that impossible.
+    ///
+    /// These are the messages `AppError` renders for the three domain refusals a
+    /// caller can hit on the memory verbs, verbatim.
+    #[test]
+    fn a_refused_precondition_exits_four_not_one() {
+        for message in [
+            // `inbox accept` / `reject` on a row that is no longer pending —
+            // domain::rules::memory_lifecycle::require_pending.
+            "Domain error: Validation error: memory 9ab9ff00-0000-0000-0000-000000000001 \
+             is active and cannot be accepted; only a pending candidate can",
+            "Domain error: Validation error: memory 9ab9ff00-0000-0000-0000-000000000001 \
+             is rejected and cannot be rejected; only a pending candidate can",
+            // `inbox merge --into` a target that holds no truth.
+            "Domain error: Validation error: memory 9ab9ff00-0000-0000-0000-000000000002 \
+             is pending and cannot receive a merge; only an active memory can",
+            // Re-superseding a row that already has a successor.
+            "Domain error: Memory 9ab9ff00-0000-0000-0000-000000000003 is already \
+             invalidated; supersede the head of its chain instead",
+            // Closing a supersession loop.
+            "Domain error: Superseding memory 9ab9ff00-0000-0000-0000-000000000003 by \
+             9ab9ff00-0000-0000-0000-000000000004 would create a cycle in the \
+             supersession chain",
+            // `AppError::Validation`, raised outside the domain.
+            "Validation error: nothing searchable in the query",
+        ] {
+            assert_eq!(
+                exit_code_for(&ClientError::Graphql(message.to_string())),
+                ExitCode::PreconditionFailed,
+                "{message}"
+            );
+        }
+    }
+
+    /// A transport failure must NOT be dressed up as a precondition: the job has to
+    /// know the run was never really attempted.
+    #[test]
+    fn a_broken_connection_is_still_a_generic_failure() {
+        assert_eq!(
+            exit_code_for(&ClientError::Unreachable {
+                url: "http://127.0.0.1:3001/graphql".to_string()
+            }),
+            ExitCode::Generic
+        );
+        assert_eq!(
+            exit_code_for(&ClientError::HttpStatus {
+                status: 500,
+                body: "boom".to_string()
+            }),
+            ExitCode::Generic
+        );
+        assert_eq!(
+            exit_code_for(&ClientError::Graphql(
+                "Repository error: Database error: disk I/O error".to_string()
+            )),
+            ExitCode::Generic
+        );
+    }
+
+    /// The two lookup outcomes keep their own codes: a precondition check must not
+    /// swallow "no such memory" (2) or "which one did you mean" (3).
+    #[test]
+    fn the_lookup_codes_still_win_over_the_precondition_code() {
+        assert_eq!(
+            exit_code_for(&ClientError::Graphql(
+                "Not found: memory `9ab9`".to_string()
+            )),
+            ExitCode::NotFound
+        );
+        assert_eq!(
+            exit_code_for(&ClientError::Graphql(
+                "Ambiguous memory reference `ab01`: 2 matches; please add more characters"
+                    .to_string()
+            )),
+            ExitCode::Ambiguous
         );
     }
 

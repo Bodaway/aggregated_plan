@@ -48,6 +48,36 @@ aplan config get
 aplan config set general.working_hours 8
 ```
 
+## Semantic memory
+
+```bash
+aplan brief                                   # session brief, capped at 40 lines
+aplan remember "Wave 0 limited to MS AI" --kind decision --why "Pierre asked"
+aplan recall --q "AP-1234"                    # search; raw input is safe
+aplan inbox                                   # the validation queue
+aplan inbox accept <id>                       # or merge --into / supersede --replaces / reject
+aplan memory supersede <old> --by <new>       # revise an already-active memory
+```
+
+## Consolidation (driven by a scheduled Claude session)
+
+The 17:30 consolidation is **not** a backend job — the backend holds no model. A
+scheduled Claude Code session drives these three verbs; its instruction set lives
+in `docs/prompts/consolidation-memoire.md`, outside the binary so it can be
+iterated without recompiling.
+
+```bash
+aplan consolidate pending --json      # entries never consolidated, oldest first.
+                                      # Read-only, so it doubles as the reachability
+                                      # probe: if it fails, do nothing and mark nothing.
+aplan consolidate mark <id>… --json   # LAST, after the memories are persisted
+aplan consolidate record-run --json   # so `aplan brief` can see the job is alive
+```
+
+The order matters: marking before writing trades a recoverable failure (a duplicate
+candidate, which a rejection turns into a tombstone) for an unrecoverable one (an
+entry marked that never produced anything).
+
 ## Task identifier resolution
 
 Wherever a command takes a TASK argument the same resolver runs:
@@ -72,7 +102,13 @@ Default: terse human output, one line per action.
 - `1` generic error (network, GraphQL, parse)
 - `2` not found
 - `3` ambiguous lookup (more than one fuzzy match)
-- `4` precondition failed (e.g. `aplan note` with no current task)
+- `4` precondition failed — `aplan note` with no current task; and on the memory
+  verbs, a state the store refuses to leave: a candidate already active or
+  rejected, a merge target that is not active, an already-invalidated memory, a
+  supersession cycle, a query with nothing searchable in it.
+
+`1` versus `4` is load-bearing for automated callers: `4` means "skip this one",
+`1` means "the call never landed — retry the whole run and write no watermark".
 
 ## Refreshing the GraphQL schema
 

@@ -5,6 +5,7 @@ use clap::Parser;
 mod cli;
 mod client;
 mod commands;
+mod consolidate_cmd;
 mod lookup;
 mod memory_cmd;
 mod output;
@@ -123,6 +124,7 @@ fn main() -> ExitCode {
             project,
             to,
             task,
+            source_ref,
             confirm,
         } => memory_cmd::remember(
             &args.api_url,
@@ -133,6 +135,7 @@ fn main() -> ExitCode {
             project.as_deref(),
             &to,
             task.as_deref(),
+            source_ref.as_deref(),
             confirm,
         ),
         cli::Commands::Recall {
@@ -189,6 +192,17 @@ fn main() -> ExitCode {
             }
             cli::MemoryCmd::Supersede { old, by } => {
                 memory_cmd::supersede(&args.api_url, args.json, &old, &by)
+            }
+        },
+        cli::Commands::Consolidate { cmd } => match cmd {
+            cli::ConsolidateCmd::Pending { limit } => {
+                consolidate_cmd::pending(&args.api_url, args.json, limit)
+            }
+            cli::ConsolidateCmd::Mark { ids } => {
+                consolidate_cmd::mark(&args.api_url, args.json, &ids)
+            }
+            cli::ConsolidateCmd::RecordRun => {
+                consolidate_cmd::record_run(&args.api_url, args.json)
             }
         },
     };

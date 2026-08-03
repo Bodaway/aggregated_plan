@@ -394,17 +394,25 @@ type CombinedMutation {
 	memory, nothing is written and the look-alikes come back in
 	`nearDuplicates` so the caller can choose `mergeMemory` or
 	`supersedeMemory`. `force` accepts anyway.
+	
+	`id` takes a full UUID **or** the short reference the brief and the inbox
+	display (`m:7c1`, `7c1`) — see [`resolve_memory_arg`].
 	"""
 	acceptMemory(id: ID!, kind: MemoryKindGql, force: Boolean! = false): AcceptMemoryResultGql!
 	"""
 	Reject a pending candidate (`aplan inbox reject`). The row is kept as a
 	tombstone so the consolidation job cannot re-propose it.
+	
+	`id` takes a full UUID or a short reference.
 	"""
 	rejectMemory(id: ID!): MemoryGql!
 	"""
 	Merge a pending candidate into an active memory (`aplan inbox merge`):
 	same fact, better wording. ONE row survives — this ERASES history. Use
 	`supersedeMemory` when the fact itself changed.
+	
+	Both arguments take a full UUID or a short reference, and BOTH are resolved
+	before the merge is applied.
 	"""
 	mergeMemory(id: ID!, into: ID!): MergeMemoryResultGql!
 	"""
@@ -413,6 +421,10 @@ type CombinedMutation {
 	one carrying `invalidatedAt` and `supersededBy`.
 	
 	This is the ONLY path that writes `invalidatedAt`.
+	
+	Both arguments take a full UUID or a short reference, and BOTH are resolved
+	before anything is written: half a supersession would either hide a fact
+	with no successor, or leave two contradictory truths active.
 	"""
 	supersedeMemory(old: ID!, by: ID!): SupersedeMemoryResultGql!
 	"""
@@ -422,6 +434,31 @@ type CombinedMutation {
 	nothing. Read-only — aplan never writes into that directory.
 	"""
 	importMemories(directory: String!): MemoryImportResultGql!
+	"""
+	Stamp `consolidated_at` on the worklog entries a consolidation run has
+	finished with (`aplan consolidate mark`).
+	
+	**Call this only after the memories those entries produced are persisted**
+	(§6.2). A duplicate memory is recoverable — the rejection tombstones stop it
+	coming back — whereas an entry marked and never turned into anything is lost
+	for good.
+	
+	Idempotent: an id already consolidated, or belonging to another user, moves
+	no row and is not an error, so a retry after a crash converges. `marked` is
+	therefore allowed to be lower than `requested`.
+	"""
+	markWorklogEntriesConsolidated(ids: [ID!]!): MarkConsolidatedResultGql!
+	"""
+	Record that a consolidation run happened (`aplan consolidate record-run`).
+	
+	Writes `memory.consolidation.last_run` into `configuration` — the very key
+	`aplan brief` reads to render "Dernière consolidation : …". `sync_status`
+	cannot carry it: its `source` column is under a closed `CHECK`.
+	
+	`at` defaults to now; it is settable so a run that finished at 17:30 can
+	stamp its own start rather than the clock of whichever call came last.
+	"""
+	recordConsolidationRun(at: DateTime): ConsolidationRunGql!
 }
 
 """
@@ -560,6 +597,19 @@ type CombinedQuery {
 	"""
 	recall(q: String!, projectId: ID, taskId: ID, stakeholders: [String!], includeHistory: Boolean! = false, limit: Int! = 10): [ScoredMemoryGql!]!
 	"""
+	The worklog entries the consolidation job has not read yet
+	(`consolidated_at IS NULL`), **oldest first**.
+	
+	This is the read side of a per-entry watermark, not a timestamp cursor: an
+	entry inserted late but dated early would be permanently skipped by a
+	cursor, and nothing would report the loss (§6.2 of the design).
+	
+	Oldest first because the job is a catch-up — after a day off, a page that
+	truncates leaves the most recent entries for the next run rather than the
+	ones already overdue.
+	"""
+	unconsolidatedWorklogEntries(limit: Int! = 200): [WorklogEntryGql!]!
+	"""
 	Memory candidates awaiting validation (`status = PENDING`).
 	"""
 	pendingMemories(limit: Int! = 50, offset: Int! = 0): [MemoryGql!]!
@@ -569,6 +619,16 @@ enum ConfidenceGql {
 	HIGH
 	MEDIUM
 	LOW
+}
+
+"""
+Result of `recordConsolidationRun`: the timestamp now stored under
+`memory.consolidation.last_run` in `configuration`, and the key it went to — so
+a caller can verify it landed where `aplan brief` reads it.
+"""
+type ConsolidationRunGql {
+	key: String!
+	ranAt: DateTime!
 }
 
 """
@@ -766,6 +826,29 @@ enum MappingKindGql {
 	MEETING_SUBJECT
 	MEETING_ORGANIZER
 	INTERNAL_PROJECT
+}
+
+"""
+Result of `markWorklogEntriesConsolidated` — the write side of the
+per-entry consolidation watermark (§6.2).
+
+`marked` is deliberately allowed to be lower than `requested`: an id already
+consolidated, or belonging to another user, is a no-op rather than an error, so
+a job that retries after a crash converges instead of failing.
+"""
+type MarkConsolidatedResultGql {
+	"""
+	How many ids the caller submitted.
+	"""
+	requested: Int!
+	"""
+	How many rows actually moved from unmarked to marked.
+	"""
+	marked: Int!
+	"""
+	The timestamp written into `worklog_entries.consolidated_at`.
+	"""
+	consolidatedAt: DateTime!
 }
 
 type MeetingGql {

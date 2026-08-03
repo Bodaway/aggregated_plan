@@ -62,6 +62,24 @@ aplan config get --json
 aplan config set --json <KEY> <VALUE>
 ```
 
+## Memory consolidation (scheduled sessions only)
+
+If you are a **scheduled** session running the 17:30 memory consolidation, your
+instructions are `docs/prompts/consolidation-memoire.md` — read it and follow it,
+it is more specific than this skill. Three verbs:
+
+```bash
+aplan consolidate pending --json      # worklog entries never consolidated, oldest
+                                      # first. Read-only, so run it FIRST as the
+                                      # reachability probe: if it fails, do nothing
+                                      # at all and mark nothing.
+aplan consolidate mark <id>… --json   # LAST, only after the memories are written
+aplan consolidate record-run --json   # record the run, even if nothing was proposed
+```
+
+In an ordinary session, don't run these. Marking entries outside a consolidation
+pass makes them invisible to the next one, and that is not recoverable.
+
 ## Exit code handling
 
 | Code | Meaning | What to do |
@@ -70,7 +88,10 @@ aplan config set --json <KEY> <VALUE>
 | `1` | generic error (network/GraphQL) | tell the user, don't retry blindly |
 | `2` | not found | the task or alert doesn't exist; ask the user for a better identifier |
 | `3` | ambiguous fuzzy match | re-run with a more specific query, or ask the user which match they meant |
-| `4` | precondition failed | usually `aplan note` / `aplan status` with no running worklog and no `--task` — ask the user to start one or pass `--task` |
+| `4` | precondition failed | `aplan note` / `aplan status` with no running worklog and no `--task` — ask the user to start one or pass `--task`. On the memory verbs it means a state the store refuses to leave (candidate already active or rejected, merge target not active, memory already invalidated, supersession cycle, nothing searchable in the query): **skip that item, never `--force`** |
+
+`1` and `4` must not be treated alike. `4` is a normal outcome to skip; `1` means
+the call never landed, so anything that depends on it has to be retried whole.
 
 When you get exit `3`, the stderr lists up to 5 candidates with their key and
 title. Use that list to ask the user which one they meant.

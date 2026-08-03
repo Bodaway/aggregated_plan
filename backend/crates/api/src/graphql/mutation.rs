@@ -10,6 +10,7 @@ use application::repositories::*;
 use application::services::{MemoryFileSource, MemoryRetriever};
 use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, gryzzly_assignment, priority, sync, task_management, worklog as worklog_uc};
+use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
@@ -1252,6 +1253,72 @@ impl MutationRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(MemoryImportResultGql::from(outcome))
+    }
+
+    /// Stamp `consolidated_at` on the worklog entries a consolidation run has
+    /// finished with (`aplan consolidate mark`).
+    ///
+    /// **Call this only after the memories those entries produced are persisted**
+    /// (§6.2). A duplicate memory is recoverable — the rejection tombstones stop it
+    /// coming back — whereas an entry marked and never turned into anything is lost
+    /// for good.
+    ///
+    /// Idempotent: an id already consolidated, or belonging to another user, moves
+    /// no row and is not an error, so a retry after a crash converges. `marked` is
+    /// therefore allowed to be lower than `requested`.
+    async fn mark_worklog_entries_consolidated(
+        &self,
+        ctx: &Context<'_>,
+        ids: Vec<ID>,
+    ) -> Result<MarkConsolidatedResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let mut parsed = Vec::with_capacity(ids.len());
+        for id in &ids {
+            parsed.push(Uuid::parse_str(id).map_err(|e| {
+                async_graphql::Error::new(format!(
+                    "Invalid worklog entry ID `{}`: {e}",
+                    id.as_str()
+                ))
+            })?);
+        }
+        let outcome = consolidation_uc::mark_entries_consolidated(
+            repo.as_ref(),
+            user_id,
+            &parsed,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(MarkConsolidatedResultGql::from(outcome))
+    }
+
+    /// Record that a consolidation run happened (`aplan consolidate record-run`).
+    ///
+    /// Writes `memory.consolidation.last_run` into `configuration` — the very key
+    /// `aplan brief` reads to render "Dernière consolidation : …". `sync_status`
+    /// cannot carry it: its `source` column is under a closed `CHECK`.
+    ///
+    /// `at` defaults to now; it is settable so a run that finished at 17:30 can
+    /// stamp its own start rather than the clock of whichever call came last.
+    async fn record_consolidation_run(
+        &self,
+        ctx: &Context<'_>,
+        at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ConsolidationRunGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let ran_at = consolidation_uc::record_consolidation_run(
+            config_repo.as_ref(),
+            user_id,
+            at.unwrap_or_else(chrono::Utc::now),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(ConsolidationRunGql {
+            key: consolidation_uc::CONSOLIDATION_LAST_RUN_KEY.to_string(),
+            ran_at,
+        })
     }
 }
 

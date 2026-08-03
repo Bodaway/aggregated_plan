@@ -172,6 +172,27 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
     tâches suivies sans la remplacer (R56) : cette liste alimente le sélecteur de tâche du hook.
     La CLI imprime les lignes rendues par `domain::rules::brief` telle quelles — un seul rendu, donc
     le plafond ne peut pas être contourné côté client. `--json` émet `data.brief` brut.
+- **Verbes de consolidation (lot 5)** — pilotés par une session Claude Code planifiée, jamais par le
+  backend. Les trois acceptent `--json`, ce qui est la condition pour être pilotables :
+  - `aplan consolidate pending [--limit N]` (défaut 200) — les entrées de journal dont
+    `consolidatedAt` est nul, **de la plus ancienne à la plus récente**. Lecture seule, donc c'est
+    aussi la **sonde de joignabilité** que la session exécute en premier (R60) : elle ne marque rien,
+    et son échec laisse le filigrane intact.
+  - `aplan consolidate mark <id>…` — pose le filigrane. Idempotent et par entrée (R59) ; la sortie
+    annonce `marked/requested` pour que l'écart soit visible. Un appel sans identifiant est refusé
+    par `clap` (`required = true`).
+  - `aplan consolidate record-run` — écrit `memory.consolidation.last_run` dans `configuration`,
+    c'est-à-dire la clé que le brief lit (R57).
+  - Le jeu d'instructions de la session vit dans `docs/prompts/consolidation-memoire.md`, **hors du
+    binaire** : c'est le composant le plus incertain du dispositif, il doit être itérable sans
+    recompiler.
+- **Codes de sortie des verbes de mémoire** : `2` identifiant introuvable, `3` référence ambiguë,
+  `4` précondition refusée (candidat déjà `active`/`rejected`, cible de fusion non active, souvenir
+  déjà invalidé, cycle de supersession, saisie sans rien de recherchable), `1` échec générique
+  (réseau, base). Le `4` est ce qui permet à un appelant automatisé de sauter un candidat sans
+  conclure que le réseau est tombé (R62). `async-graphql` ne transportant pas de code d'erreur, la
+  reconnaissance se fait sur le **message rendu** par `AppError` — ces libellés sont donc porteurs de
+  contrat et fixés par des tests (`memory_cmd::is_precondition_failure`).
 
 The CLI is a third client alongside the React frontend and the existing `aggregated-plan-mcp` MCP server. The MCP server talks directly to SQLite via the application/infrastructure crates; the CLI deliberately goes over HTTP so it can never race on the database file and shares one source of truth with the frontend.
 
@@ -391,6 +412,7 @@ aggregated-plan/
 |               +-- commands.rs       # One fn per subcommand
 |               +-- timesheet_cmd.rs  # `aplan timesheet` / `aplan map` subcommands
 |               +-- memory_cmd.rs     # `aplan remember` / `recall` / `inbox` / `memory` / `brief`
+|               +-- consolidate_cmd.rs # `aplan consolidate pending|mark|record-run`
 |
 +-- frontend/                         # React application
 |   +-- package.json
@@ -496,6 +518,8 @@ aggregated-plan/
 |
 +-- docs/
 |   +-- plans/                        # Design documents
+|   +-- prompts/                      # Instruction sets for scheduled Claude sessions
+|       +-- consolidation-memoire.md  # 17:30 memory consolidation (§ 10.10)
 |
 +-- SPEC_FONCTIONNELLE.md             # Functional specification (French)
 +-- SPEC_TECHNIQUE.md                 # This file
@@ -1880,6 +1904,52 @@ pub async fn build_brief(
 ) -> Result<Brief, AppError>;
 ```
 
+Consolidation (lot 5) — la machinerie déterministe que pilote la session planifiée. **Aucun client
+LLM, aucune clé d'API, aucun *prompt* dans le backend** : c'est la frontière que ce lot préserve.
+
+```rust
+// use_cases/consolidation.rs
+
+/// Réexportée, pas redéclarée : `brief` LIT cette clé, ce module l'ÉCRIT. Deux
+/// constantes de noms voisins feraient afficher « jamais exécutée » indéfiniment
+/// pendant que le job enregistrerait consciencieusement chaque passage.
+pub use crate::use_cases::brief::CONSOLIDATION_LAST_RUN_KEY;
+
+pub const CONSOLIDATION_BATCH_LIMIT: u32 = 200;
+
+pub struct MarkConsolidatedOutcome { /* requested, marked, consolidated_at */ }
+
+/// Entrées jamais consolidées, **de la plus ancienne à la plus récente**.
+/// `limit = 0` → `CONSOLIDATION_BATCH_LIMIT` ; la borne dure est résolue par
+/// `WorklogFilter::effective_limit()`.
+pub async fn list_unconsolidated_entries(
+    worklog_repo: &dyn WorklogRepository, user_id: UserId, limit: u32,
+) -> Result<Vec<WorklogEntry>, AppError>;
+
+/// Pose le filigrane. Une liste vide est un no-op **sans erreur** : un passage qui
+/// n'a rien trouvé doit finir proprement, sinon on apprend au job à ignorer ses
+/// propres échecs.
+pub async fn mark_entries_consolidated(
+    worklog_repo: &dyn WorklogRepository, user_id: UserId,
+    ids: &[WorklogEntryId], now: DateTime<Utc>,
+) -> Result<MarkConsolidatedOutcome, AppError>;
+
+/// Écrit la date du passage dans `configuration`, au format RFC 3339 — celui que
+/// le brief reparse.
+pub async fn record_consolidation_run(
+    config_repo: &dyn ConfigRepository, user_id: UserId, at: DateTime<Utc>,
+) -> Result<DateTime<Utc>, AppError>;
+```
+
+Le trait `WorklogRepository` reçoit les deux méthodes correspondantes,
+`list_unconsolidated(user_id, &WorklogFilter)` et
+`mark_consolidated(user_id, &[WorklogEntryId], at) -> u64`, toutes deux avec une **implémentation
+par défaut qui échoue explicitement** : un double de test qui ne les implémente pas ne doit pas
+pouvoir faire croire au job qu'il n'y a rien à consolider. `WorklogFilter` gagne
+`effective_limit()` (`0` → `WORKLOG_FILTER_DEFAULT_LIMIT` = 200, plafond
+`WORKLOG_FILTER_MAX_LIMIT` = 1 000), et **les deux** méthodes de listage lient cette valeur : un
+`LIMIT 0` renverrait une page vide sans erreur, indiscernable de « plus rien à consolider ».
+
 Traits associés : `repositories::MemoryRepository` (`create` / `find_by_id` /
 `find_by_id_prefix` / `list` / `update` / `apply_merge` / `apply_supersession` /
 `existing_source_refs` / `supersession_chain`), `services::MemoryRetriever`
@@ -2891,6 +2961,15 @@ ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT;
   sauterait définitivement toute entrée insérée tardivement avec un `logged_at` antérieur, et
   `sync_status` ne peut pas porter ce filigrane (`CHECK (source IN ('jira','outlook','excel','obsidian'))`,
   et SQLite ne sait pas `ALTER` une contrainte `CHECK`).
+  La colonne est lue et écrite **uniquement** par `SqliteWorklogRepository::list_unconsolidated` /
+  `mark_consolidated` ; elle n'est **pas** portée par `domain::WorklogEntry` et n'apparaît pas dans
+  `WorklogEntryGql`. C'est un choix : le filigrane appartient au dispositif de mémoire, pas à ce
+  qu'une entrée de journal *signifie*, et la valeur elle-même n'est jamais nécessaire — la lecture
+  filtre sur `IS NULL`, l'écriture renvoie un nombre de lignes. Le prédicat
+  `consolidated_at IS NULL` figure aussi dans le `WHERE` de la mise à jour : le premier marquage
+  gagne, donc un passage relancé après un crash ne réécrit pas la date réelle. Le lot est marqué en
+  **une transaction**, découpée en tranches de 400 identifiants pour rester sous
+  `SQLITE_MAX_VARIABLE_NUMBER`.
 - **Les pools de test doivent activer `foreign_keys(true)`.** Le pool de production l'active
   (`infrastructure/src/database/connection.rs`) mais un `SqlitePool::connect("sqlite::memory:")` nu
   ne l'active pas : sans cela une violation de FK reste verte en TDD et n'apparaît qu'en runtime.
@@ -3408,6 +3487,10 @@ type Query {
     limit: Int! = 10
   ): [ScoredMemoryGql!]!
   pendingMemories(limit: Int! = 50, offset: Int! = 0): [MemoryGql!]!
+  # Filigrane de consolidation, côté lecture : les entrées de journal jamais lues
+  # par la consolidation, de la PLUS ANCIENNE à la plus récente. Marqueur par
+  # entrée, pas curseur horodaté (R59).
+  unconsolidatedWorklogEntries(limit: Int! = 200): [WorklogEntryGql!]!
   # Brief de démarrage de session. `lines` porte le rendu déjà plafonné à 40 lignes ;
   # les champs structurés servent les clients qui veulent leur propre mise en forme.
   # S'AJOUTE à la liste des tâches suivies, ne la remplace pas.
@@ -3500,6 +3583,26 @@ type Mutation {
   supersedeMemory(old: ID!, by: ID!): SupersedeMemoryResultGql!
   # Import one-shot, idempotent, lecture seule sur le dossier.
   importMemories(directory: String!): MemoryImportResultGql!
+
+  # Consolidation (lot 5). Filigrane côté écriture : à appeler UNIQUEMENT après que
+  # les souvenirs produits par ces entrées sont persistés (R59). Idempotent — un id
+  # déjà marqué ou appartenant à un autre utilisateur ne déplace aucune ligne et
+  # n'est pas une erreur, d'où `marked` <= `requested`.
+  markWorklogEntriesConsolidated(ids: [ID!]!): MarkConsolidatedResultGql!
+  # Écrit `memory.consolidation.last_run` dans `configuration` — la clé que lit le
+  # brief (R57). `at` vaut maintenant par défaut.
+  recordConsolidationRun(at: DateTime): ConsolidationRunGql!
+}
+
+type MarkConsolidatedResultGql {
+  requested: Int!              # nombre d'ids soumis
+  marked: Int!                 # nombre de lignes réellement passées de non marqué à marqué
+  consolidatedAt: DateTime!
+}
+
+type ConsolidationRunGql {
+  key: String!                 # `memory.consolidation.last_run`, pour vérifier la cible
+  ranAt: DateTime!
 }
 
 type AcceptMemoryResultGql {
@@ -3973,6 +4076,69 @@ query Alerts {
 ```
 
 Clients filter on `alertType == TIMESHEET_READY` to find end-of-day reconstruction alerts. Severity is always `INFORMATION` for this alert type.
+
+### 10.10 Consolidation mémoire de 17 h 30
+
+#### Où le job vit — et pourquoi pas ici
+
+Contrairement au job de fin de journée (§ 10.9), **la consolidation mémoire n'est pas une tâche
+tokio du serveur**. C'est une **session Claude Code planifiée** qui pilote la CLI. La raison est une
+frontière, pas une commodité : le backend Rust ne contient aujourd'hui aucun code LLM, et y faire
+entrer un client de modèle, une clé d'API et du *prompt engineering* serait disproportionné pour une
+extraction qui tourne une fois par jour. La session consomme le modèle déjà payé, laisse la
+séparation DDD intacte, et rend le *prompt* itérable sans recompiler.
+
+| Élément | Emplacement |
+|---|---|
+| Jeu d'instructions de la session | `docs/prompts/consolidation-memoire.md` (hors binaire, versionné) |
+| Machinerie déterministe | `application::use_cases::consolidation` + `SqliteWorklogRepository` |
+| Surface pilotable | `aplan consolidate {pending,mark,record-run} --json` |
+| Filigrane par entrée | `worklog_entries.consolidated_at` (migration `012`) |
+| Date du dernier passage | `configuration['memory.consolidation.last_run']` |
+| Planification | **hors dépôt** — `CronCreate` / skill `schedule`, à installer |
+
+#### Séquence d'un passage
+
+```
+0. aplan consolidate pending --json     ← sonde de joignabilité ET lecture du lot
+   └─ échec ⇒ ARRÊT TOTAL, aucun marqueur posé (R60)
+1. aplan brief --project <p> --json     ← décisions actives du projet (matière des supersessions)
+   aplan recall --q "…" --history --json ← actifs + PENDING + pierres tombales (anti-boucle)
+   aplan inbox --json                    ← file déjà remplie
+2. aplan remember --json … (sans --confirm, avec --source-ref <id d'entrée>)
+3. aplan consolidate mark --json <id>…  ← EN DERNIER, après écritures réussies (R59)
+4. aplan consolidate record-run --json  ← rend une panne visible dans le brief (R57)
+```
+
+`--history` à l'étape 1 n'est pas un détail : sans lui, la session ne voit que les souvenirs
+`ACTIVE` et re-propose chaque soir ce que l'utilisateur a déjà rejeté. La réponse porte
+`memory.status`, ce qui permet de distinguer `ACTIVE` (déjà su), `PENDING` (déjà en file) et
+`REJECTED` (pierre tombale, à ne jamais re-proposer).
+
+#### Garanties
+
+- **Rien n'entre en `ACTIVE`.** La session n'emploie ni `--confirm` ni `--force`, et n'exécute aucun
+  verbe de la file (`accept` / `merge` / `supersede` / `reject`) : ce sont les verbes de
+  l'utilisateur. Une supersession est *proposée* — le candidat nomme l'ancien identifiant dans son
+  `--why`, et le compte rendu donne la commande `aplan inbox supersede … --replaces …` à coller
+  (R61). `invalidated_at` conserve donc ses trois écrivains humains (R46).
+- **Le marqueur est posé après les écritures.** Un doublon devient une pierre tombale au premier
+  rejet ; une entrée marquée sans souvenir est perdue en silence. L'ordre inverse échangerait une
+  panne récupérable contre une panne irrécupérable.
+- **L'horaire n'est pas critique.** Les entrées consignées après le passage sont reprises au suivant :
+  le filigrane par entrée, et non l'heure, porte la correction.
+- **Une exécution manquée ne perd rien.** Poste éteint, congé, client : le lot suivant contient tout
+  le retard, borné par `CONSOLIDATION_BATCH_LIMIT` (200) et drainé sur plusieurs passages.
+- **Un passage à vide s'enregistre quand même** (`record-run`) : c'est ce qui distingue « rien à
+  consolider » de « le job est mort », distinction que le brief affiche au-delà de 3 jours (R57).
+
+#### Prérequis hors dépôt, à installer
+
+1. Le hook `~/.claude/hooks/aplan-session-start.sh` impose aujourd'hui `AskUserQuestion` comme
+   première action. Une session planifiée non interactive va donc bloquer ou brûler son tour : le
+   hook doit détecter le mode non interactif et sauter la question.
+2. L'API doit tourner en service (`systemd --user`). Sans cela, la garde de joignabilité se contente
+   de rendre la panne visible — elle ne l'empêche pas.
 
 ---
 

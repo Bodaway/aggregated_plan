@@ -353,3 +353,27 @@ pub struct MemoryImport;
     response_derives = "Debug, Clone"
 )]
 pub struct Brief;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/unconsolidated_entries.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct UnconsolidatedEntries;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/mark_consolidated.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct MarkConsolidated;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/record_consolidation_run.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct RecordConsolidationRun;

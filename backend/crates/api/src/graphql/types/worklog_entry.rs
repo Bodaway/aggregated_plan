@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, InputObject, Object, ID};
+use async_graphql::{Context, InputObject, Object, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::TaskRepository;
+use application::use_cases::consolidation::MarkConsolidatedOutcome;
 use application::use_cases::worklog::FlushOutcome;
 use domain::types::WorklogEntry;
 
@@ -68,6 +69,41 @@ impl FlushResultGql {
     async fn slots_written(&self) -> i32 {
         self.0.slots_written as i32
     }
+}
+
+/// Result of `markWorklogEntriesConsolidated` — the write side of the
+/// per-entry consolidation watermark (§6.2).
+///
+/// `marked` is deliberately allowed to be lower than `requested`: an id already
+/// consolidated, or belonging to another user, is a no-op rather than an error, so
+/// a job that retries after a crash converges instead of failing.
+#[derive(SimpleObject)]
+pub struct MarkConsolidatedResultGql {
+    /// How many ids the caller submitted.
+    pub requested: i32,
+    /// How many rows actually moved from unmarked to marked.
+    pub marked: i32,
+    /// The timestamp written into `worklog_entries.consolidated_at`.
+    pub consolidated_at: DateTime<Utc>,
+}
+
+impl From<MarkConsolidatedOutcome> for MarkConsolidatedResultGql {
+    fn from(outcome: MarkConsolidatedOutcome) -> Self {
+        Self {
+            requested: outcome.requested as i32,
+            marked: outcome.marked as i32,
+            consolidated_at: outcome.consolidated_at,
+        }
+    }
+}
+
+/// Result of `recordConsolidationRun`: the timestamp now stored under
+/// `memory.consolidation.last_run` in `configuration`, and the key it went to — so
+/// a caller can verify it landed where `aplan brief` reads it.
+#[derive(SimpleObject)]
+pub struct ConsolidationRunGql {
+    pub key: String,
+    pub ran_at: DateTime<Utc>,
 }
 
 /// Filter input for `worklogEntries`.

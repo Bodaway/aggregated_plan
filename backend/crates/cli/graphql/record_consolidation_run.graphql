@@ -1,0 +1,6 @@
+mutation RecordConsolidationRun {
+  recordConsolidationRun {
+    key
+    ranAt
+  }
+}

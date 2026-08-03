@@ -234,6 +234,11 @@ pub enum Commands {
         /// Attach to a task: UUID, Jira-style key, fuzzy title, or @current.
         #[arg(long)]
         task: Option<String>,
+        /// Where this came from: a worklog entry id, a session id. Free-form, no
+        /// foreign key. The consolidation job records the entry it read here, so a
+        /// memory can be traced back to what produced it.
+        #[arg(long)]
+        source_ref: Option<String>,
         /// Skip the validation queue and store as active.
         #[arg(long)]
         confirm: bool,
@@ -290,6 +295,39 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: MemoryCmd,
     },
+    /// Drive the 17:30 consolidation: read the worklog entries nobody has turned
+    /// into memories yet, then mark them and record the run.
+    ///
+    /// The consolidation itself is a scheduled Claude Code session — the backend
+    /// holds no model. These verbs are the deterministic half it drives; see
+    /// `docs/prompts/consolidation-memoire.md`.
+    Consolidate {
+        #[command(subcommand)]
+        cmd: ConsolidateCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConsolidateCmd {
+    /// The worklog entries still awaiting consolidation (`consolidatedAt` null),
+    /// oldest first. Read-only: it marks nothing, so it doubles as the
+    /// reachability probe a run must pass before doing anything.
+    Pending {
+        /// Max entries to read in one run.
+        #[arg(long, default_value_t = 200)]
+        limit: i64,
+    },
+    /// Mark entries consolidated. Run this LAST, once the memories they produced
+    /// are persisted: a duplicate memory is recoverable through the rejection
+    /// tombstones, an entry skipped forever is not.
+    Mark {
+        /// Worklog entry ids (full UUIDs, as `consolidate pending` prints them).
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
+    /// Record that a consolidation run happened, so `aplan brief` stops reporting
+    /// "jamais exécutée" — and starts reporting staleness if the job dies.
+    RecordRun,
 }
 
 #[derive(Subcommand, Debug)]
@@ -526,6 +564,93 @@ mod tests {
                 assert_eq!(date, None);
             }
             other => panic!("expected Brief, got {other:?}"),
+        }
+    }
+
+    /// The consolidation records which worklog entry produced a memory, so a
+    /// candidate can be traced back to what it was extracted from (§5.2:
+    /// `source_ref` holds a worklog entry id).
+    #[test]
+    fn remember_carries_the_provenance_of_the_entry_it_came_from() {
+        match parse(&[
+            "aplan",
+            "remember",
+            "Wave 0 limitee au perimetre AI Microsoft",
+            "--kind",
+            "decision",
+            "--source-ref",
+            "509a006c-0000-0000-0000-000000000001",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Remember {
+                source_ref,
+                confirm,
+                ..
+            } => {
+                assert_eq!(
+                    source_ref.as_deref(),
+                    Some("509a006c-0000-0000-0000-000000000001")
+                );
+                assert!(!confirm, "the consolidation never writes straight to active");
+            }
+            other => panic!("expected Remember, got {other:?}"),
+        }
+    }
+
+    /// The batch default is the same 200 the resolver applies, so the scheduled
+    /// job reads the same page whether or not it passes `--limit`.
+    #[test]
+    fn consolidate_pending_defaults_to_the_batch_limit() {
+        match parse(&["aplan", "consolidate", "pending"])
+            .expect("parses")
+            .command
+        {
+            Commands::Consolidate {
+                cmd: ConsolidateCmd::Pending { limit },
+            } => assert_eq!(limit, 200),
+            other => panic!("expected Consolidate/Pending, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn consolidate_mark_takes_several_ids() {
+        match parse(&["aplan", "consolidate", "mark", "aaa", "bbb", "ccc"])
+            .expect("parses")
+            .command
+        {
+            Commands::Consolidate {
+                cmd: ConsolidateCmd::Mark { ids },
+            } => assert_eq!(ids, vec!["aaa", "bbb", "ccc"]),
+            other => panic!("expected Consolidate/Mark, got {other:?}"),
+        }
+    }
+
+    /// Marking nothing must be a parse error, not a silent success: a job that
+    /// forgot to collect its ids would otherwise look like a clean run and record
+    /// a consolidation that consolidated nothing.
+    #[test]
+    fn consolidate_mark_refuses_an_empty_id_list() {
+        let err = parse(&["aplan", "consolidate", "mark"]).expect_err("must require ids");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "got {:?}",
+            err.kind()
+        );
+    }
+
+    #[test]
+    fn consolidate_record_run_parses() {
+        match parse(&["aplan", "consolidate", "record-run"])
+            .expect("parses")
+            .command
+        {
+            Commands::Consolidate {
+                cmd: ConsolidateCmd::RecordRun,
+            } => {}
+            other => panic!("expected Consolidate/RecordRun, got {other:?}"),
         }
     }
 
