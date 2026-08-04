@@ -21,8 +21,13 @@ pub enum SlotSource {
 }
 
 impl SlotSource {
-    /// May a rebuild delete and rewrite this slot?
-    pub fn is_rebuildable(&self) -> bool {
+    /// Is this slot one the worklog projection owns?
+    ///
+    /// Not the whole answer to "may a rebuild delete and rewrite this slot" — that
+    /// is [`crate::rules::reattribution::is_rebuildable`], which also checks the slot
+    /// is closed. This method is one input to that question: a rebuild deletes what
+    /// the projection wrote and must never delete anything else.
+    pub fn is_projection(&self) -> bool {
         matches!(self, SlotSource::Worklog)
     }
 }
@@ -70,7 +75,6 @@ impl ActivitySlot {
     }
 
     /// A slot no rebuild may touch — including an open one, which is a running timer.
-    #[allow(clippy::too_many_arguments)]
     pub fn manual(
         user_id: UserId,
         task_id: Option<TaskId>,
@@ -125,7 +129,7 @@ mod tests {
         assert_eq!(slot.end_time, Some(t(11)));
         assert_eq!(slot.source, SlotSource::Worklog);
         assert_eq!(slot.session_id.as_deref(), Some("sess-1"));
-        assert!(slot.source.is_rebuildable());
+        assert!(slot.source.is_projection());
     }
 
     #[test]
@@ -144,6 +148,6 @@ mod tests {
         );
         assert_eq!(slot.source, SlotSource::Manual);
         assert!(slot.session_id.is_none());
-        assert!(!slot.source.is_rebuildable());
+        assert!(!slot.source.is_projection());
     }
 }
