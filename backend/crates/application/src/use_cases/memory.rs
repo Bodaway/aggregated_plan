@@ -40,6 +40,14 @@ pub struct RememberInput {
     /// Skip the validation queue and store as `active` — for entries the human
     /// typed themselves.
     pub confirmed: bool,
+    /// The active memory this candidate CLAIMS to contradict, so `aplan inbox`
+    /// can show the conflict and `aplan inbox supersede` can default to it.
+    ///
+    /// Already resolved to an id by the caller: the reference the consolidation
+    /// writes is a short prefix, and [`resolve_memory_id`] is the one place that
+    /// turns those into ids. Incompatible with `confirmed` — the domain refuses a
+    /// claim on a row that never enters the queue.
+    pub proposed_supersedes: Option<MemoryId>,
     pub project_id: Option<ProjectId>,
     pub task_id: Option<TaskId>,
     pub stakeholders: Vec<String>,
@@ -66,6 +74,7 @@ pub async fn remember(
             } else {
                 MemoryStatus::Pending
             },
+            proposed_supersedes: input.proposed_supersedes,
             project_id: input.project_id,
             task_id: input.task_id,
             stakeholders: input.stakeholders,
@@ -351,6 +360,9 @@ pub async fn import_memories(
                 source: MemorySource::Manual,
                 source_ref: Some(source_ref.clone()),
                 status: MemoryStatus::Active,
+                // The harness files are curated notes, not queue candidates: there
+                // is no conflict for anyone to settle.
+                proposed_supersedes: None,
                 project_id: None,
                 task_id: None,
                 stakeholders: vec![],
@@ -497,6 +509,32 @@ pub async fn supersede_memory(
         .apply_supersession(&outcome.invalidated, &outcome.successor)
         .await?;
     Ok(outcome)
+}
+
+/// The memory a queue supersession must invalidate when the caller named none:
+/// the claim the candidate itself carries.
+///
+/// This is what turns `aplan inbox supersede <id> --replaces <old>` into
+/// `aplan inbox supersede <id>` for the case the consolidation produced. The old
+/// id is already ON the candidate, recorded by the run that proposed it; asking the
+/// human to re-type it out of a `--why` paragraph was the workaround this replaces.
+///
+/// A candidate with no claim is a refused precondition, never a silent no-op: a
+/// caller that read "superseded" and saw nothing invalidated would believe an
+/// obsolete memory had been retired. The message names `--replaces`, because
+/// supplying it is the fix.
+pub async fn proposed_supersession_target(
+    memory_repo: &dyn MemoryRepository,
+    user_id: UserId,
+    candidate_id: MemoryId,
+) -> Result<MemoryId, AppError> {
+    let candidate = load(memory_repo, user_id, candidate_id).await?;
+    candidate.proposed_supersedes.ok_or_else(|| {
+        AppError::Validation(format!(
+            "memory {candidate_id} proposes no supersession; \
+             name the memory it makes obsolete with --replaces"
+        ))
+    })
 }
 
 async fn load(
@@ -764,6 +802,7 @@ mod tests {
             source: MemorySource::ClaudeSession,
             source_ref: None,
             confirmed,
+            proposed_supersedes: None,
             project_id: None,
             task_id: None,
             stakeholders: vec![],
@@ -1052,6 +1091,134 @@ mod tests {
             matches!(err, AppError::NotFound(_)),
             "expected a not-found, got {err:?}"
         );
+    }
+
+    // ─── Structured supersession proposals ────────────────────────────────
+
+    #[tokio::test]
+    async fn remember_records_the_supersession_a_candidate_proposes() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let older = remembered(&repo, uid, MemoryKind::Decision, "scope is Microsoft AI", true).await;
+
+        let mut i = input(MemoryKind::Decision, "scope is the whole platform", false);
+        i.proposed_supersedes = Some(older.id);
+        let candidate = remember(&repo, uid, i, now()).await.expect("remembers");
+
+        assert_eq!(candidate.status, MemoryStatus::Pending);
+        assert_eq!(candidate.proposed_supersedes, Some(older.id));
+        let stored = repo.find_by_id(candidate.id, uid).await.unwrap().unwrap();
+        assert_eq!(
+            stored.proposed_supersedes,
+            Some(older.id),
+            "the claim has to survive the write, it is what `inbox` reads"
+        );
+        assert_eq!(
+            repo.find_by_id(older.id, uid).await.unwrap().unwrap().invalidated_at,
+            None,
+            "proposing invalidates nothing; only supersede does"
+        );
+    }
+
+    /// The point of the whole change: `aplan inbox supersede <id>` with no
+    /// `--replaces` uses the claim the consolidation recorded, so triage is one
+    /// command and not a copy-paste of an id read out of prose.
+    #[tokio::test]
+    async fn a_queue_supersession_defaults_to_the_recorded_proposal() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let older = remembered(&repo, uid, MemoryKind::Decision, "scope is Microsoft AI", true).await;
+        let mut i = input(MemoryKind::Decision, "scope is the whole platform", false);
+        i.proposed_supersedes = Some(older.id);
+        let candidate = remember(&repo, uid, i, now()).await.expect("remembers");
+
+        assert_eq!(
+            proposed_supersession_target(&repo, uid, candidate.id)
+                .await
+                .expect("the proposal is the default"),
+            older.id
+        );
+
+        let outcome = supersede_memory(&repo, uid, older.id, candidate.id, now())
+            .await
+            .expect("supersedes");
+        assert_eq!(outcome.invalidated.id, older.id);
+        assert_eq!(
+            repo.find_by_id(candidate.id, uid)
+                .await
+                .unwrap()
+                .unwrap()
+                .proposed_supersedes,
+            None,
+            "the applied claim is spent, and the store must show it"
+        );
+    }
+
+    /// Silently doing nothing would be the worst outcome here: the caller would
+    /// read a success and believe an old memory had been retired.
+    #[tokio::test]
+    async fn a_candidate_carrying_no_proposal_refuses_to_guess() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let candidate = remembered(&repo, uid, MemoryKind::Fact, "a plain candidate", false).await;
+        let err = proposed_supersession_target(&repo, uid, candidate.id)
+            .await
+            .expect_err("there is nothing to default to");
+        assert!(
+            matches!(err, AppError::Validation(_)),
+            "a refused precondition (exit 4), not a not-found: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("--replaces"),
+            "the message must name the flag that fixes it: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proposal_lookup_is_scoped_to_its_user() {
+        let repo = InMemoryMemoryRepository::default();
+        let uid = Uuid::new_v4();
+        let candidate = remembered(&repo, uid, MemoryKind::Fact, "a candidate", false).await;
+        assert!(matches!(
+            proposed_supersession_target(&repo, Uuid::new_v4(), candidate.id)
+                .await
+                .unwrap_err(),
+            AppError::NotFound(_)
+        ));
+    }
+
+    /// Every queue verdict answers the claim, so none of them may leave it behind
+    /// — asserted through the store, because that is where a later reader looks.
+    #[tokio::test]
+    async fn accepting_or_rejecting_a_candidate_clears_its_proposal_in_the_store() {
+        for reject_it in [false, true] {
+            let repo = InMemoryMemoryRepository::default();
+            let uid = Uuid::new_v4();
+            let older =
+                remembered(&repo, uid, MemoryKind::Decision, "scope is Microsoft AI", true).await;
+            let mut i = input(MemoryKind::Decision, "an unrelated new decision", false);
+            i.proposed_supersedes = Some(older.id);
+            let candidate = remember(&repo, uid, i, now()).await.expect("remembers");
+
+            if reject_it {
+                reject_candidate(&repo, uid, candidate.id).await.expect("rejects");
+            } else {
+                accept_candidate(&repo, &repo, uid, candidate.id, None, true, now())
+                    .await
+                    .expect("accepts");
+            }
+
+            let stored = repo.find_by_id(candidate.id, uid).await.unwrap().unwrap();
+            assert_eq!(
+                stored.proposed_supersedes, None,
+                "reject_it = {reject_it}: the claim must not outlive the verdict"
+            );
+            assert_eq!(
+                repo.find_by_id(older.id, uid).await.unwrap().unwrap().invalidated_at,
+                None,
+                "neither verdict invalidates the memory the claim named"
+            );
+        }
     }
 
     #[tokio::test]

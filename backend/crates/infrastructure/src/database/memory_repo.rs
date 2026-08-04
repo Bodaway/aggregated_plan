@@ -84,6 +84,7 @@ fn map_row(row: &SqliteRow) -> Result<Memory, RepositoryError> {
         recorded_at: parse_dt(&Row::get::<String, _>(row, "recorded_at"))?,
         invalidated_at: parse_opt_dt(Row::get(row, "invalidated_at"))?,
         superseded_by: parse_opt_uuid(Row::get(row, "superseded_by"))?,
+        proposed_supersedes: parse_opt_uuid(Row::get(row, "proposed_supersedes"))?,
         source: MemorySource::from_str(&source_str)
             .ok_or_else(|| RepositoryError::Database(format!("bad memory source '{source_str}'")))?,
         source_ref: Row::get(row, "source_ref"),
@@ -139,8 +140,8 @@ async fn insert_row(
     sqlx::query(
         "INSERT INTO memories
             (id, user_id, kind, title, body, occurred_at, recorded_at, invalidated_at,
-             superseded_by, source, source_ref, status, project_id, task_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             superseded_by, proposed_supersedes, source, source_ref, status, project_id, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(memory.id.to_string())
     .bind(memory.user_id.to_string())
@@ -151,6 +152,7 @@ async fn insert_row(
     .bind(memory.recorded_at.to_rfc3339())
     .bind(memory.invalidated_at.map(|d| d.to_rfc3339()))
     .bind(memory.superseded_by.map(|id| id.to_string()))
+    .bind(memory.proposed_supersedes.map(|id| id.to_string()))
     .bind(memory.source.as_str())
     .bind(&memory.source_ref)
     .bind(memory.status.as_str())
@@ -170,8 +172,8 @@ async fn update_row(
     sqlx::query(
         "UPDATE memories SET
             kind = ?, title = ?, body = ?, occurred_at = ?, recorded_at = ?,
-            invalidated_at = ?, superseded_by = ?, source = ?, source_ref = ?,
-            status = ?, project_id = ?, task_id = ?
+            invalidated_at = ?, superseded_by = ?, proposed_supersedes = ?, source = ?,
+            source_ref = ?, status = ?, project_id = ?, task_id = ?
          WHERE id = ? AND user_id = ?",
     )
     .bind(memory.kind.as_str())
@@ -181,6 +183,9 @@ async fn update_row(
     .bind(memory.recorded_at.to_rfc3339())
     .bind(memory.invalidated_at.map(|d| d.to_rfc3339()))
     .bind(memory.superseded_by.map(|id| id.to_string()))
+    // Carried on UPDATE too: this is the path every queue verdict takes to clear a
+    // spent claim, so omitting it would leave the store contradicting the domain.
+    .bind(memory.proposed_supersedes.map(|id| id.to_string()))
     .bind(memory.source.as_str())
     .bind(&memory.source_ref)
     .bind(memory.status.as_str())
@@ -626,6 +631,7 @@ mod tests {
                 source: MemorySource::ClaudeSession,
                 source_ref: None,
                 status: MemoryStatus::Active,
+                proposed_supersedes: None,
                 project_id: None,
                 task_id: None,
                 stakeholders: vec![],
@@ -713,6 +719,110 @@ mod tests {
         assert_eq!(got.invalidated_at, None);
         assert_eq!(got.superseded_by, None);
         assert_eq!(got.stakeholders, vec!["Pierre".to_string(), "Sophie".to_string()]);
+    }
+
+    /// The claim has to survive the write: `aplan inbox` reads it off the stored
+    /// row, and `aplan inbox supersede` defaults to it. Held in a real SQLite
+    /// because the column is what 013 added.
+    #[tokio::test]
+    async fn a_supersession_proposal_roundtrips() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        let older = memory(uid, MemoryKind::Decision, "périmètre limité à AI Microsoft", None);
+        repo.create(&older).await.expect("create");
+
+        let mut candidate = memory(uid, MemoryKind::Decision, "périmètre étendu", None);
+        candidate.status = MemoryStatus::Pending;
+        candidate.proposed_supersedes = Some(older.id);
+        repo.create(&candidate).await.expect("create");
+
+        let got = repo
+            .find_by_id(candidate.id, uid)
+            .await
+            .expect("find")
+            .expect("row exists");
+        assert_eq!(got.proposed_supersedes, Some(older.id));
+        assert_eq!(got.invalidated_at, None, "a claim invalidates nothing");
+        assert_eq!(
+            repo.find_by_id(older.id, uid)
+                .await
+                .expect("find")
+                .expect("row exists")
+                .invalidated_at,
+            None
+        );
+    }
+
+    /// `update` carries the column too — that is the path every queue verdict takes
+    /// to clear a spent claim. Without it the claim would stay in the store forever,
+    /// whatever the domain decided.
+    #[tokio::test]
+    async fn clearing_a_supersession_proposal_is_persisted() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        let older = memory(uid, MemoryKind::Decision, "ancienne décision", None);
+        repo.create(&older).await.expect("create");
+        let mut candidate = memory(uid, MemoryKind::Decision, "nouvelle décision", None);
+        candidate.status = MemoryStatus::Pending;
+        candidate.proposed_supersedes = Some(older.id);
+        repo.create(&candidate).await.expect("create");
+
+        candidate.status = MemoryStatus::Active;
+        candidate.proposed_supersedes = None;
+        repo.update(&candidate).await.expect("update");
+
+        assert_eq!(
+            repo.find_by_id(candidate.id, uid)
+                .await
+                .expect("find")
+                .expect("row exists")
+                .proposed_supersedes,
+            None
+        );
+    }
+
+    /// `ON DELETE SET NULL`, same reasoning as `superseded_by`: `apply_merge`
+    /// deletes the discarded row, and a claim pointing at a row that no longer
+    /// exists would be a dangling id no reader could resolve.
+    #[tokio::test]
+    async fn deleting_the_proposed_memory_nulls_the_claim() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool.clone());
+        let older = memory(uid, MemoryKind::Decision, "ancienne décision", None);
+        repo.create(&older).await.expect("create");
+        let mut candidate = memory(uid, MemoryKind::Decision, "nouvelle décision", None);
+        candidate.status = MemoryStatus::Pending;
+        candidate.proposed_supersedes = Some(older.id);
+        repo.create(&candidate).await.expect("create");
+
+        sqlx::query("DELETE FROM memories WHERE id = ?")
+            .bind(older.id.to_string())
+            .execute(&pool)
+            .await
+            .expect("delete the proposed memory");
+
+        let got = repo
+            .find_by_id(candidate.id, uid)
+            .await
+            .expect("find")
+            .expect("the candidate must survive");
+        assert_eq!(got.proposed_supersedes, None, "SET NULL, never CASCADE");
+    }
+
+    /// The foreign key is enforced, so a claim naming a memory that does not exist
+    /// cannot be written at all.
+    #[tokio::test]
+    async fn a_proposal_naming_no_memory_is_refused() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteMemoryRepository::new(pool);
+        let mut candidate = memory(uid, MemoryKind::Decision, "nouvelle décision", None);
+        candidate.status = MemoryStatus::Pending;
+        candidate.proposed_supersedes = Some(Uuid::new_v4());
+        let err = repo
+            .create(&candidate)
+            .await
+            .expect_err("the FK on memories(id) must be enforced");
+        assert!(matches!(err, RepositoryError::Database(_)));
     }
 
     #[tokio::test]

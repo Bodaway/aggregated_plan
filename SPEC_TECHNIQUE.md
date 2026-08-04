@@ -513,6 +513,7 @@ aggregated-plan/
 |   |   +-- 001_initial.sql
 |   |   +-- ...                       # 002-011: recurrence, worklog, Gryzzly, timesheet, mappings
 |   |   +-- 012_create_memories.sql   # Semantic memory + standalone FTS5 index
+|   |   +-- 013_add_proposed_supersedes_and_fix_alert_type_check.sql
 |   +-- postgres/
 |       +-- 001_initial.sql
 |
@@ -1322,6 +1323,7 @@ valeurs, si bien que tout le chemin d'écriture est testable sans base.
 | `reject(candidate)` | `pending` → `rejected` (pierre tombale) | idem ; n'écrit **pas** `invalidated_at` |
 | `merge(candidate, target)` | **une** ligne survit : la cible garde identité et dates, prend la formulation du candidat, union des personnes | candidat `pending`, cible `active` et non invalidée, ids distincts, même utilisateur |
 | `supersede(old, successor, chain_from_successor, now)` | **deux** lignes survivent : `old` reçoit `invalidated_at` + `superseded_by` ; `successor` passe `active` | pas d'auto-supersession, pas de cycle, `old` actif et non invalidé, `successor` ni invalidé ni rejeté, même utilisateur |
+| `spend_proposal(memory)` (privée) | efface `proposed_supersedes` | appelée par **les quatre** verdicts ci-dessus : une proposition est une question, tout verdict y répond. D'où l'invariant `status <> 'pending'` ⇒ `proposed_supersedes IS NULL` (§ 7.2.1) |
 | `title_similarity(a, b)` | max(recouvrement de jetons, Levenshtein normalisé) | le recouvrement attrape la réécriture par réordonnancement, Levenshtein la faute de frappe ; aucun filtre de longueur, sinon `wave 0` et `wave 1` deviendraient identiques |
 | `near_duplicates(title, candidates)` | les candidats au-delà de `NEAR_DUPLICATE_THRESHOLD` (0,6), plus similaires d'abord | ne tente **pas** de distinguer reformulation et contradiction : jugement sémantique, laissé à l'humain |
 
@@ -1797,7 +1799,11 @@ pub async fn sync_all(/* ... */) -> Result<Vec<SyncResult>, AppError> { /* ... *
 
 ```rust
 pub struct RememberInput { /* kind, title, body, occurred_at, source, source_ref,
-                             confirmed, project_id, task_id, stakeholders */ }
+                             confirmed, proposed_supersedes, project_id, task_id,
+                             stakeholders */ }
+// `proposed_supersedes: Option<MemoryId>` — DÉJÀ résolu par l'appelant : la
+// référence écrite par la consolidation est un préfixe court, et
+// `resolve_memory_id` est le seul endroit qui les transforme en identifiants.
 
 pub async fn remember(
     memory_repo: &dyn MemoryRepository,
@@ -1853,6 +1859,15 @@ pub async fn merge_candidate(/* repo, user_id, candidate_id, into_id */)
 /// écrit `invalidated_at`.
 pub async fn supersede_memory(/* repo, user_id, old_id, successor_id, now */)
     -> Result<SupersedeOutcome, AppError>;
+
+/// Le souvenir qu'une supersession de file doit invalider quand l'appelant n'en a
+/// nommé aucun : la proposition portée par le candidat lui-même (§ 7.2.1). C'est
+/// ce qui réduit `aplan inbox supersede <id> --replaces <old>` à
+/// `aplan inbox supersede <id>`. Un candidat sans proposition est un refus de
+/// précondition (`AppError::Validation`, code 4), jamais un no-op silencieux :
+/// lire « superseded » sans que rien ne soit invalidé serait le pire résultat.
+pub async fn proposed_supersession_target(/* repo, user_id, candidate_id */)
+    -> Result<MemoryId, AppError>;
 ```
 
 Brief et références courtes (lot 4) :
@@ -2765,8 +2780,10 @@ CREATE TABLE activity_slots (
 CREATE TABLE alerts (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Les quatre variantes de domain::AlertType. La liste initiale de 001 n'en
+    -- portait que trois ; la migration 013 a reconstruit la table (§ 7.2.2).
     alert_type TEXT NOT NULL
-        CHECK (alert_type IN ('deadline', 'overload', 'conflict')),
+        CHECK (alert_type IN ('deadline', 'overload', 'conflict', 'timesheet_ready')),
     severity TEXT NOT NULL
         CHECK (severity IN ('critical', 'warning', 'information')),
     message TEXT NOT NULL,
@@ -2882,6 +2899,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 | **008** | `008_add_delegated_to.sql` | `ALTER TABLE tasks ADD COLUMN delegated_to TEXT;` — champ délégation (texte libre, user-owned, jamais écrasé par la sync). |
 | 009–011 | (voir `migrations/sqlite/`) | Catalogue Gryzzly, brouillons de feuille de temps, règles de mappage de signaux. |
 | **012** | `012_create_memories.sql` | Mémoire sémantique : `memories`, `memory_stakeholders`, table FTS5 autonome `memories_fts`, et `ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT` (filigrane de consolidation par entrée). Voir § 7.2. |
+| **013** | `013_add_proposed_supersedes_and_fix_alert_type_check.sql` | Deux corrections indépendantes : `memories.proposed_supersedes` (supersession *proposée*, forme structurée) et reconstruction de `alerts` pour que le `CHECK` sur `alert_type` admette `timesheet_ready`. Voir § 7.2.1 et § 7.2.2. |
 
 ### 7.2 Migration `012_create_memories.sql` — mémoire sémantique
 
@@ -2980,6 +2998,90 @@ ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT;
   **négatif** (mesuré : `-0.000001`) et que l'ordre `ASC` place bien la meilleure correspondance
   en tête. Une montée de version de `sqlx` qui perdrait FTS5 échouera ici, bruyamment, au lieu
   de vider silencieusement tous les rappels.
+
+### 7.2.1 Migration `013` — `memories.proposed_supersedes`
+
+```sql
+ALTER TABLE memories ADD COLUMN proposed_supersedes TEXT REFERENCES memories(id) ON DELETE SET NULL;
+
+CREATE INDEX idx_memories_proposed_supersedes
+    ON memories(proposed_supersedes) WHERE proposed_supersedes IS NOT NULL;
+```
+
+**Ce que la colonne porte.** `superseded_by` enregistre une supersession qui a **eu lieu** ;
+`proposed_supersedes` enregistre celle que la consolidation **propose**. Les deux doivent rester
+distinctes : le filtre dur de rappel lit `invalidated_at`, et une proposition est précisément une
+affirmation que personne n'a encore validée — elle ne doit jamais masquer un souvenir encore vrai.
+Avant cette colonne, la proposition vivait en prose dans le `body` du candidat : aucune surface ne
+pouvait la lire, aucun verbe ne pouvait l'appliquer, et le triage devait recopier un identifiant
+lu dans un paragraphe.
+
+**Invariant du cycle de vie : une proposition n'existe que sur une ligne `pending`.**
+`Memory::new` **refuse** une proposition portée par une ligne qui saute la file (`--confirm`,
+donc `active`, ou `rejected`) — le verbe correct dans ce cas est `aplan memory supersede`. Et
+chaque verdict de la file la **consomme** (`domain::rules::memory_lifecycle::spend_proposal`) :
+
+| Verdict | Sort de `proposed_supersedes` | Pourquoi |
+|---|---|---|
+| `accept` | effacée | Accepter, c'est répondre « non, c'est un fait nouveau, on garde les deux » : ce verbe n'invalide rien. Laisser la proposition ferait annoncer indéfiniment un conflit que l'utilisateur vient d'écarter. |
+| `reject` | effacée | La pierre tombale conserve le libellé (c'est ce qui fait converger la boucle de proposition), pas la question : il n'y a plus rien à trancher. |
+| `merge` | effacée, et **jamais héritée** par le survivant | Un merge dit « même fait » : il n'y a pas de contradiction. Et comme la porte anti-doublon propose `merge` **et** `supersede` sur la *même* paire, la proposition nomme d'ordinaire la cible du merge — l'hériter ferait proposer au survivant de se superséder lui-même. |
+| `supersede` | effacée | La proposition est **honorée** : `invalidated_at` + `superseded_by` portent désormais le même fait sous forme structurée. Le garder stockerait une vérité en deux exemplaires, qui divergeraient. |
+
+Conséquence lisible par n'importe quel lecteur : **`status <> 'pending'` implique
+`proposed_supersedes IS NULL`**. Une proposition trouvée dans la base est donc toujours une
+question ouverte, jamais un vestige. L'invariant est tenu par le domaine et non par un `CHECK` —
+`memories` n'en porte aucun, pas même sur `kind` ou `status` (§ 7.2).
+
+**Cas résiduel assumé** : le souvenir *nommé* par une proposition peut être invalidé par une autre
+supersession entre le passage de 17 h 30 qui l'a proposée et le triage du lendemain matin. La
+proposition n'est donc pas revalidée à l'écriture (une affirmation molle ne doit pas faire échouer
+un `remember`), mais les deux surfaces sont honnêtes : `aplan inbox` marque une proposition dont la
+cible n'est **déjà plus vraie**, et `supersede` la refuse (`MemoryAlreadyInvalidated`, code 4).
+
+**`ON DELETE SET NULL`**, même raisonnement que `superseded_by` : `apply_merge` supprime la ligne
+écartée, et un identifiant pendant qu'aucun lecteur ne peut résoudre serait pire qu'une absence de
+proposition. L'index est **partiel** : seules quelques lignes portent une proposition, et c'est la
+colonne que SQLite doit parcourir pour appliquer `SET NULL` à chaque suppression d'un `memories`.
+
+**Surface.** `MemoryGql.proposedSupersedes: ID` (l'identifiant) et `MemoryGql.contradicts: MemoryGql`
+(le souvenir nommé, résolu — un identifiant seul ne dit pas *quelle* décision est contredite).
+`RememberInputGql.proposedSupersedes: ID` accepte une **référence courte** (`m:7c1`), résolue par le
+même résolveur que tous les autres verbes. `supersedeMemory(old: ID, by: ID!)` : `old` est devenu
+**nullable** et, omis, retombe sur la proposition portée par `by`
+(`use_cases::memory::proposed_supersession_target`). Un candidat qui ne propose rien est un refus de
+précondition (code 4), jamais une supersession de rien.
+
+### 7.2.2 Migration `013` — reconstruction de `alerts`
+
+`domain::AlertType` compte **quatre** variantes et `alert_type_to_str` associe `TimesheetReady` à
+`timesheet_ready` (`infrastructure/src/database/conversions.rs`), mais le `CHECK` écrit en `001` n'en
+listait que trois. La reconstruction de feuille de temps de fin de journée échouait donc à **chaque
+passage** depuis la fusion de la fonctionnalité — `(code: 275) CHECK constraint failed` — et c'est
+**tout le job** qui s'arrêtait, pas seulement l'alerte. Seul le journal du service le montrait.
+
+SQLite ne sait pas `ALTER` une contrainte `CHECK` : la migration applique la
+[reconstruction de table documentée](https://sqlite.org/lang_altertable.html#otherxform)
+(`CREATE TABLE new_alerts` avec les quatre valeurs → `INSERT … SELECT` colonne par colonne →
+`DROP TABLE alerts` → `RENAME` → recréation de `idx_alerts_user_resolved`), avec quatre écarts
+explicites par rapport aux 12 étapes :
+
+- **étapes 2 et 11 (BEGIN / COMMIT)** : ce sont celles de `sqlx`, qui exécute chaque migration dans
+  une transaction — un échec en cours de route laisse donc l'ancienne table intacte ;
+- **étapes 1 et 12 (`PRAGMA foreign_keys` off/on)** : volontairement absentes. Ce pragma est un
+  **no-op documenté à l'intérieur d'une transaction**, et il est inutile ici : `alerts` n'est que
+  table *fille*. Rien ne la référence, donc ni le `DROP` ni le `RENAME` ne peut toucher la clé
+  étrangère d'une autre table ;
+- **étape 3 (inventaire)** : `sqlite_master` ne contient pour `alerts` qu'une table et un index
+  explicite — aucun trigger, aucune vue. L'étape 9 et la moitié de l'étape 8 sont donc vides ;
+- **étape 10 (`PRAGMA foreign_key_check`)** : ne peut pas faire échouer une migration depuis du SQL
+  (elle renvoie des lignes au lieu de lever), donc elle est vérifiée dans la suite de tests
+  (`database::connection::migration_tests`).
+
+**Garde-fou de non-régression** : `alert_repo.rs` porte un test qui insère une alerte de **chaque**
+variante de `AlertType`, la liste étant écrite via un `match` exhaustif. Ajouter une variante sans
+migration devient une erreur de **compilation** au lieu d'un `CHECK constraint failed` levé le soir
+au fond d'un job d'arrière-plan.
 
 ### 7.3 Notes
 
@@ -3580,7 +3682,10 @@ type Mutation {
   # Une seule ligne survit — efface l'historique.
   mergeMemory(id: ID!, into: ID!): MergeMemoryResultGql!
   # Les deux lignes survivent. SEUL chemin qui écrit invalidatedAt.
-  supersedeMemory(old: ID!, by: ID!): SupersedeMemoryResultGql!
+  # `old` omis => retombe sur by.proposedSupersedes (la proposition portée par le
+  # candidat). Un candidat qui ne propose rien est refusé (code 4), jamais une
+  # supersession de rien.
+  supersedeMemory(old: ID, by: ID!): SupersedeMemoryResultGql!
   # Import one-shot, idempotent, lecture seule sur le dossier.
   importMemories(directory: String!): MemoryImportResultGql!
 
@@ -3647,12 +3752,19 @@ type MemoryGql {
   recordedAt: DateTime!
   invalidatedAt: DateTime      # null = encore vrai
   supersededBy: ID
+  # Supersession PROPOSÉE, pas encore appliquée (migration 013, § 7.2.1). Ne
+  # figure que sur un candidat PENDING : tout verdict de la file l'efface.
+  proposedSupersedes: ID
   source: MemorySourceGql!
   sourceRef: String
   status: MemoryStatusGql!
   projectId: ID
   taskId: ID
   stakeholders: [String!]!
+  # Le souvenir nommé par proposedSupersedes, résolu : un identifiant seul ne dit
+  # pas QUELLE décision est contredite. null si rien n'est proposé, ou si le
+  # souvenir nommé a été supprimé depuis (la colonne est ON DELETE SET NULL).
+  contradicts: MemoryGql
 }
 
 type ScoredMemoryGql {
@@ -3668,6 +3780,10 @@ input RememberInputGql {
   source: MemorySourceGql      # défaut : CLAUDE_SESSION
   sourceRef: String
   confirmed: Boolean           # défaut : false → status = PENDING
+  # Le souvenir actif que ce candidat CONTREDIT : UUID complet ou référence
+  # courte (m:7c1). Incompatible avec confirmed: true — une proposition est une
+  # question posée à la file, et une ligne confirmée n'y entre pas.
+  proposedSupersedes: ID
   projectId: ID
   taskId: ID
   stakeholders: [String!]
@@ -4046,6 +4162,11 @@ The use case performs the following steps for the target date (today in local ti
      - `related_items: []` (no specific task/meeting links)
    - Persist via `alert_repo.save(alert)`.
    - Emit an `alertsUpdated` subscription to notify any connected frontend clients.
+   - **Prérequis schéma** : `alerts.alert_type` doit admettre `timesheet_ready`. La liste `CHECK`
+     de `001` n'en portait que trois valeurs, si bien que cette insertion levait
+     `(code: 275) CHECK constraint failed` et faisait **avorter tout le job** — à chaque passage,
+     depuis la fusion de la fonctionnalité, visible uniquement dans le journal du service. Corrigé
+     par la reconstruction de table de la migration `013` (§ 7.2.2).
 
 5. **Update Watermark:**
    - Save `aplan.timesheet.last_auto_run` = `Utc::now()` to configuration.

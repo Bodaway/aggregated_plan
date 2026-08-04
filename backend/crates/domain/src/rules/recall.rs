@@ -594,6 +594,7 @@ mod scoring_tests {
                 source: MemorySource::ClaudeSession,
                 source_ref: None,
                 status: MemoryStatus::Active,
+                proposed_supersedes: None,
                 project_id: None,
                 task_id: None,
                 stakeholders: vec![],

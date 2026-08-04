@@ -120,6 +120,15 @@ pub struct Memory {
     pub invalidated_at: Option<DateTime<Utc>>,
     pub superseded_by: Option<MemoryId>,
 
+    /// The memory this candidate CLAIMS to contradict — a supersession proposed and
+    /// not yet applied. `superseded_by` says a supersession happened; this says one
+    /// was suggested and is waiting for a human verdict.
+    ///
+    /// Only a `Pending` row may carry it, and every queue verdict clears it (see
+    /// `rules::memory_lifecycle`). That is what stops a stale claim from outliving
+    /// the triage that answered it and misleading a later reader.
+    pub proposed_supersedes: Option<MemoryId>,
+
     pub source: MemorySource,
     pub source_ref: Option<String>,
     pub status: MemoryStatus,
@@ -142,6 +151,9 @@ pub struct NewMemory {
     pub source: MemorySource,
     pub source_ref: Option<String>,
     pub status: MemoryStatus,
+    /// The memory this candidate claims to contradict. Only legal alongside
+    /// `status: Pending` — see [`Memory::proposed_supersedes`].
+    pub proposed_supersedes: Option<MemoryId>,
     pub project_id: Option<ProjectId>,
     pub task_id: Option<TaskId>,
     pub stakeholders: Vec<String>,
@@ -192,6 +204,19 @@ impl Memory {
             }
         }
 
+        // A supersession proposal is a question put to the validation queue, so it
+        // is only meaningful on a row that is IN the queue. `--confirm` bypasses the
+        // queue, and a claim there would never be answered — it would just keep
+        // announcing a conflict. Refused rather than dropped: the caller meant
+        // something, and `aplan memory supersede` is the verb that does it.
+        if input.proposed_supersedes.is_some() && input.status != MemoryStatus::Pending {
+            return Err(DomainError::ValidationError(format!(
+                "a supersession proposal only applies to a pending candidate, not a {} memory; \
+                 revise an established memory with `aplan memory supersede`",
+                input.status.as_str()
+            )));
+        }
+
         Ok(Self {
             id: Uuid::new_v4(),
             user_id,
@@ -202,6 +227,7 @@ impl Memory {
             recorded_at: now,
             invalidated_at: None,
             superseded_by: None,
+            proposed_supersedes: input.proposed_supersedes,
             source: input.source,
             source_ref: input.source_ref,
             status: input.status,
@@ -241,6 +267,7 @@ mod tests {
             source: MemorySource::ClaudeSession,
             source_ref: None,
             status: MemoryStatus::Pending,
+            proposed_supersedes: None,
             project_id: None,
             task_id: None,
             stakeholders: vec![],
@@ -362,6 +389,44 @@ mod tests {
         let m = Memory::new(uid(), input("a decision"), t0()).unwrap();
         assert_eq!(m.invalidated_at, None);
         assert_eq!(m.superseded_by, None);
+        assert_eq!(m.proposed_supersedes, None);
+    }
+
+    #[test]
+    fn new_carries_a_supersession_proposal_on_a_candidate() {
+        let older = Uuid::new_v4();
+        let mut i = input("Wave 0 étendue à toute la plateforme");
+        i.proposed_supersedes = Some(older);
+        let m = Memory::new(uid(), i, t0()).unwrap();
+        assert_eq!(m.proposed_supersedes, Some(older));
+        assert_eq!(
+            m.invalidated_at, None,
+            "a proposal invalidates nothing on its own"
+        );
+    }
+
+    /// The invariant: a proposal is a question asked of the triage, so it only
+    /// means anything while the row is waiting for an answer.
+    ///
+    /// `--confirm` skips the queue, so a proposal attached to it would sit there
+    /// forever, claiming a conflict nobody will ever be asked to settle. Refused
+    /// loudly rather than dropped silently, because the caller meant something and
+    /// the right verb for it exists (`aplan memory supersede`).
+    #[test]
+    fn new_refuses_a_proposal_on_a_memory_that_skips_the_queue() {
+        for status in [MemoryStatus::Active, MemoryStatus::Rejected] {
+            let mut i = input("Wave 0 étendue à toute la plateforme");
+            i.status = status;
+            i.proposed_supersedes = Some(Uuid::new_v4());
+            assert!(
+                matches!(
+                    Memory::new(uid(), i, t0()).unwrap_err(),
+                    DomainError::ValidationError(_)
+                ),
+                "a {} row must not carry a proposal",
+                status.as_str()
+            );
+        }
     }
 
     #[test]

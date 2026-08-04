@@ -14,5 +14,11 @@ query GetMemory($id: ID!) {
     projectId
     taskId
     stakeholders
+    proposedSupersedes
+    contradicts {
+      id
+      title
+      invalidatedAt
+    }
   }
 }

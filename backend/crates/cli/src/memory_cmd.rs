@@ -107,8 +107,45 @@ fn date_part(timestamp: &str) -> String {
     timestamp.chars().take(10).collect()
 }
 
+/// Width of the short memory reference this surface prints.
+///
+/// Mirrors `domain::rules::brief::MEMORY_REF_MIN_CHARS`, duplicated on purpose:
+/// the CLI is a standalone GraphQL client and depends on no backend crate. The
+/// value is safe to duplicate because it is not a protocol — the resolver accepts
+/// ANY prefix width, and a collision is reported (exit 3) rather than guessed.
+const MEMORY_REF_CHARS: usize = 3;
+
+/// The short reference the brief renders, `m:7c1`, so what the inbox prints can be
+/// typed straight back into `aplan recall` / `aplan inbox`.
+fn short_memory_reference(id: &str) -> String {
+    format!("m:{}", id.chars().take(MEMORY_REF_CHARS).collect::<String>())
+}
+
+/// The conflict line a triage reads: which memory this candidate claims to
+/// contradict, NAMED rather than merely pointed at.
+///
+/// Before the claim was a column it was prose inside `--why`, which no surface
+/// could act on; a bare id would be no better, since nothing in it says which
+/// decision is being contradicted.
+///
+/// `already_invalidated` is not decoration: the named memory can be superseded by
+/// something else between the 17:30 run that proposed this and the morning that
+/// reads it. Saying so is the difference between a live conflict and a claim
+/// `supersede` is about to refuse.
+fn contradiction_line(id: &str, title: &str, already_invalidated: bool) -> String {
+    let reference = short_memory_reference(id);
+    if already_invalidated {
+        format!(
+            "\u{26a0} contradicts [{reference}] {title} \u{2014} which is ALREADY no longer true; \
+             supersede will refuse it"
+        )
+    } else {
+        format!("\u{26a0} contradicts [{reference}] {title}")
+    }
+}
+
 /// `aplan remember <title> [--kind K] [--why TEXT] [--project P] [--to PERSON]
-/// [--task T] [--source-ref REF] [--confirm]`
+/// [--task T] [--source-ref REF] [--contradicts REF] [--confirm]`
 #[allow(clippy::too_many_arguments)]
 pub fn remember(
     api_url: &str,
@@ -120,6 +157,7 @@ pub fn remember(
     to: &[String],
     task: Option<&str>,
     source_ref: Option<&str>,
+    contradicts: Option<&str>,
     confirm: bool,
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
@@ -155,6 +193,10 @@ pub fn remember(
             source: Some(remember_op::MemorySourceGql::CLAUDE_SESSION),
             source_ref: source_ref.map(String::from),
             confirmed: Some(confirm),
+            // Passed through as typed: the API resolves it with the same resolver
+            // every other memory verb uses, so `m:7c1` works and an unknown or
+            // ambiguous reference fails the write rather than storing a dead claim.
+            proposed_supersedes: contradicts.map(String::from),
             project_id,
             task_id,
             stakeholders: if to.is_empty() {
@@ -181,6 +223,13 @@ pub fn remember(
                 m.title
             );
             println!("  {} \u{00b7} {}", m.id, enum_label(&m.status));
+            if let Some(old) = &m.contradicts {
+                println!("  {}", contradiction_line(&old.id, &old.title, false));
+                println!(
+                    "  nothing was invalidated \u{2014} triage decides: `aplan inbox supersede {}`",
+                    m.id
+                );
+            }
             if !confirm {
                 println!("  to validate: `aplan inbox`");
             }
@@ -236,6 +285,12 @@ pub fn recall_one(api_url: &str, json: bool, id: &str) -> ExitCode {
     }
     if let Some(tid) = &m.task_id {
         println!("  task     : {tid}");
+    }
+    if let Some(old) = &m.contradicts {
+        println!(
+            "  {}",
+            contradiction_line(&old.id, &old.title, old.invalidated_at.is_some())
+        );
     }
     if let Some(invalidated) = &m.invalidated_at {
         let by = m.superseded_by.clone().unwrap_or_else(|| "\u{2014}".into());
@@ -335,6 +390,7 @@ pub fn inbox_list(api_url: &str, json: bool, limit: i64) -> ExitCode {
                 return ExitCode::Success;
             }
             println!("{} to triage", rows.len());
+            let mut any_conflict = false;
             for m in rows {
                 println!(
                     "  [{}] {} ({})",
@@ -343,10 +399,26 @@ pub fn inbox_list(api_url: &str, json: bool, limit: i64) -> ExitCode {
                     date_part(&m.occurred_at)
                 );
                 println!("      {}", m.id);
+                // The conflict is shown HERE, next to the candidate, because a
+                // triage that has to open `--why` and read a paragraph to find out
+                // that two decisions disagree will not do it.
+                if let Some(old) = &m.contradicts {
+                    any_conflict = true;
+                    println!(
+                        "      {}",
+                        contradiction_line(&old.id, &old.title, old.invalidated_at.is_some())
+                    );
+                }
             }
             println!(
                 "accept: `aplan inbox accept <id>` \u{00b7} reject: `aplan inbox reject <id>`"
             );
+            if any_conflict {
+                println!(
+                    "the fact changed? `aplan inbox supersede <id>` \u{2014} defaults to the \
+                     contradicted memory shown above"
+                );
+            }
             ExitCode::Success
         }
         Err(e) => {
@@ -470,12 +542,18 @@ pub fn inbox_merge(api_url: &str, json: bool, id: &str, into: &str) -> ExitCode 
     }
 }
 
-/// `aplan inbox supersede <id> --replaces <old>` and `aplan memory supersede <old> --by <new>`.
-/// Both write `invalidatedAt` on the old row; both rows survive.
-pub fn supersede(api_url: &str, json: bool, old: &str, by: &str) -> ExitCode {
+/// `aplan inbox supersede <id> [--replaces <old>]` and
+/// `aplan memory supersede <old> --by <new>`. Both write `invalidatedAt` on the old
+/// row; both rows survive.
+///
+/// `old` is optional on the inbox path: omitted, the API falls back to the claim the
+/// candidate carries (`proposedSupersedes`), which is what a consolidation run
+/// records. A candidate proposing nothing is refused there — exit 4 — rather than
+/// superseding nothing.
+pub fn supersede(api_url: &str, json: bool, old: Option<&str>, by: &str) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let vars = memory_supersede::Variables {
-        old: old.to_string(),
+        old: old.map(String::from),
         by: by.to_string(),
     };
     match client.run::<MemorySupersede>(vars) {
@@ -725,6 +803,44 @@ mod tests {
             )),
             ExitCode::Ambiguous
         );
+    }
+
+    /// The reference printed has to be the one the resolver accepts back, or the
+    /// inbox is a dead end again: `aplan recall m:7c1` resolves by prefix.
+    #[test]
+    fn the_conflict_line_prints_a_reference_that_can_be_typed_back() {
+        assert_eq!(
+            short_memory_reference("7c1e4b2a-0000-0000-0000-000000000000"),
+            "m:7c1"
+        );
+        let line = contradiction_line(
+            "7c1e4b2a-0000-0000-0000-000000000000",
+            "Wave 0 limitée au périmètre AI Microsoft",
+            false,
+        );
+        assert!(line.contains("[m:7c1]"), "{line}");
+        assert!(
+            line.contains("Wave 0 limitée au périmètre AI Microsoft"),
+            "an id alone does not say which decision is contradicted: {line}"
+        );
+        assert!(
+            !line.contains("ALREADY"),
+            "a live conflict must not be reported as settled: {line}"
+        );
+    }
+
+    /// The named memory can be superseded by something else between the 17:30 run
+    /// that proposed the claim and the morning that reads it. A render that hides
+    /// that shows a conflict `supersede` is about to refuse.
+    #[test]
+    fn a_claim_naming_an_already_invalidated_memory_says_so() {
+        let line = contradiction_line(
+            "7c1e4b2a-0000-0000-0000-000000000000",
+            "Wave 0 limitée",
+            true,
+        );
+        assert!(line.contains("ALREADY no longer true"), "{line}");
+        assert!(line.contains("supersede will refuse"), "{line}");
     }
 
     /// The codegen'd enums are SCREAMING_CASE; the display form is lowercase.

@@ -1,4 +1,4 @@
-mutation MemorySupersede($old: ID!, $by: ID!) {
+mutation MemorySupersede($old: ID, $by: ID!) {
   supersedeMemory(old: $old, by: $by) {
     invalidated {
       id

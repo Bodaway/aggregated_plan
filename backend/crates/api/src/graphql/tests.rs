@@ -2475,6 +2475,7 @@ fn seeded_memory(
             source: MemorySource::Manual,
             source_ref: None,
             status,
+            proposed_supersedes: None,
             project_id: None,
             task_id: None,
             stakeholders: vec![],

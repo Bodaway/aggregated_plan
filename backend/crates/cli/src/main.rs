@@ -125,6 +125,7 @@ fn main() -> ExitCode {
             to,
             task,
             source_ref,
+            contradicts,
             confirm,
         } => memory_cmd::remember(
             &args.api_url,
@@ -136,6 +137,7 @@ fn main() -> ExitCode {
             &to,
             task.as_deref(),
             source_ref.as_deref(),
+            contradicts.as_deref(),
             confirm,
         ),
         cli::Commands::Recall {
@@ -181,17 +183,20 @@ fn main() -> ExitCode {
             Some(cli::InboxCmd::Merge { id, into }) => {
                 memory_cmd::inbox_merge(&args.api_url, args.json, &id, &into)
             }
-            // `inbox supersede <new> --replaces <old>`: the candidate is the successor.
+            // `inbox supersede <new> [--replaces <old>]`: the candidate is the
+            // successor, and the old memory defaults to the claim it carries.
             Some(cli::InboxCmd::Supersede { id, replaces }) => {
-                memory_cmd::supersede(&args.api_url, args.json, &replaces, &id)
+                memory_cmd::supersede(&args.api_url, args.json, replaces.as_deref(), &id)
             }
         },
         cli::Commands::Memory { cmd } => match cmd {
             cli::MemoryCmd::Import { dir } => {
                 memory_cmd::memory_import(&args.api_url, args.json, &dir)
             }
+            // Outside the queue there is no claim to fall back on: `old` is the
+            // required positional argument of this verb.
             cli::MemoryCmd::Supersede { old, by } => {
-                memory_cmd::supersede(&args.api_url, args.json, &old, &by)
+                memory_cmd::supersede(&args.api_url, args.json, Some(&old), &by)
             }
         },
         cli::Commands::Consolidate { cmd } => match cmd {

@@ -239,6 +239,16 @@ pub enum Commands {
         /// memory can be traced back to what produced it.
         #[arg(long)]
         source_ref: Option<String>,
+        /// The active memory this one CONTRADICTS: full UUID or short reference
+        /// (`m:7c1`). Records a supersession *proposal* — nothing is invalidated,
+        /// the triage decides. `aplan inbox supersede <id>` then needs no
+        /// `--replaces`.
+        ///
+        /// Refused next to --confirm: a proposal is a question for the queue, and a
+        /// confirmed memory never enters it. Revise an established memory with
+        /// `aplan memory supersede` instead.
+        #[arg(long, conflicts_with = "confirm")]
+        contradicts: Option<String>,
         /// Skip the validation queue and store as active.
         #[arg(long)]
         confirm: bool,
@@ -358,9 +368,12 @@ pub enum InboxCmd {
     Supersede {
         /// Candidate: full UUID or short reference.
         id: String,
-        /// The active memory this candidate makes obsolete: full UUID or short reference.
+        /// The active memory this candidate makes obsolete: full UUID or short
+        /// reference. Optional — defaults to the memory the candidate itself
+        /// records as contradicted (what `aplan inbox` shows), which is the case a
+        /// consolidation run produces.
         #[arg(long)]
-        replaces: String,
+        replaces: Option<String>,
     },
     /// Reject a candidate. Kept as a tombstone so it is never re-proposed.
     Reject {

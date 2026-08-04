@@ -1098,6 +1098,14 @@ impl MutationRoot {
                     .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?,
             ),
         };
+        // A reference, not a raw id: the consolidation reads `[m:7c1]` out of a
+        // brief and has nothing longer to pass. Resolved through the shared
+        // resolver so an unknown or ambiguous one fails the write instead of
+        // recording a claim nobody can act on.
+        let proposed_supersedes = match &input.proposed_supersedes {
+            None => None,
+            Some(reference) => Some(resolve_memory_arg(repo.as_ref(), user_id, reference).await?),
+        };
 
         let memory = memory_uc::remember(
             repo.as_ref(),
@@ -1113,6 +1121,7 @@ impl MutationRoot {
                     .unwrap_or(domain::types::MemorySource::ClaudeSession),
                 source_ref: input.source_ref,
                 confirmed: input.confirmed.unwrap_or(false),
+                proposed_supersedes,
                 project_id,
                 task_id,
                 stakeholders: input.stakeholders.unwrap_or_default(),
@@ -1207,18 +1216,34 @@ impl MutationRoot {
     /// Both arguments take a full UUID or a short reference, and BOTH are resolved
     /// before anything is written: half a supersession would either hide a fact
     /// with no successor, or leave two contradictory truths active.
+    ///
+    /// `old` may be omitted, in which case it falls back to `by`'s
+    /// `proposedSupersedes` — the claim a consolidation run recorded. Omitting it on
+    /// a memory that proposes nothing is a refused precondition, never a
+    /// supersession of nothing.
     async fn supersede_memory(
         &self,
         ctx: &Context<'_>,
-        old: ID,
+        old: Option<ID>,
         by: ID,
     ) -> Result<SupersedeMemoryResultGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
-        let (old_id, successor_id) =
-            memory_uc::resolve_memory_id_pair(repo.as_ref(), user_id, &old, &by)
+        let (old_id, successor_id) = match &old {
+            Some(old) => memory_uc::resolve_memory_id_pair(repo.as_ref(), user_id, old, &by)
                 .await
-                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?,
+            None => {
+                // Still both ids before any write: reading the claim off the
+                // candidate is a lookup, not a mutation.
+                let successor_id = resolve_memory_arg(repo.as_ref(), user_id, &by).await?;
+                let old_id =
+                    memory_uc::proposed_supersession_target(repo.as_ref(), user_id, successor_id)
+                        .await
+                        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                (old_id, successor_id)
+            }
+        };
         let outcome = memory_uc::supersede_memory(
             repo.as_ref(),
             user_id,

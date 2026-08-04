@@ -849,6 +849,10 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
 - **Reconstruction idempotente :** le système utilise un watermark (`aplan.timesheet.last_auto_run`) pour éviter les exécutions redondantes. Un jour ne peut être reconstruit qu'une seule fois automatiquement.
 - **Fenêtre de rattrapage :** si le watermark est absent (premier lancement) ou remonte à plus de 7 jours, la reconstruction s'exécute pour les 7 derniers jours (bouchon configurable à 7 jours, non dépassé).
 - **Alerte passive :** une fois la reconstruction complétée, une alerte passive « Brouillon de feuille de temps prêt » (`TimesheetReady`, sévérité `Information`) est levée. Elle apparaît dans la zone des alertes du dashboard et est accessible via la requête `alerts`. Il n'existe aucune notification OS/push — l'alerte est consultée in-app via l'écran `/timesheet` ou le dashboard.
+  - **Régression corrigée (migration 013)** : cette alerte était **rejetée par la base**, dont la
+    contrainte sur les types d'alerte ne connaissait que trois valeurs. Le passage entier avortait
+    donc à chaque exécution — pas seulement l'alerte — depuis la mise en service de la
+    fonctionnalité, sans autre trace que le journal du service. Voir R63.
 - **Heure de déclenchement configurable :** accessible via la clé de configuration `workday.auto_reconstruct_hour` (0–23, défaut 18).
 
 **Priorité** : Should
@@ -949,8 +953,17 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 
 **Critères d'acceptation :**
 - L'utilisateur enregistre un souvenir via
-  `aplan remember "<titre>" [--kind decision|commitment|fact|preference] [--why "<contexte>"] [--project <projet>] [--to <personne>] [--task <tâche>] [--source-ref <réf>] [--confirm]`.
+  `aplan remember "<titre>" [--kind decision|commitment|fact|preference] [--why "<contexte>"] [--project <projet>] [--to <personne>] [--task <tâche>] [--source-ref <réf>] [--contradicts <réf-souvenir>] [--confirm]`.
   `--kind` vaut `fact` par défaut ; `--to` est répétable.
+- `--contradicts <réf>` enregistre une **supersession proposée** : « ce souvenir contredit celui-là ».
+  Il accepte un UUID complet **ou** la référence courte affichée (`m:7c1`). **Rien n'est invalidé** :
+  c'est une affirmation soumise au triage, qui tranchera entre `supersede` (le fait a changé) et
+  `merge` (même fait, mieux écrit). C'est la forme structurée de ce que la consolidation écrivait
+  auparavant en prose dans `--why`, que nulle surface ne pouvait lire ni appliquer.
+- `--contradicts` est **refusé avec `--confirm`** : une proposition est une question posée à la file
+  de validation, et un souvenir confirmé n'y entre pas — la question ne serait jamais tranchée et
+  le conflit resterait affiché indéfiniment. Pour réviser un souvenir déjà actif, le verbe est
+  `aplan memory supersede <ancien> --by <nouveau>` (US-093).
 - `--source-ref` note **d'où vient** le souvenir : un identifiant d'entrée de journal, un
   identifiant de session. Champ libre, sans clé étrangère (les entrées de journal disparaissent
   en cascade avec leur tâche, une provenance pendante est acceptée explicitement). C'est la
@@ -1047,6 +1060,15 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
 
 **Critères d'acceptation :**
 - `aplan inbox` liste les candidats en attente (`pending`).
+- Un candidat portant une **supersession proposée** (`--contradicts`, US-090) est affiché comme
+  **contredisant le souvenir nommé** : sa référence courte `[m:xxx]` **et son titre**, sur une ligne
+  sous le candidat. Le titre en fait partie : un identifiant seul ne dit pas *quelle* décision est
+  contredite. Le triage voit donc le conflit dans la liste, sans avoir à ouvrir le `--why` et à y
+  lire un paragraphe.
+- Si le souvenir nommé n'est **déjà plus vrai** — une autre supersession a pu l'invalider entre le
+  passage de 17 h 30 qui a proposé le conflit et le triage du lendemain matin — la ligne le signale
+  et annonce que `supersede` le refusera. Un conflit périmé présenté comme vivant serait pire que
+  pas de conflit du tout.
 - `aplan inbox accept <id> [--kind <type>]` valide un candidat : il devient `active` et donc
   rappelable. `--kind` permet de le retyper au passage.
 - **Jamais d'ajout muet** : si le candidat ressemble à un souvenir déjà actif, l'acceptation est
@@ -1056,8 +1078,18 @@ d'où un **filtre dur** par défaut : seuls les souvenirs `ACTIVE` et non invali
   survit — celle de la cible, qui conserve son identité et ses dates et reçoit la nouvelle
   formulation. Les personnes concernées des deux lignes sont conservées. **Cette opération efface
   l'historique** et n'est donc pas le choix par défaut.
-- `aplan inbox supersede <id> --replaces <id>` : *le fait a changé*. **Les deux lignes
+- `aplan inbox supersede <id> [--replaces <id>]` : *le fait a changé*. **Les deux lignes
   survivent** ; l'ancienne reçoit sa fin de validité et un pointeur vers la nouvelle.
+- **`--replaces` est facultatif** : omis, il retombe sur la supersession que le candidat **propose
+  lui-même** (celle qu'affiche `aplan inbox`). C'est le cas que produit la consolidation, et cela
+  évite de recopier à la main un identifiant déjà porté par la ligne. Un candidat qui ne propose
+  rien est **refusé** (code 4) avec un message nommant `--replaces` — jamais une supersession de
+  rien : lire « superseded » sans que rien ne soit invalidé serait le pire des résultats.
+- **La proposition est consommée par le verdict, quel qu'il soit.** `accept`, `reject`, `merge` et
+  `supersede` l'effacent tous : accepter, c'est répondre « non, c'est un fait nouveau » ;
+  `supersede`, c'est l'honorer, et la fin de validité porte alors le même fait sous forme
+  structurée. Un souvenir qui n'est plus `pending` ne porte donc **jamais** de proposition, et une
+  proposition trouvée dans la base est toujours une question ouverte, jamais un vestige.
 - `aplan inbox reject <id>` : le candidat devient `rejected` et **la ligne est conservée** comme
   pierre tombale, afin que la consolidation ne le re-propose pas chaque soir.
 - **Tous ces identifiants acceptent la référence courte affichée** (`m:7c1`, `[m:7c1]`, `7c1`) au
@@ -1300,6 +1332,9 @@ garde de joignabilité rende une panne visible au lieu d'être la panne.
 | **R57** | **Visibilité de la panne de consolidation** : le brief affiche l'âge du dernier passage de consolidation dès qu'il dépasse **3 jours**, et « jamais exécutée » si aucun passage n'est enregistré. L'horodatage vit dans la table `configuration` (clé `memory.consolidation.last_run`) et non dans `sync_status`, dont la colonne `source` est sous une contrainte `CHECK` fermée. Une clé absente ou invalide se lit comme « jamais exécutée » : le brief rend la panne visible, il ne tombe pas avec elle. |
 | **R59** | **Filigrane de consolidation PAR ENTRÉE, jamais curseur horodaté**. Une entrée de journal porte son propre marqueur (`worklog_entries.consolidated_at`) ; la consolidation lit exactement les entrées dont il est nul, de la plus ancienne à la plus récente. Un curseur horodaté sauterait **définitivement** toute entrée insérée tardivement avec un `loggedAt` antérieur au curseur, et rien ne signalerait la perte. Le marqueur est **idempotent** (`consolidated_at IS NULL` fait partie de la condition de mise à jour, le premier marquage gagne) et **posé après les écritures réussies** : un souvenir en double se rejette (R53), une entrée marquée sans souvenir est perdue. Marquer un lot est **atomique** (une transaction), pour qu'un lot ne puisse pas être marqué à moitié. |
 | **R60** | **Garde de joignabilité de la consolidation** : la session planifiée vérifie que l'API répond **avant toute autre chose** et, si elle ne répond pas, **ne fait rien et ne pose aucun marqueur** — l'exécution suivante rattrape tout. La CLI étant un client GraphQL, sans cette garde une API arrêtée produirait une suite d'échecs silencieux. Corollaire : une consolidation à moitié faite n'existe pas ; soit le lot est traité et marqué, soit rien ne bouge. |
+| **R61** | **Une supersession proposée est une donnée, pas de la prose**. Quand la consolidation juge qu'un candidat contredit un souvenir actif, elle enregistre l'ancien identifiant dans un champ dédié (`--contradicts`) et non dans le texte du `--why`. C'est ce qui permet à `aplan inbox` d'**afficher** le conflit — référence courte *et* titre du souvenir contredit — et à `aplan inbox supersede <id>` de s'en servir comme valeur par défaut de `--replaces`. Une proposition **n'invalide rien** : R46 reste entier, `invalidatedAt` n'a que ses trois écrivains humains. |
+| **R62** | **Une proposition n'existe que sur un candidat en attente, et tout verdict la consomme**. Elle est refusée sur un souvenir qui saute la file (`--confirm`), et `accept`, `reject`, `merge` et `supersede` l'effacent tous — accepter répond « non, c'est un fait nouveau », `supersede` l'honore et la fin de validité porte alors le même fait sous forme structurée. Conséquence : un souvenir qui n'est plus en attente ne porte **jamais** de proposition, donc une proposition trouvée est toujours une question ouverte et jamais un vestige qui égarerait un lecteur. Un `merge` **n'hérite jamais** de la proposition du candidat : la porte anti-doublon (R52) offre `merge` et `supersede` sur la *même* paire, si bien que la proposition nomme d'ordinaire la cible du merge — l'hériter ferait proposer au survivant de se superséder lui-même. |
+| **R63** | **Les valeurs autorisées d'un type d'alerte suivent le domaine**. La colonne `alert_type` est sous contrainte fermée en base : une variante ajoutée au domaine sans migration ne produit aucune erreur de type, seulement un échec d'insertion levé au fond du job d'arrière-plan qui émet cette alerte. C'est ainsi que l'alerte « feuille de temps prête » a fait **avorter la reconstruction de fin de journée à chaque passage** depuis sa mise en service, sans autre trace que le journal du service. La contrainte reste fermée — c'est un vrai garde-fou d'intégrité — mais un test insère une alerte de **chaque** variante, la liste étant écrite de façon exhaustive : ajouter une variante sans migration devient une erreur de compilation. |
 | **R61** | **La consolidation propose, elle n'applique jamais**. Tout ce qu'elle écrit est `PENDING` ; elle n'exécute aucun verbe de la file (`accept`, `merge`, `supersede`, `reject`) et n'emploie ni `--confirm` ni `--force`. Pour une décision qui contredit une décision active du même projet, elle **soumet une supersession en nommant l'ancien identifiant** et laisse l'utilisateur trancher entre supersession (le fait a changé) et fusion (même fait, mieux écrit) — cette distinction est un jugement sémantique, et le backend n'a aucun modèle (R50, R52). |
 | **R62** | **Code de sortie 4 pour une précondition refusée**. Un état que le magasin refuse de quitter — candidat déjà `ACTIVE` ou `REJECTED`, cible de fusion non active, souvenir déjà invalidé, cycle de supersession, saisie sans rien de recherchable — sort en **4**, jamais en 1. Le 1 est réservé à « l'appel n'a pas abouti » (réseau, base). Un appelant automatisé doit distinguer les deux : le premier se saute, le second impose de reprendre tout le passage sans poser de marqueur. |
 

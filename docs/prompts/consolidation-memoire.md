@@ -145,27 +145,46 @@ Pour chaque candidat de type `decision` :
      magasin sait déjà.
    - **Le fait a changé** (le périmètre s'est élargi, la techno retenue a changé, la décision a été
      annulée) → c'est une supersession.
-3. Si c'est une supersession, écris le candidat comme à l'étape 2, **en nommant l'ancien dans le
-   `--why`** :
+3. Si c'est une supersession, écris le candidat comme à l'étape 2, **en passant l'ancien à
+   `--contradicts`** :
 
 ```bash
 aplan remember --json --kind decision \
   "Wave 0 etendue a toute la plateforme" \
-  --why "Remplace [m:7c1] (Wave 0 limitee au perimetre AI Microsoft) : Pierre a elargi le perimetre le 3 aout. Motif du changement : le livrable de septembre couvre desormais l'ensemble." \
+  --contradicts m:7c1 \
+  --why "Pierre a elargi le perimetre le 3 aout. Motif du changement : le livrable de septembre couvre desormais l'ensemble." \
   --project <projectId> --source-ref <id de l'entrée>
 ```
+
+`--contradicts` accepte la référence courte que l'étape 1 t'a donnée (`m:7c1`) ou l'UUID complet.
+**Rien n'est invalidé** : c'est une proposition, enregistrée dans un champ dédié du candidat. Le
+`--why` garde ce qu'il porte de mieux — le **motif** du changement — et n'a plus à recopier
+l'identifiant de l'ancien : `aplan inbox` l'affiche désormais tout seul, avec le titre du souvenir
+contredit.
+
+Ne mets **jamais** `--contradicts` à côté de `--confirm` : la commande est refusée, et de toute
+façon tu ne passes jamais `--confirm` (invariant 2).
+
+Si `--contradicts` échoue en code 2 (référence introuvable) ou 3 (référence ambiguë), **rien n'a été
+écrit** : réessaie avec l'UUID complet obtenu à l'étape 1, ou renonce à ce candidat et signale-le.
 
 4. Et **dans le compte rendu**, donne la commande prête à coller :
 
 ```
-aplan inbox supersede <id du candidat> --replaces m:7c1
+aplan inbox supersede <id du candidat>
 ```
 
+`--replaces` est inutile : le candidat porte déjà la proposition, et la commande retombe dessus.
+
 **Tu n'exécutes jamais cette commande.** `invalidated_at` n'a que trois écrivains, tous passant par
-une validation humaine (R46). Ton rôle est de *proposer* la supersession avec l'ancien identifiant
-nommé ; l'utilisateur tranche entre `supersede` (le fait a changé, les deux lignes survivent) et
-`merge` (même fait, mieux écrit, une seule ligne survit). Confondre les deux fait disparaître la
-réponse à « pourquoi a-t-on changé d'avis », qui est la moitié de la valeur du dispositif.
+une validation humaine (R46). Ton rôle est de *proposer* la supersession en nommant l'ancien ;
+l'utilisateur tranche entre `supersede` (le fait a changé, les deux lignes survivent) et `merge`
+(même fait, mieux écrit, une seule ligne survit). Confondre les deux fait disparaître la réponse à
+« pourquoi a-t-on changé d'avis », qui est la moitié de la valeur du dispositif.
+
+Quel que soit son verdict, il **consomme** la proposition : tu ne peux donc pas relire une
+proposition sur un candidat déjà trié, et tu n'as pas à t'inquiéter d'en laisser une périmée
+derrière toi.
 
 ---
 
@@ -221,7 +240,7 @@ Termine par un résumé court, en français :
 
 - nombre d'entrées lues, nombre marquées ;
 - les candidats proposés, un par ligne : `[kind] titre — <id>` ;
-- les supersessions proposées, avec la commande `aplan inbox supersede … --replaces …` à coller ;
+- les supersessions proposées, avec la commande `aplan inbox supersede <id>` à coller ;
 - les engagements dont la tâche correspondante semble manquer ;
 - tout ce qui a échoué, avec son code de sortie ;
 - la commande pour trier : `aplan inbox`.

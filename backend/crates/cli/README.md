@@ -53,11 +53,18 @@ aplan config set general.working_hours 8
 ```bash
 aplan brief                                   # session brief, capped at 40 lines
 aplan remember "Wave 0 limited to MS AI" --kind decision --why "Pierre asked"
+aplan remember "Wave 0 extended" --kind decision --contradicts m:7c1
+                                              # ^ proposes a supersession; invalidates NOTHING
 aplan recall --q "AP-1234"                    # search; raw input is safe
-aplan inbox                                   # the validation queue
-aplan inbox accept <id>                       # or merge --into / supersede --replaces / reject
+aplan inbox                                   # the validation queue, conflicts shown inline
+aplan inbox accept <id>                       # or merge --into / reject
+aplan inbox supersede <id>                    # --replaces defaults to what the candidate proposes
 aplan memory supersede <old> --by <new>       # revise an already-active memory
 ```
+
+Every id above takes the short reference the brief prints (`m:7c1`, `[m:7c1]`, `7c1`)
+as well as a full UUID. `--contradicts` is refused next to `--confirm`: a proposal is
+a question for the validation queue, and a confirmed memory never enters it.
 
 ## Consolidation (driven by a scheduled Claude session)
 

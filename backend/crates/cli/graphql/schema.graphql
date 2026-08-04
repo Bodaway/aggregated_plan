@@ -425,8 +425,13 @@ type CombinedMutation {
 	Both arguments take a full UUID or a short reference, and BOTH are resolved
 	before anything is written: half a supersession would either hide a fact
 	with no successor, or leave two contradictory truths active.
+	
+	`old` may be omitted, in which case it falls back to `by`'s
+	`proposedSupersedes` — the claim a consolidation run recorded. Omitting it on
+	a memory that proposes nothing is a refused precondition, never a
+	supersession of nothing.
 	"""
-	supersedeMemory(old: ID!, by: ID!): SupersedeMemoryResultGql!
+	supersedeMemory(old: ID, by: ID!): SupersedeMemoryResultGql!
 	"""
 	One-shot import of the harness memory files (`aplan memory import <dir>`).
 	
@@ -891,6 +896,16 @@ type MemoryGql {
 	"""
 	invalidatedAt: DateTime
 	supersededBy: ID
+	"""
+	The memory this candidate CLAIMS to contradict: a supersession *proposed*
+	and not yet applied. Distinct from `supersededBy`, which records one that
+	happened.
+	
+	Only a `PENDING` candidate carries it; every queue verdict clears it, so a
+	value here is always a live question. `supersedeMemory` defaults its `old`
+	argument to it. Use `contradicts` to read the named memory itself.
+	"""
+	proposedSupersedes: ID
 	source: MemorySourceGql!
 	sourceRef: String
 	status: MemoryStatusGql!
@@ -900,6 +915,19 @@ type MemoryGql {
 	"Towards whom" / "with whom".
 	"""
 	stakeholders: [String!]!
+	"""
+	The memory named by `proposedSupersedes`, resolved.
+	
+	A triage screen has to *name* the conflict — an id alone says nothing about
+	which decision is being contradicted, which is exactly why the prose
+	workaround this replaces spelled the old title out by hand. Resolved here
+	rather than joined into the list query so `pendingMemories` keeps its shape
+	and the lookup only happens for the callers that ask for it.
+	
+	`null` when the candidate proposes nothing, or when the memory it named has
+	since been deleted (the column is `ON DELETE SET NULL`).
+	"""
+	contradicts: MemoryGql
 }
 
 """
@@ -1176,6 +1204,17 @@ input RememberInputGql {
 	Skip the validation queue and store as `ACTIVE`.
 	"""
 	confirmed: Boolean
+	"""
+	The active memory this candidate contradicts, so the triage sees the
+	conflict and `supersedeMemory` can default to it. Takes a full UUID **or**
+	the short reference the brief renders (`m:7c1`), like every other memory
+	argument.
+	
+	A proposal is a question for the validation queue, so it is incompatible
+	with `confirmed: true` — revise an established memory with `supersedeMemory`
+	instead.
+	"""
+	proposedSupersedes: ID
 	projectId: ID
 	taskId: ID
 	stakeholders: [String!]

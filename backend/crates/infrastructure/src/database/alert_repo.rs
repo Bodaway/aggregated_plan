@@ -219,6 +219,64 @@ mod tests {
         }
     }
 
+    /// Every `AlertType` variant, enumerated through an exhaustive `match` so that
+    /// adding one is a COMPILE error here.
+    ///
+    /// `alerts.alert_type` is under a closed `CHECK`, so a variant added to the
+    /// domain without a migration is not a type error anywhere — it is a
+    /// `CHECK constraint failed` raised at INSERT time, inside whichever background
+    /// job happens to raise that alert. That is how `timesheet_ready` shipped: the
+    /// end-of-day reconstruction aborted on every single run for weeks, visible
+    /// only in the service journal.
+    fn every_alert_type() -> Vec<AlertType> {
+        let all = vec![
+            AlertType::Deadline,
+            AlertType::Overload,
+            AlertType::Conflict,
+            AlertType::TimesheetReady,
+        ];
+        for variant in &all {
+            // The exhaustiveness pin: a new variant makes this match fail to
+            // compile, which is the whole point of writing it out.
+            match variant {
+                AlertType::Deadline
+                | AlertType::Overload
+                | AlertType::Conflict
+                | AlertType::TimesheetReady => {}
+            }
+        }
+        all
+    }
+
+    /// The regression this table was rebuilt for: the `CHECK` must admit exactly
+    /// what `alert_type_to_str` produces, for every variant.
+    #[tokio::test]
+    async fn every_alert_type_can_be_persisted_and_read_back() {
+        let pool = setup().await;
+        let repo = SqliteAlertRepository::new(pool);
+
+        for alert_type in every_alert_type() {
+            let mut alert = make_alert(alert_type_to_str(alert_type), false);
+            alert.alert_type = alert_type;
+            repo.save(&alert).await.unwrap_or_else(|e| {
+                panic!(
+                    "alert_type `{}` must be storable, got {e}",
+                    alert_type_to_str(alert_type)
+                )
+            });
+        }
+
+        let stored = repo.find_unresolved(user_id()).await.unwrap();
+        assert_eq!(stored.len(), every_alert_type().len());
+        for alert_type in every_alert_type() {
+            assert!(
+                stored.iter().any(|a| a.alert_type == alert_type),
+                "alert_type `{}` did not survive the roundtrip",
+                alert_type_to_str(alert_type)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_save_and_find_unresolved() {
         let pool = setup().await;

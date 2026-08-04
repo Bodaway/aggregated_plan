@@ -508,6 +508,7 @@ mod tests {
             recorded_at: now(),
             invalidated_at: None,
             superseded_by: None,
+            proposed_supersedes: None,
             source: MemorySource::ClaudeSession,
             source_ref: None,
             status,

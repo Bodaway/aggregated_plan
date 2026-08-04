@@ -45,6 +45,10 @@ pub struct SupersedeOutcome {
 /// Accept a pending candidate: `pending` → `active`, optionally re-typing it.
 /// Does not touch temporality — accepting does not change when the thing
 /// happened, nor when aplan learned it.
+///
+/// Accepting also *answers* any supersession the candidate proposed, with "no":
+/// this verb invalidates nothing, so both facts stay true and the claim is
+/// [`spent`](spend_proposal).
 pub fn accept(candidate: &Memory, kind_override: Option<MemoryKind>) -> Result<Memory, DomainError> {
     require_pending(candidate, "accepted")?;
     let mut accepted = candidate.clone();
@@ -52,15 +56,20 @@ pub fn accept(candidate: &Memory, kind_override: Option<MemoryKind>) -> Result<M
     if let Some(kind) = kind_override {
         accepted.kind = kind;
     }
+    spend_proposal(&mut accepted);
     Ok(accepted)
 }
 
 /// Reject a pending candidate. The row is KEPT as a tombstone: without it the
 /// consolidation job would re-propose the same candidate every evening.
+///
+/// The tombstone keeps the wording — that is what makes the loop converge — but
+/// not the claim: nothing is left to settle.
 pub fn reject(candidate: &Memory) -> Result<Memory, DomainError> {
     require_pending(candidate, "rejected")?;
     let mut rejected = candidate.clone();
     rejected.status = MemoryStatus::Rejected;
+    spend_proposal(&mut rejected);
     Ok(rejected)
 }
 
@@ -103,6 +112,12 @@ pub fn merge(candidate: &Memory, target: &Memory) -> Result<MergeOutcome, Domain
     if candidate.task_id.is_some() {
         survivor.task_id = candidate.task_id;
     }
+    // The candidate's claim is deliberately NOT inherited: a merge means "same
+    // fact", so there is no contradiction left to settle. Inheriting it would also
+    // be pathological in the common case — the near-duplicate gate offers merge and
+    // supersede on the same pair, so the claim usually names the merge target, and
+    // the survivor would end up proposing to supersede itself.
+    spend_proposal(&mut survivor);
 
     Ok(MergeOutcome {
         survivor,
@@ -170,14 +185,29 @@ pub fn supersede(
     let mut invalidated = old.clone();
     invalidated.invalidated_at = Some(now);
     invalidated.superseded_by = Some(successor.id);
+    spend_proposal(&mut invalidated);
 
     let mut promoted = successor.clone();
     promoted.status = MemoryStatus::Active;
+    // The claim has been HONOURED: `invalidated.superseded_by` now records the same
+    // fact structurally. Keeping both would store one truth twice, in two forms
+    // that can drift.
+    spend_proposal(&mut promoted);
 
     Ok(SupersedeOutcome {
         invalidated,
         successor: promoted,
     })
+}
+
+/// Clear a supersession proposal that has been answered.
+///
+/// Every queue verdict — accept, reject, merge, supersede — is an answer, so every
+/// one of them calls this. The invariant it upholds: a row that is no longer
+/// `pending` carries no proposal, which is what lets any reader treat a proposal it
+/// finds as a live question rather than an archaeological one.
+fn spend_proposal(memory: &mut Memory) {
+    memory.proposed_supersedes = None;
 }
 
 fn require_pending(candidate: &Memory, verb: &str) -> Result<(), DomainError> {
@@ -283,6 +313,7 @@ mod tests {
                 source: MemorySource::ClaudeSession,
                 source_ref: None,
                 status,
+                proposed_supersedes: None,
                 project_id: None,
                 task_id: None,
                 stakeholders: vec![],
@@ -348,6 +379,83 @@ mod tests {
             reject(&active).unwrap_err(),
             DomainError::ValidationError(_)
         ));
+    }
+
+    // ─── the supersession proposal is spent by the queue verdict ────────────
+
+    /// A candidate carrying a proposal, i.e. the shape the consolidation writes.
+    fn candidate_proposing(user_id: Uuid, title: &str, older: MemoryId) -> Memory {
+        let mut candidate = memory(user_id, title, MemoryStatus::Pending);
+        candidate.proposed_supersedes = Some(older);
+        candidate
+    }
+
+    /// Accepting is the human answering "no, this is a new fact, keep both" — the
+    /// verb invalidates nothing. Leaving the claim on the row afterwards would keep
+    /// announcing a conflict that was just waved through, and `recall` would keep
+    /// printing it.
+    #[test]
+    fn accept_spends_the_supersession_proposal() {
+        let uid = Uuid::new_v4();
+        let older = Uuid::new_v4();
+        let accepted = accept(&candidate_proposing(uid, "a new scope", older), None).expect("accepts");
+        assert_eq!(accepted.status, MemoryStatus::Active);
+        assert_eq!(
+            accepted.proposed_supersedes, None,
+            "an active memory never carries a pending claim"
+        );
+        assert_eq!(
+            accepted.invalidated_at, None,
+            "accepting is not superseding: nothing was invalidated"
+        );
+    }
+
+    #[test]
+    fn reject_spends_the_supersession_proposal() {
+        let uid = Uuid::new_v4();
+        let rejected =
+            reject(&candidate_proposing(uid, "a new scope", Uuid::new_v4())).expect("rejects");
+        assert_eq!(rejected.status, MemoryStatus::Rejected);
+        assert_eq!(
+            rejected.proposed_supersedes, None,
+            "the tombstone keeps the wording, not the claim"
+        );
+    }
+
+    /// The trap this closes: the near-duplicate gate offers `merge` and
+    /// `supersede` on the SAME pair, so the memory a candidate proposes to
+    /// supersede is usually the very one it gets merged into. Inheriting the claim
+    /// would leave the survivor proposing to supersede itself.
+    #[test]
+    fn merge_does_not_carry_the_candidates_proposal_into_the_survivor() {
+        let uid = Uuid::new_v4();
+        let target = memory(uid, "Wave 0 limited to Microsoft AI", MemoryStatus::Active);
+        let candidate = candidate_proposing(uid, "Wave 0 scope, restated", target.id);
+
+        let outcome = merge(&candidate, &target).expect("merges");
+        assert_eq!(
+            outcome.survivor.proposed_supersedes, None,
+            "the survivor must not propose to supersede itself"
+        );
+    }
+
+    /// Applying the supersession is what the proposal asked for. Keeping it would
+    /// leave the same fact recorded twice — once structurally on the old row, once
+    /// as a claim on the new one — and two representations drift.
+    #[test]
+    fn supersede_spends_the_proposal_it_realises() {
+        let uid = Uuid::new_v4();
+        let old = memory(uid, "Wave 0 limited to Microsoft AI", MemoryStatus::Active);
+        let successor = candidate_proposing(uid, "Wave 0 extended to the platform", old.id);
+
+        let outcome = supersede(&old, &successor, &[], now()).expect("supersedes");
+        assert_eq!(outcome.successor.proposed_supersedes, None);
+        assert_eq!(
+            outcome.invalidated.superseded_by,
+            Some(successor.id),
+            "the claim is replaced by the real link, not lost"
+        );
+        assert_eq!(outcome.invalidated.proposed_supersedes, None);
     }
 
     // ─── merge vs supersede: the distinction that carries the bi-temporal ───

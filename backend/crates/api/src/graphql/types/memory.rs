@@ -1,15 +1,20 @@
-use application::use_cases::memory::{AcceptOutcome, MemoryImportOutcome};
-use async_graphql::{InputObject, SimpleObject, ID};
+use std::sync::Arc;
+
+use application::repositories::MemoryRepository;
+use application::use_cases::memory::{self as memory_uc, AcceptOutcome, MemoryImportOutcome};
+use async_graphql::{ComplexObject, Context, InputObject, Result, SimpleObject, ID};
 use chrono::{DateTime, Utc};
 use domain::rules::memory_lifecycle::{MergeOutcome, SupersedeOutcome};
 use domain::rules::recall::ScoredMemory;
-use domain::types::Memory;
+use domain::types::{Memory, UserId};
+use uuid::Uuid;
 
 use super::enums::{MemoryKindGql, MemorySourceGql, MemoryStatusGql};
 
 /// A semantic memory: what must be known. Bi-temporal — `occurredAt` is when it
 /// became true, `invalidatedAt` when it stopped being true.
 #[derive(SimpleObject)]
+#[graphql(complex)]
 pub struct MemoryGql {
     pub id: ID,
     pub kind: MemoryKindGql,
@@ -21,6 +26,14 @@ pub struct MemoryGql {
     /// `null` = still true. Written only by the supersede path.
     pub invalidated_at: Option<DateTime<Utc>>,
     pub superseded_by: Option<ID>,
+    /// The memory this candidate CLAIMS to contradict: a supersession *proposed*
+    /// and not yet applied. Distinct from `supersededBy`, which records one that
+    /// happened.
+    ///
+    /// Only a `PENDING` candidate carries it; every queue verdict clears it, so a
+    /// value here is always a live question. `supersedeMemory` defaults its `old`
+    /// argument to it. Use `contradicts` to read the named memory itself.
+    pub proposed_supersedes: Option<ID>,
     pub source: MemorySourceGql,
     pub source_ref: Option<String>,
     pub status: MemoryStatusGql,
@@ -28,6 +41,33 @@ pub struct MemoryGql {
     pub task_id: Option<ID>,
     /// "Towards whom" / "with whom".
     pub stakeholders: Vec<String>,
+}
+
+#[ComplexObject]
+impl MemoryGql {
+    /// The memory named by `proposedSupersedes`, resolved.
+    ///
+    /// A triage screen has to *name* the conflict — an id alone says nothing about
+    /// which decision is being contradicted, which is exactly why the prose
+    /// workaround this replaces spelled the old title out by hand. Resolved here
+    /// rather than joined into the list query so `pendingMemories` keeps its shape
+    /// and the lookup only happens for the callers that ask for it.
+    ///
+    /// `null` when the candidate proposes nothing, or when the memory it named has
+    /// since been deleted (the column is `ON DELETE SET NULL`).
+    async fn contradicts(&self, ctx: &Context<'_>) -> Result<Option<MemoryGql>> {
+        let Some(proposed) = &self.proposed_supersedes else {
+            return Ok(None);
+        };
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn MemoryRepository>>()?;
+        let id = Uuid::parse_str(proposed)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid proposedSupersedes: {e}")))?;
+        let found = memory_uc::get_memory(repo.as_ref(), user_id, id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(found.map(MemoryGql::from))
+    }
 }
 
 impl From<Memory> for MemoryGql {
@@ -41,6 +81,7 @@ impl From<Memory> for MemoryGql {
             recorded_at: m.recorded_at,
             invalidated_at: m.invalidated_at,
             superseded_by: m.superseded_by.map(|id| ID(id.to_string())),
+            proposed_supersedes: m.proposed_supersedes.map(|id| ID(id.to_string())),
             source: m.source.into(),
             source_ref: m.source_ref,
             status: m.status.into(),
@@ -180,6 +221,15 @@ pub struct RememberInputGql {
     pub source_ref: Option<String>,
     /// Skip the validation queue and store as `ACTIVE`.
     pub confirmed: Option<bool>,
+    /// The active memory this candidate contradicts, so the triage sees the
+    /// conflict and `supersedeMemory` can default to it. Takes a full UUID **or**
+    /// the short reference the brief renders (`m:7c1`), like every other memory
+    /// argument.
+    ///
+    /// A proposal is a question for the validation queue, so it is incompatible
+    /// with `confirmed: true` — revise an established memory with `supersedeMemory`
+    /// instead.
+    pub proposed_supersedes: Option<ID>,
     pub project_id: Option<ID>,
     pub task_id: Option<ID>,
     pub stakeholders: Option<Vec<String>>,

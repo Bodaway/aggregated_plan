@@ -10,5 +10,11 @@ query PendingMemories($limit: Int!) {
     projectId
     taskId
     stakeholders
+    proposedSupersedes
+    contradicts {
+      id
+      title
+      invalidatedAt
+    }
   }
 }
