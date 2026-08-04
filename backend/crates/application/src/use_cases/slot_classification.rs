@@ -10,10 +10,12 @@ use crate::repositories::{
     WORKLOG_FILTER_MAX_LIMIT,
 };
 use crate::use_cases::configuration;
+use crate::use_cases::reattribution::refuse_a_truncated_page;
 
 /// Set once the pass has run, so a restart does not redo it.
 pub const CLASSIFIED_KEY: &str = "aplan.slot_source_classified";
 
+#[derive(Debug)]
 pub struct ClassificationOutcome {
     pub worklog: u32,
     pub manual: u32,
@@ -67,6 +69,11 @@ pub async fn classify_slot_sources(
     let mut manual_ids: Vec<ActivitySlotId> = Vec::new();
 
     for slot in &slots {
+        // `find_by_user_and_date_range` returns closed slots only (its SQL filters
+        // `end_time IS NOT NULL`), so this arm is reached for a slot with no task,
+        // never for an open one — but a slot with no task still needs no entry
+        // lookup to be `Manual`, so the guard is stated in terms of what it means
+        // rather than which enumeration currently guarantees it.
         let (task_id, end_time) = match (slot.task_id, slot.end_time) {
             (Some(task_id), Some(end_time)) => (task_id, end_time),
             _ => {
@@ -79,7 +86,14 @@ pub async fn classify_slot_sources(
             let stamps = entry_timestamps(worklog_repo, user_id, task_id).await?;
             timestamps_cache.insert(task_id, stamps);
         }
-        let stamps = &timestamps_cache[&task_id];
+        // `.get` rather than an indexing operator: the line above just inserted this
+        // key if it was missing, but reaching for `[&task_id]` would still be a
+        // panic waiting for whoever edits the cache-fill branch next. A missing
+        // entry here means that edit broke the invariant, and the pass should fail
+        // loudly rather than crash.
+        let stamps = timestamps_cache.get(&task_id).ok_or_else(|| {
+            AppError::Validation(format!("no cached worklog timestamps for task {task_id}"))
+        })?;
 
         let start_is_an_entry = stamps.contains(&slot.start_time);
         let end_is_an_entry_or_the_minimum = stamps.contains(&end_time)
@@ -92,12 +106,28 @@ pub async fn classify_slot_sources(
         }
     }
 
-    activity_repo
+    // `set_source`'s own doc names the failure this guards: a double that silently
+    // reports fewer rows moved than asked would make the pass look finished while
+    // some rows stayed NULL — permanently, since the guard key below is about to be
+    // written. Comparing the return value, not trusting `worklog_ids.len()` twice.
+    let worklog_moved = activity_repo
         .set_source(&worklog_ids, SlotSource::Worklog)
         .await?;
-    activity_repo
+    if worklog_moved != worklog_ids.len() as u64 {
+        return Err(AppError::Validation(format!(
+            "set_source stamped {worklog_moved} of {} worklog slots",
+            worklog_ids.len()
+        )));
+    }
+    let manual_moved = activity_repo
         .set_source(&manual_ids, SlotSource::Manual)
         .await?;
+    if manual_moved != manual_ids.len() as u64 {
+        return Err(AppError::Validation(format!(
+            "set_source stamped {manual_moved} of {} manual slots",
+            manual_ids.len()
+        )));
+    }
 
     configuration::set_config(config_repo, user_id, CLASSIFIED_KEY, &now.to_rfc3339()).await?;
 
@@ -109,6 +139,12 @@ pub async fn classify_slot_sources(
 }
 
 /// Every `logged_at` a task's worklog entries carry, for exact boundary matching.
+///
+/// Refuses a full page rather than silently classifying against a truncated one:
+/// a task with at least [`crate::repositories::WORKLOG_FILTER_MAX_LIMIT`] entries
+/// would otherwise lose its oldest timestamps to the repository's `ORDER BY
+/// logged_at DESC LIMIT ?`, and the oldest slots on that task would read `Manual`
+/// permanently, under the guard key, with nothing to say why.
 async fn entry_timestamps(
     worklog_repo: &dyn WorklogRepository,
     user_id: UserId,
@@ -121,7 +157,8 @@ async fn entry_timestamps(
         limit: WORKLOG_FILTER_MAX_LIMIT,
         offset: 0,
     };
-    let entries = worklog_repo.list(user_id, &filter).await?;
+    let page = worklog_repo.list(user_id, &filter).await?;
+    let entries = refuse_a_truncated_page(page, &format!("task {task_id}'s worklog"))?;
     Ok(entries.into_iter().map(|e| e.logged_at).collect())
 }
 
@@ -143,6 +180,9 @@ mod tests {
     struct FakeActivityRepo {
         slots: Mutex<Vec<ActivitySlot>>,
         sources: Mutex<HashMap<ActivitySlotId, SlotSource>>,
+        /// When set, `set_source` under-reports its `rows_affected` by one —
+        /// simulating the partial write `classify_slot_sources` must catch.
+        understate_set_source: std::sync::atomic::AtomicBool,
     }
 
     impl FakeActivityRepo {
@@ -210,7 +250,16 @@ mod tests {
             for id in ids {
                 sources.insert(*id, source);
             }
-            Ok(ids.len() as u64)
+            let moved = ids.len() as u64;
+            if moved > 0
+                && self
+                    .understate_set_source
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                Ok(moved - 1)
+            } else {
+                Ok(moved)
+            }
         }
     }
 
@@ -439,7 +488,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_slot_with_no_task_is_manual_without_consulting_any_entry() {
-        let (activity, worklog, config) = fakes_with_entries(&[]).await;
+        // Entries exist at exactly the slot's own boundaries — on `task_id()`, the
+        // fixture's default task. An implementation that fell back to some default
+        // task id instead of short-circuiting on `task_id: None` would find them
+        // and misclassify this slot `Worklog`. Only the short-circuit keeps it
+        // `Manual`.
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(9, 0)]).await;
         let mut slot = closed_slot(t(7, 0), t(9, 0));
         slot.task_id = None;
         activity.save(&slot).await.unwrap();
@@ -499,5 +553,59 @@ mod tests {
         assert!(second.skipped, "a restart must not re-classify");
         assert_eq!(second.worklog, 0);
         assert_eq!(second.manual, 0);
+    }
+
+    #[tokio::test]
+    async fn a_partial_set_source_write_fails_the_pass_and_leaves_the_guard_key_unwritten() {
+        // `set_source` reporting fewer rows moved than asked is exactly the
+        // "looks finished, isn't" failure its own doc warns about — and the guard
+        // key must not be written on top of it, or the shortfall never retries.
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(9, 0)]).await;
+        activity.save(&closed_slot(t(7, 0), t(9, 0))).await.unwrap();
+        activity
+            .understate_set_source
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let result = classify_slot_sources(
+            &activity, &worklog, &config, user_id(),
+            date(2026, 8, 1), date(2026, 8, 31), t(12, 0),
+        )
+        .await;
+
+        assert!(result.is_err(), "a short count must fail the pass, not succeed quietly");
+        assert!(
+            config.get(user_id(), CLASSIFIED_KEY).await.unwrap().is_none(),
+            "a failed write must not set the guard key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_with_a_full_page_of_entries_refuses_rather_than_guesses() {
+        // A page at the repository's cap may have been cut — its `ORDER BY
+        // logged_at DESC LIMIT ?` would silently drop this task's oldest
+        // timestamps, and its oldest slots would read `Manual` forever, under the
+        // guard key, with nothing to say why.
+        let base = t(0, 0);
+        let logged_ats: Vec<DateTime<Utc>> = (0..WORKLOG_FILTER_MAX_LIMIT)
+            .map(|i| base + Duration::seconds(i as i64))
+            .collect();
+        let (activity, worklog, config) = fakes_with_entries(&logged_ats).await;
+        let slot = closed_slot(logged_ats[0], logged_ats[0] + Duration::minutes(MIN_BLOCK_MINUTES));
+        activity.save(&slot).await.unwrap();
+
+        let result = classify_slot_sources(
+            &activity, &worklog, &config, user_id(),
+            date(2026, 8, 1), date(2026, 8, 31), t(12, 0),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a full page must refuse rather than classify against a truncated read"
+        );
+        assert!(
+            config.get(user_id(), CLASSIFIED_KEY).await.unwrap().is_none(),
+            "the guard key must not be written on failure"
+        );
     }
 }

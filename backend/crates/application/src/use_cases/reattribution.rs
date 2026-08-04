@@ -559,7 +559,11 @@ fn local_times(
 /// A page that came back full is a page that may have been cut, and a correction
 /// that silently moved the first 1 000 entries of a month would be worse than one
 /// that refused.
-fn refuse_a_truncated_page(
+///
+/// `pub(crate)`: [`crate::use_cases::slot_classification`] reads the same
+/// `WorklogRepository::list` page cap and needs the identical guard, not a second
+/// copy of it.
+pub(crate) fn refuse_a_truncated_page(
     entries: Vec<WorklogEntry>,
     what: &str,
 ) -> Result<Vec<WorklogEntry>, AppError> {

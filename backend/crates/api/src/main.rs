@@ -70,35 +70,6 @@ async fn main() {
 
     let default_user_id = Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap();
 
-    // Migration 014 leaves `activity_slots.source` NULL. Classify those rows once,
-    // from the data itself, before anything can rebuild a half-day: a NULL is read
-    // as `Manual`, so an unclassified flush-derived slot would survive a rebuild and
-    // the same morning would be counted twice.
-    match application::use_cases::slot_classification::classify_slot_sources(
-        activity_repo.as_ref(),
-        worklog_repo.as_ref(),
-        config_repo.as_ref(),
-        default_user_id,
-        chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("static date"),
-        chrono::Utc::now().date_naive(),
-        chrono::Utc::now(),
-    )
-    .await
-    {
-        Ok(outcome) if outcome.skipped => {
-            tracing::debug!("slot provenance already classified");
-        }
-        Ok(outcome) => tracing::info!(
-            worklog = outcome.worklog,
-            manual = outcome.manual,
-            "classified pre-014 activity slot provenance"
-        ),
-        // A failure here must not stop the server: every unclassified row reads as
-        // `Manual`, which is the conservative value, and the pass retries on the
-        // next boot because the guard key was never written.
-        Err(e) => tracing::error!("slot provenance classification failed: {e}"),
-    }
-
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
     let gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository> =
@@ -143,13 +114,13 @@ async fn main() {
         task_repo,
         meeting_repo,
         project_repo,
-        activity_repo,
+        activity_repo: activity_repo.clone(),
         alert_repo,
         tag_repo,
         task_link_repo,
         sync_repo,
         config_repo: config_repo.clone(),
-        worklog_repo,
+        worklog_repo: worklog_repo.clone(),
         recurrence_repo,
         gryzzly_catalog_repo,
         timesheet_draft_repo,
@@ -165,6 +136,42 @@ async fn main() {
     if let Some(Command::ExportSchema) = cli.command {
         println!("{}", schema.sdl());
         return;
+    }
+
+    // Migration 014 leaves `activity_slots.source` NULL. Classify those rows once,
+    // from the data itself, before anything can rebuild a half-day: a NULL is read
+    // as `Manual`, so an unclassified flush-derived slot would survive a rebuild and
+    // the same morning would be counted twice. Deliberately after the `ExportSchema`
+    // early return above: that path is `cargo run -p api -- export-schema`, the
+    // documented codegen command run against the real `DATABASE_URL` with its
+    // stdout redirected into `schema.graphql` — a codegen command must not also
+    // perform a one-shot irreversible write, and `tracing_subscriber::fmt()`'s
+    // default writer is stdout, so its own `tracing::info!` would land in the same
+    // file as the SDL. No request can reach the router below until `axum::serve`
+    // starts several lines down, so running the pass here costs nothing either way.
+    match application::use_cases::slot_classification::classify_slot_sources(
+        activity_repo.as_ref(),
+        worklog_repo.as_ref(),
+        config_repo.as_ref(),
+        default_user_id,
+        chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("static date"),
+        chrono::Utc::now().date_naive(),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(outcome) if outcome.skipped => {
+            tracing::debug!("slot provenance already classified");
+        }
+        Ok(outcome) => tracing::info!(
+            worklog = outcome.worklog,
+            manual = outcome.manual,
+            "classified pre-014 activity slot provenance"
+        ),
+        // A failure here must not stop the server: every unclassified row reads as
+        // `Manual`, which is the conservative value, and the pass retries on the
+        // next boot because the guard key was never written.
+        Err(e) => tracing::error!("slot provenance classification failed: {e}"),
     }
 
     let mut app = Router::new()
