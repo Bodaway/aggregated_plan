@@ -84,6 +84,20 @@ mois.
 
 `fact` et `preference` sont ton apport principal : personne ne pense à les enregistrer à la main.
 
+### Combien tu proposes — au plus 5 par passage
+
+**Plafond dur : 5 candidats.** Si tu en as identifié davantage, garde les 5 qui resteront vrais le
+plus longtemps et **ne marque pas** les entrées des candidats écartés : la prochaine exécution les
+reverra.
+
+Ce plafond ne protège pas la base, il protège le tri du matin. Un `aplan inbox` qui affiche trente
+lignes ne se trie pas, il se contourne — et un dispositif contourné trois matins de suite est
+abandonné. Cinq candidats se trient en une minute, et c'est cette minute qui décide si le dispositif
+survit. Mieux vaut cinq souvenirs par jour pendant un an que trente une seule fois.
+
+Corollaire : quand tu hésites sur un candidat, **ne le propose pas**. Il reviendra si l'entrée n'est
+pas marquée, et un faux positif coûte plus cher qu'un oubli — il enseigne à ignorer la file.
+
 `decision` et `commitment` sont un **rattrapage** : le chemin normal est `aplan remember`, tapé dans
 la session. Tu ne les proposes que pour ce qui a été **consigné dans le journal sans jamais passer
 par `remember`**. Si c'est déjà dans le magasin (étape 1), tu passes.
@@ -258,3 +272,8 @@ Termine par un résumé court, en français :
    d'auto-mémoire du harness. Deux écrivains divergent.
 6. **Ne pas re-proposer** ce qui est `ACTIVE`, `PENDING` ou `REJECTED`.
 7. **Aucune date d'échéance dans un souvenir.**
+8. **Au plus 5 candidats par passage**, et ne marque pas les entrées de ceux que tu écartes pour
+   tenir ce plafond.
+9. **Ne touche jamais au pointeur de tâche actif** : ni `aplan start`, ni `new`, ni `stop`, ni `done`,
+   ni `flush`, ni `triage`. Le pointeur appartient aux sessions de travail de l'utilisateur ; le
+   déplacer réattribue silencieusement son temps, donc sa facturation.
