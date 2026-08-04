@@ -925,6 +925,22 @@ mod tests {
             id
         }
 
+        /// An entry under an id the caller chose, so a test that needs two ids to
+        /// relate in a particular way — sharing a prefix, say — gets that relation by
+        /// construction instead of waiting for randomness to supply it.
+        fn log_with_id(
+            &self,
+            id: WorklogEntryId,
+            task: TaskId,
+            at: DateTime<Utc>,
+        ) -> WorklogEntryId {
+            let mut entry = WorklogEntry::new(self.user, task, "work".into(), at, at)
+                .expect("valid entry");
+            entry.id = id;
+            self.worklog.push(entry);
+            id
+        }
+
         /// A slot as a flush would have left it.
         fn slot(
             &self,
@@ -988,6 +1004,10 @@ mod tests {
 
     fn paris() -> Tz {
         "Europe/Paris".parse().expect("known zone")
+    }
+
+    fn entry_id(literal: &str) -> WorklogEntryId {
+        Uuid::parse_str(literal).expect("valid uuid literal")
     }
 
     fn hours(slots: &[ActivitySlot]) -> f64 {
@@ -1393,27 +1413,33 @@ mod tests {
     #[tokio::test]
     async fn an_ambiguous_prefix_is_reported_never_guessed() {
         let w = World::new();
-        // Two entries whose ids share a first character: seed until it happens, so
-        // the test does not depend on a hand-written UUID.
-        let mut first = w.log(w.source, utc(3, 7, 0));
-        let mut prefix = first.to_string()[..1].to_string();
-        let mut collided = false;
-        for _ in 0..64 {
-            let candidate = w.log(w.source, utc(3, 8, 0));
-            if candidate.to_string().starts_with(&prefix) {
-                collided = true;
-                break;
-            }
-            first = candidate;
-            prefix = first.to_string()[..1].to_string();
-        }
-        assert!(collided, "expected two ids to share a first character");
+        // The collision is constructed, not hoped for: two ids differing only in
+        // their last character, so this prefix names both of them every run.
+        const SHARED: &str = "a1b2c3d4";
+        let first = w.log_with_id(
+            entry_id("a1b2c3d4-0000-4000-8000-000000000001"),
+            w.source,
+            utc(3, 7, 0),
+        );
+        let second = w.log_with_id(
+            entry_id("a1b2c3d4-0000-4000-8000-000000000002"),
+            w.source,
+            utc(3, 8, 0),
+        );
 
         let err = w
-            .run(w.by_ref(&[prefix], true))
+            .run(w.by_ref(&[SHARED.into()], true))
             .await
             .expect_err("must refuse to guess");
         assert!(matches!(err, AppError::Ambiguous(_)), "got {err}");
+        // Reported, and reported usefully: both candidates named in full.
+        let message = err.to_string();
+        assert!(message.contains(&first.to_string()), "got {message}");
+        assert!(message.contains(&second.to_string()), "got {message}");
+        // And never silently resolved to one of them.
+        assert_eq!(w.worklog.task_of(first), Some(w.source));
+        assert_eq!(w.worklog.task_of(second), Some(w.source));
+        assert!(w.worklog.reassign_calls.lock().expect("lock").is_empty());
     }
 
     #[tokio::test]
