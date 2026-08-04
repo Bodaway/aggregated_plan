@@ -102,18 +102,32 @@ Applied to historical rows this is a fork with no free branch: blanket-marking t
 them untouchable risks double counting on the cutover day (a half-day flushed before the
 migration keeps its old slot *and* gains a rebuilt one).
 
-Neither is necessary, because the provenance is recoverable from the data. A pre-014 closed
-slot is flush-derived **iff its span coincides with a block `derive_time_blocks` yields from
-its task's worklog entries** — that function is the only thing that ever wrote those spans.
-So migration 014 is followed by a one-shot classification pass, in Rust because it needs the
-domain rule:
+Neither is necessary, because the provenance is recoverable from the data — but **not** by the
+rule this document first specified. Comparing a slot's span against the blocks
+`derive_time_blocks` yields today tests the *grouping* of entries into blocks, and that grouping
+changed: the 45-minute gap-splitting rule landed in `abda52a` on 2026-08-04, and before it the
+flush wrote incrementally against a watermark rather than re-deriving a whole day. A fresh
+whole-day recompute cannot reproduce those spans. Measured against the real database, that rule
+classified only 12 of 52 candidates.
 
-- for each existing closed slot with a `task_id`, recompute its task's blocks over its local
-  day and compare span (with the `MIN_BLOCK_MINUTES` single-timestamp case handled as
-  `materialize_worklog_time` handles it) → `'worklog'` on a match, `'manual'` otherwise;
-- open slots and slots with no `task_id` → `'manual'` (a running timer is never a projection);
-- guarded and made idempotent by a config key, `aplan.slot_source_classified`, so a restart
-  does not redo it.
+The invariant that *did* hold across the change is that a slot's boundaries **are** entry
+timestamps: the flush copies an entry's `logged_at` verbatim into the slot. So the pass tests
+that instead. A closed slot carrying a `task_id` is flush-derived iff:
+
+1. some worklog entry of that task has `logged_at == slot.start_time`, **and**
+2. some entry of that task has `logged_at == slot.end_time`, **or**
+   `slot.end_time == slot.start_time + MIN_BLOCK_MINUTES` (the single-entry block, 1 minute).
+
+Everything else is `'manual'`: an open slot (a running timer is never a projection), a slot with
+no `task_id`, a slot whose start matches nothing, and a slot whose start matches but whose end
+matches neither an entry nor the one-minute minimum. Guarded and made idempotent by a config
+key, `aplan.slot_source_classified`, so a restart does not redo it.
+
+Measured on the real database before writing anything: all 52 closed task-bearing slots match
+condition 1, 42 also match condition 2's first branch, the remaining 10 match its second exactly,
+0 are unexplained, and 0 have a round-minute start — the signature a hand-made slot would carry.
+The rule needs no timezone, because it compares exact UTC instants; dropping that read removes a
+failure mode rather than adding one.
 
 Result: a single rule holds everywhere afterwards — **a rebuild replaces `source='worklog'`
 and protects `source='manual'`** — with no cutover special case, no double count, and no
