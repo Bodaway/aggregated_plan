@@ -9,6 +9,13 @@ import type {
 } from '@/hooks/use-timesheet';
 import { projectColor } from './project-colors';
 
+const STATUS_LABELS: Record<string, string> = {
+  DRAFT: 'Brouillon',
+  VALIDATED: 'Validé',
+  SUBMITTED: 'Soumis',
+  DAY_OFF: 'Jour off',
+};
+
 interface Props {
   day: ReconstructedDay;
   projects?: ProjectOption[];
@@ -37,7 +44,7 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
     setRows(
       day.lines.map((l) => ({
         gryzzlyProjectId: l.gryzzlyProjectId,
-        label: l.projectName ?? l.gryzzlyProjectId ?? 'Unattributed',
+        label: l.projectName ?? l.gryzzlyProjectId ?? 'Non attribué',
         hours: l.hours,
         isPinned: l.isPinned,
         confidence: l.confidence,
@@ -54,7 +61,7 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
   // Label to show for a row: follows the selected project, falls back to the
   // line's original name, then to "Unattributed" for null.
   const labelFor = (r: EditRow): string => {
-    if (r.gryzzlyProjectId === null) return 'Unattributed';
+    if (r.gryzzlyProjectId === null) return 'Non attribué';
     return projects.find((p) => p.id === r.gryzzlyProjectId)?.label ?? r.label;
   };
 
@@ -101,14 +108,16 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
     setSaveError(err?.message ?? null);
   };
 
+  // DAY_OFF stays actionable on purpose: there is no reopen/reset mutation, so
+  // locking it would strand the day (Save resets status to Draft — the only recovery path).
   const locked = day.status === 'VALIDATED' || day.status === 'SUBMITTED';
 
   return (
     <div className="w-80 shrink-0 bg-white rounded-lg border border-gray-200 p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Hours × project</h2>
+        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Heures × projet</h2>
         <span className={`text-[10px] px-2 py-0.5 rounded-full ${locked ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
-          {day.status}
+          {STATUS_LABELS[day.status] ?? day.status}
         </span>
       </div>
 
@@ -120,7 +129,7 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
               <span className={`flex-1 text-sm truncate ${r.gryzzlyProjectId ? 'text-gray-800' : 'text-amber-700 font-medium'}`}>
                 {labelFor(r)}
               </span>
-              {r.confidence === 'LOW' && <span title="low confidence" className="text-amber-500 text-xs">▲</span>}
+              {r.confidence === 'LOW' && <span title="confiance basse" className="text-amber-500 text-xs">▲</span>}
               <input
                 type="number"
                 step={day.roundingIncrement}
@@ -138,7 +147,7 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
               onChange={(e) => setProject(i, e.target.value === '' ? null : e.target.value)}
               className="w-full text-xs border border-gray-300 rounded px-1 py-0.5 bg-white disabled:bg-gray-100"
             >
-              <option value="">— Unattributed —</option>
+              <option value="">— Non attribué —</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>{p.label}</option>
               ))}
@@ -152,7 +161,7 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
           {total.toFixed(2)} / {day.targetHours.toFixed(1)}h
         </span>
         <span className={balanced ? 'text-green-600' : 'text-amber-600'}>
-          {balanced ? '✓ balanced' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}h`}
+          {balanced ? '✓ équilibré' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}h`}
         </span>
       </div>
 
@@ -160,10 +169,10 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
 
       {!locked && (
         <div className="grid grid-cols-2 gap-2 pt-1">
-          <button onClick={save} disabled={busy} className="bg-gray-100 text-gray-800 text-sm rounded px-2 py-1 hover:bg-gray-200 disabled:opacity-50">Save</button>
-          <button onClick={onValidate} disabled={busy} className="bg-blue-600 text-white text-sm rounded px-2 py-1 hover:bg-blue-700 disabled:opacity-50">Validate &amp; lock</button>
-          <button onClick={onRefresh} disabled={busy} className="bg-white border border-gray-300 text-gray-700 text-sm rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50">Refresh from signals</button>
-          <button onClick={() => onMarkOff('FULL')} disabled={busy} className="bg-white border border-gray-300 text-gray-700 text-sm rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50">Day off</button>
+          <button onClick={save} disabled={busy} className="bg-gray-100 text-gray-800 text-sm rounded px-2 py-1 hover:bg-gray-200 disabled:opacity-50">Enregistrer</button>
+          <button onClick={onValidate} disabled={busy} className="bg-blue-600 text-white text-sm rounded px-2 py-1 hover:bg-blue-700 disabled:opacity-50">Valider et verrouiller</button>
+          <button onClick={onRefresh} disabled={busy} className="bg-white border border-gray-300 text-gray-700 text-sm rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50">Reconstruire depuis les signaux</button>
+          <button onClick={() => onMarkOff('FULL')} disabled={busy} className="bg-white border border-gray-300 text-gray-700 text-sm rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50">Jour off</button>
         </div>
       )}
     </div>

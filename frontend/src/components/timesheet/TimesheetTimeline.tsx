@@ -18,8 +18,8 @@ interface WindowDef {
   end: number;
 }
 const WINDOWS: WindowDef[] = [
-  { label: 'Morning', start: AM_START, end: AM_END },
-  { label: 'Afternoon', start: PM_START, end: PM_END },
+  { label: 'Matin', start: AM_START, end: AM_END },
+  { label: 'Après-midi', start: PM_START, end: PM_END },
 ];
 
 function blockClasses(kind: AttributedBlock['kind'], projectId: string | null): string {
@@ -40,7 +40,7 @@ function HalfDay({ win, blocks }: { win: WindowDef; blocks: AttributedBlock[] })
           const e = Math.min(timeToMinutes(b.endTime), win.end);
           const leftPct = ((s - win.start) / duration) * 100;
           const widthPct = Math.max(((e - s) / duration) * 100, 1);
-          const label = b.kind === 'MEETING' ? 'meet' : (b.gryzzlyProjectId ?? '??');
+          const label = b.kind === 'MEETING' ? 'réu' : (b.gryzzlyProjectId ?? '??');
           return (
             <div
               key={`${b.startTime}-${i}`}
@@ -60,7 +60,7 @@ function HalfDay({ win, blocks }: { win: WindowDef; blocks: AttributedBlock[] })
 
 export function TimesheetTimeline({ blocks }: { blocks: AttributedBlock[] }) {
   if (blocks.length === 0) {
-    return <div className="text-sm text-gray-400 italic py-4">No activity reconstructed for this day.</div>;
+    return <div className="text-sm text-gray-400 italic py-4">Aucune activité reconstruite pour ce jour.</div>;
   }
   return (
     <div className="flex gap-6">

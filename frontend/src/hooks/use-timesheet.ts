@@ -52,6 +52,12 @@ export interface MutationError {
   message: string;
 }
 
+// Outcome of a reconstruct/refresh, surfaced so the page can show feedback.
+export interface ReconstructResult {
+  message: string;
+  isError: boolean;
+}
+
 // A deduped Gryzzly project, ready to feed a <select>.
 export interface ProjectOption {
   id: string;
@@ -81,6 +87,7 @@ const MARK_DAY_OFF_MUTATION = `mutation MarkDayOff($date: NaiveDate!, $scope: Da
 const GRYZZLY_PROJECTS_QUERY = `query GryzzlyProjects { gryzzlyTasks(limit: 500) { gryzzlyProjectId projectName customerName } }`;
 
 interface DraftData { timesheetDraft: ReconstructedDay | null; }
+interface ReconstructData { runTimesheetReconstruction: ReconstructedDay; }
 interface GryzzlyProjectsData { gryzzlyTasks: GryzzlyProjectRow[]; }
 
 // Catalog of distinct Gryzzly projects for the reassignment dropdown.
@@ -109,7 +116,7 @@ export function useTimesheet(date: Date) {
     query: TIMESHEET_DRAFT_QUERY,
     variables: { date: dateStr },
   });
-  const [, execReconstruct] = useMutation(RECONSTRUCT_MUTATION);
+  const [, execReconstruct] = useMutation<ReconstructData>(RECONSTRUCT_MUTATION);
   const [, execSave] = useMutation(SAVE_DRAFT_MUTATION);
   const [, execValidate] = useMutation(VALIDATE_MUTATION);
   const [, execMarkOff] = useMutation(MARK_DAY_OFF_MUTATION);
@@ -119,9 +126,22 @@ export function useTimesheet(date: Date) {
     [reexecute],
   );
 
-  const reconstruct = useCallback(async () => {
+  const reconstruct = useCallback(async (): Promise<ReconstructResult> => {
     const res = await execReconstruct({ date: dateStr });
-    if (!res.error) refetch();
+    if (res.error) {
+      return {
+        message: res.error.graphQLErrors[0]?.message ?? res.error.message,
+        isError: true,
+      };
+    }
+    refetch();
+    const rebuilt = res.data?.runTimesheetReconstruction;
+    if (!rebuilt) {
+      return { message: 'Reconstruit.', isError: false };
+    }
+    const projectCount = rebuilt.lines.filter((l) => l.gryzzlyProjectId !== null).length;
+    const message = `Reconstruit : ${rebuilt.totalHours}h au total, ${rebuilt.unattributedHours}h non attribuées, ${projectCount} projet(s), ${rebuilt.unresolved.length} signal(aux) non résolu(s).`;
+    return { message, isError: false };
   }, [execReconstruct, dateStr, refetch]);
 
   const saveLines = useCallback(

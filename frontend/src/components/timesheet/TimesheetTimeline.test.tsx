@@ -15,8 +15,8 @@ const blocks: AttributedBlock[] = [
 describe('TimesheetTimeline', () => {
   it('renders morning and afternoon half-day columns', () => {
     render(<TimesheetTimeline blocks={blocks} />);
-    expect(screen.getByText(/morning/i)).toBeInTheDocument();
-    expect(screen.getByText(/afternoon/i)).toBeInTheDocument();
+    expect(screen.getByText(/matin/i)).toBeInTheDocument();
+    expect(screen.getByText(/après-midi/i)).toBeInTheDocument();
   });
 
   it('renders a bar per block that overlaps a half-day window', () => {
@@ -27,6 +27,6 @@ describe('TimesheetTimeline', () => {
 
   it('shows an empty-state when there are no blocks', () => {
     render(<TimesheetTimeline blocks={[]} />);
-    expect(screen.getByText(/no activity/i)).toBeInTheDocument();
+    expect(screen.getByText(/aucune activité/i)).toBeInTheDocument();
   });
 });

@@ -5,8 +5,8 @@
 use crate::client::{Client, ClientError};
 use crate::output::ExitCode;
 use crate::queries::{
-    find_task_by_source_id, find_tasks_by_title, get_configuration, FindTaskBySourceId,
-    FindTasksByTitle, GetConfiguration,
+    find_task_by_source_id, find_tasks_by_title, get_configuration, get_task, FindTaskBySourceId,
+    FindTasksByTitle, GetConfiguration, GetTask,
 };
 use thiserror::Error;
 
@@ -109,13 +109,24 @@ pub fn resolve_task(client: &Client, token: Option<&str>) -> Result<TaskRef, Loo
     let raw = token.unwrap_or("");
     match classify(raw) {
         TokenShape::Empty | TokenShape::Current => resolve_from_current_activity(client),
-        TokenShape::Uuid => Ok(TaskRef {
-            id: raw.trim().to_string(),
-            title: String::new(),
-            source_id: None,
-        }),
+        TokenShape::Uuid => hydrate_by_id(client, raw.trim()),
         TokenShape::SourceIdLike => resolve_by_source_id(client, raw.trim()),
         TokenShape::Fuzzy => resolve_by_title(client, raw.trim()),
+    }
+}
+
+/// Fetch a task by its UUID and return a fully hydrated `TaskRef`. A `null`
+/// task in the response means the id is unknown (`NotFound`); transport and
+/// GraphQL errors propagate as `LookupError::Client`.
+fn hydrate_by_id(client: &Client, id: &str) -> Result<TaskRef, LookupError> {
+    let result = client.run::<GetTask>(get_task::Variables { id: id.to_string() })?;
+    match result.data.task {
+        None => Err(LookupError::NotFound(id.to_string())),
+        Some(t) => Ok(TaskRef {
+            id: t.id,
+            title: t.title,
+            source_id: t.source_id,
+        }),
     }
 }
 
@@ -129,11 +140,7 @@ fn resolve_from_current_activity(client: &Client) -> Result<TaskRef, LookupError
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .ok_or(LookupError::NoCurrentActivity)?;
-    Ok(TaskRef {
-        id: task_id,
-        title: String::new(),
-        source_id: None,
-    })
+    hydrate_by_id(client, &task_id)
 }
 
 fn resolve_by_source_id(client: &Client, key: &str) -> Result<TaskRef, LookupError> {

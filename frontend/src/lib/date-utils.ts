@@ -1,4 +1,5 @@
 import { format, startOfWeek, endOfWeek, addDays, addWeeks, isToday, isSameDay, parseISO } from 'date-fns';
+import { fr } from 'date-fns/locale';
 
 export const formatDate = (date: Date | string): string => {
   const d = typeof date === 'string' ? parseISO(date) : date;
@@ -8,6 +9,11 @@ export const formatDate = (date: Date | string): string => {
 export const formatDisplayDate = (date: Date | string): string => {
   const d = typeof date === 'string' ? parseISO(date) : date;
   return format(d, 'EEEE d MMMM yyyy');
+};
+
+export const formatDisplayDateFr = (date: Date | string): string => {
+  const d = typeof date === 'string' ? parseISO(date) : date;
+  return format(d, 'EEEE d MMMM yyyy', { locale: fr });
 };
 
 export const formatWeekRange = (weekStart: Date, workingDays: readonly number[] = [1, 2, 3, 4, 5]): string => {

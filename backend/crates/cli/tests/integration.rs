@@ -26,28 +26,76 @@ fn aplan() -> Command {
     Command::cargo_bin("aplan").unwrap()
 }
 
-#[tokio::test]
-async fn current_with_running_activity_prints_one_line() {
-    // `current` reads aplan.active_task_id via GetConfiguration.
-    // When the stored value is a UUID, resolve_task short-circuits without a
-    // network call and returns a TaskRef with an empty title; the output is
-    // "▶ tracking: " (empty title). This matches the real flow: `start` stores
-    // the raw UUID from task resolution.
-    let server = mock_graphql(json!({
+/// Canonical hydrated task title. `resolve_task` now issues `GetTask` to
+/// hydrate a UUID token (or the current-activity pointer) before proceeding,
+/// so flows that resolve a UUID surface this real title instead of an empty one.
+const ACTIVE_TASK_TITLE: &str = "Présentation Similarity IA — équipe de suivi";
+
+/// Full `GetTask` response body for the canonical active task
+/// (id `00000000-0000-0000-0000-000000000001`). Selects every field
+/// `graphql/get_task.graphql` asks for; nullable fields are left null.
+fn get_task_body() -> serde_json::Value {
+    json!({
         "data": {
-            "configuration": {
-                "aplan.active_task_id": "00000000-0000-0000-0000-000000000001"
+            "task": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": ACTIVE_TASK_TITLE,
+                "description": null,
+                "notes": null,
+                "sourceId": "AP-1234",
+                "status": "IN_PROGRESS",
+                "urgency": "HIGH",
+                "impact": "HIGH",
+                "quadrant": "URGENT_IMPORTANT",
+                "trackingState": "FOLLOWED",
+                "deadline": null,
+                "plannedStart": null,
+                "plannedEnd": null,
+                "estimatedHours": null
             }
         }
-    }))
-    .await;
+    })
+}
+
+/// Mount a `GetTask` mock on `server` returning the canonical hydrated task.
+async fn mount_get_task(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(get_task_body()))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn current_with_running_activity_prints_one_line() {
+    // `current` reads aplan.active_task_id via GetConfiguration, then hydrates
+    // that UUID through GetTask (the pointer is resolved like any other token).
+    // The hydrated title is printed as "▶ tracking: <title>".
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "configuration": {
+                    "aplan.active_task_id": "00000000-0000-0000-0000-000000000001"
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
 
     let url = format!("{}/graphql", server.uri());
     aplan()
         .args(["--api-url", &url, "current"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("▶ tracking"));
+        .stdout(predicate::str::contains(format!(
+            "▶ tracking: {}",
+            ACTIVE_TASK_TITLE
+        )));
 }
 
 #[tokio::test]
@@ -81,6 +129,41 @@ async fn current_with_json_flag_emits_raw_data_block() {
     .await;
     let url = format!("{}/graphql", server.uri());
 
+    aplan()
+        .args(["--api-url", &url, "--json", "current"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"currentActivity\":null"));
+}
+
+#[tokio::test]
+async fn current_with_json_flag_and_stale_pointer_emits_null() {
+    // The pointer names a task that GetTask can no longer find (task: null).
+    // resolve_task fails with NotFound; in JSON mode `current` swallows the
+    // resolve error and still succeeds, reporting {"currentActivity":null}.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "configuration": {
+                    "aplan.active_task_id": "00000000-0000-0000-0000-000000000001"
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "task": null }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
     aplan()
         .args(["--api-url", &url, "--json", "current"])
         .assert()
@@ -199,16 +282,24 @@ async fn done_with_keep_running_does_not_flush_worklog() {
 
 #[tokio::test]
 async fn triage_sets_tracking_state() {
-    let server = mock_graphql(json!({
-        "data": {
-            "setTrackingState": {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "title": "Auth migration",
-                "sourceId": "AP-1234",
-                "trackingState": "FOLLOWED"
+    // triage resolves the UUID token via GetTask, then issues SetTrackingState.
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("SetTrackingState"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "setTrackingState": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "Auth migration",
+                    "sourceId": "AP-1234",
+                    "trackingState": "FOLLOWED"
+                }
             }
-        }
-    })).await;
+        })))
+        .mount(&server)
+        .await;
     let url = format!("{}/graphql", server.uri());
 
     aplan()
@@ -222,7 +313,8 @@ async fn triage_sets_tracking_state() {
 #[tokio::test]
 async fn status_updates_currently_tracked_task() {
     let server = MockServer::start().await;
-    // resolve_task (implicit) reads aplan.active_task_id from GetConfiguration
+    // resolve_task (implicit) reads aplan.active_task_id from GetConfiguration,
+    // then hydrates that UUID via GetTask before issuing the status mutation.
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("GetConfiguration"))
@@ -235,6 +327,7 @@ async fn status_updates_currently_tracked_task() {
         })))
         .mount(&server)
         .await;
+    mount_get_task(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("UpdateTaskStatus"))
@@ -263,7 +356,8 @@ async fn status_updates_currently_tracked_task() {
 #[tokio::test]
 async fn note_appends_to_active_task() {
     let server = MockServer::start().await;
-    // resolve_task (implicit) reads aplan.active_task_id from GetConfiguration
+    // resolve_task (implicit) reads aplan.active_task_id from GetConfiguration,
+    // then hydrates that UUID via GetTask before appending notes.
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("GetConfiguration"))
@@ -276,7 +370,8 @@ async fn note_appends_to_active_task() {
         })))
         .mount(&server)
         .await;
-    // Second call: appendTaskNotes
+    mount_get_task(&server).await;
+    // Third call: appendTaskNotes
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("AppendTaskNotes"))
@@ -590,7 +685,17 @@ async fn ls_prints_a_table_of_tasks() {
 
 #[tokio::test]
 async fn rm_deletes_a_task_by_uuid() {
-    let server = mock_graphql(json!({ "data": { "deleteTask": true } })).await;
+    // rm resolves the UUID token via GetTask, then issues DeleteTask.
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("DeleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "deleteTask": true }
+        })))
+        .mount(&server)
+        .await;
     let url = format!("{}/graphql", server.uri());
 
     aplan()
@@ -631,13 +736,12 @@ async fn new_creates_personal_task() {
 
 #[tokio::test]
 async fn start_with_uuid_token_starts_activity() {
-    // UUID token: resolve_task returns immediately (no network call for lookup).
-    // start then reads the previous pointer (GetConfiguration), finds nothing,
-    // and writes the new pointer via UpdateConfiguration (twice: id + since).
-    // Human output: "▶ tracking: <title>" — but UUID resolve gives an empty
-    // title, so the binary prints "▶ tracking: " (empty title is acceptable;
-    // we assert on the operation being issued, not the exact title text).
+    // UUID token: resolve_task hydrates the task via GetTask, yielding the real
+    // title. start then reads the previous pointer (GetConfiguration), finds
+    // nothing, and writes the new pointer via UpdateConfiguration (twice: id +
+    // since). Human output: "▶ tracking: <title>".
     let server = MockServer::start().await;
+    mount_get_task(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("GetConfiguration"))
@@ -765,19 +869,26 @@ async fn config_set_sets_a_key() {
 
 #[tokio::test]
 async fn priority_sets_urgency_and_impact() {
-    let server = mock_graphql(json!({
-        "data": {
-            "updatePriority": {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "title": "Auth migration",
-                "sourceId": "AP-1234",
-                "urgency": "HIGH",
-                "impact": "CRITICAL",
-                "urgencyManual": true
+    // priority resolves the UUID token via GetTask, then issues UpdatePriority.
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdatePriority"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "updatePriority": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "Auth migration",
+                    "sourceId": "AP-1234",
+                    "urgency": "HIGH",
+                    "impact": "CRITICAL",
+                    "urgencyManual": true
+                }
             }
-        }
-    }))
-    .await;
+        })))
+        .mount(&server)
+        .await;
     let url = format!("{}/graphql", server.uri());
 
     aplan()
@@ -808,11 +919,13 @@ async fn priority_sets_urgency_and_impact() {
 // command issues rather than a single shared stateful backend.
 // ---------------------------------------------------------------------------
 
-/// `aplan start <uuid>` issues GetConfiguration (prior pointer check) then
-/// UpdateConfiguration (sets aplan.active_task_id and aplan.active_since).
+/// `aplan start <uuid>` hydrates the token via GetTask, issues GetConfiguration
+/// (prior pointer check), then UpdateConfiguration (sets aplan.active_task_id
+/// and aplan.active_since).
 #[tokio::test]
 async fn start_log_stop_pointer_lifecycle_start_sets_pointer() {
     let server = MockServer::start().await;
+    mount_get_task(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("GetConfiguration"))
@@ -843,8 +956,10 @@ async fn start_log_stop_pointer_lifecycle_start_sets_pointer() {
         .stdout(predicate::str::contains("▶ tracking"));
 }
 
-/// `aplan current --json` reports the active task under `.currentActivity.task.id`
-/// when GetConfiguration returns a non-empty aplan.active_task_id.
+/// `aplan current --json` reports the active task under `.currentActivity.task`
+/// when GetConfiguration returns a non-empty aplan.active_task_id. The pointer
+/// is hydrated through GetTask, so the payload carries the real title, not an
+/// empty one.
 #[tokio::test]
 async fn start_log_stop_pointer_lifecycle_current_reports_task() {
     let task_id = "00000000-0000-0000-0000-000000000001";
@@ -862,20 +977,24 @@ async fn start_log_stop_pointer_lifecycle_current_reports_task() {
         })))
         .mount(&server)
         .await;
+    mount_get_task(&server).await;
 
     let url = format!("{}/graphql", server.uri());
-    // UUID token → resolve_task returns immediately; title is empty but id is present.
+    // UUID pointer → resolve_task hydrates via GetTask; both id and title present.
     aplan()
         .args(["--api-url", &url, "--json", "current"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(task_id));
+        .stdout(predicate::str::contains(task_id))
+        .stdout(predicate::str::contains(ACTIVE_TASK_TITLE));
 }
 
-/// `aplan log "did a thing"` with a UUID token issues AddWorklogEntry.
+/// `aplan log "did a thing"` with a UUID token hydrates it via GetTask, then
+/// issues AddWorklogEntry.
 #[tokio::test]
 async fn start_log_stop_pointer_lifecycle_log_issues_add_worklog_entry() {
     let server = MockServer::start().await;
+    mount_get_task(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
@@ -913,6 +1032,8 @@ async fn start_log_stop_pointer_lifecycle_log_issues_add_worklog_entry() {
 async fn start_on_already_active_same_task_flushes_previous() {
     let task_id = "00000000-0000-0000-0000-000000000001";
     let server = MockServer::start().await;
+    // resolve_task hydrates the UUID token via GetTask before start proceeds.
+    mount_get_task(&server).await;
     // GetConfiguration returns the same task id we are about to re-start.
     Mock::given(method("POST"))
         .and(path("/graphql"))

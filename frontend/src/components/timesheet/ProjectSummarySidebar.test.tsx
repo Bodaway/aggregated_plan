@@ -22,15 +22,15 @@ describe('ProjectSummarySidebar', () => {
   it('renders each line, the unattributed row, and the total vs target', () => {
     render(<ProjectSummarySidebar day={day} onSaveLines={vi.fn()} onValidate={vi.fn()} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
     expect(screen.getByText('Proj One')).toBeInTheDocument();
-    // Exact match hits only the row label span, not the "— Unattributed —" <option>.
-    expect(screen.getByText('Unattributed')).toBeInTheDocument();
+    // Exact match hits only the row label span, not the "— Non attribué —" <option>.
+    expect(screen.getByText('Non attribué')).toBeInTheDocument();
     expect(screen.getByText(/7\.5.*\/.*7\.5/)).toBeInTheDocument(); // total / target
   });
 
   it('validates via the callback', () => {
     const onValidate = vi.fn();
     render(<ProjectSummarySidebar day={day} onSaveLines={vi.fn()} onValidate={onValidate} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
-    fireEvent.click(screen.getByRole('button', { name: /validate/i }));
+    fireEvent.click(screen.getByRole('button', { name: /valider et verrouiller/i }));
     expect(onValidate).toHaveBeenCalledOnce();
   });
 
@@ -39,7 +39,7 @@ describe('ProjectSummarySidebar', () => {
     render(<ProjectSummarySidebar day={day} onSaveLines={onSaveLines} onValidate={vi.fn()} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
     const inputs = screen.getAllByRole('spinbutton');
     fireEvent.change(inputs[0], { target: { value: '5' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }));
     expect(onSaveLines).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ gryzzlyProjectId: 'p1', hours: 5, isPinned: true }),
@@ -58,7 +58,7 @@ describe('ProjectSummarySidebar', () => {
     const selects = screen.getAllByRole('combobox');
     // Second row is the null (Unattributed) line.
     fireEvent.change(selects[1], { target: { value: 'p1' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }));
     expect(onSaveLines).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ gryzzlyProjectId: 'p1', isPinned: true }),
@@ -80,7 +80,7 @@ describe('ProjectSummarySidebar', () => {
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[0], { target: { value: 'p1' } });
     fireEvent.change(selects[1], { target: { value: 'p1' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }));
     const savedLines = onSaveLines.mock.calls[0][0] as Array<{ gryzzlyProjectId: string | null; hours: number }>;
     const p1Lines = savedLines.filter((l) => l.gryzzlyProjectId === 'p1');
     expect(p1Lines).toHaveLength(1);
@@ -99,10 +99,10 @@ describe('ProjectSummarySidebar', () => {
     const onSaveLines = vi.fn();
     render(<ProjectSummarySidebar day={dayTwoProjects} projects={projects} onSaveLines={onSaveLines} onValidate={vi.fn()} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
     const selects = screen.getAllByRole('combobox');
-    // Reassign both rows back to "— Unattributed —" (value "" → null).
+    // Reassign both rows back to "— Non attribué —" (value "" → null).
     fireEvent.change(selects[0], { target: { value: '' } });
     fireEvent.change(selects[1], { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }));
     const savedLines = onSaveLines.mock.calls[0][0] as Array<{ gryzzlyProjectId: string | null; hours: number }>;
     const nullLines = savedLines.filter((l) => l.gryzzlyProjectId === null);
     expect(nullLines).toHaveLength(1);
@@ -112,9 +112,26 @@ describe('ProjectSummarySidebar', () => {
   it('shows the error message returned by onSaveLines', async () => {
     const onSaveLines = vi.fn().mockResolvedValue({ message: 'pinned hours (11.5) exceed the daily target (7.5)' });
     render(<ProjectSummarySidebar day={day} projects={projects} onSaveLines={onSaveLines} onValidate={vi.fn()} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    fireEvent.click(screen.getByRole('button', { name: /enregistrer/i }));
     expect(
       await screen.findByText(/pinned hours \(11\.5\) exceed the daily target \(7\.5\)/i),
     ).toBeInTheDocument();
+  });
+
+  it('renders the action grid for an editable (DRAFT) day', () => {
+    render(<ProjectSummarySidebar day={day} projects={projects} onSaveLines={vi.fn()} onValidate={vi.fn()} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
+    expect(screen.getByRole('button', { name: /reconstruire depuis les signaux/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /enregistrer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /valider et verrouiller/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /jour off/i })).toBeInTheDocument();
+  });
+
+  it('keeps the action grid visible on a DAY_OFF day so the day can be recovered via Enregistrer', () => {
+    const dayOff: ReconstructedDay = { ...day, status: 'DAY_OFF' };
+    render(<ProjectSummarySidebar day={dayOff} projects={projects} onSaveLines={vi.fn()} onValidate={vi.fn()} onMarkOff={vi.fn()} onRefresh={vi.fn()} busy={false} />);
+    expect(screen.getByRole('button', { name: /reconstruire depuis les signaux/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /enregistrer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /valider et verrouiller/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /jour off/i })).toBeInTheDocument();
   });
 });

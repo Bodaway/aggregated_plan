@@ -21,6 +21,7 @@ const CONFIG_KEYS = {
   GENERAL_WORKING_HOURS: 'general.working_hours',
   GENERAL_WORKING_DAYS: 'general.working_days',
   GENERAL_CAPACITY: 'general.capacity',
+  TIMESHEET_DAILY_TARGET: 'workday.daily_target_hours',
 } as const;
 
 /** Chevron icon for collapsible sections. */
@@ -773,6 +774,27 @@ export function SettingsPage() {
                   CONFIG_KEYS.GENERAL_CAPACITY,
                 ])
               }
+              saving={saving}
+            />
+          </div>
+        </div>
+      </SettingsSection>
+
+      {/* Section 6: Timesheet */}
+      <SettingsSection title="Timesheet" icon={<GearIcon />}>
+        <div className="space-y-4">
+          <SettingsInput
+            label="Timesheet Daily Target (hours)"
+            value={getConfigValue(CONFIG_KEYS.TIMESHEET_DAILY_TARGET, '7.5')}
+            onChange={v => setConfigValue(CONFIG_KEYS.TIMESHEET_DAILY_TARGET, v)}
+            type="number"
+            placeholder="7.5"
+            description="Target hours the reconstructed daily timesheet is normalized to (independent of General → Working Hours per Day). Pinned hours above this are rejected on save."
+          />
+
+          <div className="pt-2">
+            <SaveButton
+              onClick={() => saveConfigKeys([CONFIG_KEYS.TIMESHEET_DAILY_TARGET])}
               saving={saving}
             />
           </div>
