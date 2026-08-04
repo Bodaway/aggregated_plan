@@ -160,10 +160,45 @@ Wherever a command takes a TASK argument the same resolver runs:
    hit wins; zero hits exits 2; multiple hits exits 3 with up to 5 candidates
    printed and a suggestion to be more specific.
 
+## Sessions — who is writing
+
+Two natures of actor share one cockpit. **The global pointer is you, working by hand**:
+`aplan.active_task_id`, one task at a time, unchanged. **A session is a Claude**: one row per
+Claude Code session, each with its own task, so several sessions can log against different tasks
+at once without overwriting each other's pointer.
+
+```
+aplan sessions                        # the open sessions: task, label, since, last write, mode
+                                      # plus one display-only line for your own pointer
+aplan session show                    # what this session is linked to — what the hook reads
+aplan session bind <task>             # link this session (does not move your pointer)
+aplan session off                     # disable aplan logging for this session, persistently
+aplan session end                     # close this session
+```
+
+`--session <ID>` is global and defaults to `CLAUDE_CODE_SESSION_ID`, which the harness exports
+into every Bash call — so a Claude never passes it, and a plain terminal never has it.
+
+Target resolution for `log`, `note`, `status`, `done`:
+
+1. `--task` wins.
+2. Otherwise the session's task. **If the session is in `off` mode, the command refuses with
+   exit 4** rather than falling back. That refusal is the point: silently falling back to the
+   global pointer is how a Claude ends up reporting work on a task you declined.
+3. Otherwise the global pointer — you.
+
+`remember` is the deliberate exception: it never refuses. `--task` wins, else a tracking session
+attaches the memory to its task, else the memory is created unattached and the command succeeds —
+including for an `off` session. Memories sit outside the worklog rules, and an unattached memory
+misattributes nothing, where a misattributed worklog entry is billable time on the wrong task.
+
+`aplan start` and `aplan stop` still act on the global pointer, not on the session.
+
 ## Output
 
 Default: terse human output, one line per action.
 `--json`: emits the raw GraphQL `data.*` payload — used by the Claude skill.
+`aplan current --json` also carries `actor`: the session id, or `manual`.
 
 ## Exit codes
 
@@ -177,7 +212,9 @@ Default: terse human output, one line per action.
   supersession cycle, a query with nothing searchable in it; and on
   `aplan reattribute`, a selection it refuses to act on: same source and
   destination, an entry belonging to another task, nothing selected, nothing
-  matched, or a window at the page cap.
+  matched, or a window at the page cap. On the worklog verbs with a session, one of three
+  refusals: the session is not tracked (`aplan session off` was answered), it has no task bound,
+  or it has ended. An unknown session id exits `2`, not `4` — it is a lookup failure, not a state.
 
 `1` versus `4` is load-bearing for automated callers: `4` means "skip this one",
 `1` means "the call never landed — retry the whole run and write no watermark".

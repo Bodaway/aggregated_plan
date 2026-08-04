@@ -2928,6 +2928,85 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 | 009–011 | (voir `migrations/sqlite/`) | Catalogue Gryzzly, brouillons de feuille de temps, règles de mappage de signaux. |
 | **012** | `012_create_memories.sql` | Mémoire sémantique : `memories`, `memory_stakeholders`, table FTS5 autonome `memories_fts`, et `ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT` (filigrane de consolidation par entrée). Voir § 7.2. |
 | **013** | `013_add_proposed_supersedes_and_fix_alert_type_check.sql` | Deux corrections indépendantes : `memories.proposed_supersedes` (supersession *proposée*, forme structurée) et reconstruction de `alerts` pour que le `CHECK` sur `alert_type` admette `timesheet_ready`. Voir § 7.2.1 et § 7.2.2. |
+| **014** | `014_create_sessions.sql` | Sessions Claude Code : table `sessions`, plus `worklog_entries.session_id`, `activity_slots.session_id` et `activity_slots.source`. Voir § 7.3. |
+
+### 7.3 Migration `014_create_sessions.sql` — sessions Claude Code
+
+#### 7.3.1 Deux natures d'acteur
+
+Le pointeur global reste ce qu'il était : **l'humain, en manuel**. Les deux clés de
+configuration `aplan.active_task_id` et `aplan.active_since` gardent leur sens et leur
+comportement mono-tâche, inchangés.
+
+Une ligne de `sessions` est **un Claude**. N sessions ouvertes, chacune sa tâche, chacune son
+mode. Rien ne fusionne les deux : le pointeur de l'humain ne bouge jamais parce qu'un Claude a
+changé de tâche, et l'inverse est vrai aussi.
+
+```sql
+CREATE TABLE sessions (
+    id            TEXT PRIMARY KEY,                              -- CLAUDE_CODE_SESSION_ID
+    user_id       TEXT NOT NULL REFERENCES users(id),
+    task_id       TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    mode          TEXT NOT NULL CHECK (mode IN ('tracking','off')),
+    label         TEXT,                                          -- le `cwd` du hook, pour l'affichage
+    started_at    TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    last_flush_at TEXT,
+    ended_at      TEXT
+);
+CREATE INDEX idx_sessions_user_open ON sessions(user_id, ended_at);
+
+ALTER TABLE worklog_entries ADD COLUMN session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL;
+ALTER TABLE activity_slots  ADD COLUMN session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL;
+ALTER TABLE activity_slots  ADD COLUMN source     TEXT;   -- 'worklog' | 'manual'
+```
+
+`session_id` à NULL signifie l'humain : le pointeur global n'a pas de ligne de session et n'en
+aura jamais. L'énumération de `source` est **appliquée en Rust** (`SlotSource`), pas par un
+`CHECK` SQL — corriger un `CHECK` sur une table SQLite existante coûte la reconstruction
+complète que la migration 013 a dû faire. Un `source` NULL se lit **`manual`**, la valeur que
+rien ne reconstruit : l'inconnu est protégé plutôt qu'effacé.
+
+#### 7.3.2 Résolution de la cible d'un verbe implicite
+
+Pour `log`, `note`, `status` et `done` :
+
+1. `--task <cible>` gagne toujours.
+2. Sinon `--session <id>` (ou `CLAUDE_CODE_SESSION_ID`, que le harnais exporte dans chaque appel
+   Bash) → la tâche de la session. **Si la session est en mode `off`, refus en code 4** — jamais
+   de repli silencieux sur le pointeur global. Ce refus *est* la fonctionnalité : le défaut
+   corrigé était un Claude rapportant du travail sur une tâche que l'utilisateur avait
+   explicitement déclinée.
+3. Sinon le pointeur global.
+
+`remember` est l'exception délibérée : il ne refuse jamais. `--task` gagne, sinon une session
+qui tracke rattache la mémoire à sa tâche, sinon la mémoire est créée non rattachée et la
+commande réussit — y compris pour une session `off`. Les mémoires sont hors des règles du
+worklog (le hook SessionStart le dit déjà pour les sessions non surveillées), et une mémoire non
+rattachée n'attribue rien à tort, là où une mauvaise attribution de worklog serait du temps
+facturable sur la mauvaise tâche.
+
+#### 7.3.3 Passe de classification de la provenance des slots
+
+La migration laisse `source` à NULL sur toutes les lignes existantes. Une passe unique, au
+démarrage de l'API et gardée par la clé `aplan.slot_source_classified`, la remplit depuis les
+données. Un slot fermé porteur d'une tâche vient d'un flush **si et seulement si** une entrée de
+cette tâche a `logged_at == start_time`, **et** qu'une entrée a `logged_at == end_time` **ou**
+que `end_time == start_time + MIN_BLOCK_MINUTES`.
+
+Ce n'est pas la règle envisagée d'abord. Comparer l'intervalle du slot aux blocs que
+`derive_time_blocks` produit aujourd'hui teste le *regroupement* des entrées, et ce regroupement
+a changé : la coupure à 45 minutes est arrivée avec `abda52a`, et avant elle le flush écrivait de
+façon incrémentale contre un watermark. Mesurée sur la base réelle, cette règle ne classait que
+12 des 52 candidats. L'invariante qui a survécu au changement est que les bornes d'un slot
+**sont** des `logged_at` d'entrées, le flush les recopiant verbatim. Sur la base réelle : 52/52
+candidats satisfont la première condition, 42 la première branche de la seconde, les 10 autres sa
+seconde branche, 0 inexpliqué. La règle compare des instants UTC exacts, donc elle n'a **besoin
+d'aucun fuseau horaire**.
+
+La passe s'exécute **après** le retour anticipé d'`export-schema` : cette commande de génération
+de code ne doit pas effectuer une écriture irréversible dont la trace serait avalée par la
+redirection de sortie.
 
 ### 7.2 Migration `012_create_memories.sql` — mémoire sémantique
 
