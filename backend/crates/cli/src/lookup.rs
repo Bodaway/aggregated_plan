@@ -33,6 +33,9 @@ pub enum LookupError {
     SessionNoTask(String),
     #[error("session {0} has ended")]
     SessionEnded(String),
+    /// An explicit lookup (`aplan session show`) found no row for the id. Note
+    /// this is *not* raised by `resolve_from_session`: there, an id with no row
+    /// falls through to the global pointer instead — see `resolve_target`'s doc.
     #[error("no session {0} is known to aplan")]
     SessionUnknown(String),
 }
@@ -60,6 +63,17 @@ pub struct TaskRef {
     pub title: String,
     #[allow(dead_code)]
     pub source_id: Option<String>,
+}
+
+/// Which of `resolve_target`'s three levels actually produced the task. `log`
+/// needs this to decide whether a worklog entry's `sessionId` may be sent: only
+/// a target that came *through* the session may carry it — an id that merely
+/// happened to be set (and was unknown, or was bypassed by `--task`) must not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedVia {
+    Task,
+    Session,
+    GlobalPointer,
 }
 
 /// Token shape: which lookup branch should we take?
@@ -136,8 +150,13 @@ pub fn resolve_task(client: &Client, token: Option<&str>) -> Result<TaskRef, Loo
 ///   2. the session (`--session`, or `CLAUDE_CODE_SESSION_ID`) — a Claude.
 ///   3. the global pointer — the human, working by hand.
 ///
-/// Level 2 refuses rather than falling through to level 3. That refusal is the
-/// feature: it is what makes "ne pas tracker" hold for a whole session.
+/// A session *known to aplan* refuses rather than falling through to level 3.
+/// That refusal is the feature: it is what makes "ne pas tracker" hold for a
+/// whole session. An id that names no session at all is not that refusal — it
+/// carries no decision to honour — so it falls through to level 3 exactly like
+/// an absent `--session` would. `CLAUDE_CODE_SESSION_ID` is exported into every
+/// Bash call inside a Claude session, and nothing on this branch creates a
+/// session row for it yet, so this is the common case, not an edge case.
 ///
 /// The three-way refusal below mirrors `domain::types::SessionTargetRefusal`. It is
 /// restated here rather than shared because this crate deliberately depends on no
@@ -146,22 +165,30 @@ pub fn resolve_target(
     client: &Client,
     session: Option<&str>,
     task: Option<&str>,
-) -> Result<TaskRef, LookupError> {
+) -> Result<(TaskRef, ResolvedVia), LookupError> {
     if let Some(token) = task.filter(|t| !t.trim().is_empty()) {
-        return resolve_task(client, Some(token));
+        return resolve_task(client, Some(token)).map(|t| (t, ResolvedVia::Task));
     }
     match session.filter(|s| !s.trim().is_empty()) {
         Some(id) => resolve_from_session(client, id),
-        None => resolve_task(client, None),
+        None => resolve_task(client, None).map(|t| (t, ResolvedVia::GlobalPointer)),
     }
 }
 
-fn resolve_from_session(client: &Client, id: &str) -> Result<TaskRef, LookupError> {
+fn resolve_from_session(client: &Client, id: &str) -> Result<(TaskRef, ResolvedVia), LookupError> {
     let result = client.run::<ClaudeSession>(claude_session::Variables { id: id.to_string() })?;
-    let found = result
-        .data
-        .claude_session
-        .ok_or_else(|| LookupError::SessionUnknown(id.to_string()))?;
+    let found = match result.data.claude_session {
+        // No row named `id`: nothing was decided for it, so there is nothing to
+        // honour and nothing to misattribute — fall through to the global pointer
+        // exactly as an absent `--session` would. This is deliberately not
+        // `SessionUnknown`: that refusal is for `aplan session show`, where the
+        // user asked about this id directly and a silent fallback would hide the
+        // typo instead of reporting it. And it is why the fallthrough reports
+        // `ResolvedVia::GlobalPointer`, not `Session`: the session named here
+        // named nothing, so it may not be attributed on the write that follows.
+        None => return resolve_task(client, None).map(|t| (t, ResolvedVia::GlobalPointer)),
+        Some(s) => s,
+    };
 
     if found.ended_at.is_some() {
         return Err(LookupError::SessionEnded(id.to_string()));
@@ -174,7 +201,7 @@ fn resolve_from_session(client: &Client, id: &str) -> Result<TaskRef, LookupErro
         .filter(|t| !t.is_empty())
         .ok_or_else(|| LookupError::SessionNoTask(id.to_string()))?;
 
-    hydrate_by_id(client, &task_id)
+    hydrate_by_id(client, &task_id).map(|t| (t, ResolvedVia::Session))
 }
 
 /// Fetch a task by its UUID and return a fully hydrated `TaskRef`. A `null`

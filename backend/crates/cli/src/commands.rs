@@ -3,7 +3,7 @@
 
 use crate::cli::{ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg};
 use crate::client::Client;
-use crate::lookup::{resolve_target, resolve_task, LookupError};
+use crate::lookup::{resolve_target, resolve_task, LookupError, ResolvedVia};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, add_worklog_entry, append_task_notes, complete_task, create_task,
@@ -95,7 +95,7 @@ pub fn done(
     let has_explicit_target = task.is_some() || session.filter(|s| !s.trim().is_empty()).is_some();
     let target_id = if has_explicit_target {
         match resolve_target(&client, session, task) {
-            Ok(t) => t.id,
+            Ok((t, _)) => t.id,
             Err(e) => {
                 eprintln!("error: {}", e);
                 return e.exit_code();
@@ -201,7 +201,7 @@ pub fn status(
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let target = match resolve_target(&client, session, task) {
-        Ok(t) => t,
+        Ok((t, _)) => t,
         Err(e) => {
             eprintln!("error: {}", e);
             return e.exit_code();
@@ -245,7 +245,7 @@ pub fn note(
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let target = match resolve_target(&client, session, task) {
-        Ok(t) => t,
+        Ok((t, _)) => t,
         Err(e) => {
             eprintln!("error: {}", e);
             return e.exit_code();
@@ -289,18 +289,27 @@ pub fn log(
     session: Option<&str>,
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    let target = match resolve_target(&client, session, task) {
-        Ok(t) => t,
+    let (target, via) = match resolve_target(&client, session, task) {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!("error: {}", e);
             return e.exit_code();
         }
     };
     let joined = text.join(" ");
+    // `sessionId` is only sent when the session itself named `target` — not for
+    // `--task` (which never touches the session) and not for a session id that
+    // turned out to be unknown and fell through to the global pointer (see
+    // `ResolvedVia`'s doc). `worklog_entries.session_id` is a real foreign key;
+    // sending an id with no row would fail the whole write, having logged nothing.
+    let session_id = match via {
+        ResolvedVia::Session => session.map(|s| s.to_string()),
+        ResolvedVia::Task | ResolvedVia::GlobalPointer => None,
+    };
     let result = client.run::<AddWorklogEntry>(add_worklog_entry::Variables {
         task_id: target.id.clone(),
         body: joined,
-        session_id: session.map(|s| s.to_string()),
+        session_id,
     });
     match result {
         Ok(r) => {
