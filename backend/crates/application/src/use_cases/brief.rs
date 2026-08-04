@@ -681,6 +681,8 @@ mod tests {
             half_day: HalfDay::Morning,
             date: today(),
             created_at: now(),
+            session_id: None,
+            source: SlotSource::Manual,
         });
 
         let mut mine = memory(MemoryKind::Decision, "du projet suivi", MemoryStatus::Active);
@@ -719,6 +721,8 @@ mod tests {
             half_day: HalfDay::Morning,
             date: today(),
             created_at: now(),
+            session_id: None,
+            source: SlotSource::Manual,
         });
         let mut asked_decision = memory(MemoryKind::Decision, "demandée", MemoryStatus::Active);
         asked_decision.project_id = Some(asked);

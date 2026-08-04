@@ -530,16 +530,16 @@ fn project_slots(
             if end <= start_time {
                 end = start_time + Duration::minutes(MIN_BLOCK_MINUTES);
             }
-            Some(ActivitySlot {
-                id: Uuid::new_v4(),
+            Some(ActivitySlot::from_worklog(
                 user_id,
-                task_id: Some(task_id),
+                task_id,
+                None,
                 start_time,
-                end_time: Some(end),
-                half_day: block.half_day,
-                date: block.date,
-                created_at: now,
-            })
+                end,
+                block.half_day,
+                block.date,
+                now,
+            ))
         })
         .collect()
 }
@@ -941,7 +941,11 @@ mod tests {
             id
         }
 
-        /// A slot as a flush would have left it.
+        /// A slot as a flush would have left it — closed, so `Worklog`-sourced. The
+        /// one caller that passes `end: None` wants a running timer, which a flush
+        /// never produces (`from_worklog` has no way to leave `end_time` open), so
+        /// that case is `Manual` instead — the same distinction the constructors
+        /// themselves encode.
         fn slot(
             &self,
             task: TaskId,
@@ -949,6 +953,11 @@ mod tests {
             end: Option<DateTime<Utc>>,
             half_day: HalfDay,
         ) -> ActivitySlotId {
+            let source = if end.is_some() {
+                SlotSource::Worklog
+            } else {
+                SlotSource::Manual
+            };
             let slot = ActivitySlot {
                 id: Uuid::new_v4(),
                 user_id: self.user,
@@ -958,6 +967,8 @@ mod tests {
                 half_day,
                 date: to_local(&paris(), start).date(),
                 created_at: start,
+                session_id: None,
+                source,
             };
             let id = slot.id;
             self.activity.push(slot);

@@ -175,6 +175,7 @@ pub fn is_rebuildable(slot: &ActivitySlot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::activity::SlotSource;
     use crate::types::common::HalfDay;
     use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
     use uuid::Uuid;
@@ -205,6 +206,14 @@ mod tests {
         start: DateTime<Utc>,
         end: Option<DateTime<Utc>>,
     ) -> ActivitySlot {
+        // Closed → as a flush would have left it (`Worklog`). Open → a running
+        // timer, which `from_worklog` cannot produce (its `end_time` is not
+        // optional), so `Manual` — the same distinction the constructors encode.
+        let source = if end.is_some() {
+            SlotSource::Worklog
+        } else {
+            SlotSource::Manual
+        };
         ActivitySlot {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
@@ -214,6 +223,8 @@ mod tests {
             half_day: HalfDay::Morning,
             date: start.date_naive(),
             created_at: start,
+            session_id: None,
+            source,
         }
     }
 

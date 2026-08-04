@@ -1,7 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 use domain::rules::worklog_time::{derive_time_blocks, MIN_BLOCK_MINUTES};
 use domain::types::*;
-use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::repositories::{
@@ -146,16 +145,19 @@ pub async fn materialize_worklog_time(
             // and the reattribution repair persist the same duration for it.
             end_utc = start_utc + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
         }
-        let slot = ActivitySlot {
-            id: Uuid::new_v4(),
+        // Session attribution on materialized slots arrives with plan 2, which is
+        // where the flush learns which session asked; `None` keeps this plan's
+        // behaviour identical to today's.
+        let slot = ActivitySlot::from_worklog(
             user_id,
-            task_id: Some(task_id),
-            start_time: start_utc,
-            end_time: Some(end_utc),
-            half_day: block.half_day,
-            date: block.date,
-            created_at: Utc::now(),
-        };
+            task_id,
+            None,
+            start_utc,
+            end_utc,
+            block.half_day,
+            block.date,
+            Utc::now(),
+        );
         activity_repo.save(&slot).await?;
         written += 1;
     }

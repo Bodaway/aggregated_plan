@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::errors::DomainError;
 
 use super::common::*;
+use super::session::SessionId;
 
 pub type WorklogEntryId = Uuid;
 
@@ -17,6 +18,8 @@ pub struct WorklogEntry {
     pub logged_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The session that wrote this entry. `None` is the human, working by hand.
+    pub session_id: Option<SessionId>,
 }
 
 pub const WORKLOG_BODY_MAX_LEN: usize = 10_000;
@@ -48,7 +51,18 @@ impl WorklogEntry {
             logged_at,
             created_at: now,
             updated_at: now,
+            session_id: None,
         })
+    }
+
+    /// Attribute the entry to the session that wrote it.
+    ///
+    /// A builder rather than a `new` parameter: `new` has 40-odd call sites, almost
+    /// all of them tests that have nothing to say about authorship, and widening its
+    /// signature would churn every one of them to pass `None`.
+    pub fn by_session(mut self, session_id: Option<SessionId>) -> Self {
+        self.session_id = session_id;
+        self
     }
 }
 
@@ -104,5 +118,17 @@ mod tests {
         let body = "a".repeat(WORKLOG_BODY_MAX_LEN);
         let entry = WorklogEntry::new(uid(), tid(), body.clone(), t0(), t0()).unwrap();
         assert_eq!(entry.body.chars().count(), WORKLOG_BODY_MAX_LEN);
+    }
+
+    #[test]
+    fn an_entry_is_the_humans_until_a_session_claims_it() {
+        let entry = WorklogEntry::new(uid(), tid(), "fait".into(), t0(), t0()).unwrap();
+        assert!(
+            entry.session_id.is_none(),
+            "NULL is the human working by hand"
+        );
+
+        let claimed = entry.by_session(Some("sess-1".into()));
+        assert_eq!(claimed.session_id.as_deref(), Some("sess-1"));
     }
 }

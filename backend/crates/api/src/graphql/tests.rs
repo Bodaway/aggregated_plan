@@ -2673,6 +2673,7 @@ async fn run_reconstruction_with_seeded_worklog_produces_project_line_and_fill()
             logged_at,
             created_at: logged_at,
             updated_at: logged_at,
+            session_id: None,
         })
         .await
         .unwrap();

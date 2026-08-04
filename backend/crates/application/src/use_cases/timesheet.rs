@@ -1255,6 +1255,7 @@ mod tests {
             logged_at,
             created_at: logged_at,
             updated_at: logged_at,
+            session_id: None,
         };
 
         let worklog_repo = MemWorklog { entries: vec![worklog_entry] };
@@ -1427,6 +1428,7 @@ mod tests {
             logged_at,
             created_at: logged_at,
             updated_at: logged_at,
+            session_id: None,
         };
 
         let result = reconstruct_timesheet(
@@ -1502,6 +1504,7 @@ mod tests {
             logged_at,
             created_at: logged_at,
             updated_at: logged_at,
+            session_id: None,
         };
 
         let result = reconstruct_timesheet(

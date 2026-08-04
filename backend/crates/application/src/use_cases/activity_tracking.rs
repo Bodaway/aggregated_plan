@@ -1,7 +1,6 @@
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use domain::rules::workload::half_day_of;
 use domain::types::*;
-use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::repositories::*;
@@ -25,16 +24,7 @@ pub async fn start_activity(
     let date = now.date_naive();
 
     // 3. Create new slot
-    let slot = ActivitySlot {
-        id: Uuid::new_v4(),
-        user_id,
-        task_id,
-        start_time: now,
-        end_time: None,
-        half_day,
-        date,
-        created_at: now,
-    };
+    let slot = ActivitySlot::manual(user_id, task_id, now, None, half_day, date, now);
 
     activity_repo.save(&slot).await?;
     Ok(slot)
@@ -136,16 +126,15 @@ pub async fn create_manual_activity_slot(
     let half_day = half_day_of(start_time.hour());
     let date = start_time.date_naive();
 
-    let slot = ActivitySlot {
-        id: Uuid::new_v4(),
+    let slot = ActivitySlot::manual(
         user_id,
         task_id,
         start_time,
-        end_time: Some(end_time),
+        Some(end_time),
         half_day,
         date,
-        created_at: Utc::now(),
-    };
+        Utc::now(),
+    );
 
     activity_repo.save(&slot).await?;
     Ok(slot)

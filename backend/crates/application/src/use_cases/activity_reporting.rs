@@ -156,6 +156,8 @@ mod tests {
             half_day: HalfDay::Morning,
             date,
             created_at: Utc::now(),
+            session_id: None,
+            source: SlotSource::Manual,
         }
     }
 

@@ -53,6 +53,8 @@ fn map_row(row: &SqliteRow) -> Result<WorklogEntry, RepositoryError> {
         logged_at: parse_datetime(&logged_at_str)?,
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
+        // Task 6 reads the `session_id` column migration 014 added.
+        session_id: None,
     })
 }
 

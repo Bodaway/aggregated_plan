@@ -68,6 +68,9 @@ fn map_activity_slot_row(row: &SqliteRow) -> Result<ActivitySlot, RepositoryErro
             RepositoryError::Database(format!("Failed to parse date '{}': {}", date_str, e))
         })?,
         created_at: parse_datetime(&created_at_str)?,
+        // Task 6 reads the `session_id`/`source` columns migration 014 added.
+        session_id: None,
+        source: SlotSource::Manual,
     })
 }
 
@@ -234,6 +237,8 @@ mod tests {
             half_day,
             date,
             created_at: Utc::now(),
+            session_id: None,
+            source: SlotSource::Manual,
         }
     }
 
