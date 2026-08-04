@@ -78,6 +78,13 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
+    /// The Claude Code session this invocation belongs to. Defaults to
+    /// `CLAUDE_CODE_SESSION_ID`, which the harness exports into every Bash call, so
+    /// a Claude never has to pass it. Absent (a plain terminal), the global pointer
+    /// answers instead: that pointer is the human, working by hand.
+    #[arg(long, env = "CLAUDE_CODE_SESSION_ID", global = true)]
+    pub session: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -88,6 +95,13 @@ pub enum Commands {
     Version,
     /// Show the task this session is linked to (the active-task pointer).
     Current,
+    /// List the open Claude sessions and what each one is working on.
+    Sessions,
+    /// Manage this session's aplan link.
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Link this session to TASK (sets the active-task pointer). Flushes the previously active task's worklog time first.
     Start {
         /// Task to track: UUID, Jira-style key (AP-123), or fuzzy title match.
@@ -346,6 +360,23 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ConsolidateCmd,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionAction {
+    /// Show the session's link — what the SessionStart hook reads.
+    Show,
+    /// Link this session to TASK. Does not move the global pointer.
+    Bind {
+        task: String,
+        /// Displayed in `aplan sessions`. Defaults to the working directory.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Disable aplan logging for this session, persistently.
+    Off,
+    /// Close this session.
+    End,
 }
 
 #[derive(Subcommand, Debug)]

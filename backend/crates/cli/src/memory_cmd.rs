@@ -3,7 +3,7 @@
 
 use crate::cli::MemoryKindArg;
 use crate::client::{Client, ClientError};
-use crate::lookup::{resolve_task, LookupError};
+use crate::lookup::{resolve_target, resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     brief as brief_query, get_memory, inbox_accept, inbox_merge, inbox_reject, list_projects,
@@ -156,6 +156,7 @@ pub fn remember(
     project: Option<&str>,
     to: &[String],
     task: Option<&str>,
+    session: Option<&str>,
     source_ref: Option<&str>,
     contradicts: Option<&str>,
     confirm: bool,
@@ -173,15 +174,29 @@ pub fn remember(
         },
     };
 
-    let task_id = match task {
-        None => None,
-        Some(token) => match resolve_task(&client, Some(token)) {
+    // A memory is valid with no task at all — unlike log/note/status/done, this
+    // verb has never fallen back onto the global pointer when nothing is given.
+    // `--task` still wins outright; absent that, attach to the session's task
+    // when a session is present (refusing the same three ways `resolve_target`
+    // does), otherwise leave it unattached exactly as before.
+    let task_id = if let Some(token) = task {
+        match resolve_task(&client, Some(token)) {
             Ok(t) => Some(t.id),
             Err(e) => {
                 eprintln!("error: {e}");
                 return e.exit_code();
             }
-        },
+        }
+    } else if let Some(sid) = session.filter(|s| !s.trim().is_empty()) {
+        match resolve_target(&client, Some(sid), None) {
+            Ok(t) => Some(t.id),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return e.exit_code();
+            }
+        }
+    } else {
+        None
     };
 
     let vars = remember_op::Variables {

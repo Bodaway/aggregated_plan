@@ -385,3 +385,43 @@ pub struct MarkConsolidated;
     response_derives = "Debug, Clone"
 )]
 pub struct RecordConsolidationRun;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/claude_session.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ClaudeSession;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/open_claude_sessions.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct OpenClaudeSessions;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/bind_session.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct BindSession;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/set_session_mode.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct SetSessionMode;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/end_session.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct EndSession;

@@ -1,0 +1,6 @@
+mutation EndSession($sessionId: String!) {
+  endSession(sessionId: $sessionId) {
+    id
+    endedAt
+  }
+}

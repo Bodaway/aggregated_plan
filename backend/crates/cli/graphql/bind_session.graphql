@@ -1,0 +1,6 @@
+mutation BindSession($sessionId: String!, $taskId: ID!, $label: String) {
+  bindSession(sessionId: $sessionId, taskId: $taskId, label: $label) {
+    session { id taskId mode label }
+    previousTaskId
+  }
+}

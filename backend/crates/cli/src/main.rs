@@ -11,6 +11,7 @@ mod memory_cmd;
 mod output;
 mod queries;
 mod reattribute_cmd;
+mod session_cmd;
 mod timesheet_cmd;
 
 fn main() -> ExitCode {
@@ -21,13 +22,23 @@ fn main() -> ExitCode {
             println!("aplan {}", env!("CARGO_PKG_VERSION"));
             output::ExitCode::Success
         }
-        cli::Commands::Current => commands::current(&args.api_url, args.json),
+        cli::Commands::Current => {
+            commands::current(&args.api_url, args.json, args.session.as_deref())
+        }
+        cli::Commands::Sessions => session_cmd::sessions(&args.api_url, args.json),
+        cli::Commands::Session { action } => {
+            session_cmd::session(&args.api_url, args.json, args.session.as_deref(), &action)
+        }
         cli::Commands::Start { task } => commands::start(&args.api_url, args.json, &task),
         cli::Commands::Stop => commands::stop(&args.api_url, args.json),
         cli::Commands::Flush { task } => commands::flush(&args.api_url, args.json, &task),
-        cli::Commands::Note { text, task } => {
-            commands::note(&args.api_url, args.json, &text, task.as_deref())
-        }
+        cli::Commands::Note { text, task } => commands::note(
+            &args.api_url,
+            args.json,
+            &text,
+            task.as_deref(),
+            args.session.as_deref(),
+        ),
         cli::Commands::Reattribute {
             from,
             to,
@@ -47,18 +58,30 @@ fn main() -> ExitCode {
             &entry,
             confirm,
         ),
-        cli::Commands::Log { text, task } => {
-            commands::log(&args.api_url, args.json, &text, task.as_deref())
-        }
-        cli::Commands::Status { state, task } => {
-            commands::status(&args.api_url, args.json, &state, task.as_deref())
-        }
+        cli::Commands::Log { text, task } => commands::log(
+            &args.api_url,
+            args.json,
+            &text,
+            task.as_deref(),
+            args.session.as_deref(),
+        ),
+        cli::Commands::Status { state, task } => commands::status(
+            &args.api_url,
+            args.json,
+            &state,
+            task.as_deref(),
+            args.session.as_deref(),
+        ),
         cli::Commands::Triage { state, task } => {
             commands::triage(&args.api_url, args.json, &state, &task)
         }
-        cli::Commands::Done { task, keep_running } => {
-            commands::done(&args.api_url, args.json, task.as_deref(), keep_running)
-        }
+        cli::Commands::Done { task, keep_running } => commands::done(
+            &args.api_url,
+            args.json,
+            task.as_deref(),
+            args.session.as_deref(),
+            keep_running,
+        ),
         cli::Commands::Ls { status, triage } => {
             commands::ls(&args.api_url, args.json, &status, &triage)
         }
@@ -156,6 +179,7 @@ fn main() -> ExitCode {
             project.as_deref(),
             &to,
             task.as_deref(),
+            args.session.as_deref(),
             source_ref.as_deref(),
             contradicts.as_deref(),
             confirm,

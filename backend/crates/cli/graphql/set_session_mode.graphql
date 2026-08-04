@@ -1,0 +1,12 @@
+mutation SetSessionMode($sessionId: String!, $mode: SessionModeGql!, $label: String) {
+  setSessionMode(sessionId: $sessionId, mode: $mode, label: $label) {
+    id
+    taskId
+    mode
+    label
+    startedAt
+    lastSeenAt
+    lastFlushAt
+    endedAt
+  }
+}

@@ -1,0 +1,12 @@
+query ClaudeSession($id: String!) {
+  claudeSession(id: $id) {
+    id
+    taskId
+    mode
+    label
+    startedAt
+    lastSeenAt
+    lastFlushAt
+    endedAt
+  }
+}

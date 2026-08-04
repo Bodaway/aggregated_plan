@@ -3,7 +3,7 @@
 
 use crate::cli::{ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg};
 use crate::client::Client;
-use crate::lookup::{resolve_task, LookupError};
+use crate::lookup::{resolve_target, resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, add_worklog_entry, append_task_notes, complete_task, create_task,
@@ -39,7 +39,11 @@ fn set_config_key(client: &Client, key: &str, value: &str) {
 }
 
 /// Flush the worklog window of `task_id` into closed activity slots.
-fn flush_task(client: &Client, task_id: &str) {
+///
+/// `pub(crate)`: `session_cmd::bind` makes the same call `start` does, so a
+/// bind that repoints a session away from its previous task loses no time
+/// either.
+pub(crate) fn flush_task(client: &Client, task_id: &str) {
     if let Err(e) = client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
         task_id: task_id.to_string(),
     }) {
@@ -74,11 +78,23 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
     ExitCode::Success
 }
 
-pub fn done(api_url: &str, json: bool, task: Option<&str>, keep_running: bool) -> ExitCode {
+pub fn done(
+    api_url: &str,
+    json: bool,
+    task: Option<&str>,
+    session: Option<&str>,
+    keep_running: bool,
+) -> ExitCode {
     let client = Client::new(api_url.to_string());
 
-    let target_id = if let Some(token) = task {
-        match resolve_task(&client, Some(token)) {
+    // `--task` or `--session` present: go through the three-level resolution order.
+    // Neither present: keep the original lightweight lookup, which reads only the
+    // id (the title comes later from `CompleteTask`'s own response) — resolving
+    // through `resolve_target` here would additionally hydrate via `GetTask` for
+    // no reason.
+    let has_explicit_target = task.is_some() || session.filter(|s| !s.trim().is_empty()).is_some();
+    let target_id = if has_explicit_target {
+        match resolve_target(&client, session, task) {
             Ok(t) => t.id,
             Err(e) => {
                 eprintln!("error: {}", e);
@@ -176,9 +192,15 @@ pub fn triage(api_url: &str, json: bool, state: &TriageArg, task: &str) -> ExitC
     }
 }
 
-pub fn status(api_url: &str, json: bool, state: &StatusArg, task: Option<&str>) -> ExitCode {
+pub fn status(
+    api_url: &str,
+    json: bool,
+    state: &StatusArg,
+    task: Option<&str>,
+    session: Option<&str>,
+) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    let target = match resolve_task(&client, task) {
+    let target = match resolve_target(&client, session, task) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -214,9 +236,15 @@ pub fn status(api_url: &str, json: bool, state: &StatusArg, task: Option<&str>) 
     }
 }
 
-pub fn note(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> ExitCode {
+pub fn note(
+    api_url: &str,
+    json: bool,
+    text: &[String],
+    task: Option<&str>,
+    session: Option<&str>,
+) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    let target = match resolve_task(&client, task) {
+    let target = match resolve_target(&client, session, task) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -253,9 +281,15 @@ pub fn note(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> E
     }
 }
 
-pub fn log(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> ExitCode {
+pub fn log(
+    api_url: &str,
+    json: bool,
+    text: &[String],
+    task: Option<&str>,
+    session: Option<&str>,
+) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    let target = match resolve_task(&client, task) {
+    let target = match resolve_target(&client, session, task) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -266,6 +300,7 @@ pub fn log(api_url: &str, json: bool, text: &[String], task: Option<&str>) -> Ex
     let result = client.run::<AddWorklogEntry>(add_worklog_entry::Variables {
         task_id: target.id.clone(),
         body: joined,
+        session_id: session.map(|s| s.to_string()),
     });
     match result {
         Ok(r) => {
@@ -628,17 +663,24 @@ pub fn ls(api_url: &str, json: bool, status: &[StatusArg], triage: &[TriageArg])
     }
 }
 
-pub fn current(api_url: &str, json: bool) -> ExitCode {
+pub fn current(api_url: &str, json: bool, session: Option<&str>) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let active = active_task_id(&client);
     if json {
-        let payload = match &active {
+        // Additive only: `.currentActivity` still names the global pointer, unchanged
+        // — `aplan-session-start.sh` / `aplan-session-end.sh` read `.currentActivity.task.id`
+        // today, and plan 3 owns rewriting them. `actor` just says who asked.
+        let actor = session.unwrap_or("manual");
+        let mut payload = match &active {
             Some(id) => match resolve_task(&client, Some(id)) {
                 Ok(t) => serde_json::json!({ "currentActivity": { "task": { "id": t.id, "title": t.title, "sourceId": t.source_id } } }),
                 Err(_) => serde_json::json!({ "currentActivity": null }),
             },
             None => serde_json::json!({ "currentActivity": null }),
         };
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("actor".to_string(), serde_json::json!(actor));
+        }
         if let Err(e) = print_json(&payload) {
             eprintln!("error writing output: {}", e);
             return ExitCode::Generic;

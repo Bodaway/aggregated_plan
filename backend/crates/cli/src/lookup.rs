@@ -5,8 +5,8 @@
 use crate::client::{Client, ClientError};
 use crate::output::ExitCode;
 use crate::queries::{
-    find_task_by_source_id, find_tasks_by_title, get_configuration, get_task, FindTaskBySourceId,
-    FindTasksByTitle, GetConfiguration, GetTask,
+    claude_session, find_task_by_source_id, find_tasks_by_title, get_configuration, get_task,
+    ClaudeSession, FindTaskBySourceId, FindTasksByTitle, GetConfiguration, GetTask,
 };
 use thiserror::Error;
 
@@ -24,17 +24,32 @@ pub enum LookupError {
     },
     #[error(transparent)]
     Client(#[from] ClientError),
+    /// The session exists but the user turned logging off for it. A refusal, never a
+    /// fallback: falling back onto the global pointer is exactly how a Claude ends up
+    /// reporting work on a task the user declined.
+    #[error("session {0} is not tracked — aplan logging is off for this session\nhint: `aplan session bind <task>` to start tracking it")]
+    SessionNotTracked(String),
+    #[error("session {0} has no task bound\nhint: `aplan session bind <task>`")]
+    SessionNoTask(String),
+    #[error("session {0} has ended")]
+    SessionEnded(String),
+    #[error("no session {0} is known to aplan")]
+    SessionUnknown(String),
 }
 
 impl LookupError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            LookupError::NoCurrentActivity => {
-                ExitCode::PreconditionFailed
-            }
+            LookupError::NoCurrentActivity => ExitCode::PreconditionFailed,
             LookupError::NotFound(_) => ExitCode::NotFound,
             LookupError::Ambiguous { .. } => ExitCode::Ambiguous,
             LookupError::Client(_) => ExitCode::Generic,
+            // A session that refuses is a precondition the store will not leave,
+            // which is what exit 4 means everywhere else in this CLI.
+            LookupError::SessionNotTracked(_)
+            | LookupError::SessionNoTask(_)
+            | LookupError::SessionEnded(_) => ExitCode::PreconditionFailed,
+            LookupError::SessionUnknown(_) => ExitCode::NotFound,
         }
     }
 }
@@ -104,7 +119,6 @@ pub fn is_source_id_shape(s: &str) -> bool {
 }
 
 /// Resolve a token into a concrete task using the GraphQL client.
-#[allow(dead_code)]
 pub fn resolve_task(client: &Client, token: Option<&str>) -> Result<TaskRef, LookupError> {
     let raw = token.unwrap_or("");
     match classify(raw) {
@@ -113,6 +127,54 @@ pub fn resolve_task(client: &Client, token: Option<&str>) -> Result<TaskRef, Loo
         TokenShape::SourceIdLike => resolve_by_source_id(client, raw.trim()),
         TokenShape::Fuzzy => resolve_by_title(client, raw.trim()),
     }
+}
+
+/// Resolve the task a verb with an implicit target should write to.
+///
+/// Three levels, in this order:
+///   1. `--task` — always wins, and never touches the session.
+///   2. the session (`--session`, or `CLAUDE_CODE_SESSION_ID`) — a Claude.
+///   3. the global pointer — the human, working by hand.
+///
+/// Level 2 refuses rather than falling through to level 3. That refusal is the
+/// feature: it is what makes "ne pas tracker" hold for a whole session.
+///
+/// The three-way refusal below mirrors `domain::types::SessionTargetRefusal`. It is
+/// restated here rather than shared because this crate deliberately depends on no
+/// workspace crate — it talks to the backend over GraphQL like any other client.
+pub fn resolve_target(
+    client: &Client,
+    session: Option<&str>,
+    task: Option<&str>,
+) -> Result<TaskRef, LookupError> {
+    if let Some(token) = task.filter(|t| !t.trim().is_empty()) {
+        return resolve_task(client, Some(token));
+    }
+    match session.filter(|s| !s.trim().is_empty()) {
+        Some(id) => resolve_from_session(client, id),
+        None => resolve_task(client, None),
+    }
+}
+
+fn resolve_from_session(client: &Client, id: &str) -> Result<TaskRef, LookupError> {
+    let result = client.run::<ClaudeSession>(claude_session::Variables { id: id.to_string() })?;
+    let found = result
+        .data
+        .claude_session
+        .ok_or_else(|| LookupError::SessionUnknown(id.to_string()))?;
+
+    if found.ended_at.is_some() {
+        return Err(LookupError::SessionEnded(id.to_string()));
+    }
+    if !matches!(found.mode, claude_session::SessionModeGql::TRACKING) {
+        return Err(LookupError::SessionNotTracked(id.to_string()));
+    }
+    let task_id = found
+        .task_id
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| LookupError::SessionNoTask(id.to_string()))?;
+
+    hydrate_by_id(client, &task_id)
 }
 
 /// Fetch a task by its UUID and return a fully hydrated `TaskRef`. A `null`

@@ -1,0 +1,13 @@
+query OpenClaudeSessions {
+  openClaudeSessions {
+    id
+    taskId
+    task { id title }
+    mode
+    label
+    startedAt
+    lastSeenAt
+    lastFlushAt
+    endedAt
+  }
+}

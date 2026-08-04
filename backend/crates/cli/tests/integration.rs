@@ -1120,3 +1120,216 @@ async fn start_log_stop_pointer_lifecycle_stop_clears_pointer() {
         .stdout(predicate::str::contains("\"stopped\""))
         .stdout(predicate::str::contains(task_id));
 }
+
+// ---------------------------------------------------------------------------
+// Task 9 — `--session`, resolution order, `session`/`sessions` commands
+// ---------------------------------------------------------------------------
+
+/// Session-aware flows must never inherit the developer's own session id: the suite
+/// runs inside a Claude Code session, where `CLAUDE_CODE_SESSION_ID` is exported into
+/// every command. Without this the test exercises a different branch than it claims.
+fn aplan_no_session() -> Command {
+    let mut cmd = Command::cargo_bin("aplan").unwrap();
+    cmd.env_remove("CLAUDE_CODE_SESSION_ID");
+    cmd
+}
+
+/// `claudeSession(id:)` response body. The field is `claudeSession`, not `session` —
+/// that name is already the Microsoft-OAuth status query the frontend's auth gate
+/// consumes.
+fn session_body(mode: &str, task_id: Option<&str>) -> serde_json::Value {
+    json!({
+        "data": {
+            "claudeSession": {
+                "id": "s1",
+                "taskId": task_id,
+                "mode": mode,
+                "label": "/home/mbt/appfactory/aggregated_plan",
+                "startedAt": "2026-08-04T09:00:00+00:00",
+                "lastSeenAt": "2026-08-04T09:00:00+00:00",
+                "lastFlushAt": null,
+                "endedAt": null
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn log_targets_the_sessions_task_not_the_global_pointer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some("00000000-0000-0000-0000-000000000001"),
+        )))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
+                "loggedAt": "2026-08-04T10:00:00+00:00", "sessionId": "s1" } }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "log", "fait"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worklog entry added"));
+}
+
+#[tokio::test]
+async fn log_refuses_exit_4_when_the_session_is_not_tracked() {
+    // The bug this feature exists to kill: an opted-out session must refuse, not
+    // fall back onto the human's pointer.
+    let server = mock_graphql(session_body("OFF", None)).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "log", "fait"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("not tracked"));
+}
+
+#[tokio::test]
+async fn log_refuses_exit_4_when_the_session_has_no_task() {
+    let server = mock_graphql(session_body("TRACKING", None)).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "log", "fait"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("no task"));
+}
+
+#[tokio::test]
+async fn an_explicit_task_wins_over_the_session() {
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
+                "loggedAt": "2026-08-04T10:00:00+00:00", "sessionId": null } }
+        })))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    // No `Session` mock is mounted: resolving one would be a bug, and the missing
+    // stub makes that visible instead of silent.
+    aplan_no_session()
+        .args([
+            "--api-url", &url, "--session", "s1", "log", "fait",
+            "--task", "00000000-0000-0000-0000-000000000001",
+        ])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn without_a_session_the_global_pointer_still_answers() {
+    // The human, working by hand. Unchanged behaviour.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": "00000000-0000-0000-0000-000000000001" } }
+        })))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
+                "loggedAt": "2026-08-04T10:00:00+00:00", "sessionId": null } }
+        })))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "log", "fait"])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn the_session_id_is_picked_up_from_the_environment() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("OFF", None)))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    // Refusing on an OFF session proves the env var reached the resolver: a CLI
+    // that ignored it would have fallen through to the global pointer and asked
+    // for `GetConfiguration`, which is not mocked here.
+    aplan()
+        .env("CLAUDE_CODE_SESSION_ID", "s1")
+        .args(["--api-url", &url, "log", "fait"])
+        .assert()
+        .code(4);
+}
+
+#[tokio::test]
+async fn sessions_lists_the_open_ones() {
+    let server = mock_graphql(json!({
+        "data": { "openClaudeSessions": [
+            { "id": "s1", "taskId": "00000000-0000-0000-0000-000000000001",
+              "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Saft cadrage" },
+              "mode": "TRACKING", "label": "/home/mbt/x",
+              "startedAt": "2026-08-04T09:00:00+00:00",
+              "lastSeenAt": "2026-08-04T10:30:00+00:00",
+              "lastFlushAt": null, "endedAt": null }
+        ] }
+    }))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "sessions"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("s1"))
+        .stdout(predicate::str::contains("Saft cadrage"));
+}
+
+#[tokio::test]
+async fn session_off_persists_the_decision() {
+    let server = mock_graphql(json!({
+        "data": { "setSessionMode": {
+            "id": "s1", "taskId": null, "mode": "OFF", "label": null,
+            "startedAt": "2026-08-04T09:00:00+00:00",
+            "lastSeenAt": "2026-08-04T09:00:00+00:00",
+            "lastFlushAt": null, "endedAt": null } }
+    }))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "session", "off", "--session", "s1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not tracking"));
+}

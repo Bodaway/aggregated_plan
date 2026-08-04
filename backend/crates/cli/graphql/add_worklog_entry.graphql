@@ -1,7 +1,8 @@
-mutation AddWorklogEntry($taskId: ID!, $body: String!) {
-  addWorklogEntry(taskId: $taskId, body: $body) {
+mutation AddWorklogEntry($taskId: ID!, $body: String!, $sessionId: String) {
+  addWorklogEntry(taskId: $taskId, body: $body, sessionId: $sessionId) {
     id
     taskId
     loggedAt
+    sessionId
   }
 }
