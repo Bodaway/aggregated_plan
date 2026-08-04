@@ -4167,12 +4167,24 @@ La résolution utilise `GryzzlyCatalogRepository::find_by_gryzzly_task_id` qui r
 
 #### Architecture
 
-The end-of-day job is a background task running within the Axum server using `tokio-cron-scheduler`. It executes a daily pass (configurable hour) to automatically reconstruct the user's timesheet draft and emit a passive `TimesheetReady` alert.
+The end-of-day job is a plain long-lived tokio task inside the Axum server (**pas**
+`tokio-cron-scheduler`) : une boucle qui exécute un passage, puis attend la durée que lui dicte une
+politique pure, indéfiniment. Chaque passage reconstruit le brouillon de feuille de temps des jours
+dus et lève une alerte passive `TimesheetReady`.
 
-**Implementation location:** `api/src/jobs.rs`
+**Implementation location:** `api/src/jobs.rs` (le sommeil et les appels `tracing` — rien d'autre),
+`application/src/jobs.rs` (la politique, pure et testable).
 
-- `run_eod_scheduler(eod_deps: EodDeps)` — async function that spawns a tokio-cron-scheduler job and runs indefinitely. Called once at server startup from `main.rs`.
-- `run_eod_pass(eod_deps: EodDeps, user_id: UserId, now: DateTime<Utc>)` — the use case function (in `application::use_cases::timesheet`) that performs one reconstruction pass for a single user. Called by the scheduler job for each configured user.
+- `run_eod_scheduler(deps: EodDeps, user_id: UserId)` — boucle `run_eod_pass` → décision → `sleep`.
+  Appelée une fois au démarrage depuis `main.rs`. Le premier passage a lieu **immédiatement**, les
+  suivants après le délai décidé par la politique.
+- `run_eod_pass(...) -> Result<EodPassOutcome, AppError>` — le cas d'usage
+  (`application::use_cases::timesheet`) qui exécute un passage pour un utilisateur.
+- `application::jobs::{RetryPolicy, JobHealth, AttemptOutcome, AttemptDecision, LogEntry}` — la
+  machine à états : `JobHealth::observe(outcome, now, &policy)` consomme l'état, rend le nouvel état
+  plus un délai et, éventuellement, la ligne de journal à imprimer. Aucune I/O, aucune horloge,
+  aucun `tracing` : `now` est un paramètre, ce qui rend la courbe de repli testable sans attendre
+  l'horloge murale (12 tests unitaires dans le module).
 
 #### Configuration Keys
 
@@ -4184,13 +4196,19 @@ The end-of-day job is a background task running within the Axum server using `to
 
 #### Scheduler Behavior
 
-1. **Trigger Condition:** The scheduler checks every 60 seconds whether `now.with_timezone(&tz).hour() == auto_reconstruct_hour`. When true and sufficient time has elapsed since the last run, the pass executes.
+1. **Trigger Condition:** le passage tourne toutes les **5 minutes** (base de `RetryPolicy::end_of_day()`)
+   et interroge le watermark : ce sont `compute_target_dates` et `aplan.timesheet.last_auto_run` qui
+   décident du travail dû, pas le tick. La cadence a été relevée de 60 s à 5 min — pour une tâche de
+   fin de journée, la réactivité à la minute n'a aucune valeur et coûtait 1 440 passages par jour.
 
 2. **Watermark Logic (Idempotency):**
-   - Load `aplan.timesheet.last_auto_run` from configuration.
+   - Load `aplan.timesheet.last_auto_run` from configuration (format `%Y-%m-%d`, date locale — pas
+     un horodatage, malgré le nom historique de la clé).
    - If the watermark is on the same day as today (in local timezone), skip the pass (already ran today).
    - If the watermark is on a previous day, proceed.
-   - After a successful pass, update `aplan.timesheet.last_auto_run` to `Utc::now()`.
+   - En fin de passage, le watermark n'avance que sur le **préfixe ininterrompu** de jours
+     reconstruits. Si le rattrapage traite 06-06, 06-07, 06-08 et que 06-07 échoue, le watermark
+     s'arrête à 06-06 : passer par-dessus un jour en échec le perdrait définitivement.
 
 3. **Catch-Up Window:** If the watermark is more than 7 days old (stale), only reconstruct the last 7 days of drafts (configurable, fixed at 7 days for MVP). This prevents re-running reconstruction on very old dates.
 
@@ -4227,10 +4245,59 @@ The use case performs the following steps for the target date (today in local ti
      de `001` n'en portait que trois valeurs, si bien que cette insertion levait
      `(code: 275) CHECK constraint failed` et faisait **avorter tout le job** — à chaque passage,
      depuis la fusion de la fonctionnalité, visible uniquement dans le journal du service. Corrigé
-     par la reconstruction de table de la migration `013` (§ 7.2.2).
+     par la reconstruction de table de la migration `013` (§ 7.2.2). L'étape est en outre devenue
+     **accessoire** : son échec ne détruit plus la reconstruction (voir « Résilience » ci-dessous).
 
 5. **Update Watermark:**
-   - Save `aplan.timesheet.last_auto_run` = `Utc::now()` to configuration.
+   - `aplan.timesheet.last_auto_run` = dernière date du préfixe ininterrompu (`%Y-%m-%d`).
+
+#### Résilience : ce qui est fatal, ce qui est toléré
+
+`run_eod_pass` rend un `EodPassOutcome { processed: Vec<NaiveDate>, degraded: Vec<EodStepFailure> }`
+au lieu d'un simple `Vec<NaiveDate>`. Le passage n'est plus tout-ou-rien : il garde ce qui a réussi
+et **rapporte** le reste. Rien n'est avalé en silence — l'appelant journalise le détail de `degraded`
+(via `EodPassOutcome::degradation_signature()`, soumis à la déduplication décrite plus bas), et un
+passage dégradé compte comme un **échec** pour le repli exponentiel : ce qu'il a toléré reste cassé.
+
+| Étape (`EodStep`) | Échec | Conséquence |
+|---|---|---|
+| Lecture de configuration (`aplan.timezone`, heure de déclenchement, watermark) | **fatal** (`Err`) | Sans elles, impossible de savoir ce qui est dû : aucun travail n'est tenté. |
+| `Reconstruction` d'un jour | toléré, jour par jour | Le jour est ignoré, les **autres jours du rattrapage continuent**, et le watermark s'arrête avant ce jour pour qu'il soit réessayé. |
+| `ReadyAlert` (alerte passive) | toléré | Le brouillon déjà enregistré est conservé, le jour compte comme traité, le watermark avance. Seule l'alerte manque. |
+| `Watermark` (écriture de la clé) | toléré | Le travail persisté est conservé ; le prochain passage refera les mêmes jours (l'opération est idempotente). |
+
+Reste tout-ou-rien **à l'intérieur d'un jour** : `reconstruct_timesheet` lit worklog, commits git,
+réunions et catalogue puis écrit un brouillon en un seul enchaînement — une lecture en échec (Graph
+indisponible, dépôt git absent) perd la journée entière, pas seulement le signal manquant. C'est
+volontaire : un brouillon reconstruit à partir d'une moitié des signaux serait faux sans le dire.
+
+#### Repli exponentiel et journalisation déduplicée
+
+Le vice corrigé : un échec permanent ne faisait pas avancer le watermark, donc le passage était
+réessayé toutes les 60 s **indéfiniment**, chaque tentative imprimant un `warn` identique au
+caractère près — 61 lignes identiques en un quart d'heure, pendant trois semaines. Le signal se
+noyait dans sa propre répétition : rien ne distinguait une panne permanente d'un incident passager.
+
+`RetryPolicy::end_of_day()` : base 5 min, plafond 30 min, escalade au **3ᵉ** échec consécutif,
+rappel tous les **12** échecs.
+
+| Échecs consécutifs | Délai avant la tentative suivante | Journal |
+|---|---|---|
+| 1 | 5 min | `warn` — première occurrence |
+| 2 | 10 min | supprimé si l'erreur est identique |
+| 3 | 20 min | **`error`** — escalade |
+| 4 et au-delà | 30 min (plafond) | supprimé, puis `error` de rappel aux échecs 15, 27, 39… |
+
+- **Une erreur *différente* est journalisée immédiatement**, même en pleine série : une nouvelle
+  erreur est une information, pas une répétition.
+- La ligne escaladée porte **le compte d'échecs consécutifs, la durée de la panne**
+  (`humanize_duration` → `3w 0d`, `2d 4h`, `45m`) et le nombre de répétitions supprimées :
+  « failing for 3w 0d (4021 consecutive attempts) — it will not fix itself ».
+- Un succès remet l'état à zéro et, s'il met fin à une série, imprime **une** ligne `info`
+  « recovered » avec la durée de la panne.
+- Coût d'une panne permanente : **≈ 50 tentatives et 5 lignes** de journal par jour (mesuré par le
+  test `a_permanent_failure_costs_dozens_of_lines_a_day_not_thousands`), contre 1 440 tentatives et
+  1 440 lignes identiques avant.
 
 #### Important Guarantees
 
@@ -4238,6 +4305,8 @@ The use case performs the following steps for the target date (today in local ti
 - **Never clobbers validated/submitted drafts:** If a user has already validated or submitted a draft, the EOD pass skips that date silently.
 - **Passive alert only:** The `TimesheetReady` alert is displayed in the alerts zone of the dashboard and in the `/alerts` query. There is no OS-level push notification, no SMS, no email — only in-app visibility.
 - **Idempotent watermark:** Re-running the job on the same day (clock drift, scheduler restart) has no effect; the watermark prevents duplicate reconstruction.
+- **Jamais fatal pour le serveur :** aucune erreur du job ne remonte à `main` ; la boucle survit à
+  tout, y compris à une base en lecture seule.
 
 #### GraphQL Surface
 

@@ -1,3 +1,4 @@
+pub mod jobs;
 pub mod repositories;
 pub mod services;
 pub mod use_cases;

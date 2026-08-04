@@ -447,10 +447,70 @@ pub fn compute_target_dates(
 const EOD_CATCHUP_CAP: usize = 7;
 const DEFAULT_AUTO_RECONSTRUCT_HOUR: u32 = 18;
 
+/// A step of the end-of-day pass, named so a tolerated failure says what it cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EodStep {
+    /// Rebuilding and persisting one day's draft. Failing loses that day's work,
+    /// so the watermark must not step over it.
+    Reconstruction,
+    /// The passive TimesheetReady alert. Ancillary: failing costs the alert only.
+    ReadyAlert,
+    /// Advancing the watermark. Failing costs a redundant re-run, not the work.
+    Watermark,
+}
+
+impl std::fmt::Display for EodStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            EodStep::Reconstruction => "reconstruction",
+            EodStep::ReadyAlert => "ready-alert",
+            EodStep::Watermark => "watermark",
+        };
+        f.write_str(s)
+    }
+}
+
+/// A step that failed without costing the pass the work it had already persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EodStepFailure {
+    pub date: NaiveDate,
+    pub step: EodStep,
+    pub error: String,
+}
+
+/// What one end-of-day pass achieved, and what it had to tolerate to achieve it.
+///
+/// The pass used to be all-or-nothing: a single failing ancillary write discarded a
+/// whole reconstruction. It now keeps what succeeded and reports the rest — tolerated,
+/// never swallowed. The caller is expected to log every entry in `degraded` and to
+/// treat a degraded pass as a failed attempt for back-off purposes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EodPassOutcome {
+    /// Local dates reconstructed and persisted on this pass, ascending.
+    pub processed: Vec<NaiveDate>,
+    /// Steps that failed without aborting the pass.
+    pub degraded: Vec<EodStepFailure>,
+}
+
+impl EodPassOutcome {
+    /// A stable one-line rendering of everything that went wrong, so a caller can tell
+    /// "the same failure again" from "a new failure" without printing either twice.
+    pub fn degradation_signature(&self) -> String {
+        self.degraded
+            .iter()
+            .map(|f| format!("{}@{}: {}", f.step, f.date, f.error))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
 /// One end-of-day pass for `user_id` as of `now_utc`. Reconstructs each due local day
 /// (persisting a draft; never clobbering validated/submitted), raises/settles a
 /// TimesheetReady alert, and advances the `aplan.timesheet.last_auto_run` watermark.
-/// Returns the dates processed. NEVER submits to Gryzzly.
+/// NEVER submits to Gryzzly.
+///
+/// Only the configuration reads that decide *what is due* are fatal: past that point a
+/// failing day or a failing alert degrades the outcome instead of discarding the pass.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_eod_pass(
     worklog_repo: &dyn WorklogRepository,
@@ -464,7 +524,7 @@ pub async fn run_eod_pass(
     alert_repo: &dyn AlertRepository,
     user_id: UserId,
     now_utc: DateTime<Utc>,
-) -> Result<Vec<NaiveDate>, AppError> {
+) -> Result<EodPassOutcome, AppError> {
     let tz = resolve_tz(config_repo.get(user_id, "aplan.timezone").await?);
     let local_now = to_local(now_utc, tz);
     let local_today = local_now.date();
@@ -481,22 +541,58 @@ pub async fn run_eod_pass(
 
     let targets = compute_target_dates(last_auto_run, local_today, local_hour, trigger_hour, EOD_CATCHUP_CAP);
 
+    let mut outcome = EodPassOutcome::default();
+    // The watermark may only advance over an unbroken prefix of reconstructed days:
+    // stepping past a day that failed would drop it silently and forever.
+    let mut watermark: Option<NaiveDate> = None;
+    let mut prefix_intact = true;
+
     for date in &targets {
-        reconstruct_timesheet(
+        if let Err(e) = reconstruct_timesheet(
             worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo,
             git, draft_repo, user_id, *date,
         )
-        .await?;
-        upsert_timesheet_ready_alert(alert_repo, draft_repo, user_id, *date, now_utc).await?;
+        .await
+        {
+            // Days are independent: one bad day must not cost the others.
+            outcome.degraded.push(EodStepFailure {
+                date: *date,
+                step: EodStep::Reconstruction,
+                error: e.to_string(),
+            });
+            prefix_intact = false;
+            continue;
+        }
+        outcome.processed.push(*date);
+        if prefix_intact {
+            watermark = Some(*date);
+        }
+        // Ancillary: a rejected alert write must not discard the draft just persisted.
+        if let Err(e) =
+            upsert_timesheet_ready_alert(alert_repo, draft_repo, user_id, *date, now_utc).await
+        {
+            outcome.degraded.push(EodStepFailure {
+                date: *date,
+                step: EodStep::ReadyAlert,
+                error: e.to_string(),
+            });
+        }
     }
 
-    if let Some(max) = targets.last() {
-        config_repo
+    if let Some(max) = watermark {
+        if let Err(e) = config_repo
             .set(user_id, "aplan.timesheet.last_auto_run", &max.format("%Y-%m-%d").to_string())
-            .await?;
+            .await
+        {
+            outcome.degraded.push(EodStepFailure {
+                date: max,
+                step: EodStep::Watermark,
+                error: e.to_string(),
+            });
+        }
     }
 
-    Ok(targets)
+    Ok(outcome)
 }
 
 /// Raise a single passive TimesheetReady alert for a day with a non-empty draft (deduped),
@@ -982,6 +1078,94 @@ mod tests {
         chrono::TimeZone::with_ymd_and_hms(&Utc, y, m, d, h, 0, 0).unwrap()
     }
 
+    fn date_of(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// An alert repo that fails every read and write, the way the `alerts.alert_type`
+    /// CHECK constraint did for weeks.
+    struct BrokenAlert;
+
+    impl BrokenAlert {
+        fn boom<T>() -> Result<T, RepositoryError> {
+            Err(RepositoryError::Database("(code: 275) CHECK constraint failed: alerts".into()))
+        }
+    }
+
+    #[async_trait]
+    impl AlertRepository for BrokenAlert {
+        async fn find_by_id(&self, _id: domain::types::AlertId) -> Result<Option<Alert>, RepositoryError> {
+            Self::boom()
+        }
+        async fn find_unresolved(&self, _u: UserId) -> Result<Vec<Alert>, RepositoryError> {
+            Self::boom()
+        }
+        async fn find_by_user(&self, _u: UserId, _r: Option<bool>) -> Result<Vec<Alert>, RepositoryError> {
+            Self::boom()
+        }
+        async fn save(&self, _a: &Alert) -> Result<(), RepositoryError> {
+            Self::boom()
+        }
+        async fn save_batch(&self, _alerts: &[Alert]) -> Result<(), RepositoryError> {
+            Self::boom()
+        }
+        async fn update(&self, _a: &Alert) -> Result<(), RepositoryError> {
+            Self::boom()
+        }
+        async fn delete_resolved(&self, _u: UserId) -> Result<u64, RepositoryError> {
+            Self::boom()
+        }
+    }
+
+    /// A draft repo that refuses to persist exactly one date, to prove a mid-catch-up
+    /// failure neither aborts the pass nor lets the watermark step over the lost day.
+    struct FlakyDraft {
+        inner: MemDraft,
+        fail_on: NaiveDate,
+    }
+
+    #[async_trait]
+    impl TimesheetDraftRepository for FlakyDraft {
+        async fn upsert(&self, d: &TimesheetDraft) -> Result<(), RepositoryError> {
+            if d.date == self.fail_on {
+                return Err(RepositoryError::Database("draft upsert refused".into()));
+            }
+            self.inner.upsert(d).await
+        }
+        async fn find_by_user_and_date(
+            &self,
+            u: UserId,
+            d: NaiveDate,
+        ) -> Result<Option<TimesheetDraft>, RepositoryError> {
+            self.inner.find_by_user_and_date(u, d).await
+        }
+        async fn set_status(
+            &self,
+            u: UserId,
+            d: NaiveDate,
+            s: TimesheetStatus,
+        ) -> Result<(), RepositoryError> {
+            self.inner.set_status(u, d, s).await
+        }
+    }
+
+    /// A config repo that reads defaults but cannot write, so the watermark update fails
+    /// while everything upstream of it succeeds.
+    struct ReadOnlyConfig;
+
+    #[async_trait]
+    impl ConfigRepository for ReadOnlyConfig {
+        async fn get(&self, _u: UserId, _key: &str) -> Result<Option<String>, RepositoryError> {
+            Ok(None)
+        }
+        async fn get_all(&self, _u: UserId) -> Result<Vec<(String, String)>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn set(&self, _u: UserId, _key: &str, _value: &str) -> Result<(), RepositoryError> {
+            Err(RepositoryError::Database("configuration is read-only".into()))
+        }
+    }
+
     /// Empty-seeded Plan-1 mocks for the EOD job tests, in `run_eod_pass` arg order.
     #[allow(clippy::type_complexity)]
     fn eod_mocks() -> (MemWorklog, MemMeeting, MemTask, MemCatalog, MemMapping, MemConfig, MemGit, MemDraft) {
@@ -1346,13 +1530,14 @@ mod tests {
         // 09:00 UTC = 11:00 Paris, before the default 18:00 trigger, no watermark.
         let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
         let alert = MemAlert::default();
-        let processed = run_eod_pass(
+        let outcome = run_eod_pass(
             &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
             make_user_id(), utc(2026, 6, 8, 9),
         )
         .await
         .unwrap();
-        assert!(processed.is_empty());
+        assert!(outcome.processed.is_empty());
+        assert!(outcome.degraded.is_empty());
         assert!(alert.saved.lock().unwrap().is_empty());
     }
 
@@ -1361,13 +1546,14 @@ mod tests {
         // 20:00 UTC = 22:00 Paris, after trigger. Empty signals → draft total 0 → NO alert, but watermark advances.
         let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
         let alert = MemAlert::default();
-        let processed = run_eod_pass(
+        let outcome = run_eod_pass(
             &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
             make_user_id(), utc(2026, 6, 8, 20),
         )
         .await
         .unwrap();
-        assert_eq!(processed.len(), 1);
+        assert_eq!(outcome.processed.len(), 1);
+        assert!(outcome.degraded.is_empty(), "a clean pass reports no degradation");
         // watermark set to the local date (2026-06-08 Paris)
         assert_eq!(
             config.get(make_user_id(), "aplan.timesheet.last_auto_run").await.unwrap().as_deref(),
@@ -1375,6 +1561,83 @@ mod tests {
         );
         // empty day → no alert (total 0)
         assert!(alert.saved.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn eod_keeps_the_reconstruction_when_the_alert_step_fails() {
+        // The real incident: `alerts.alert_type` rejected `timesheet_ready`, so an
+        // ancillary write killed the whole pass — every 60s, for weeks.
+        let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
+        let alert = BrokenAlert;
+        let outcome = run_eod_pass(
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            make_user_id(), utc(2026, 6, 8, 20),
+        )
+        .await
+        .expect("an alert-table failure must not fail the whole pass");
+
+        assert_eq!(outcome.processed, vec![date_of(2026, 6, 8)], "the day was reconstructed");
+        assert!(
+            draft.find_by_user_and_date(make_user_id(), date_of(2026, 6, 8)).await.unwrap().is_some(),
+            "the persisted draft must survive the broken alert step"
+        );
+        assert_eq!(
+            config.get(make_user_id(), "aplan.timesheet.last_auto_run").await.unwrap().as_deref(),
+            Some("2026-06-08"),
+            "the watermark must advance: the day's work is done and must not be redone forever"
+        );
+        // Tolerated, never swallowed.
+        assert_eq!(outcome.degraded.len(), 1);
+        assert_eq!(outcome.degraded[0].step, EodStep::ReadyAlert);
+        assert_eq!(outcome.degraded[0].date, date_of(2026, 6, 8));
+        assert!(outcome.degraded[0].error.contains("CHECK constraint"));
+        assert!(!outcome.degradation_signature().is_empty());
+    }
+
+    #[tokio::test]
+    async fn eod_watermark_never_steps_over_a_day_that_failed() {
+        // Watermark 3 days back → catch up 06-06, 06-07, 06-08. Persisting 06-07 fails.
+        let (worklog, meeting, task, catalog, mapping, _config, git, _draft) = eod_mocks();
+        let config = MemConfig::with(&[("aplan.timesheet.last_auto_run", "2026-06-05")]);
+        let draft = FlakyDraft { inner: MemDraft::default(), fail_on: date_of(2026, 6, 7) };
+        let alert = MemAlert::default();
+
+        let outcome = run_eod_pass(
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            make_user_id(), utc(2026, 6, 8, 20),
+        )
+        .await
+        .expect("one bad day must not abort the catch-up");
+
+        assert_eq!(
+            outcome.processed,
+            vec![date_of(2026, 6, 6), date_of(2026, 6, 8)],
+            "the days that could be reconstructed were, the broken one was skipped"
+        );
+        assert_eq!(
+            config.get(make_user_id(), "aplan.timesheet.last_auto_run").await.unwrap().as_deref(),
+            Some("2026-06-06"),
+            "the watermark stops before the failed day so it is retried, not lost"
+        );
+        assert_eq!(outcome.degraded.len(), 1);
+        assert_eq!(outcome.degraded[0].step, EodStep::Reconstruction);
+        assert_eq!(outcome.degraded[0].date, date_of(2026, 6, 7));
+    }
+
+    #[tokio::test]
+    async fn eod_reports_a_watermark_write_failure_without_pretending_to_succeed() {
+        let (worklog, meeting, task, catalog, mapping, _config, git, draft) = eod_mocks();
+        let config = ReadOnlyConfig;
+        let alert = MemAlert::default();
+        let outcome = run_eod_pass(
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            make_user_id(), utc(2026, 6, 8, 20),
+        )
+        .await
+        .expect("the reconstruction still happened");
+        assert_eq!(outcome.processed, vec![date_of(2026, 6, 8)]);
+        assert_eq!(outcome.degraded.len(), 1);
+        assert_eq!(outcome.degraded[0].step, EodStep::Watermark);
     }
 
     // ── upsert_timesheet_ready_alert ────────────────────────────────────────
