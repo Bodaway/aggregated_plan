@@ -13,6 +13,7 @@ pub mod gryzzly_catalog_repository;
 pub mod timesheet_draft_repository;
 pub mod signal_mapping_repository;
 pub mod memory_repository;
+pub mod session_repository;
 
 pub use task_repository::*;
 pub use meeting_repository::*;
@@ -29,3 +30,4 @@ pub use gryzzly_catalog_repository::*;
 pub use timesheet_draft_repository::*;
 pub use signal_mapping_repository::*;
 pub use memory_repository::*;
+pub use session_repository::*;
