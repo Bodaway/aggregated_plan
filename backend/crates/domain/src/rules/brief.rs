@@ -366,15 +366,20 @@ pub fn memory_reference_width(ids: &[MemoryId]) -> usize {
     MEMORY_REF_MAX_CHARS
 }
 
-/// Turn what a reader typed back — `[m:7c1]`, `m:7c1`, `7c1`, or a full UUID —
-/// into a lowercase id prefix. `None` when there is nothing usable, so a bad
-/// token never reaches a `LIKE` pattern.
-pub fn parse_memory_reference(token: &str) -> Option<String> {
-    let trimmed = token.trim().trim_start_matches('[').trim_end_matches(']');
-    let body = trimmed
-        .strip_prefix("m:")
-        .or_else(|| trimmed.strip_prefix("M:"))
-        .unwrap_or(trimmed)
+/// Turn what a reader typed back — `[7c1]`, `7c1`, or a full UUID — into a
+/// lowercase id prefix. `None` when there is nothing usable, so a bad token never
+/// reaches a `LIKE` pattern.
+///
+/// Not memory-specific: every aggregate whose ids a human retypes needs the same
+/// parsing, and the worklog reattribution resolves entry references through it.
+/// One definition means one answer to "is this token usable" — two would drift, and
+/// the drift would show up as a reference that resolves for one verb and not for
+/// another.
+pub fn parse_id_reference(token: &str) -> Option<String> {
+    let body = token
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
         .trim()
         .to_lowercase();
     if body.is_empty() || body.len() > MEMORY_REF_MAX_CHARS {
@@ -387,6 +392,18 @@ pub fn parse_memory_reference(token: &str) -> Option<String> {
         return None;
     }
     Some(body)
+}
+
+/// Turn what a reader typed back — `[m:7c1]`, `m:7c1`, `7c1`, or a full UUID —
+/// into a lowercase id prefix. `None` when there is nothing usable, so a bad
+/// token never reaches a `LIKE` pattern.
+pub fn parse_memory_reference(token: &str) -> Option<String> {
+    let trimmed = token.trim().trim_start_matches('[').trim_end_matches(']');
+    let body = trimmed
+        .strip_prefix("m:")
+        .or_else(|| trimmed.strip_prefix("M:"))
+        .unwrap_or(trimmed);
+    parse_id_reference(body)
 }
 
 // ─── Composition ─────────────────────────────────────────────────────────────

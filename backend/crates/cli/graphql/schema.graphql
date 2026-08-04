@@ -247,6 +247,19 @@ type CombinedMutation {
 	"""
 	flushWorklogTime(taskId: ID!): FlushResultGql!
 	"""
+	Move worklog entries — and the activity time derived from them — from one
+	task to another.
+	
+	The correction a wrong attribution needs: `addWorklogEntry` can only write to
+	the task it is given, so before this existed a day recorded against the wrong
+	task stayed wrong, and flowed into the timesheet and on to billing.
+	
+	Writes nothing unless `input.confirm` is true. The preview reports the same
+	counts and the same before/after hours the write would produce, computed from
+	the same projection — one code path, so the two cannot drift.
+	"""
+	reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!
+	"""
 	Carry forward all active tasks whose planned_start is before the current
 	Monday to that Monday at 08:00 UTC. Returns the number of tasks updated.
 	"""
@@ -1083,6 +1096,70 @@ enum QuadrantGql {
 	NEITHER
 }
 
+"""
+What `reattributeWorklogEntries` is asked to move.
+
+Two selections, one at a time: the explicit entries, or the source task's
+entries over a local date window. `confirm` defaults to `false`, so the default
+call previews and writes nothing — this operation rewrites billing-relevant
+history and an accidental invocation must not be able to move a month of work.
+"""
+input ReattributeWorklogInput {
+	"""
+	The task the time is currently attributed to.
+	"""
+	fromTask: ID!
+	"""
+	The task it belongs to.
+	"""
+	toTask: ID!
+	"""
+	Entry references: full UUIDs or id prefixes. Resolved server-side, where an
+	ambiguous prefix is reported rather than guessed.
+	"""
+	entryRefs: [String!]
+	"""
+	First local day of the window (inclusive).
+	"""
+	since: NaiveDate
+	"""
+	Last local day of the window (inclusive). Defaults to `since`.
+	"""
+	until: NaiveDate
+	"""
+	Write. Absent or `false` previews.
+	"""
+	confirm: Boolean
+}
+
+"""
+Result of `reattributeWorklogEntries`.
+
+Everything a reader needs to CHECK the correction rather than trust it: what was
+selected, what actually moved, which local days had their slots rebuilt, and the
+hours on both sides before and after. `applied: false` means nothing was written.
+"""
+type ReattributionResultGql {
+	applied: Boolean!
+	selectedEntries: [ID!]!
+	"""
+	Rows that actually moved. `0` on a preview; below `selectedEntries` only if a
+	row left the source task concurrently.
+	"""
+	movedEntries: Int!
+	affectedDates: [NaiveDate!]!
+	"""
+	Closed slots of the two tasks dropped from those days.
+	"""
+	slotsDiscarded: Int!
+	"""
+	Slots written back from the entries.
+	"""
+	slotsRebuilt: Int!
+	source: TaskTimeChangeGql!
+	destination: TaskTimeChangeGql!
+}
+
 type ReconstructedDayGql {
 	date: NaiveDate!
 	status: TimesheetStatusGql!
@@ -1451,6 +1528,15 @@ enum TaskStatusGql {
 	Marks a skipped occurrence of a recurring task.
 	"""
 	CANCELLED
+}
+
+"""
+One task's hours on the affected days, before and after the correction.
+"""
+type TaskTimeChangeGql {
+	taskId: ID!
+	hoursBefore: Float!
+	hoursAfter: Float!
 }
 
 type TimesheetLineGql {

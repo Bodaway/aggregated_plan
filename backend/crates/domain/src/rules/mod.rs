@@ -6,6 +6,7 @@ pub mod dedup;
 pub mod recurrence;
 pub mod meeting;
 pub mod worklog_time;
+pub mod reattribution;
 pub mod project_mapping;
 pub mod reconstruction;
 pub mod recall;

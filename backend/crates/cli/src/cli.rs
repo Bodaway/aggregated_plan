@@ -110,6 +110,37 @@ pub enum Commands {
         #[arg(long)]
         task: Option<String>,
     },
+    /// Move logged time from one task to another: the worklog entries AND the
+    /// activity slots derived from them. The fix for a day recorded against the
+    /// wrong task — that time reaches the timesheet and the client invoice.
+    ///
+    /// Previews by default and writes only with --confirm, because it rewrites
+    /// billing-relevant history: the preview names both tasks and prints the
+    /// before/after hours, so the confirmation is informed rather than a reflex.
+    Reattribute {
+        /// Task the time is wrongly attributed to: UUID, id prefix, Jira-style key,
+        /// fuzzy title, or @current.
+        #[arg(long)]
+        from: String,
+        /// Task it belongs to: same forms.
+        #[arg(long)]
+        to: String,
+        /// One local day (YYYY-MM-DD) — the mis-attributed-day case.
+        #[arg(long, conflicts_with_all = ["since", "until", "entry"])]
+        date: Option<String>,
+        /// First local day of a range (inclusive).
+        #[arg(long, conflicts_with = "entry")]
+        since: Option<String>,
+        /// Last local day of a range (inclusive). Defaults to --since.
+        #[arg(long, requires = "since", conflicts_with = "entry")]
+        until: Option<String>,
+        /// A worklog entry to move: full UUID or id prefix. Repeat for several.
+        #[arg(long = "entry")]
+        entry: Vec<String>,
+        /// Apply the move. Without it nothing is written.
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Append a timestamped entry to the worklog of the active task (or --task TARGET).
     Log {
         /// Entry text. Variadic — multiple words are joined with spaces.
@@ -652,6 +683,144 @@ mod tests {
             "got {:?}",
             err.kind()
         );
+    }
+
+    /// The real invocation this verb exists for: a whole day on the wrong task.
+    /// It must parse WITHOUT `--confirm`, and carry `confirm: false`, or the safe
+    /// default is not a default at all.
+    #[test]
+    fn reattributing_a_day_parses_and_defaults_to_a_preview() {
+        match parse(&[
+            "aplan",
+            "reattribute",
+            "--from",
+            "b6a62457",
+            "--to",
+            "35d79540",
+            "--date",
+            "2026-08-03",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Reattribute {
+                from,
+                to,
+                date,
+                since,
+                until,
+                entry,
+                confirm,
+            } => {
+                assert_eq!(from, "b6a62457");
+                assert_eq!(to, "35d79540");
+                assert_eq!(date.as_deref(), Some("2026-08-03"));
+                assert_eq!(since, None);
+                assert_eq!(until, None);
+                assert!(entry.is_empty());
+                assert!(!confirm, "the default must write nothing");
+            }
+            other => panic!("expected Reattribute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reattributing_a_range_and_several_entries_parse() {
+        match parse(&[
+            "aplan",
+            "reattribute",
+            "--from",
+            "AP-1",
+            "--to",
+            "AP-2",
+            "--since",
+            "2026-08-01",
+            "--until",
+            "2026-08-03",
+            "--confirm",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Reattribute {
+                since,
+                until,
+                confirm,
+                ..
+            } => {
+                assert_eq!(since.as_deref(), Some("2026-08-01"));
+                assert_eq!(until.as_deref(), Some("2026-08-03"));
+                assert!(confirm);
+            }
+            other => panic!("expected Reattribute, got {other:?}"),
+        }
+        match parse(&[
+            "aplan",
+            "reattribute",
+            "--from",
+            "AP-1",
+            "--to",
+            "AP-2",
+            "--entry",
+            "7c1",
+            "--entry",
+            "9ab",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Reattribute { entry, .. } => assert_eq!(entry, vec!["7c1", "9ab"]),
+            other => panic!("expected Reattribute, got {other:?}"),
+        }
+    }
+
+    /// Two selections at once would leave it unclear what was corrected, and the
+    /// answer must come at parse time rather than after a round trip.
+    #[test]
+    fn a_day_and_an_entry_together_are_refused_at_parse_time() {
+        for extra in [
+            vec!["--date", "2026-08-03", "--entry", "7c1"],
+            vec!["--since", "2026-08-01", "--entry", "7c1"],
+            vec!["--date", "2026-08-03", "--since", "2026-08-01"],
+        ] {
+            let mut args = vec!["aplan", "reattribute", "--from", "AP-1", "--to", "AP-2"];
+            args.extend_from_slice(&extra);
+            let err = parse(&args).expect_err(&format!("{extra:?} must be refused"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{extra:?} gave {:?}",
+                err.kind()
+            );
+        }
+    }
+
+    /// `--until` alone would silently move a single day, or nothing at all.
+    #[test]
+    fn until_requires_since() {
+        let err = parse(&[
+            "aplan",
+            "reattribute",
+            "--from",
+            "AP-1",
+            "--to",
+            "AP-2",
+            "--until",
+            "2026-08-03",
+        ])
+        .expect_err("must require --since");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn reattribute_requires_both_tasks() {
+        for args in [
+            vec!["aplan", "reattribute", "--to", "AP-2", "--date", "2026-08-03"],
+            vec!["aplan", "reattribute", "--from", "AP-1", "--date", "2026-08-03"],
+        ] {
+            let err = parse(&args).expect_err("both tasks are required");
+            assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        }
     }
 
     #[test]

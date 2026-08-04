@@ -1,5 +1,16 @@
 use domain::types::*;
 
+/// Escape the LIKE metacharacters so a prefix is matched literally.
+///
+/// Shared by every repository that resolves an id prefix (memories, worklog
+/// entries): `_` matches any single character in LIKE, so an unescaped token would
+/// turn a mistyped reference into a match on an arbitrary row.
+pub fn escape_like(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 // --- Source ---
 
 pub fn source_to_str(s: Source) -> &'static str {

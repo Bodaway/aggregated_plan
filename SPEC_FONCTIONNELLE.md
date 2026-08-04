@@ -545,10 +545,11 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - **R-WL-06** : arrêter le timer d'activité avec une note rapide crée une entrée de worklog associée à la tâche courante (et n'écrit plus dans le champ `notes`).
 - **R-WL-07** : dans `TaskEditSheet`, la section Worklog apparaît juste sous le champ `notes`, avec un champ d'ajout (Ctrl/Cmd+Enter pour soumettre) et la liste des dernières entrées de la tâche.
 - **R-WL-08** : Claude Code journalise via le worklog horodaté (`aplan log "<texte>"`). Chaque appel crée une entrée distincte et atomique — ne pas regrouper plusieurs découvertes en un seul appel.
-- **R-WL-09** : le temps est enregistré en créneaux **fermés** (granularité demi-journée) dérivés des horodatages des entrées de worklog, jamais via un créneau ouvert. Les créneaux sont matérialisés à `aplan stop`, `aplan done`, ou en fin de session (hook `SessionEnd`).
+- **R-WL-09** : le temps est enregistré en créneaux **fermés** dérivés des horodatages des entrées de worklog, jamais via un créneau ouvert. Un créneau couvre une **plage de travail continue** (R-WL-13) : il va de sa première à sa dernière entrée, ne franchit jamais la frontière de demi-journée, et vaut une minute au minimum lorsqu'il est réduit à une seule entrée. Les créneaux sont matérialisés à `aplan stop`, `aplan done`, ou en fin de session (hook `SessionEnd`).
 - **R-WL-10** : le fuseau horaire `aplan.timezone` (défaut `Europe/Paris`) définit les bornes de journée et de demi-journée utilisées pour dériver les créneaux à partir des horodatages UTC des entrées.
 - **R-WL-11** : le lien session→tâche est le pointeur de configuration `aplan.active_task_id` (défini par `aplan start`, effacé par `aplan stop`/`aplan done`). Il n'existe aucun créneau d'activité ouvert associé à ce pointeur.
 - **R-WL-12** : chaque entrée porte un **filigrane de consolidation** (`consolidatedAt`, nul par défaut) qui dit si la consolidation mémoire l'a déjà lue (US-096, R59). Ce marqueur n'est ni saisi ni affiché par l'utilisateur : il n'appartient qu'au dispositif de mémoire, et le supprimer ferait re-proposer chaque soir l'intégralité du journal.
+- **R-WL-13** : **règle des 45 minutes** — un écart de **plus de 45 minutes** entre deux entrées consécutives est du temps qui **n'a pas** été passé sur la tâche. Les horodatages d'une même demi-journée sont donc découpés en autant de créneaux qu'il y a de plages de travail continues : la coupure tombe partout où deux entrées consécutives sont séparées de plus de 45 minutes, et deux entrées séparées de 45 minutes ou moins restent dans la même plage (45 min → même créneau, 45 min et 1 s → deux créneaux). Le seuil est une constante du domaine (`MAX_CONTINUATION_GAP_MINUTES`), délibérément non configurable : un seuil variable rendrait deux relevés incomparables. **Pourquoi 45 et non 15** : une entrée de journal est un **marqueur d'événement**, pas un échantillon d'activité — la consigne étant « une entrée par découverte, décision ou action », deux entrées peuvent légitimement être espacées de 40 minutes pendant une lecture de code ou une compilation, sans interruption du travail. Un seuil de 15 minutes suppose une cadence dense que le journal n'a pas et sous-compte lourdement (−73 % mesuré sur une journée réelle) ; 45 minutes exclut une vraie pause tout en tolérant une cadence clairsemée. La distribution réelle des écarts du 03/08/2026 (45 écarts) le confirme : 43 écarts ≤ 15 min, **aucun** entre 16 et 30 min, deux entre 31 et 45 min, un de 2h53. **L'invariant « un créneau par demi-journée » est donc abandonné** — une demi-journée en porte autant que le journal en justifie. Conséquence assumée : le temps dérivé d'un journal donné **diminue**, et c'est le but — l'après-midi du 03/08/2026, dont les entrées s'étalent de 14:56 à 21:34 (heure de Paris), passe de **6h38** (un créneau unique, pauses comprises) à **3h45** en deux créneaux, l'arrêt de 2h53 après 18:41 n'étant plus facturé. Le temps inactif n'est imputé à personne. La règle ne s'applique **pas** à la reconstruction de feuille de temps (US-TS), qui a son propre report d'attribution sur les fenêtres matin/après-midi.
 
 **Priorité** : Must (MVP v1)
 
@@ -567,6 +568,30 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - **R-DEL-04** : le champ est local et distinct de l'assigné Jira (`assignee`, lecture seule). La valeur survit aux synchronisations Jira/Excel, au même titre que `notes`.
 - **R-DEL-05** : quand une tâche est déléguée, le nom du délégué est affiché sur les cartes de tâche (matrice de priorités, vue Triage), préfixé d'une flèche « → ».
 - **R-DEL-06** : pour les tâches récurrentes, la délégation est par occurrence — elle n'est pas propagée au modèle de récurrence.
+
+**Priorité** : Must (MVP v1)
+
+---
+
+### 6.4quater Réattribution du temps consigné
+
+#### US-RE : Corriger la tâche à laquelle du temps a été attribué
+
+> En tant que Tech Lead, je veux déplacer les entrées de journal — et le temps qui en découle — d'une tâche vers une autre, afin de corriger une journée consignée sur la mauvaise tâche avant qu'elle n'alimente ma feuille de temps et la facturation client.
+
+`aplan log` écrit sur la tâche qu'on lui donne : sans ce verbe, une attribution erronée reste erronée. Ce n'est pas hypothétique — 37 entrées et 4h35 du 03/08/2026 ont été consignées sur « Saft : basculer le temps projet… » alors qu'elles appartenaient à « Design : couche mémoire agent ».
+
+**Critères d'acceptation :**
+- **R-RE-01** : la sélection se fait **soit** par entrées explicites (`--entry`, UUID complet ou préfixe d'identifiant, répétable), **soit** par tâche source et fenêtre de dates locales (`--date` pour un jour, `--since`/`--until` pour une plage). Les deux modes ensemble sont refusés : on ne saurait pas ce qui a été corrigé.
+- **R-RE-02** : les tâches (`--from`, `--to`) acceptent toutes les formes des autres verbes : UUID, préfixe, clé Jira, titre approché, `@current`. Un préfixe d'entrée ambigu est **signalé** (code 3), jamais deviné : deviner ici déplace la mauvaise heure de travail.
+- **R-RE-03** : **aperçu par défaut**. Sans `--confirm`, rien n'est écrit : les deux tâches sont résolues et nommées, les heures avant/après sont affichées, et l'opération s'arrête. `--confirm` applique exactement ce qui a été montré (même chemin de code, donc aucune dérive possible entre l'aperçu et l'écriture).
+- **R-RE-04** : les créneaux d'activité sont **redérivés**, pas repointés. Ils sont une projection des horodatages du journal (un créneau par plage de travail continue, jamais à cheval sur deux demi-journées locales — R-WL-13) : la correction supprime la projection des deux tâches **dans les seules demi-journées** où tombe une entrée déplacée, puis la reconstruit depuis les entrées. Un déplacement partiel devant re-borner les deux côtés, repointer `task_id` attribuerait à la destination du temps qui n'a pas bougé.
+- **R-RE-05** : la correction ne touche **jamais** les créneaux d'une troisième tâche sur la même demi-journée, ni la matinée quand seul l'après-midi bouge, ni un créneau **ouvert** (minuteur en cours). Suppression et reconstruction portent sur le même ensemble de demi-journées, et la suppression emporte **tous** les créneaux fermés des deux tâches dans ces demi-journées, ce qui interdit le double comptage : sans elle, une destination qui travaillait déjà cette matinée-là conserverait son créneau **en plus** de celui reconstruit.
+- **R-RE-06** : le total des deux tâches sur les demi-journées touchées peut légitimement changer, et c'est **signalé** : (a) un déplacement partiel re-borne les deux côtés ; (b) une demi-journée portant des créneaux que le journal ne justifie pas (plusieurs matérialisations partielles, ou une matérialisation antérieure à la règle des 45 minutes) est ramenée à ce que les entrées projettent aujourd'hui. L'aperçu montre ce changement avant écriture.
+- **R-RE-07** : le compte rendu indique ce qui a bougé (entrées sélectionnées, entrées effectivement déplacées, dates touchées, créneaux supprimés et reconstruits) et les heures avant/après **par tâche**, afin que la correction soit vérifiable et non pas crue sur parole.
+- **R-RE-08** : sont refusés sans rien écrire, avec le code de sortie 4 : source et destination identiques, entrée n'appartenant pas à la tâche source annoncée, sélection vide, sélection atteignant le plafond de page (1 000 entrées — à découper en plusieurs passes plutôt que tronquée en silence).
+- **R-RE-09** : le filigrane de consolidation (`consolidatedAt`) n'est **pas** remis à zéro : l'attribution d'une entrée et le fait que la consolidation l'ait lue sont deux questions distinctes.
+- **R-RE-10** : après application, la feuille de temps du jour a été reconstruite **avant** la correction : le compte rendu invite à relancer `aplan timesheet --date <jour>`.
 
 **Priorité** : Must (MVP v1)
 
@@ -1283,6 +1308,7 @@ garde de joignabilité rende une panne visible au lieu d'être la panne.
 | **R21** | Quand l'utilisateur change de tâche, le créneau précédent est automatiquement fermé (heure de fin = maintenant). |
 | **R22** | Les créneaux sans tâche déclarée sont marqués comme "non renseigné" dans le journal. |
 | **R23** | L'utilisateur peut modifier le journal a posteriori (corriger, ajouter, supprimer des créneaux). |
+| **R23b** | **Réattribution** : déplacer du temps d'une tâche à une autre se fait par les entrées de journal, jamais par les créneaux (US-RE). Les créneaux étant une projection des horodatages des entrées, ils sont supprimés puis redérivés dans les seules demi-journées concernées, pour les deux tâches uniquement. L'opération est en aperçu par défaut et n'écrit qu'avec confirmation explicite : elle réécrit un historique qui alimente la facturation. |
 | **R28** | **Ordre des tâches dans le sélecteur du minuteur d'activité** : les tâches dont `plannedStart` OU `deadline` correspond à aujourd'hui (selon le fuseau horaire configuré) sont remontées en tête de liste. Aucune tâche n'est filtrée ou masquée. À l'intérieur du groupe « du jour », le tri secondaire est par urgence décroissante puis impact décroissant. Les tâches hors du jour sont triées après ce groupe, selon le tri habituel par priorité. |
 
 ### 7.7 Configuration du fichier Excel

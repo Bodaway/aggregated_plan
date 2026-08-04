@@ -95,6 +95,53 @@ pub trait WorklogRepository: Send + Sync {
         ))
     }
 
+    /// Entries whose id starts with `prefix`, newest first, at most `limit`.
+    ///
+    /// Mirrors `MemoryRepository::find_by_id_prefix`, and for the same reason: the
+    /// ids a reader sees are the ones `aplan journal` and `aplan consolidate
+    /// pending` print, and a correction verb that demanded a full 36-character UUID
+    /// would be a copy-paste exercise on the one operation nobody wants to mistype.
+    ///
+    /// A prefix that matches several entries must come back as several rows — the
+    /// caller reports the collision rather than picking, because picking here means
+    /// moving the wrong hour of work.
+    ///
+    /// Loud default, same rationale as the rest of this trait: a double that
+    /// silently found nothing would make a reattribution look like "that entry does
+    /// not exist".
+    async fn find_by_id_prefix(
+        &self,
+        _user_id: UserId,
+        _prefix: &str,
+        _limit: u32,
+    ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+        Err(RepositoryError::Database(
+            "find_by_id_prefix is not implemented by this repository".into(),
+        ))
+    }
+
+    /// Re-point entries at another task. Returns how many rows moved.
+    ///
+    /// `from_task` is part of the WHERE, not just of the caller's intent: an id list
+    /// assembled from a stale read must not be able to pull an entry off a task the
+    /// operator never named. Rows that no longer belong to `from_task` are left
+    /// alone, and the count says so.
+    ///
+    /// This rewrites billing-relevant history, so it is one statement per call and
+    /// the caller repairs the derived `activity_slots` afterwards.
+    async fn reassign_task(
+        &self,
+        _user_id: UserId,
+        _ids: &[WorklogEntryId],
+        _from_task: TaskId,
+        _to_task: TaskId,
+        _now: DateTime<Utc>,
+    ) -> Result<u64, RepositoryError> {
+        Err(RepositoryError::Database(
+            "reassign_task is not implemented by this repository".into(),
+        ))
+    }
+
     /// Stamp `consolidated_at` on the given entries. Returns how many rows moved.
     ///
     /// Only rows that belong to `user_id` **and** are still unmarked are touched:

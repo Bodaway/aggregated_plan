@@ -1,5 +1,5 @@
 use chrono::{DateTime, TimeZone, Utc};
-use domain::rules::worklog_time::derive_time_blocks;
+use domain::rules::worklog_time::{derive_time_blocks, MIN_BLOCK_MINUTES};
 use domain::types::*;
 use uuid::Uuid;
 
@@ -85,8 +85,28 @@ pub struct FlushOutcome {
 
 const DEFAULT_TZ: &str = "Europe/Paris";
 
+/// The timezone the half-day projection is expressed in.
+///
+/// Shared rather than inlined: the flush writes slots and the reattribution repair
+/// rebuilds them, and two readings of `aplan.timezone` that could disagree would put
+/// the same worklog entry on two different local days.
+pub async fn user_timezone(
+    config_repo: &dyn ConfigRepository,
+    user_id: UserId,
+) -> Result<chrono_tz::Tz, AppError> {
+    Ok(config_repo
+        .get(user_id, "aplan.timezone")
+        .await?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| DEFAULT_TZ.parse().expect("default tz parses")))
+}
+
 /// Materialize worklog entries logged in `[from, now]` for `task_id` into closed
-/// activity slots, one per (local day, half-day). Returns new watermark + count.
+/// activity slots — one per stretch of work the entries document, as
+/// [`derive_time_blocks`] cuts them: a half-day yields several slots when the entries
+/// stopped for more than
+/// [`MAX_CONTINUATION_GAP_MINUTES`](domain::rules::worklog_time::MAX_CONTINUATION_GAP_MINUTES).
+/// Returns new watermark + count.
 pub async fn materialize_worklog_time(
     worklog_repo: &dyn WorklogRepository,
     activity_repo: &dyn ActivitySlotRepository,
@@ -96,11 +116,7 @@ pub async fn materialize_worklog_time(
     from: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<FlushOutcome, AppError> {
-    let tz: chrono_tz::Tz = config_repo
-        .get(user_id, "aplan.timezone")
-        .await?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| DEFAULT_TZ.parse().expect("default tz parses"));
+    let tz = user_timezone(config_repo, user_id).await?;
 
     let filter = WorklogFilter {
         task_ids: Some(vec![task_id]),
@@ -126,7 +142,9 @@ pub async fn materialize_worklog_time(
         let start_utc = local_to_utc[&block.start];
         let mut end_utc = local_to_utc[&block.end];
         if end_utc <= start_utc {
-            end_utc = start_utc + chrono::Duration::minutes(1);
+            // The domain owns how long a single-timestamp block lasts, so the flush
+            // and the reattribution repair persist the same duration for it.
+            end_utc = start_utc + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
         }
         let slot = ActivitySlot {
             id: Uuid::new_v4(),
@@ -245,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn materialize_writes_one_local_slot_per_half_day() {
+    async fn materialize_writes_one_slot_per_continuous_stretch() {
         use chrono::TimeZone;
         let wlog = FakeRepo::default();
         let acts = FakeActivityRepo::default();
@@ -255,26 +273,20 @@ mod tests {
         let tid = Uuid::new_v4();
         let from = Utc.with_ymd_and_hms(2026, 6, 8, 0, 0, 0).unwrap();
         let to = Utc.with_ymd_and_hms(2026, 6, 8, 23, 0, 0).unwrap();
-        add_worklog_entry(
-            &wlog,
-            uid,
-            tid,
-            "a".into(),
-            Some(Utc.with_ymd_and_hms(2026, 6, 8, 8, 0, 0).unwrap()),
-            from,
-        )
-        .await
-        .unwrap();
-        add_worklog_entry(
-            &wlog,
-            uid,
-            tid,
-            "b".into(),
-            Some(Utc.with_ymd_and_hms(2026, 6, 8, 9, 30, 0).unwrap()),
-            from,
-        )
-        .await
-        .unwrap();
+        // 08:00 and 08:15 UTC = 10:00 and 10:15 Paris: fifteen minutes apart, so one
+        // uninterrupted stretch of the same local morning.
+        for (body, at) in [("a", (8, 0)), ("b", (8, 15))] {
+            add_worklog_entry(
+                &wlog,
+                uid,
+                tid,
+                body.into(),
+                Some(Utc.with_ymd_and_hms(2026, 6, 8, at.0, at.1, 0).unwrap()),
+                from,
+            )
+            .await
+            .unwrap();
+        }
 
         let result =
             materialize_worklog_time(&wlog, &acts, &cfg, uid, tid, from, to).await.unwrap();
@@ -287,6 +299,48 @@ mod tests {
         assert!(slots[0].end_time.unwrap() > slots[0].start_time);
         assert_eq!(result.slots_written, 1);
         assert_eq!(result.active_since, to);
+    }
+
+    /// The gap rule reaches the persistence path: a half-day whose entries stop for
+    /// more than [`domain::rules::worklog_time::MAX_CONTINUATION_GAP_MINUTES`] becomes
+    /// two slots, and the idle stretch between them is charged to nobody.
+    #[tokio::test]
+    async fn materialize_writes_several_slots_when_the_work_stopped() {
+        use chrono::TimeZone;
+        let wlog = FakeRepo::default();
+        let acts = FakeActivityRepo::default();
+        let cfg = FakeConfigRepo::default();
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let uid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let from = Utc.with_ymd_and_hms(2026, 6, 8, 0, 0, 0).unwrap();
+        let to = Utc.with_ymd_and_hms(2026, 6, 8, 23, 0, 0).unwrap();
+        // Local 10:00, 10:15 — then nothing until 11:30.
+        for (body, at) in [("a", (8, 0)), ("b", (8, 15)), ("c", (9, 30))] {
+            add_worklog_entry(
+                &wlog,
+                uid,
+                tid,
+                body.into(),
+                Some(Utc.with_ymd_and_hms(2026, 6, 8, at.0, at.1, 0).unwrap()),
+                from,
+            )
+            .await
+            .unwrap();
+        }
+
+        let result =
+            materialize_worklog_time(&wlog, &acts, &cfg, uid, tid, from, to).await.unwrap();
+
+        let slots = acts.slots.lock().unwrap();
+        assert_eq!(result.slots_written, 2);
+        assert_eq!(slots.len(), 2, "the 75-minute pause is not worked time");
+        assert!(slots.iter().all(|s| s.half_day == HalfDay::Morning));
+        let charged: i64 = slots
+            .iter()
+            .filter_map(|s| s.end_time.map(|end| (end - s.start_time).num_minutes()))
+            .sum();
+        assert_eq!(charged, 15 + MIN_BLOCK_MINUTES, "15 min worked, then a lone entry");
     }
 
     #[tokio::test]

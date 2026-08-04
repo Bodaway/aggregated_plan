@@ -5,6 +5,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::TaskRepository;
 use application::use_cases::consolidation::MarkConsolidatedOutcome;
+use application::use_cases::reattribution::{ReattributionOutcome, TaskTimeChange};
 use application::use_cases::worklog::FlushOutcome;
 use domain::types::WorklogEntry;
 
@@ -104,6 +105,87 @@ impl From<MarkConsolidatedOutcome> for MarkConsolidatedResultGql {
 pub struct ConsolidationRunGql {
     pub key: String,
     pub ran_at: DateTime<Utc>,
+}
+
+/// What `reattributeWorklogEntries` is asked to move.
+///
+/// Two selections, one at a time: the explicit entries, or the source task's
+/// entries over a local date window. `confirm` defaults to `false`, so the default
+/// call previews and writes nothing — this operation rewrites billing-relevant
+/// history and an accidental invocation must not be able to move a month of work.
+#[derive(InputObject, Debug)]
+pub struct ReattributeWorklogInput {
+    /// The task the time is currently attributed to.
+    pub from_task: ID,
+    /// The task it belongs to.
+    pub to_task: ID,
+    /// Entry references: full UUIDs or id prefixes. Resolved server-side, where an
+    /// ambiguous prefix is reported rather than guessed.
+    pub entry_refs: Option<Vec<String>>,
+    /// First local day of the window (inclusive).
+    pub since: Option<NaiveDate>,
+    /// Last local day of the window (inclusive). Defaults to `since`.
+    pub until: Option<NaiveDate>,
+    /// Write. Absent or `false` previews.
+    pub confirm: Option<bool>,
+}
+
+/// One task's hours on the affected days, before and after the correction.
+#[derive(SimpleObject)]
+pub struct TaskTimeChangeGql {
+    pub task_id: ID,
+    pub hours_before: f64,
+    pub hours_after: f64,
+}
+
+impl From<TaskTimeChange> for TaskTimeChangeGql {
+    fn from(change: TaskTimeChange) -> Self {
+        Self {
+            task_id: ID(change.task_id.to_string()),
+            hours_before: change.hours_before,
+            hours_after: change.hours_after,
+        }
+    }
+}
+
+/// Result of `reattributeWorklogEntries`.
+///
+/// Everything a reader needs to CHECK the correction rather than trust it: what was
+/// selected, what actually moved, which local days had their slots rebuilt, and the
+/// hours on both sides before and after. `applied: false` means nothing was written.
+#[derive(SimpleObject)]
+pub struct ReattributionResultGql {
+    pub applied: bool,
+    pub selected_entries: Vec<ID>,
+    /// Rows that actually moved. `0` on a preview; below `selectedEntries` only if a
+    /// row left the source task concurrently.
+    pub moved_entries: i32,
+    pub affected_dates: Vec<NaiveDate>,
+    /// Closed slots of the two tasks dropped from those days.
+    pub slots_discarded: i32,
+    /// Slots written back from the entries.
+    pub slots_rebuilt: i32,
+    pub source: TaskTimeChangeGql,
+    pub destination: TaskTimeChangeGql,
+}
+
+impl From<ReattributionOutcome> for ReattributionResultGql {
+    fn from(outcome: ReattributionOutcome) -> Self {
+        Self {
+            applied: outcome.applied,
+            selected_entries: outcome
+                .selected_entries
+                .iter()
+                .map(|id| ID(id.to_string()))
+                .collect(),
+            moved_entries: outcome.moved_entries as i32,
+            affected_dates: outcome.affected_dates,
+            slots_discarded: outcome.slots_discarded as i32,
+            slots_rebuilt: outcome.slots_rebuilt as i32,
+            source: outcome.source.into(),
+            destination: outcome.destination.into(),
+        }
+    }
 }
 
 /// Filter input for `worklogEntries`.

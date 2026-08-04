@@ -12,6 +12,8 @@ use application::services::{MemoryRetriever, RecallQuery};
 use domain::rules::recall::{rank, ScoredMemory};
 use domain::types::*;
 
+use super::conversions::escape_like;
+
 /// How many FTS candidates are pulled per requested result before the domain
 /// scorer re-ranks them. BM25 alone is not the final order — entity match and
 /// recency can promote a row — so the SQL layer must hand up more than `limit`.
@@ -250,13 +252,6 @@ async fn delete_fts(
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
     Ok(())
-}
-
-/// Escape the LIKE metacharacters so a prefix is matched literally.
-fn escape_like(raw: &str) -> String {
-    raw.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
 }
 
 #[async_trait]

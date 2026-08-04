@@ -296,43 +296,82 @@ impl MeetingRepository for StubMeetingRepository {
     }
 }
 
-struct StubActivitySlotRepository;
+/// Activity slots kept in memory rather than discarded, so a resolver that reads
+/// back what it wrote — the reattribution repair does, to report measured hours —
+/// can be tested at all.
+#[derive(Default)]
+struct InMemoryActivitySlotRepository {
+    slots: Mutex<Vec<ActivitySlot>>,
+}
+
 #[async_trait]
-impl ActivitySlotRepository for StubActivitySlotRepository {
+impl ActivitySlotRepository for InMemoryActivitySlotRepository {
     async fn find_by_id(
         &self,
-        _id: ActivitySlotId,
+        id: ActivitySlotId,
     ) -> Result<Option<ActivitySlot>, RepositoryError> {
-        Ok(None)
+        Ok(self
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.id == id)
+            .cloned())
     }
     async fn find_by_user_and_date(
         &self,
-        _user_id: UserId,
-        _date: NaiveDate,
+        user_id: UserId,
+        date: NaiveDate,
     ) -> Result<Vec<ActivitySlot>, RepositoryError> {
-        Ok(vec![])
+        Ok(self
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.user_id == user_id && s.date == date)
+            .cloned()
+            .collect())
     }
     async fn find_by_user_and_date_range(
         &self,
-        _user_id: UserId,
-        _start: NaiveDate,
-        _end: NaiveDate,
+        user_id: UserId,
+        start: NaiveDate,
+        end: NaiveDate,
     ) -> Result<Vec<ActivitySlot>, RepositoryError> {
-        Ok(vec![])
+        Ok(self
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.user_id == user_id && s.date >= start && s.date <= end)
+            .cloned()
+            .collect())
     }
     async fn find_active(
         &self,
-        _user_id: UserId,
+        user_id: UserId,
     ) -> Result<Option<ActivitySlot>, RepositoryError> {
-        Ok(None)
+        Ok(self
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.user_id == user_id && s.end_time.is_none())
+            .cloned())
     }
-    async fn save(&self, _slot: &ActivitySlot) -> Result<(), RepositoryError> {
+    async fn save(&self, slot: &ActivitySlot) -> Result<(), RepositoryError> {
+        self.slots.lock().unwrap().push(slot.clone());
         Ok(())
     }
-    async fn update(&self, _slot: &ActivitySlot) -> Result<(), RepositoryError> {
+    async fn update(&self, slot: &ActivitySlot) -> Result<(), RepositoryError> {
+        let mut slots = self.slots.lock().unwrap();
+        if let Some(existing) = slots.iter_mut().find(|s| s.id == slot.id) {
+            *existing = slot.clone();
+        }
         Ok(())
     }
-    async fn delete(&self, _id: ActivitySlotId) -> Result<(), RepositoryError> {
+    async fn delete(&self, id: ActivitySlotId) -> Result<(), RepositoryError> {
+        self.slots.lock().unwrap().retain(|s| s.id != id);
         Ok(())
     }
 }
@@ -527,6 +566,40 @@ impl application::repositories::WorklogRepository for InMemoryWorklogRepository 
         _offset: u32,
     ) -> Result<Vec<domain::types::WorklogEntry>, RepositoryError> {
         Ok(vec![])
+    }
+    async fn find_by_id_prefix(
+        &self,
+        user_id: UserId,
+        prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<domain::types::WorklogEntry>, RepositoryError> {
+        let entries = self.entries.lock().unwrap();
+        let mut out: Vec<domain::types::WorklogEntry> = entries
+            .iter()
+            .filter(|e| e.user_id == user_id && e.id.to_string().starts_with(prefix))
+            .cloned()
+            .collect();
+        out.truncate(limit.max(1) as usize);
+        Ok(out)
+    }
+    async fn reassign_task(
+        &self,
+        user_id: UserId,
+        ids: &[domain::types::WorklogEntryId],
+        from_task: TaskId,
+        to_task: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, RepositoryError> {
+        let mut entries = self.entries.lock().unwrap();
+        let mut moved = 0u64;
+        for entry in entries.iter_mut() {
+            if entry.user_id == user_id && entry.task_id == from_task && ids.contains(&entry.id) {
+                entry.task_id = to_task;
+                entry.updated_at = now;
+                moved += 1;
+            }
+        }
+        Ok(moved)
     }
 }
 
@@ -986,7 +1059,8 @@ fn build_test_schema_with_memory(
 
     let meeting_repo: Arc<dyn MeetingRepository> = Arc::new(StubMeetingRepository);
     let project_repo: Arc<dyn ProjectRepository> = Arc::new(InMemoryProjectRepository::new());
-    let activity_repo: Arc<dyn ActivitySlotRepository> = Arc::new(StubActivitySlotRepository);
+    let activity_repo: Arc<dyn ActivitySlotRepository> =
+        Arc::new(InMemoryActivitySlotRepository::default());
     let alert_repo: Arc<dyn AlertRepository> = Arc::new(StubAlertRepository);
     let tag_repo: Arc<dyn TagRepository> = Arc::new(InMemoryTagRepository::new());
     let task_link_repo: Arc<dyn TaskLinkRepository> = Arc::new(StubTaskLinkRepository);
@@ -2282,6 +2356,215 @@ async fn flush_worklog_time_materializes_morning_slot() {
     assert!(
         flush["activeSince"].as_str().is_some(),
         "activeSince should be a datetime string"
+    );
+}
+
+// ─── Reattribution Tests ───
+
+/// Seed two tasks and a local morning of worklog entries on the first one, then
+/// flush so the day carries the slots a real mis-attribution would have left.
+async fn seed_a_misattributed_morning(schema: &TestSchema) -> (String, String) {
+    let mut ids = Vec::new();
+    for title in ["Wrong task", "Right task"] {
+        let created = schema
+            .execute(format!(
+                r#"mutation {{ createTask(input: {{ title: "{title}" }}) {{ id }} }}"#
+            ))
+            .await;
+        assert!(created.errors.is_empty(), "create: {:?}", created.errors);
+        ids.push(
+            created.data.into_json().unwrap()["createTask"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let (wrong, right) = (ids[0].clone(), ids[1].clone());
+
+    // 07:00 and 07:15 UTC = 09:00 and 09:15 Paris — one continuous local morning
+    // stretch, hence one slot worth a quarter of an hour.
+    for logged_at in ["2026-08-03T07:00:00Z", "2026-08-03T07:15:00Z"] {
+        let seed = schema
+            .execute(format!(
+                r#"mutation {{ addWorklogEntry(taskId: "{wrong}", body: "work", loggedAt: "{logged_at}") {{ id }} }}"#
+            ))
+            .await;
+        assert!(seed.errors.is_empty(), "seed: {:?}", seed.errors);
+    }
+    let flush = schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{wrong}") {{ slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(flush.errors.is_empty(), "flush: {:?}", flush.errors);
+
+    (wrong, right)
+}
+
+const REATTRIBUTION_FIELDS: &str = "applied selectedEntries movedEntries affectedDates \
+     slotsDiscarded slotsRebuilt source { taskId hoursBefore hoursAfter } \
+     destination { taskId hoursBefore hoursAfter }";
+
+/// The default call previews: this verb rewrites billing history, so writing must be
+/// something the caller asked for in as many words.
+#[tokio::test]
+async fn reattributing_without_confirm_previews_and_writes_nothing() {
+    let schema = build_test_schema();
+    let (wrong, right) = seed_a_misattributed_morning(&schema).await;
+
+    let result = schema
+        .execute(format!(
+            r#"mutation {{ reattributeWorklogEntries(input: {{ fromTask: "{wrong}", toTask: "{right}", since: "2026-08-03" }}) {{ {REATTRIBUTION_FIELDS} }} }}"#
+        ))
+        .await;
+    assert!(result.errors.is_empty(), "preview: {:?}", result.errors);
+    let out = result.data.into_json().unwrap()["reattributeWorklogEntries"].clone();
+
+    assert_eq!(out["applied"], false);
+    assert_eq!(out["movedEntries"], 0);
+    assert_eq!(out["selectedEntries"].as_array().unwrap().len(), 2);
+    assert_eq!(out["affectedDates"], serde_json::json!(["2026-08-03"]));
+    assert_eq!(out["source"]["hoursBefore"], 0.25);
+    assert_eq!(out["source"]["hoursAfter"], 0.0);
+    assert_eq!(out["destination"]["hoursAfter"], 0.25);
+
+    // And the entries are still where they were.
+    let still = schema
+        .execute(format!(
+            r#"{{ worklogEntries(filter: {{ taskIds: ["{wrong}"], limit: 10 }}) {{ id }} }}"#
+        ))
+        .await;
+    assert_eq!(
+        still.data.into_json().unwrap()["worklogEntries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_confirmed_reattribution_moves_the_day_and_its_hours() {
+    let schema = build_test_schema();
+    let (wrong, right) = seed_a_misattributed_morning(&schema).await;
+
+    let result = schema
+        .execute(format!(
+            r#"mutation {{ reattributeWorklogEntries(input: {{ fromTask: "{wrong}", toTask: "{right}", since: "2026-08-03", confirm: true }}) {{ {REATTRIBUTION_FIELDS} }} }}"#
+        ))
+        .await;
+    assert!(result.errors.is_empty(), "apply: {:?}", result.errors);
+    let out = result.data.into_json().unwrap()["reattributeWorklogEntries"].clone();
+
+    assert_eq!(out["applied"], true);
+    assert_eq!(out["movedEntries"], 2);
+    assert_eq!(out["slotsDiscarded"], 1);
+    assert_eq!(out["slotsRebuilt"], 1, "one stretch of work, one slot");
+    assert_eq!(out["source"]["hoursAfter"], 0.0);
+    assert_eq!(out["destination"]["hoursAfter"], 0.25);
+
+    let moved = schema
+        .execute(format!(
+            r#"{{ worklogEntries(filter: {{ taskIds: ["{right}"], limit: 10 }}) {{ id }} }}"#
+        ))
+        .await;
+    assert_eq!(
+        moved.data.into_json().unwrap()["worklogEntries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn reattributing_a_task_onto_itself_is_refused() {
+    let schema = build_test_schema();
+    let (wrong, _right) = seed_a_misattributed_morning(&schema).await;
+
+    let result = schema
+        .execute(format!(
+            r#"mutation {{ reattributeWorklogEntries(input: {{ fromTask: "{wrong}", toTask: "{wrong}", since: "2026-08-03", confirm: true }}) {{ applied }} }}"#
+        ))
+        .await;
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("same task"),
+        "expected a refusal naming the mistake, got {message:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_day_with_no_entries_is_refused_rather_than_reported_as_done() {
+    let schema = build_test_schema();
+    let (wrong, right) = seed_a_misattributed_morning(&schema).await;
+
+    let result = schema
+        .execute(format!(
+            r#"mutation {{ reattributeWorklogEntries(input: {{ fromTask: "{wrong}", toTask: "{right}", since: "2026-07-01", confirm: true }}) {{ applied }} }}"#
+        ))
+        .await;
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("nothing to move"),
+        "expected an empty-selection refusal, got {message:?}"
+    );
+}
+
+/// An entry reference is resolved server-side, by prefix, so the three characters a
+/// journal prints are enough — and an unknown one is a miss, not a silent no-op.
+#[tokio::test]
+async fn an_entry_reference_selects_exactly_that_entry() {
+    let schema = build_test_schema();
+    let (wrong, right) = seed_a_misattributed_morning(&schema).await;
+
+    let listed = schema
+        .execute(format!(
+            r#"{{ worklogEntries(filter: {{ taskIds: ["{wrong}"], limit: 10 }}) {{ id loggedAt }} }}"#
+        ))
+        .await;
+    let entries = listed.data.into_json().unwrap()["worklogEntries"].clone();
+    let first = entries[0]["id"].as_str().unwrap().to_string();
+    let prefix: String = first.chars().take(8).collect();
+
+    let result = schema
+        .execute(format!(
+            r#"mutation {{ reattributeWorklogEntries(input: {{ fromTask: "{wrong}", toTask: "{right}", entryRefs: ["{prefix}"], confirm: true }}) {{ {REATTRIBUTION_FIELDS} }} }}"#
+        ))
+        .await;
+    assert!(result.errors.is_empty(), "apply: {:?}", result.errors);
+    let out = result.data.into_json().unwrap()["reattributeWorklogEntries"].clone();
+    assert_eq!(out["selectedEntries"], serde_json::json!([first]));
+    assert_eq!(out["movedEntries"], 1);
+}
+
+#[tokio::test]
+async fn an_unknown_entry_reference_is_reported_as_not_found() {
+    let schema = build_test_schema();
+    let (wrong, right) = seed_a_misattributed_morning(&schema).await;
+
+    let result = schema
+        .execute(format!(
+            r#"mutation {{ reattributeWorklogEntries(input: {{ fromTask: "{wrong}", toTask: "{right}", entryRefs: ["{}"], confirm: true }}) {{ applied }} }}"#,
+            Uuid::new_v4()
+        ))
+        .await;
+    let message = result
+        .errors
+        .first()
+        .map(|e| e.message.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("Not found:"),
+        "the CLI maps this prefix to exit 2, got {message:?}"
     );
 }
 

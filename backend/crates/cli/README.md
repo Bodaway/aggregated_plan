@@ -48,6 +48,68 @@ aplan config get
 aplan config set general.working_hours 8
 ```
 
+## How the time is derived
+
+`aplan start`/`stop`/`done` open no timer: the time comes from the timestamps of the
+worklog entries, materialized into closed activity slots by `aplan flush <task>` (and by
+`stop`, `done` and the `SessionEnd` hook).
+
+**The 45-minute rule.** A gap of more than forty-five minutes between two consecutive
+entries is time that was *not* spent on the task. The entries of a half-day are
+therefore cut into as many slots as there were continuous stretches of work: entries
+forty-five minutes apart or less stay in the same slot, a longer pause starts a new one,
+and the idle stretch in between is charged to nobody. A slot never straddles the
+morning/afternoon boundary, and a stretch reduced to a single entry lasts one minute.
+
+Forty-five and not fifteen because an entry is an *event marker*, not an activity
+sample: at one entry per finding, decision or action, forty minutes can pass during a
+code read or a build wait without the work stopping.
+
+Practical consequence: a day whose entries are spread thin is worth less than the span
+from its first entry to its last. That is the point — but it means `aplan journal` and
+the activity report show the stretches, not the span.
+
+## Correcting an attribution
+
+`aplan log` writes to the task it is given, so a day logged against the wrong task
+stays wrong — and that time reaches the timesheet and the client invoice.
+`aplan reattribute` moves the entries **and** the activity slots derived from them.
+
+```bash
+aplan reattribute --from <wrong> --to <right> --date 2026-08-03            # preview
+aplan reattribute --from <wrong> --to <right> --date 2026-08-03 --confirm  # apply
+aplan reattribute --from <wrong> --to <right> --since 2026-08-01 --until 2026-08-03
+aplan reattribute --from <wrong> --to <right> --entry 7c1 --entry 9ab      # single entries
+```
+
+**It previews by default.** Without `--confirm` nothing is written: it resolves both
+tasks, prints their titles and the before/after hours, and stops. `--confirm` then
+applies exactly what was shown — the two run through one code path, so the preview
+cannot drift from the write.
+
+`--from`/`--to` take every form a TASK argument takes (see below). `--entry` takes a
+full UUID or an id prefix; an ambiguous prefix exits 3 rather than moving the wrong
+hour of work.
+
+Slots are **re-derived**, not re-pointed: they are a projection of worklog timestamps
+(one slot per continuous stretch of work — see the 45-minute rule above),
+so the correction drops the projection of the two tasks in the half-days a moved entry
+falls in, and rebuilds it from what the entries now say. Consequences worth knowing:
+
+- A third task working the same half-day is never touched, and a morning is left
+  alone when only the afternoon moved.
+- A **partial** move re-spans both sides, so the pair's total can change.
+- A half-day whose slots the worklog does not account for — several partial flushes
+  of the same half-day, a flush whose entries were later edited, or a flush that
+  predates the 45-minute rule — is rebuilt from the entries. The output says so; check
+  the totals in the preview before confirming.
+- A running (open) slot is never deleted.
+
+Refusals: same source and destination, an entry that belongs to another task, an
+empty selection and a selection at the 1 000-entry page cap all exit 4 and write
+nothing. After applying, re-run `aplan timesheet --date <day>`: the draft was
+reconstructed before the correction.
+
 ## Semantic memory
 
 ```bash
@@ -109,10 +171,13 @@ Default: terse human output, one line per action.
 - `1` generic error (network, GraphQL, parse)
 - `2` not found
 - `3` ambiguous lookup (more than one fuzzy match)
-- `4` precondition failed — `aplan note` with no current task; and on the memory
+- `4` precondition failed — `aplan note` with no current task; on the memory
   verbs, a state the store refuses to leave: a candidate already active or
   rejected, a merge target that is not active, an already-invalidated memory, a
-  supersession cycle, a query with nothing searchable in it.
+  supersession cycle, a query with nothing searchable in it; and on
+  `aplan reattribute`, a selection it refuses to act on: same source and
+  destination, an entry belonging to another task, nothing selected, nothing
+  matched, or a window at the page cap.
 
 `1` versus `4` is load-bearing for automated callers: `4` means "skip this one",
 `1` means "the call never landed — retry the whole run and write no watermark".

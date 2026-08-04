@@ -9,10 +9,13 @@ use application::repositories::{WorklogFilter, WorklogRepository};
 use domain::types::*;
 use domain::types::recurrence::RecurrenceTemplateId;
 
+use super::conversions::escape_like;
+
 /// How many entry ids one `UPDATE … IN (…)` binds when stamping the consolidation
-/// watermark. Well under SQLite's compiled `SQLITE_MAX_VARIABLE_NUMBER`, so a
-/// full-cap batch (1 000 entries) is split into a handful of statements inside one
-/// transaction rather than failing on "too many SQL variables".
+/// watermark — and when reattributing a batch, which has the same shape. Well under
+/// SQLite's compiled `SQLITE_MAX_VARIABLE_NUMBER`, so a full-cap batch (1 000
+/// entries) is split into a handful of statements inside one transaction rather than
+/// failing on "too many SQL variables".
 const MARK_CHUNK_SIZE: usize = 400;
 
 pub struct SqliteWorklogRepository {
@@ -193,6 +196,97 @@ impl WorklogRepository for SqliteWorklogRepository {
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
 
         rows.iter().map(map_row).collect()
+    }
+
+    /// Ids are stored hyphenated and lowercase, so a plain prefix `LIKE` matches at
+    /// any width — the same contract the memory reference resolves under.
+    ///
+    /// `escape_like` is not decoration: `_` is a LIKE wildcard, and an unescaped
+    /// token would turn a mistyped reference into a match on an arbitrary entry —
+    /// which for this verb means moving the wrong hour of work. `limit.max(1)` for
+    /// the other half of the same rule: `LIMIT 0` would report "no such entry" for an
+    /// entry that exists.
+    async fn find_by_id_prefix(
+        &self,
+        user_id: UserId,
+        prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT * FROM worklog_entries
+              WHERE user_id = ? AND id LIKE ? ESCAPE '\\'
+              ORDER BY logged_at DESC, created_at DESC
+              LIMIT ?",
+        )
+        .bind(user_id.to_string())
+        .bind(format!("{}%", escape_like(&prefix.to_lowercase())))
+        .bind(limit.max(1) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        rows.iter().map(map_row).collect()
+    }
+
+    /// Re-point entries at another task, in one transaction for the whole batch.
+    ///
+    /// `task_id = ?` in the `WHERE` is the safety rail: the caller's id list was
+    /// assembled from an earlier read, and an entry that has left the source task
+    /// since must not be dragged along. The returned count is what actually moved, so
+    /// the caller can say so rather than assume.
+    ///
+    /// `consolidated_at` is deliberately untouched: which task an entry belongs to
+    /// and whether the 17:30 run has read it are different questions, and resetting
+    /// the watermark here would re-propose memories that were already triaged.
+    async fn reassign_task(
+        &self,
+        user_id: UserId,
+        ids: &[WorklogEntryId],
+        from_task: TaskId,
+        to_task: TaskId,
+        now: DateTime<Utc>,
+    ) -> Result<u64, RepositoryError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        let stamp = now.to_rfc3339();
+        let user = user_id.to_string();
+        let source = from_task.to_string();
+        let target = to_task.to_string();
+        let mut moved = 0u64;
+        for chunk in ids.chunks(MARK_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "UPDATE worklog_entries
+                    SET task_id = ?, updated_at = ?
+                  WHERE user_id = ? AND task_id = ? AND id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql)
+                .bind(&target)
+                .bind(&stamp)
+                .bind(&user)
+                .bind(&source);
+            for id in chunk {
+                q = q.bind(id.to_string());
+            }
+            let result = q
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+            moved += result.rows_affected();
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(moved)
     }
 
     /// The read side of the consolidation watermark. `ASC` here, unlike `list`:
@@ -469,6 +563,248 @@ mod tests {
             .await
             .unwrap();
         assert!(repo.find_by_id(entry.id, uid()).await.unwrap().is_none());
+    }
+
+    // ─── Reattribution (id references and the move itself) ───────────────────
+
+    async fn task_of(pool: &SqlitePool, id: Uuid) -> String {
+        sqlx::query("SELECT task_id FROM worklog_entries WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            .get::<String, _>("task_id")
+    }
+
+    async fn updated_at_of(pool: &SqlitePool, id: Uuid) -> String {
+        sqlx::query("SELECT updated_at FROM worklog_entries WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            .get::<String, _>("updated_at")
+    }
+
+    /// A second task to move time to. `setup` only creates one.
+    async fn second_task(pool: &SqlitePool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO tasks (id, user_id, title, source, status, impact, urgency, created_at, updated_at, tracking_state)
+             VALUES (?, ?, 'Other', 'personal', 'todo', 1, 1, ?, ?, 'followed')",
+        )
+        .bind(id.to_string())
+        .bind(USER_ID)
+        .bind("2026-04-21T00:00:00+00:00")
+        .bind("2026-04-21T00:00:00+00:00")
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn find_by_id_prefix_resolves_the_short_reference_a_reader_retypes() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let entry = WorklogEntry::new(uid(), tid(), "x".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+
+        let prefix: String = entry.id.to_string().chars().take(3).collect();
+        let found = repo.find_by_id_prefix(uid(), &prefix, 10).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, entry.id);
+    }
+
+    /// Every collision must come back, or the caller cannot tell an ambiguity from a
+    /// hit — and a silent hit here moves the wrong hour of work.
+    #[tokio::test]
+    async fn find_by_id_prefix_returns_every_collision() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let mut ids = Vec::new();
+        for i in 0..40 {
+            let e = WorklogEntry::new(uid(), tid(), format!("e{i}"), now(), now()).unwrap();
+            repo.create(&e).await.unwrap();
+            ids.push(e.id);
+        }
+        // Some single hex character is shared by at least two of forty ids.
+        let mut shared = None;
+        for c in "0123456789abcdef".chars() {
+            let hits = ids
+                .iter()
+                .filter(|id| id.to_string().starts_with(c))
+                .count();
+            if hits >= 2 {
+                shared = Some((c.to_string(), hits));
+                break;
+            }
+        }
+        let (prefix, hits) = shared.expect("40 uuids share some first character");
+        let found = repo.find_by_id_prefix(uid(), &prefix, 10).await.unwrap();
+        assert_eq!(found.len(), hits.min(10));
+    }
+
+    #[tokio::test]
+    async fn find_by_id_prefix_is_user_scoped() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let entry = WorklogEntry::new(uid(), tid(), "x".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+        let prefix: String = entry.id.to_string().chars().take(3).collect();
+        assert!(repo
+            .find_by_id_prefix(Uuid::new_v4(), &prefix, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// `_` is a LIKE wildcard. A token carrying one must match nothing rather than
+    /// everything, or a mistyped reference would resolve to an arbitrary entry.
+    #[tokio::test]
+    async fn find_by_id_prefix_treats_like_metacharacters_literally() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let entry = WorklogEntry::new(uid(), tid(), "x".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+
+        assert!(repo.find_by_id_prefix(uid(), "_", 10).await.unwrap().is_empty());
+        assert!(repo.find_by_id_prefix(uid(), "%", 10).await.unwrap().is_empty());
+    }
+
+    /// A `0` limit must not reach SQL as `LIMIT 0`: the lookup would report "no such
+    /// entry" for an entry that exists.
+    #[tokio::test]
+    async fn find_by_id_prefix_never_emits_limit_zero() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let entry = WorklogEntry::new(uid(), tid(), "x".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+        let prefix: String = entry.id.to_string().chars().take(3).collect();
+        assert_eq!(
+            repo.find_by_id_prefix(uid(), &prefix, 0).await.unwrap().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn reassign_task_moves_the_named_entries_and_stamps_updated_at() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+        let target = second_task(&pool).await;
+        let entry = WorklogEntry::new(uid(), tid(), "x".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+
+        let later = now() + chrono::Duration::hours(5);
+        let moved = repo
+            .reassign_task(uid(), &[entry.id], tid(), target, later)
+            .await
+            .unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(task_of(&pool, entry.id).await, target.to_string());
+        assert_eq!(updated_at_of(&pool, entry.id).await, later.to_rfc3339());
+    }
+
+    /// The source task is part of the WHERE, not just of the caller's intent: an id
+    /// list assembled from a stale read must not pull an entry off a task nobody
+    /// named.
+    #[tokio::test]
+    async fn reassign_task_never_takes_an_entry_from_another_task() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+        let other = second_task(&pool).await;
+        let target = second_task(&pool).await;
+        let stranger = WorklogEntry::new(uid(), other, "not yours".into(), now(), now()).unwrap();
+        repo.create(&stranger).await.unwrap();
+
+        let moved = repo
+            .reassign_task(uid(), &[stranger.id], tid(), target, now())
+            .await
+            .unwrap();
+        assert_eq!(moved, 0);
+        assert_eq!(task_of(&pool, stranger.id).await, other.to_string());
+    }
+
+    #[tokio::test]
+    async fn reassign_task_cannot_reach_another_users_entry() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+        let target = second_task(&pool).await;
+        let entry = WorklogEntry::new(uid(), tid(), "mine".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+
+        assert_eq!(
+            repo.reassign_task(Uuid::new_v4(), &[entry.id], tid(), target, now())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(task_of(&pool, entry.id).await, tid().to_string());
+    }
+
+    #[tokio::test]
+    async fn reassign_task_with_no_ids_touches_nothing() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+        let target = second_task(&pool).await;
+        let entry = WorklogEntry::new(uid(), tid(), "x".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+
+        assert_eq!(
+            repo.reassign_task(uid(), &[], tid(), target, now())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(task_of(&pool, entry.id).await, tid().to_string());
+    }
+
+    /// A day's mis-attribution can be dozens of entries, and a month's more than one
+    /// statement can bind. All of it must land, or none.
+    #[tokio::test]
+    async fn reassign_task_handles_a_batch_larger_than_the_bind_chunk() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+        let target = second_task(&pool).await;
+        let mut ids = Vec::new();
+        for i in 0..(MARK_CHUNK_SIZE + 11) {
+            let e = WorklogEntry::new(uid(), tid(), format!("e{i}"), now(), now()).unwrap();
+            repo.create(&e).await.unwrap();
+            ids.push(e.id);
+        }
+
+        let moved = repo
+            .reassign_task(uid(), &ids, tid(), target, now())
+            .await
+            .unwrap();
+        assert_eq!(moved as usize, ids.len());
+        for id in ids {
+            assert_eq!(task_of(&pool, id).await, target.to_string());
+        }
+    }
+
+    /// Attribution and consolidation are different questions. Correcting which task
+    /// an entry belongs to must not make the 17:30 run read it again — nor hide an
+    /// entry it never read.
+    #[tokio::test]
+    async fn reassign_task_leaves_the_consolidation_watermark_alone() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool.clone());
+        let target = second_task(&pool).await;
+        let read = WorklogEntry::new(uid(), tid(), "already read".into(), now(), now()).unwrap();
+        let unread = WorklogEntry::new(uid(), tid(), "never read".into(), now(), now()).unwrap();
+        repo.create(&read).await.unwrap();
+        repo.create(&unread).await.unwrap();
+        stamp(&pool, read.id, "2026-08-02T17:30:00+00:00").await;
+
+        repo.reassign_task(uid(), &[read.id, unread.id], tid(), target, now())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            marker_of(&pool, read.id).await,
+            Some("2026-08-02T17:30:00+00:00".to_string())
+        );
+        assert_eq!(marker_of(&pool, unread.id).await, None);
     }
 
     // ─── Consolidation watermark (§6.2) ─────────────────────────────────────

@@ -1,0 +1,36 @@
+mutation ReattributeWorklog(
+  $fromTask: ID!
+  $toTask: ID!
+  $entryRefs: [String!]
+  $since: NaiveDate
+  $until: NaiveDate
+  $confirm: Boolean
+) {
+  reattributeWorklogEntries(
+    input: {
+      fromTask: $fromTask
+      toTask: $toTask
+      entryRefs: $entryRefs
+      since: $since
+      until: $until
+      confirm: $confirm
+    }
+  ) {
+    applied
+    selectedEntries
+    movedEntries
+    affectedDates
+    slotsDiscarded
+    slotsRebuilt
+    source {
+      taskId
+      hoursBefore
+      hoursAfter
+    }
+    destination {
+      taskId
+      hoursBefore
+      hoursAfter
+    }
+  }
+}

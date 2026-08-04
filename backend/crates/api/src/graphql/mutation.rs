@@ -12,6 +12,7 @@ use application::services::*;
 use application::use_cases::{activity_tracking, alerts, configuration, deduplication, gryzzly_assignment, priority, sync, task_management, worklog as worklog_uc};
 use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
+use application::use_cases::reattribution as reattribution_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
 use infrastructure::connectors::excel::GraphExcelClient;
@@ -221,6 +222,52 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(FlushResultGql(outcome))
+    }
+
+    /// Move worklog entries — and the activity time derived from them — from one
+    /// task to another.
+    ///
+    /// The correction a wrong attribution needs: `addWorklogEntry` can only write to
+    /// the task it is given, so before this existed a day recorded against the wrong
+    /// task stayed wrong, and flowed into the timesheet and on to billing.
+    ///
+    /// Writes nothing unless `input.confirm` is true. The preview reports the same
+    /// counts and the same before/after hours the write would produce, computed from
+    /// the same projection — one code path, so the two cannot drift.
+    async fn reattribute_worklog_entries(
+        &self,
+        ctx: &Context<'_>,
+        input: ReattributeWorklogInput,
+    ) -> Result<ReattributionResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+
+        let from_task = Uuid::parse_str(&input.from_task)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid source task ID: {e}")))?;
+        let to_task = Uuid::parse_str(&input.to_task)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid destination task ID: {e}")))?;
+
+        let outcome = reattribution_uc::reattribute_worklog_entries(
+            worklog_repo.as_ref(),
+            activity_repo.as_ref(),
+            config_repo.as_ref(),
+            user_id,
+            reattribution_uc::ReattributionRequest {
+                from_task,
+                to_task,
+                entry_refs: input.entry_refs.unwrap_or_default(),
+                since: input.since,
+                until: input.until,
+                confirm: input.confirm.unwrap_or(false),
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(outcome.into())
     }
 
     /// Carry forward all active tasks whose planned_start is before the current

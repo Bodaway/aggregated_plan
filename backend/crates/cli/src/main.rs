@@ -10,6 +10,7 @@ mod lookup;
 mod memory_cmd;
 mod output;
 mod queries;
+mod reattribute_cmd;
 mod timesheet_cmd;
 
 fn main() -> ExitCode {
@@ -27,6 +28,25 @@ fn main() -> ExitCode {
         cli::Commands::Note { text, task } => {
             commands::note(&args.api_url, args.json, &text, task.as_deref())
         }
+        cli::Commands::Reattribute {
+            from,
+            to,
+            date,
+            since,
+            until,
+            entry,
+            confirm,
+        } => reattribute_cmd::reattribute(
+            &args.api_url,
+            args.json,
+            &from,
+            &to,
+            date.as_deref(),
+            since.as_deref(),
+            until.as_deref(),
+            &entry,
+            confirm,
+        ),
         cli::Commands::Log { text, task } => {
             commands::log(&args.api_url, args.json, &text, task.as_deref())
         }

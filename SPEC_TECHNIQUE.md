@@ -165,6 +165,7 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
 - **Worklog CLI verbs:**
   - `aplan log [--task <TASK>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
   - `aplan flush [--json] <TASK>` — materializes closed activity slots from pending worklog entries (entries whose `logged_at` falls after `aplan.active_since`), grouped by day and half-day via `derive_time_blocks`. Does **not** clear the active-task pointer (`aplan.active_task_id`). Calls the `flushWorklogTime` GraphQL mutation internally. Used by the `SessionEnd` hook.
+  - `aplan reattribute --from <TASK> --to <TASK> {--date AAAA-MM-JJ | --since D [--until D] | --entry <ID>…} [--confirm]` — déplace des entrées de journal **et redérive** les créneaux d'activité qui en découlent (US-RE, R23b). Appelle la mutation `reattributeWorklogEntries`. `--from`/`--to` passent par le résolveur de tâche habituel ; les références d'entrée (`--entry`) sont résolues **côté serveur** par préfixe d'identifiant (`WorklogRepository::find_by_id_prefix`, même contrat que `MemoryRepository::find_by_id_prefix`), une collision étant signalée (code 3) et jamais devinée. `--date` et `--entry` sont mutuellement exclusifs à l'analyse des arguments (clap `conflicts_with`), `--until` exige `--since`. **Aperçu par défaut** : sans `--confirm` la mutation résout tout, calcule le même compte rendu et n'écrit rien — un seul chemin de code, donc l'aperçu ne peut pas dériver de l'écriture. Codes de sortie : 2 tâche/entrée introuvable, 3 référence ambiguë, 4 refus (source = destination, entrée d'une autre tâche, sélection vide, plafond de page atteint), 1 réseau/GraphQL.
 - **Verbe de mémoire du démarrage :**
   - `aplan brief [--morning] [--project <P>] [--date AAAA-MM-JJ]` — imprime le brief de session
     (échéances, engagements ouverts, décisions actives, file de tri, vétusté de la consolidation),
@@ -1143,40 +1144,51 @@ pub const DEDUP_CONFIDENCE_THRESHOLD: f64 = 0.7;
 
 use chrono_tz::Tz;
 
-/// A (date, half-day) pair representing a closed activity block.
-pub struct TimeBlock {
+/// Un bloc de travail dérivé, exprimé en heure locale.
+pub struct LocalBlock {
+    pub start: NaiveDateTime,
+    pub end: NaiveDateTime,
     pub date: NaiveDate,
     pub half_day: HalfDay,
 }
 
-/// Derive closed time blocks from a slice of UTC timestamps.
+/// Durée minimale d'un bloc réduit à un seul horodatage (R-WL-09).
+pub const MIN_BLOCK_MINUTES: i64 = 1;
+
+/// Écart maximal entre deux entrées consécutives pour que le travail soit
+/// considéré comme continu (R-WL-13). Au-delà, le temps n'a pas été passé sur la
+/// tâche : constante du domaine, non configurable. 45 et non 15, car une entrée de
+/// journal est un marqueur d'événement, pas un échantillon d'activité.
+pub const MAX_CONTINUATION_GAP_MINUTES: i64 = 45;
+
+/// Regroupe des horodatages LOCAUX en blocs de travail.
 ///
-/// Each timestamp is converted to local time using `tz`, then classified into
-/// morning (before 13:00 local) or afternoon (13:00+). Duplicate (date, half-day)
-/// pairs are deduplicated — a half-day is counted at most once regardless of how
-/// many worklog entries fall within it. Only timestamps strictly after `since` are
-/// considered.
+/// Deux coupures : (1) la (date, demi-journée) — matin = heure < 13, après-midi =
+/// heure >= 13, via `workload::half_day_of` — qu'un bloc ne franchit jamais, car un
+/// créneau persisté ne porte qu'une seule valeur `half_day` et la réattribution se
+/// borne par elle ; (2) un écart de plus de `MAX_CONTINUATION_GAP_MINUTES` avec
+/// l'horodatage suivant (R-WL-13). Une demi-journée produit donc autant de blocs
+/// qu'elle comptait de plages de travail continues.
 ///
-/// Pure function: no I/O, no side effects.
-pub fn derive_time_blocks(
-    logged_ats: &[DateTime<Utc>],
-    since: DateTime<Utc>,
-    tz: Tz,
-) -> Vec<TimeBlock> {
-    let mut seen = std::collections::HashSet::new();
-    let mut blocks = Vec::new();
-    for &ts in logged_ats {
-        if ts <= since { continue; }
-        let local = ts.with_timezone(&tz);
-        let date = local.date_naive();
-        let half_day = if local.hour() < 13 { HalfDay::Morning } else { HalfDay::Afternoon };
-        if seen.insert((date, half_day)) {
-            blocks.push(TimeBlock { date, half_day });
-        }
-    }
-    blocks
-}
+/// Un bloc va du premier au dernier horodatage de sa plage ; pour une plage réduite
+/// à un horodatage, `start == end` (l'appelant lui donne `MIN_BLOCK_MINUTES` à la
+/// persistance). L'ordre d'entrée est indifférent ; la sortie est triée par (date,
+/// demi-journée matin-avant-après-midi, début).
+///
+/// Fonction pure : aucune I/O, aucun effet de bord.
+pub fn derive_time_blocks(local_times: &[NaiveDateTime]) -> Vec<LocalBlock>
+
+/// Durée persistée d'un bloc : son propre écart, plancher à `MIN_BLOCK_MINUTES`.
+pub fn block_duration(block: &LocalBlock) -> Duration
+
+/// Heures qu'un ensemble de blocs représente, à la minute — le même calcul que le
+/// rapport d'activité applique aux créneaux qui en découlent.
+pub fn total_block_hours(blocks: &[LocalBlock]) -> f64
 ```
+
+La conversion UTC ↔ local (clé `aplan.timezone`) et le filtrage par filigrane
+(`aplan.active_since`) restent dans la couche application : le domaine ne devine
+jamais un fuseau.
 
 #### 5.1.3 Domain Errors
 
@@ -1729,11 +1741,13 @@ pub async fn get_activity_journal(/* ... */) -> Result<Vec<ActivitySlot>, AppErr
 /// Materialize closed activity slots from worklog entries logged after `since`.
 ///
 /// 1. Loads all worklog entries for `task_id` whose `logged_at > since`.
-/// 2. Calls `derive_time_blocks` (domain rule) with the user's configured `aplan.timezone`.
-/// 3. For each derived (date, half-day) block, inserts an `ActivitySlot` with
-///    `start_time` = block start boundary, `end_time` = block end boundary
-///    (morning: 08:00–12:00, afternoon: 13:00–17:00, in the configured timezone).
-/// 4. Skips blocks for which a slot already exists for (user_id, task_id, date, half_day).
+/// 2. Converts each `logged_at` to local wall-clock with `aplan.timezone`, then calls
+///    `derive_time_blocks` (domain rule).
+/// 3. For each derived block, inserts an `ActivitySlot` whose `start_time`/`end_time`
+///    are the UTC instants of the block's first and last entry — so a half-day carrying
+///    several stretches of work yields several slots (R-WL-13), and the idle time
+///    between them is charged to nobody. A block reduced to a single timestamp lasts
+///    `MIN_BLOCK_MINUTES`.
 /// 5. Does **not** modify `aplan.active_task_id` — the session link is preserved.
 /// 6. Updates `aplan.active_since` to `Utc::now()` so the next flush does not re-process
 ///    already-materialized entries.
@@ -2887,6 +2901,20 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
   - Mutation `updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntry!`
   - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
   - Mutation `flushWorklogTime(taskId: ID!): [ActivitySlot!]!` — calls `materialize_worklog_time` for the given task, using `aplan.active_since` as the watermark. Returns the newly created activity slots. Does not modify the active-task pointer. Idempotent: re-running produces no duplicate slots.
+  - Mutation `reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!` — moves entries between tasks and rebuilds the derived slots. Calls `use_cases::reattribution::reattribute_worklog_entries`. See "Réattribution" below.
+- `WorklogRepository::find_by_id_prefix(user_id, prefix, limit)` — `id LIKE ? ESCAPE '\'` on the hyphenated lowercase id, ordered `logged_at DESC`, `limit.max(1)` bound (never `LIMIT 0`). The `escape_like` helper (shared with the memory repository via `database::conversions`) keeps `_` and `%` literal: `_` is a LIKE wildcard, and an unescaped token would resolve a mistyped reference to an arbitrary entry.
+- `WorklogRepository::reassign_task(user_id, ids, from_task, to_task, now)` — one transaction, chunked at 400 binds like `mark_consolidated`. `task_id = ?` is part of the `WHERE`: an id list assembled from an earlier read must not pull an entry off a task the caller never named, and the returned count says what actually moved. `consolidated_at` is left untouched — attribution and consolidation are different questions.
+
+#### Réattribution (`use_cases::reattribution`)
+
+- **Domain** (`domain::rules::reattribution`): `plan_reattribution(from, to, selected) -> Result<ReattributionPlan, ReattributionRefusal>` validates the selection (refusals in order: `SameTask`, `EmptySelection`, `ForeignEntry`) and derives the **affected half-days** — `AffectedHalfDay { date, half_day }`, computed with the projection's own `half_day_of`. `slot_hours` and `is_rebuildable` define what a slot is worth and whether it may be replaced. `worklog_time::{block_duration, total_block_hours, MIN_BLOCK_MINUTES, MAX_CONTINUATION_GAP_MINUTES}` define the persisted duration of a block and where a half-day is cut, now shared with `materialize_worklog_time` so one projection is defined once.
+- **Slot strategy — re-derive, never re-point.** Slots are a projection of worklog timestamps (one per continuous stretch of work, never straddling a local half-day). Rewriting `task_id` cannot express a partial move: a slot carries the span of *several* entries, so the destination would receive time that never moved and the source would keep none of the time that stayed. The use case therefore moves the entries, deletes the projection of the two tasks in the affected half-days, and rebuilds it from the re-read entries.
+- **No double counting.** Deletion and rebuild are scoped to the *same* set: (user, task ∈ {source, destination}, half-day ∈ affected). A third task's slot on that half-day is never read or written; a morning is untouched when only the afternoon moved; only **closed** slots are replaced (an open slot is a running timer). The delete drops **every** closed slot of those tasks in those half-days, so the count per half-day is not part of the argument — a half-day legitimately holds several slots since R-WL-13. Without the delete, a destination that already had a slot that morning would keep it *and* gain the rebuilt one.
+- **Reported, not hidden.** The pair's total can legitimately change: a partial move re-spans both sides, and a half-day carrying slots the worklog does not account for (several partial flushes, or a flush predating the 45-minute gap rule) is canonicalised to what the entries now project to. `ReattributionOutcome` carries `selected_entries`, `moved_entries`, `affected_dates`, `slots_discarded`, `slots_rebuilt` and per-task `hours_before`/`hours_after`; the CLI prints a warning when the total moves.
+- **Preview parity.** `confirm: false` runs the same selection, validation and projection and returns predicted figures without writing; `confirm: true` applies and then re-reads, so its figures are measured. One resolver, one use case: the preview cannot drift from the write.
+- **Page cap.** Selection and repair bind `WORKLOG_FILTER_MAX_LIMIT` and **refuse** a page that came back full (`AppError::Validation`, exit 4) instead of silently correcting the first 1 000 entries of a month.
+- **Timezone.** `use_cases::worklog::user_timezone` (`aplan.timezone`, default `Europe/Paris`) is shared with the flush. A local date window is converted with `local_day_start`, which walks forward when a local midnight does not exist rather than dropping it.
+- **Not transactional across the two stores.** The entry move is one transaction; the slot repair is a sequence of `delete`/`save` calls, as the flush already is. The repair is a pure function of the entries, so a re-run converges — but a failure between the move and the repair leaves the affected half-days' slots stale until it is re-run.
 - `WorklogRepository::find_by_recurrence(user_id, template_id, limit, offset)` — SQL join on `tasks.recurrence_id`; returns all entries for any occurrence of the template ordered by `logged_at DESC`.
 - `update_task` per-instance allow-list: recurring instances may update `status`, `plannedStart`, `plannedEnd`, `deadline`, `notes`, `trackingState`, `remainingHoursOverride`, `estimatedHoursOverride`. Template-level fields (`title`, `description`, `urgency`, `impact`, `estimatedHours`, `projectId`, `tags`) must go through `updateRecurringTask`.
 - Backward compatibility: the `appendTaskNotes` mutation remains registered but is no longer invoked by the frontend (the activity-timer quick note writes a worklog entry instead).
@@ -3618,6 +3646,11 @@ type Mutation {
   # Idempotent: re-running never creates duplicate slots.
   flushWorklogTime(taskId: ID!): [ActivitySlot!]!
 
+  # Réattribution — moves worklog entries between tasks and REBUILDS the slots they
+  # project to, in the affected half-days only. `confirm` defaults to false: the call
+  # then reports what it would do and writes nothing.
+  reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!
+
   # Triage / Tracking state
   setTrackingState(taskId: ID!, state: TrackingState!): Task!
   setTrackingStateBatch(taskIds: [ID!]!, state: TrackingState!): [Task!]!
@@ -3703,6 +3736,34 @@ type MarkConsolidatedResultGql {
   requested: Int!              # nombre d'ids soumis
   marked: Int!                 # nombre de lignes réellement passées de non marqué à marqué
   consolidatedAt: DateTime!
+}
+
+# Réattribution (US-RE). Une seule des deux sélections à la fois : les entrées
+# explicites, ou la fenêtre de dates locales de la tâche source.
+input ReattributeWorklogInput {
+  fromTask: ID!
+  toTask: ID!
+  entryRefs: [String!]         # UUID complet ou préfixe ; ambiguïté signalée, jamais devinée
+  since: NaiveDate             # premier jour local (inclus)
+  until: NaiveDate             # dernier jour local (inclus) ; défaut = since
+  confirm: Boolean             # absent ou false ⇒ aperçu, rien n'est écrit
+}
+
+type ReattributionResultGql {
+  applied: Boolean!            # false ⇒ aucune écriture
+  selectedEntries: [ID!]!
+  movedEntries: Int!           # 0 en aperçu ; < selectedEntries si une ligne a quitté la source entre-temps
+  affectedDates: [NaiveDate!]!
+  slotsDiscarded: Int!         # créneaux fermés des deux tâches retirés des demi-journées touchées
+  slotsRebuilt: Int!           # créneaux réécrits depuis les entrées
+  source: TaskTimeChangeGql!
+  destination: TaskTimeChangeGql!
+}
+
+type TaskTimeChangeGql {
+  taskId: ID!
+  hoursBefore: Float!
+  hoursAfter: Float!
 }
 
 type ConsolidationRunGql {
@@ -4147,8 +4208,8 @@ The use case performs the following steps for the target date (today in local ti
 
 3. **Reconstruct Draft:**
    - Call `reconstruct_timesheet(...)` from the timesheet module with the exact same logic as the React surface (Plan 3):
-     - Derive time blocks from worklog entries logged after `aplan.active_since` using `derive_time_blocks(tz)` domain rule.
-     - Load all meetings and activity slots for today.
+     - Read the day's worklog entries and git commits as point-in-time **signals** (the reconstruction has its own carry-forward inside the configured half-day windows; it does **not** go through `derive_time_blocks`, and the 15-minute rule of R-WL-13 therefore does not apply to it).
+     - Load all meetings for today.
      - Compute suggested allocations using learned mapping rules (if any) and fallback heuristics.
      - Return a new draft with status `Draft`, lines (project→hours mappings), unattributed hours, and blocks.
    - Persist the reconstructed draft via `timesheet_repo.save(draft)`.
@@ -4416,10 +4477,12 @@ When Claude Code drives the cockpit via the `aplan` CLI, time is tracked through
 |--------|--------|
 | **Session link** | `aplan start <task>` writes `aplan.active_task_id` (config key). No `ActivitySlot` is opened. |
 | **Time materialization** | Closed `ActivitySlot` records are derived from worklog-entry `logged_at` timestamps via `derive_time_blocks` (domain rule) and persisted by `materialize_worklog_time` (use case). |
-| **Granularity** | One slot per (task, date, half-day). A half-day is counted at most once, regardless of the number of entries. Boundaries: morning 08:00–12:00, afternoon 13:00–17:00 (local time per `aplan.timezone`). |
+| **Granularity** | One slot per (task, continuous stretch of work). A stretch runs from its first to its last entry and stops wherever two consecutive entries are more than `MAX_CONTINUATION_GAP_MINUTES` apart (R-WL-13), so one half-day may hold several slots; it never straddles the half-day boundary (morning = local hour < 13, afternoon >= 13, per `aplan.timezone`). |
 | **Trigger** | Materialization runs on `aplan stop`, `aplan done`, and on every Claude Code `SessionEnd` hook (`~/.claude/hooks/aplan-session-end.sh`). The hook calls `aplan flush <task_id>`, which calls the `flushWorklogTime` mutation. |
 | **Watermark** | `aplan.active_since` tracks the last flush timestamp. Only entries after this timestamp are processed, preventing duplicate slots across sessions. |
 | **No open slots** | There is never an open (`end_time IS NULL`) slot associated with the active-task pointer. The existing `start_activity` / `stop_activity` use cases are unaffected and continue to work for UI-driven tracking. |
+| **Correction** | A wrong attribution is fixed with `aplan reattribute --from <task> --to <task> {--date D \| --since D --until D \| --entry ID…} [--confirm]`: the entries move and the slots of the two tasks are **re-derived in the affected half-days**. Preview by default. Because slots are a projection, correcting the entries is the only way to correct the time — editing a slot would leave it disagreeing with the journal it came from. |
+| **Agents** | A subagent must never run `aplan start` / `new` / `stop` / `done` / `flush` / `triage`: the active-task pointer belongs to the parent session, and an agent that moves it redirects the parent's time onto its own task. See `.claude/skills/aplan/SKILL.md`. |
 
 ---
 
