@@ -747,6 +747,65 @@ impl application::repositories::SessionRepository for InMemorySessionRepository 
     }
 }
 
+/// Delegates every operation to a real in-memory session store except `touch`,
+/// which always errors — pins `addWorklogEntry`'s contract that a touch
+/// failure must not fail the worklog write that already succeeded (I2).
+struct FailingTouchSessionRepository(InMemorySessionRepository);
+
+impl FailingTouchSessionRepository {
+    fn new() -> Self {
+        Self(InMemorySessionRepository::default())
+    }
+}
+
+#[async_trait]
+impl application::repositories::SessionRepository for FailingTouchSessionRepository {
+    async fn find_by_id(
+        &self,
+        id: &str,
+        user_id: UserId,
+    ) -> Result<Option<Session>, RepositoryError> {
+        self.0.find_by_id(id, user_id).await
+    }
+
+    async fn upsert(&self, session: &Session) -> Result<(), RepositoryError> {
+        self.0.upsert(session).await
+    }
+
+    async fn list_open(&self, user_id: UserId) -> Result<Vec<Session>, RepositoryError> {
+        self.0.list_open(user_id).await
+    }
+
+    async fn touch(
+        &self,
+        _id: &str,
+        _user_id: UserId,
+        _at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        Err(RepositoryError::Database(
+            "touch always fails in this test double".to_string(),
+        ))
+    }
+
+    async fn set_last_flush(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        self.0.set_last_flush(id, user_id, at).await
+    }
+
+    async fn end(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        self.0.end(id, user_id, at).await
+    }
+}
+
 // ---- Timesheet-draft in-memory repo (captures upserts) ----
 struct InMemoryTimesheetDraftRepository {
     drafts: Mutex<HashMap<(UserId, chrono::NaiveDate), domain::types::TimesheetDraft>>,
@@ -1143,18 +1202,21 @@ fn build_test_schema_with(
         gryzzly_catalog_repo,
         timesheet_draft_repo,
         Arc::new(InMemoryMemoryStore::default()),
+        Arc::new(InMemorySessionRepository::default()),
     )
 }
 
 /// Same as `build_test_schema_with`, plus an explicit semantic-memory store, so a
 /// memory test can keep a handle on it and seed rows the resolvers cannot produce
-/// (already invalidated, already rejected).
+/// (already invalidated, already rejected), and an explicit session repo, so an
+/// I2 test can swap in one that fails on `touch`.
 fn build_test_schema_with_memory(
     worklog_repo: Arc<dyn application::repositories::WorklogRepository>,
     task_repo: Arc<dyn TaskRepository>,
     gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository>,
     timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository>,
     memory_store: Arc<InMemoryMemoryStore>,
+    session_repo: Arc<dyn application::repositories::SessionRepository>,
 ) -> TestSchema {
     let default_user_id: UserId =
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
@@ -1181,8 +1243,6 @@ fn build_test_schema_with_memory(
     let memory_retriever: Arc<dyn application::services::MemoryRetriever> = memory_store;
     let memory_file_source: Arc<dyn application::services::MemoryFileSource> =
         Arc::new(StubMemoryFileSource::default());
-    let session_repo: Arc<dyn application::repositories::SessionRepository> =
-        Arc::new(InMemorySessionRepository::default());
 
     Schema::build(
         CombinedQuery(QueryRoot),
@@ -1231,8 +1291,23 @@ fn build_memory_test_schema() -> (TestSchema, Arc<InMemoryMemoryStore>) {
         Arc::new(InMemoryGryzzlyCatalogRepository::new()),
         Arc::new(InMemoryTimesheetDraftRepository::new()),
         memory_store.clone(),
+        Arc::new(InMemorySessionRepository::default()),
     );
     (schema, memory_store)
+}
+
+/// Same dependencies as `build_test_schema()`, except the session repo always
+/// errors on `touch` — used to pin the non-fatal-touch contract on
+/// `addWorklogEntry` (I2): the worklog write must still succeed.
+fn build_test_schema_with_failing_session_touch() -> TestSchema {
+    build_test_schema_with_memory(
+        Arc::new(InMemoryWorklogRepository::new()),
+        Arc::new(InMemoryTaskRepository::new()),
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+        Arc::new(InMemoryMemoryStore::default()),
+        Arc::new(FailingTouchSessionRepository::new()),
+    )
 }
 
 /// Default dependencies, plus one already-created task — for session-binding tests
@@ -3693,4 +3768,109 @@ async fn an_entry_without_a_session_is_the_humans() {
 
     assert!(added.errors.is_empty(), "{:?}", added.errors);
     assert!(added.data.into_json().unwrap()["addWorklogEntry"]["sessionId"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// I2 — `addWorklogEntry` with a `sessionId` refreshes that session's
+// `lastSeenAt`, so a session bound in the morning and logging all day does
+// not look idle to the reaper. Without a `sessionId`, no session is touched.
+// ---------------------------------------------------------------------------
+
+async fn last_seen_at_of(schema: &TestSchema, session_id: &str) -> serde_json::Value {
+    let read = schema
+        .execute(format!(r#"{{ claudeSession(id: "{session_id}") {{ lastSeenAt }} }}"#))
+        .await;
+    assert!(read.errors.is_empty(), "{:?}", read.errors);
+    read.data.into_json().unwrap()["claudeSession"]["lastSeenAt"].clone()
+}
+
+#[tokio::test]
+async fn add_worklog_entry_with_a_session_id_advances_its_last_seen_at() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+    let before = last_seen_at_of(&schema, "s1").await;
+
+    // A real clock tick between the two reads, so `lastSeenAt` has somewhere to
+    // move to — `bindSession` and the touch below both stamp `Utc::now()`.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait", sessionId: "s1") {{ id }} }}"#
+        ))
+        .await;
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+
+    let after = last_seen_at_of(&schema, "s1").await;
+    assert_ne!(
+        before, after,
+        "addWorklogEntry(sessionId: \"s1\") must bump the session's lastSeenAt"
+    );
+}
+
+#[tokio::test]
+async fn add_worklog_entry_without_a_session_id_leaves_last_seen_at_unchanged() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+    let before = last_seen_at_of(&schema, "s1").await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait") {{ id }} }}"#
+        ))
+        .await;
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+
+    let after = last_seen_at_of(&schema, "s1").await;
+    assert_eq!(
+        before, after,
+        "addWorklogEntry with no sessionId must not touch any session's lastSeenAt"
+    );
+}
+
+/// The touch is deliberately non-fatal (see `mutation.rs`'s comment on
+/// `add_worklog_entry`): a touch failure must not fail the worklog write that
+/// already succeeded. `build_test_schema_with_failing_session_touch` always
+/// errors on `touch`, so a green result here is only possible if that swallow
+/// is real, not just documented.
+#[tokio::test]
+async fn a_failing_touch_does_not_fail_the_worklog_write() {
+    let schema = build_test_schema_with_failing_session_touch();
+    let created = schema
+        .execute(r#"mutation { createTask(input: { title: "Tracked task" }) { id } }"#)
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+    let task_id = created.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bind = schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+    assert!(bind.errors.is_empty(), "{:?}", bind.errors);
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait", sessionId: "s1") {{ id }} }}"#
+        ))
+        .await;
+
+    assert!(
+        added.errors.is_empty(),
+        "a touch failure must not surface as a GraphQL error on the worklog write: {:?}",
+        added.errors
+    );
+    assert!(added.data.into_json().unwrap()["addWorklogEntry"]["id"].is_string());
 }

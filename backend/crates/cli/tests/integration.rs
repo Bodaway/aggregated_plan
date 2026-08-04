@@ -1217,13 +1217,145 @@ async fn log_refuses_exit_4_when_the_session_has_no_task() {
         .stderr(predicate::str::contains("no task"));
 }
 
+// ---------------------------------------------------------------------------
+// C1 — an id that names no known session carries no decision to honour, so it
+// must fall through to the global pointer exactly like an absent `--session`
+// would (not refuse — that refusal is reserved for a session that *was* found
+// and said no).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn log_with_an_unknown_session_id_falls_through_to_the_global_pointer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "claudeSession": null }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": "00000000-0000-0000-0000-000000000001" } }
+        })))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
+                "loggedAt": "2026-08-04T10:00:00+00:00", "sessionId": null } }
+        })))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "ghost", "log", "fait"])
+        .assert()
+        .success();
+}
+
+/// `done`'s `--session`-driven path is separate from `log`'s: `commands.rs`
+/// treats the mere presence of the session flag as an explicit target before
+/// it ever reaches `resolve_target`, so the fallthrough needs its own test or
+/// it stays uncovered.
+#[tokio::test]
+async fn done_with_an_unknown_session_id_falls_through_to_the_global_pointer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "claudeSession": null }
+        })))
+        .mount(&server)
+        .await;
+    // Two GetConfiguration reads: the fallthrough resolution itself, then the
+    // "was this the tracked task" check `done` makes before flushing.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": "00000000-0000-0000-0000-000000000001" } }
+        })))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "completeTask": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": "Auth migration", "sourceId": "AP-1234", "status": "DONE" } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdateConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "updateConfiguration": true }
+        })))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "ghost", "done"])
+        .assert()
+        .success();
+}
+
+// ---------------------------------------------------------------------------
+// C2 — `sessionId` goes on the wire only when the session level of
+// resolution actually answered. `worklog_entries.session_id` is a real
+// foreign key: sending an id with no row fails the insert.
+// ---------------------------------------------------------------------------
+
+/// Matches only when the request body carries no *string*-valued `sessionId`.
+/// graphql-client serializes `session_id: None` as `"sessionId":null`, which
+/// this matcher tolerates: the contract under test is "no session was
+/// attributed to this write", not "the JSON key is physically absent".
+struct NoSessionIdOnTheWire;
+
+impl wiremock::Match for NoSessionIdOnTheWire {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        let body = String::from_utf8_lossy(&request.body);
+        !body.contains(r#""sessionId":""#)
+    }
+}
+
 #[tokio::test]
 async fn an_explicit_task_wins_over_the_session() {
+    // `--task` never touches the session — not for resolution (the missing
+    // `Session` stub below makes that visible) and not for attribution: the
+    // request must carry no `sessionId`, even though `--session s1` was also
+    // passed. `NoSessionIdOnTheWire` makes a request that sends "s1" 404
+    // instead of silently succeeding on the wrong contract.
     let server = MockServer::start().await;
     mount_get_task(&server).await;
     Mock::given(method("POST"))
         .and(path("/graphql"))
         .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .and(NoSessionIdOnTheWire)
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": { "addWorklogEntry": {
                 "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
@@ -1240,6 +1372,78 @@ async fn an_explicit_task_wins_over_the_session() {
             "--api-url", &url, "--session", "s1", "log", "fait",
             "--task", "00000000-0000-0000-0000-000000000001",
         ])
+        .assert()
+        .success();
+}
+
+/// `CLAUDE_CODE_SESSION_ID=""` is how a hook running outside any Claude session
+/// sets the var: present, but empty. It must behave exactly like an absent
+/// `--session` — global pointer, no `sessionId` on the wire — not like a
+/// session id of `""`.
+#[tokio::test]
+async fn an_empty_session_env_var_falls_back_to_the_global_pointer_with_no_session_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": "00000000-0000-0000-0000-000000000001" } }
+        })))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .and(NoSessionIdOnTheWire)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
+                "loggedAt": "2026-08-04T10:00:00+00:00", "sessionId": null } }
+        })))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    // No `Session` mock mounted: an empty env var resolving one would be a bug.
+    aplan()
+        .env("CLAUDE_CODE_SESSION_ID", "")
+        .args(["--api-url", &url, "log", "fait"])
+        .assert()
+        .success();
+}
+
+/// The positive half of the C2 contract: without this, a CLI that simply never
+/// sent `sessionId` at all would still pass the two negative tests above.
+#[tokio::test]
+async fn a_session_that_answers_puts_its_id_on_the_wire() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some("00000000-0000-0000-0000-000000000001"),
+        )))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .and(wiremock::matchers::body_string_contains(r#""sessionId":"s1""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": "00000000-0000-0000-0000-000000000001",
+                "loggedAt": "2026-08-04T10:00:00+00:00", "sessionId": "s1" } }
+        })))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "log", "fait"])
         .assert()
         .success();
 }
@@ -1337,6 +1541,87 @@ async fn session_off_persists_the_decision() {
         .assert()
         .success()
         .stdout(predicate::str::contains("not tracking"));
+}
+
+// ---------------------------------------------------------------------------
+// I1 — `aplan session bind --json` must flush the previous task, same as the
+// human-output path. `session_cmd.rs` returns from the `--json` branch before
+// reaching the flush call, and `--json` is the path the hooks will use.
+// ---------------------------------------------------------------------------
+
+fn bind_session_body(task_id: &str, previous_task_id: &str) -> serde_json::Value {
+    json!({
+        "data": { "bindSession": {
+            "session": { "id": "s1", "taskId": task_id, "mode": "TRACKING", "label": "/tmp/x" },
+            "previousTaskId": previous_task_id
+        } }
+    })
+}
+
+#[tokio::test]
+async fn session_bind_with_json_flushes_the_previous_task() {
+    let new_task = "00000000-0000-0000-0000-000000000001";
+    let previous_task = "00000000-0000-0000-0000-000000000002";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("BindSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(bind_session_body(new_task, previous_task)))
+        .mount(&server)
+        .await;
+    // `.expect(1)` is the regression gate: the absence of this call must fail
+    // the test rather than pass silently on the `--json` early return.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args([
+            "--api-url", &url, "--session", "s1", "session", "bind", new_task, "--json",
+        ])
+        .assert()
+        .success();
+    // wiremock verifies .expect(1) on FlushWorklogTime when `server` drops.
+}
+
+/// The non-`--json` path already flushes; pinned green so a future refactor
+/// cannot regress it while fixing the `--json` path above.
+#[tokio::test]
+async fn session_bind_flushes_the_previous_task_on_the_human_output_path() {
+    let new_task = "00000000-0000-0000-0000-000000000001";
+    let previous_task = "00000000-0000-0000-0000-000000000002";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("BindSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(bind_session_body(new_task, previous_task)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "session", "bind", new_task])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("session s1"));
 }
 
 /// `aplan remember` deliberately does not follow the worklog verbs' refusal
