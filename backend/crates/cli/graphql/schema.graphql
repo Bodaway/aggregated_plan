@@ -31,6 +31,14 @@ type ActivitySlotGql {
 	"""
 	durationMinutes: Int
 	createdAt: DateTime!
+	"""
+	Which session's work this slot projects. Null is the human.
+	"""
+	sessionId: String
+	"""
+	Whether the worklog projection owns this slot.
+	"""
+	source: SlotSourceGql!
 }
 
 """
@@ -107,6 +115,14 @@ type AttributedBlockGql {
 	kind: BlockKindGql!
 	hours: Float!
 	sourceRefs: [String!]!
+}
+
+"""
+A bind, and the task the session was on before it — which the caller flushes.
+"""
+type BindSessionResultGql {
+	session: SessionGql!
+	previousTaskId: ID
 }
 
 enum BlockKindGql {
@@ -230,9 +246,23 @@ type CombinedMutation {
 	"""
 	appendTaskNotes(taskId: ID!, text: String!): TaskGql!
 	"""
-	Add a timestamped worklog entry to a task.
+	Add a timestamped worklog entry to a task. `sessionId` attributes the entry
+	to the session that wrote it; omitted, it is the human's, working by hand.
 	"""
-	addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntryGql!
+	addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime, sessionId: String): WorklogEntryGql!
+	"""
+	Point a session at a task. Returns the task it was on before, if any, so the
+	caller can flush it.
+	"""
+	bindSession(sessionId: String!, taskId: ID!, label: String): BindSessionResultGql!
+	"""
+	Record what a session was told to do. `OFF` also clears its task.
+	"""
+	setSessionMode(sessionId: String!, mode: SessionModeGql!, label: String): SessionGql!
+	"""
+	Close a session. Null when there was nothing open to close.
+	"""
+	endSession(sessionId: String!): SessionGql
 	"""
 	Update a worklog entry's body and/or logged_at. Only provided fields change.
 	"""
@@ -564,7 +594,7 @@ type CombinedQuery {
 	Reads `microsoft.refresh_token` directly from the config store (never
 	redacted here) so `authenticated` reflects the real stored value.
 	"""
-	session: SessionGql!
+	microsoftSession: MicrosoftSessionGql!
 	"""
 	List worklog entries for the authenticated user.
 	
@@ -627,6 +657,14 @@ type CombinedQuery {
 	ones already overdue.
 	"""
 	unconsolidatedWorklogEntries(limit: Int! = 200): [WorklogEntryGql!]!
+	"""
+	One session by its Claude Code id.
+	"""
+	session(id: String!): SessionGql
+	"""
+	Every session still open, most recently seen first.
+	"""
+	openSessions: [SessionGql!]!
 	"""
 	Memory candidates awaiting validation (`status = PENDING`).
 	"""
@@ -992,6 +1030,17 @@ type MergeMemoryResultGql {
 }
 
 """
+Microsoft session status returned by the `microsoftSession` query.
+
+Named distinctly from the domain `SessionGql` (a Claude Code session): the two
+are unrelated actors that happen to share the English word "session".
+"""
+type MicrosoftSessionGql {
+	authenticated: Boolean!
+	account: String
+}
+
+"""
 ISO 8601 calendar date without timezone.
 Format: %Y-%m-%d
 
@@ -1318,12 +1367,33 @@ type SearchableTaskGql {
 	status: TaskStatusGql!
 }
 
-"""
-Microsoft session status returned by the `session` query.
-"""
 type SessionGql {
-	authenticated: Boolean!
-	account: String
+	"""
+	The Claude Code session id. A `String`, not an `ID`: it is minted by another
+	program and is never a row id of ours to resolve.
+	"""
+	id: String!
+	taskId: ID
+	task: SessionTaskSummaryGql
+	mode: SessionModeGql!
+	label: String
+	startedAt: DateTime!
+	lastSeenAt: DateTime!
+	lastFlushAt: DateTime
+	endedAt: DateTime
+}
+
+"""
+What a session was told to do with its worklog.
+"""
+enum SessionModeGql {
+	TRACKING
+	OFF
+}
+
+type SessionTaskSummaryGql {
+	id: ID!
+	title: String!
 }
 
 type SignalMappingGql {
@@ -1345,6 +1415,14 @@ type SkippedMemoryFileGql {
 	`already_imported` | `no_frontmatter` | `no_title`.
 	"""
 	reason: String!
+}
+
+"""
+Which projection owns an activity slot.
+"""
+enum SlotSourceGql {
+	WORKLOG
+	MANUAL
 }
 
 """
@@ -1749,6 +1827,10 @@ type WorklogEntryGql {
 	`Some` for recurring instances, `None` for one-shot tasks.
 	"""
 	occurrenceDate: NaiveDate
+	"""
+	The session that wrote this entry. Null is the human, working by hand.
+	"""
+	sessionId: String
 }
 
 """

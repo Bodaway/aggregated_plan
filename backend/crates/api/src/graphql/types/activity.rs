@@ -70,6 +70,16 @@ impl ActivitySlotGql {
     async fn created_at(&self) -> DateTime<Utc> {
         self.0.created_at
     }
+
+    /// Which session's work this slot projects. Null is the human.
+    async fn session_id(&self) -> Option<String> {
+        self.0.session_id.clone()
+    }
+
+    /// Whether the worklog projection owns this slot.
+    async fn source(&self) -> super::enums::SlotSourceGql {
+        self.0.source.into()
+    }
 }
 
 /// Input for updating an existing activity slot.

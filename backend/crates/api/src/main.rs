@@ -67,6 +67,8 @@ async fn main() {
         Arc::new(SqliteConfigRepository::new(db_pool.clone()));
     let worklog_repo: Arc<dyn application::repositories::WorklogRepository> =
         Arc::new(SqliteWorklogRepository::new(db_pool.clone()));
+    let session_repo: Arc<dyn application::repositories::SessionRepository> =
+        Arc::new(SqliteSessionRepository::new(db_pool.clone()));
 
     let default_user_id = Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap();
 
@@ -130,6 +132,7 @@ async fn main() {
         memory_file_source,
         git_connector,
         graph_token_provider: graph_token_provider.clone(),
+        session_repo,
     };
     let schema = graphql::schema::build_schema(deps);
 

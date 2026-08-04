@@ -12,13 +12,17 @@ use application::use_cases::brief as brief_uc;
 use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
+use application::use_cases::session_tracking;
 use application::use_cases::timesheet::load_reconstruction_config;
 
 use super::types::*;
 
-/// Microsoft session status returned by the `session` query.
+/// Microsoft session status returned by the `microsoftSession` query.
+///
+/// Named distinctly from the domain `SessionGql` (a Claude Code session): the two
+/// are unrelated actors that happen to share the English word "session".
 #[derive(async_graphql::SimpleObject)]
-pub struct SessionGql {
+pub struct MicrosoftSessionGql {
     pub authenticated: bool,
     pub account: Option<String>,
 }
@@ -517,7 +521,7 @@ impl QueryRoot {
     ///
     /// Reads `microsoft.refresh_token` directly from the config store (never
     /// redacted here) so `authenticated` reflects the real stored value.
-    async fn session(&self, ctx: &Context<'_>) -> Result<SessionGql> {
+    async fn microsoft_session(&self, ctx: &Context<'_>) -> Result<MicrosoftSessionGql> {
         let user_id = ctx.data::<UserId>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
         let refresh = config_repo
@@ -528,7 +532,7 @@ impl QueryRoot {
             .get(*user_id, "microsoft.account")
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(SessionGql {
+        Ok(MicrosoftSessionGql {
             authenticated: refresh.map(|s| !s.is_empty()).unwrap_or(false),
             account,
         })
@@ -762,6 +766,27 @@ impl QueryRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(entries.into_iter().map(WorklogEntryGql).collect())
+    }
+
+    /// One session by its Claude Code id.
+    async fn session(&self, ctx: &Context<'_>, id: String) -> Result<Option<SessionGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+        Ok(repo
+            .find_by_id(&id, user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .map(SessionGql))
+    }
+
+    /// Every session still open, most recently seen first.
+    async fn open_sessions(&self, ctx: &Context<'_>) -> Result<Vec<SessionGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+        let sessions = session_tracking::list_open_sessions(repo.as_ref(), user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(sessions.into_iter().map(SessionGql).collect())
     }
 
     /// Memory candidates awaiting validation (`status = PENDING`).

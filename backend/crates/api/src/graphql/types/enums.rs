@@ -488,6 +488,47 @@ impl From<MemoryStatusGql> for types::MemoryStatus {
     }
 }
 
+/// What a session was told to do with its worklog.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SessionModeGql {
+    Tracking,
+    Off,
+}
+
+impl From<types::SessionMode> for SessionModeGql {
+    fn from(m: types::SessionMode) -> Self {
+        match m {
+            types::SessionMode::Tracking => SessionModeGql::Tracking,
+            types::SessionMode::Off => SessionModeGql::Off,
+        }
+    }
+}
+
+impl From<SessionModeGql> for types::SessionMode {
+    fn from(m: SessionModeGql) -> Self {
+        match m {
+            SessionModeGql::Tracking => types::SessionMode::Tracking,
+            SessionModeGql::Off => types::SessionMode::Off,
+        }
+    }
+}
+
+/// Which projection owns an activity slot.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SlotSourceGql {
+    Worklog,
+    Manual,
+}
+
+impl From<types::SlotSource> for SlotSourceGql {
+    fn from(s: types::SlotSource) -> Self {
+        match s {
+            types::SlotSource::Worklog => SlotSourceGql::Worklog,
+            types::SlotSource::Manual => SlotSourceGql::Manual,
+        }
+    }
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DayOffScopeGql {
     Full,

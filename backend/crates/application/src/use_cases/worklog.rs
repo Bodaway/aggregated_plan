@@ -9,6 +9,9 @@ use crate::repositories::{
 };
 
 /// Add a new worklog entry. `logged_at` defaults to `now` when `None`.
+///
+/// `session_id` attributes the entry to the session that wrote it, in the same
+/// write the entry is created with — `None` is the human, working by hand.
 pub async fn add_worklog_entry(
     worklog_repo: &dyn WorklogRepository,
     user_id: UserId,
@@ -16,8 +19,10 @@ pub async fn add_worklog_entry(
     body: String,
     logged_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
+    session_id: Option<SessionId>,
 ) -> Result<WorklogEntry, AppError> {
-    let entry = WorklogEntry::new(user_id, task_id, body, logged_at.unwrap_or(now), now)?;
+    let entry = WorklogEntry::new(user_id, task_id, body, logged_at.unwrap_or(now), now)?
+        .by_session(session_id);
     worklog_repo.create(&entry).await?;
     Ok(entry)
 }
@@ -285,6 +290,7 @@ mod tests {
                 body.into(),
                 Some(Utc.with_ymd_and_hms(2026, 6, 8, at.0, at.1, 0).unwrap()),
                 from,
+                None,
             )
             .await
             .unwrap();
@@ -326,6 +332,7 @@ mod tests {
                 body.into(),
                 Some(Utc.with_ymd_and_hms(2026, 6, 8, at.0, at.1, 0).unwrap()),
                 from,
+                None,
             )
             .await
             .unwrap();
@@ -455,7 +462,7 @@ mod tests {
         let repo = FakeRepo::default();
         let uid = Uuid::new_v4();
         let tid = Uuid::new_v4();
-        let entry = add_worklog_entry(&repo, uid, tid, "x".into(), None, now())
+        let entry = add_worklog_entry(&repo, uid, tid, "x".into(), None, now(), None)
             .await
             .unwrap();
         assert_eq!(entry.logged_at, now());
@@ -469,7 +476,7 @@ mod tests {
         let earlier = DateTime::parse_from_rfc3339("2026-04-20T08:00:00+00:00")
             .unwrap()
             .with_timezone(&Utc);
-        let entry = add_worklog_entry(&repo, uid, tid, "x".into(), Some(earlier), now())
+        let entry = add_worklog_entry(&repo, uid, tid, "x".into(), Some(earlier), now(), None)
             .await
             .unwrap();
         assert_eq!(entry.logged_at, earlier);
@@ -481,7 +488,7 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let tid = Uuid::new_v4();
-        let entry = add_worklog_entry(&repo, a, tid, "orig".into(), None, now())
+        let entry = add_worklog_entry(&repo, a, tid, "orig".into(), None, now(), None)
             .await
             .unwrap();
         let err = update_worklog_entry(&repo, b, entry.id, Some("hax".into()), None, now())
@@ -495,7 +502,7 @@ mod tests {
         let repo = FakeRepo::default();
         let uid = Uuid::new_v4();
         let tid = Uuid::new_v4();
-        let entry = add_worklog_entry(&repo, uid, tid, "v1".into(), None, now())
+        let entry = add_worklog_entry(&repo, uid, tid, "v1".into(), None, now(), None)
             .await
             .unwrap();
         let later = now() + chrono::Duration::seconds(30);
@@ -513,7 +520,7 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let tid = Uuid::new_v4();
-        let entry = add_worklog_entry(&repo, a, tid, "x".into(), None, now())
+        let entry = add_worklog_entry(&repo, a, tid, "x".into(), None, now(), None)
             .await
             .unwrap();
         assert!(!delete_worklog_entry(&repo, b, entry.id).await.unwrap());
@@ -525,7 +532,7 @@ mod tests {
         let repo = FakeRepo::default();
         let uid = Uuid::new_v4();
         let tid = Uuid::new_v4();
-        add_worklog_entry(&repo, uid, tid, "one".into(), None, now())
+        add_worklog_entry(&repo, uid, tid, "one".into(), None, now(), None)
             .await
             .unwrap();
         let out = list_worklog_entries(&repo, uid, WorklogFilter::default())

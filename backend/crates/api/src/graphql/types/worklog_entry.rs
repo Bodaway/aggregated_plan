@@ -55,6 +55,11 @@ impl WorklogEntryGql {
         let task = repo.find_by_id(self.0.task_id).await.ok()??;
         task.occurrence_date
     }
+
+    /// The session that wrote this entry. Null is the human, working by hand.
+    async fn session_id(&self) -> Option<String> {
+        self.0.session_id.clone()
+    }
 }
 
 /// Result of flushing worklog time into activity slots.

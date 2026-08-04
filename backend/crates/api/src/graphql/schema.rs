@@ -45,6 +45,7 @@ pub struct SchemaDeps {
     pub memory_file_source: Arc<dyn application::services::MemoryFileSource>,
     pub git_connector: Arc<dyn application::services::git_connector::GitConnector>,
     pub graph_token_provider: Arc<dyn application::services::GraphTokenProvider>,
+    pub session_repo: Arc<dyn SessionRepository>,
 }
 
 /// Build the async-graphql schema with all repository instances injected as data.
@@ -69,6 +70,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
         memory_file_source,
         git_connector,
         graph_token_provider,
+        session_repo,
     } = deps;
     // Default user for local development
     let default_user_id: UserId =
@@ -98,6 +100,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     .data(memory_file_source)
     .data(git_connector)
     .data(graph_token_provider)
+    .data(session_repo)
     .data(default_user_id)
     .finish()
 }

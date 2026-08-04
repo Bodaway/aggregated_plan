@@ -14,6 +14,7 @@ use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
 use application::use_cases::reattribution as reattribution_uc;
 use application::use_cases::recurrence as recurrence_uc;
+use application::use_cases::session_tracking;
 use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
 use infrastructure::connectors::excel::GraphExcelClient;
 use infrastructure::connectors::gryzzly::HttpGryzzlyClient;
@@ -120,13 +121,15 @@ impl MutationRoot {
         Ok(TaskGql(task))
     }
 
-    /// Add a timestamped worklog entry to a task.
+    /// Add a timestamped worklog entry to a task. `sessionId` attributes the entry
+    /// to the session that wrote it; omitted, it is the human's, working by hand.
     async fn add_worklog_entry(
         &self,
         ctx: &Context<'_>,
         task_id: ID,
         body: String,
         logged_at: Option<chrono::DateTime<chrono::Utc>>,
+        session_id: Option<String>,
     ) -> Result<WorklogEntryGql> {
         let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
         let user_id = *ctx.data::<UserId>()?;
@@ -139,10 +142,86 @@ impl MutationRoot {
             body,
             logged_at,
             chrono::Utc::now(),
+            session_id,
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(WorklogEntryGql(entry))
+    }
+
+    // ─── Session tracking mutations ───
+
+    /// Point a session at a task. Returns the task it was on before, if any, so the
+    /// caller can flush it.
+    async fn bind_session(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+        task_id: ID,
+        label: Option<String>,
+    ) -> Result<BindSessionResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+        let tid = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+
+        let outcome = session_tracking::bind_session(
+            repo.as_ref(),
+            user_id,
+            &session_id,
+            tid,
+            label,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(BindSessionResultGql {
+            previous_task_id: outcome.previous_task.map(|t| ID(t.to_string())),
+            session: SessionGql(outcome.session),
+        })
+    }
+
+    /// Record what a session was told to do. `OFF` also clears its task.
+    async fn set_session_mode(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+        mode: SessionModeGql,
+        label: Option<String>,
+    ) -> Result<SessionGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+        let session = session_tracking::set_session_mode(
+            repo.as_ref(),
+            user_id,
+            &session_id,
+            mode.into(),
+            label,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(SessionGql(session))
+    }
+
+    /// Close a session. Null when there was nothing open to close.
+    async fn end_session(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+    ) -> Result<Option<SessionGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+        Ok(session_tracking::end_session(
+            repo.as_ref(),
+            user_id,
+            &session_id,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?
+        .map(SessionGql))
     }
 
     /// Update a worklog entry's body and/or logged_at. Only provided fields change.

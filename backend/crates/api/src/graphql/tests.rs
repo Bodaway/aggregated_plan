@@ -645,6 +645,108 @@ impl application::services::GraphTokenProvider for StubGraphTokenProvider {
     }
 }
 
+/// Sessions kept in memory, mirroring the trait's semantics: `upsert` never rewrites
+/// `started_at`, `list_open` excludes ended sessions, `end` is idempotent.
+#[derive(Default)]
+struct InMemorySessionRepository {
+    rows: Mutex<Vec<Session>>,
+}
+
+#[async_trait]
+impl application::repositories::SessionRepository for InMemorySessionRepository {
+    async fn find_by_id(
+        &self,
+        id: &str,
+        user_id: UserId,
+    ) -> Result<Option<Session>, RepositoryError> {
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.id == id && s.user_id == user_id)
+            .cloned())
+    }
+
+    async fn upsert(&self, session: &Session) -> Result<(), RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        match rows.iter_mut().find(|s| s.id == session.id) {
+            Some(existing) => {
+                existing.task_id = session.task_id;
+                existing.mode = session.mode;
+                existing.label = session.label.clone();
+                existing.last_seen_at = session.last_seen_at;
+            }
+            None => rows.push(session.clone()),
+        }
+        Ok(())
+    }
+
+    async fn list_open(&self, user_id: UserId) -> Result<Vec<Session>, RepositoryError> {
+        let mut open: Vec<Session> = self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.user_id == user_id && s.is_open())
+            .cloned()
+            .collect();
+        open.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
+        Ok(open)
+    }
+
+    async fn touch(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        match rows
+            .iter_mut()
+            .find(|s| s.id == id && s.user_id == user_id && s.is_open())
+        {
+            Some(s) => {
+                s.last_seen_at = at;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn set_last_flush(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        match rows.iter_mut().find(|s| s.id == id && s.user_id == user_id) {
+            Some(s) => {
+                s.last_flush_at = Some(at);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn end(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        let mut rows = self.rows.lock().unwrap();
+        match rows.iter_mut().find(|s| s.id == id && s.user_id == user_id) {
+            Some(s) if s.is_open() => {
+                s.ended_at = Some(at);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
 // ---- Timesheet-draft in-memory repo (captures upserts) ----
 struct InMemoryTimesheetDraftRepository {
     drafts: Mutex<HashMap<(UserId, chrono::NaiveDate), domain::types::TimesheetDraft>>,
@@ -1079,6 +1181,8 @@ fn build_test_schema_with_memory(
     let memory_retriever: Arc<dyn application::services::MemoryRetriever> = memory_store;
     let memory_file_source: Arc<dyn application::services::MemoryFileSource> =
         Arc::new(StubMemoryFileSource::default());
+    let session_repo: Arc<dyn application::repositories::SessionRepository> =
+        Arc::new(InMemorySessionRepository::default());
 
     Schema::build(
         CombinedQuery(QueryRoot),
@@ -1104,6 +1208,7 @@ fn build_test_schema_with_memory(
     .data(memory_file_source)
     .data(git_connector)
     .data(graph_token_provider)
+    .data(session_repo)
     .data(default_user_id)
     .finish()
 }
@@ -1128,6 +1233,21 @@ fn build_memory_test_schema() -> (TestSchema, Arc<InMemoryMemoryStore>) {
         memory_store.clone(),
     );
     (schema, memory_store)
+}
+
+/// Default dependencies, plus one already-created task — for session-binding tests
+/// that need a real task id to point a session at.
+async fn schema_with_one_task() -> (TestSchema, Uuid) {
+    let schema = build_test_schema();
+    let created = schema
+        .execute(r#"mutation { createTask(input: { title: "Tracked task" }) { id } }"#)
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+    let task_id = created.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (schema, Uuid::parse_str(&task_id).unwrap())
 }
 
 // ─── Tests ───
@@ -3455,4 +3575,106 @@ async fn reject_memory_reports_an_unknown_reference_as_not_found() {
         message.contains("Not found:"),
         "an unknown id must be a not-found (exit code 2), never a generic failure, got {message:?}"
     );
+}
+
+// ─── Session tracking (GraphQL surface) ───
+
+#[tokio::test]
+async fn bind_session_then_read_it_back() {
+    let (schema, task_id) = schema_with_one_task().await;
+
+    let bind = schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}", label: "/tmp/x") {{
+                 session {{ id mode taskId label }} previousTaskId }} }}"#
+        ))
+        .await;
+    assert!(bind.errors.is_empty(), "{:?}", bind.errors);
+    let data = bind.data.into_json().unwrap();
+    assert_eq!(data["bindSession"]["session"]["mode"], "TRACKING");
+    assert_eq!(data["bindSession"]["session"]["taskId"], task_id.to_string());
+    assert!(data["bindSession"]["previousTaskId"].is_null());
+
+    let read = schema
+        .execute(r#"{ session(id: "s1") { id mode label } }"#)
+        .await;
+    assert!(read.errors.is_empty(), "{:?}", read.errors);
+    assert_eq!(read.data.into_json().unwrap()["session"]["label"], "/tmp/x");
+}
+
+#[tokio::test]
+async fn set_session_mode_off_clears_the_task() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+
+    let off = schema
+        .execute(r#"mutation { setSessionMode(sessionId: "s1", mode: OFF) { mode taskId } }"#)
+        .await;
+
+    assert!(off.errors.is_empty(), "{:?}", off.errors);
+    let data = off.data.into_json().unwrap();
+    assert_eq!(data["setSessionMode"]["mode"], "OFF");
+    assert!(data["setSessionMode"]["taskId"].is_null());
+}
+
+#[tokio::test]
+async fn open_sessions_excludes_an_ended_one() {
+    let (schema, task_id) = schema_with_one_task().await;
+    for id in ["s1", "s2"] {
+        schema
+            .execute(format!(
+                r#"mutation {{ bindSession(sessionId: "{id}", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+            ))
+            .await;
+    }
+    schema
+        .execute(r#"mutation { endSession(sessionId: "s2") { id endedAt } }"#)
+        .await;
+
+    let open = schema.execute(r#"{ openSessions { id } }"#).await;
+
+    assert!(open.errors.is_empty(), "{:?}", open.errors);
+    let list = open.data.into_json().unwrap()["openSessions"].clone();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["id"], "s1");
+}
+
+#[tokio::test]
+async fn an_entry_carries_the_session_that_wrote_it() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait", sessionId: "s1") {{ id sessionId }} }}"#
+        ))
+        .await;
+
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+    assert_eq!(
+        added.data.into_json().unwrap()["addWorklogEntry"]["sessionId"],
+        "s1"
+    );
+}
+
+#[tokio::test]
+async fn an_entry_without_a_session_is_the_humans() {
+    let (schema, task_id) = schema_with_one_task().await;
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait") {{ sessionId }} }}"#
+        ))
+        .await;
+
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+    assert!(added.data.into_json().unwrap()["addWorklogEntry"]["sessionId"].is_null());
 }
