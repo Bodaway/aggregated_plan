@@ -121,7 +121,7 @@ type AttributedBlockGql {
 A bind, and the task the session was on before it — which the caller flushes.
 """
 type BindSessionResultGql {
-	session: SessionGql!
+	session: ClaudeSessionGql!
 	previousTaskId: ID
 }
 
@@ -215,6 +215,22 @@ enum BriefVariantGql {
 	MORNING
 }
 
+type ClaudeSessionGql {
+	"""
+	The Claude Code session id. A `String`, not an `ID`: it is minted by another
+	program and is never a row id of ours to resolve.
+	"""
+	id: String!
+	taskId: ID
+	task: SessionTaskSummaryGql
+	mode: SessionModeGql!
+	label: String
+	startedAt: DateTime!
+	lastSeenAt: DateTime!
+	lastFlushAt: DateTime
+	endedAt: DateTime
+}
+
 """
 Combined mutation root that merges the base MutationRoot with future module roots.
 """
@@ -258,11 +274,11 @@ type CombinedMutation {
 	"""
 	Record what a session was told to do. `OFF` also clears its task.
 	"""
-	setSessionMode(sessionId: String!, mode: SessionModeGql!, label: String): SessionGql!
+	setSessionMode(sessionId: String!, mode: SessionModeGql!, label: String): ClaudeSessionGql!
 	"""
 	Close a session. Null when there was nothing open to close.
 	"""
-	endSession(sessionId: String!): SessionGql
+	endSession(sessionId: String!): ClaudeSessionGql
 	"""
 	Update a worklog entry's body and/or logged_at. Only provided fields change.
 	"""
@@ -594,7 +610,7 @@ type CombinedQuery {
 	Reads `microsoft.refresh_token` directly from the config store (never
 	redacted here) so `authenticated` reflects the real stored value.
 	"""
-	microsoftSession: MicrosoftSessionGql!
+	session: SessionGql!
 	"""
 	List worklog entries for the authenticated user.
 	
@@ -658,13 +674,17 @@ type CombinedQuery {
 	"""
 	unconsolidatedWorklogEntries(limit: Int! = 200): [WorklogEntryGql!]!
 	"""
-	One session by its Claude Code id.
+	One Claude Code session by its harness-minted id.
+	
+	Named `claudeSession`, not `session`: that name is already the Microsoft-OAuth
+	status query above, and the two are unrelated actors that happen to share the
+	English word "session".
 	"""
-	session(id: String!): SessionGql
+	claudeSession(id: String!): ClaudeSessionGql
 	"""
-	Every session still open, most recently seen first.
+	Every Claude Code session still open, most recently seen first.
 	"""
-	openSessions: [SessionGql!]!
+	openClaudeSessions: [ClaudeSessionGql!]!
 	"""
 	Memory candidates awaiting validation (`status = PENDING`).
 	"""
@@ -1030,17 +1050,6 @@ type MergeMemoryResultGql {
 }
 
 """
-Microsoft session status returned by the `microsoftSession` query.
-
-Named distinctly from the domain `SessionGql` (a Claude Code session): the two
-are unrelated actors that happen to share the English word "session".
-"""
-type MicrosoftSessionGql {
-	authenticated: Boolean!
-	account: String
-}
-
-"""
 ISO 8601 calendar date without timezone.
 Format: %Y-%m-%d
 
@@ -1367,20 +1376,12 @@ type SearchableTaskGql {
 	status: TaskStatusGql!
 }
 
+"""
+Microsoft session status returned by the `session` query.
+"""
 type SessionGql {
-	"""
-	The Claude Code session id. A `String`, not an `ID`: it is minted by another
-	program and is never a row id of ours to resolve.
-	"""
-	id: String!
-	taskId: ID
-	task: SessionTaskSummaryGql
-	mode: SessionModeGql!
-	label: String
-	startedAt: DateTime!
-	lastSeenAt: DateTime!
-	lastFlushAt: DateTime
-	endedAt: DateTime
+	authenticated: Boolean!
+	account: String
 }
 
 """

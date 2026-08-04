@@ -3577,6 +3577,22 @@ async fn reject_memory_reports_an_unknown_reference_as_not_found() {
     );
 }
 
+/// Regression for the naming collision between the pre-existing Microsoft-OAuth
+/// `session` query and the new Claude-session surface below: the argument-less
+/// `{ session { authenticated account } }` the frontend's `use-session.ts` sends
+/// must keep resolving under its original name, unmodified by this feature.
+#[tokio::test]
+async fn microsoft_session_query_resolves_without_an_id_argument() {
+    let schema = build_test_schema();
+    let result = schema
+        .execute(r#"{ session { authenticated account } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["session"]["authenticated"], false);
+    assert!(data["session"]["account"].is_null());
+}
+
 // ─── Session tracking (GraphQL surface) ───
 
 #[tokio::test]
@@ -3596,10 +3612,10 @@ async fn bind_session_then_read_it_back() {
     assert!(data["bindSession"]["previousTaskId"].is_null());
 
     let read = schema
-        .execute(r#"{ session(id: "s1") { id mode label } }"#)
+        .execute(r#"{ claudeSession(id: "s1") { id mode label } }"#)
         .await;
     assert!(read.errors.is_empty(), "{:?}", read.errors);
-    assert_eq!(read.data.into_json().unwrap()["session"]["label"], "/tmp/x");
+    assert_eq!(read.data.into_json().unwrap()["claudeSession"]["label"], "/tmp/x");
 }
 
 #[tokio::test]
@@ -3635,10 +3651,10 @@ async fn open_sessions_excludes_an_ended_one() {
         .execute(r#"mutation { endSession(sessionId: "s2") { id endedAt } }"#)
         .await;
 
-    let open = schema.execute(r#"{ openSessions { id } }"#).await;
+    let open = schema.execute(r#"{ openClaudeSessions { id } }"#).await;
 
     assert!(open.errors.is_empty(), "{:?}", open.errors);
-    let list = open.data.into_json().unwrap()["openSessions"].clone();
+    let list = open.data.into_json().unwrap()["openClaudeSessions"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["id"], "s1");
 }

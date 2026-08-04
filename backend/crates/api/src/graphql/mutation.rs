@@ -178,7 +178,7 @@ impl MutationRoot {
 
         Ok(BindSessionResultGql {
             previous_task_id: outcome.previous_task.map(|t| ID(t.to_string())),
-            session: SessionGql(outcome.session),
+            session: ClaudeSessionGql(outcome.session),
         })
     }
 
@@ -189,7 +189,7 @@ impl MutationRoot {
         session_id: String,
         mode: SessionModeGql,
         label: Option<String>,
-    ) -> Result<SessionGql> {
+    ) -> Result<ClaudeSessionGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
         let session = session_tracking::set_session_mode(
@@ -202,7 +202,7 @@ impl MutationRoot {
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(SessionGql(session))
+        Ok(ClaudeSessionGql(session))
     }
 
     /// Close a session. Null when there was nothing open to close.
@@ -210,7 +210,7 @@ impl MutationRoot {
         &self,
         ctx: &Context<'_>,
         session_id: String,
-    ) -> Result<Option<SessionGql>> {
+    ) -> Result<Option<ClaudeSessionGql>> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
         Ok(session_tracking::end_session(
@@ -221,7 +221,7 @@ impl MutationRoot {
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?
-        .map(SessionGql))
+        .map(ClaudeSessionGql))
     }
 
     /// Update a worklog entry's body and/or logged_at. Only provided fields change.

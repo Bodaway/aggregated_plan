@@ -9,10 +9,14 @@ use domain::types::Session;
 use super::enums::SessionModeGql;
 
 /// GraphQL wrapper for the domain Session entity.
-pub struct SessionGql(pub Session);
+///
+/// Named `ClaudeSessionGql`, not `SessionGql`: `query.rs` already has a `SessionGql`
+/// for the unrelated Microsoft-OAuth status query, and the two must not collide —
+/// async-graphql registers type names globally.
+pub struct ClaudeSessionGql(pub Session);
 
 #[Object]
-impl SessionGql {
+impl ClaudeSessionGql {
     /// The Claude Code session id. A `String`, not an `ID`: it is minted by another
     /// program and is never a row id of ours to resolve.
     async fn id(&self) -> String {
@@ -67,6 +71,6 @@ pub struct SessionTaskSummaryGql {
 /// A bind, and the task the session was on before it — which the caller flushes.
 #[derive(SimpleObject)]
 pub struct BindSessionResultGql {
-    pub session: SessionGql,
+    pub session: ClaudeSessionGql,
     pub previous_task_id: Option<ID>,
 }
