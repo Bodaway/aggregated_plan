@@ -192,6 +192,30 @@ impl ActivitySlotRepository for SqliteActivitySlotRepository {
 
         Ok(())
     }
+
+    async fn set_source(
+        &self,
+        ids: &[ActivitySlotId],
+        source: SlotSource,
+    ) -> Result<u64, RepositoryError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("UPDATE activity_slots SET source = ? WHERE id IN ({placeholders})");
+        let mut query = sqlx::query(&sql).bind(slot_source_to_str(source));
+        for id in ids {
+            query = query.bind(id.to_string());
+        }
+        let result = query
+            .execute(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(result.rows_affected())
+    }
 }
 
 #[cfg(test)]

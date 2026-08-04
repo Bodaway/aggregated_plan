@@ -67,6 +67,38 @@ async fn main() {
         Arc::new(SqliteConfigRepository::new(db_pool.clone()));
     let worklog_repo: Arc<dyn application::repositories::WorklogRepository> =
         Arc::new(SqliteWorklogRepository::new(db_pool.clone()));
+
+    let default_user_id = Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap();
+
+    // Migration 014 leaves `activity_slots.source` NULL. Classify those rows once,
+    // from the data itself, before anything can rebuild a half-day: a NULL is read
+    // as `Manual`, so an unclassified flush-derived slot would survive a rebuild and
+    // the same morning would be counted twice.
+    match application::use_cases::slot_classification::classify_slot_sources(
+        activity_repo.as_ref(),
+        worklog_repo.as_ref(),
+        config_repo.as_ref(),
+        default_user_id,
+        chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("static date"),
+        chrono::Utc::now().date_naive(),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(outcome) if outcome.skipped => {
+            tracing::debug!("slot provenance already classified");
+        }
+        Ok(outcome) => tracing::info!(
+            worklog = outcome.worklog,
+            manual = outcome.manual,
+            "classified pre-014 activity slot provenance"
+        ),
+        // A failure here must not stop the server: every unclassified row reads as
+        // `Manual`, which is the conservative value, and the pass retries on the
+        // next boot because the guard key was never written.
+        Err(e) => tracing::error!("slot provenance classification failed: {e}"),
+    }
+
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
     let gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository> =
@@ -134,9 +166,6 @@ async fn main() {
         println!("{}", schema.sdl());
         return;
     }
-
-    let default_user_id =
-        Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap();
 
     let mut app = Router::new()
         .route("/graphql", post(graphql::schema::graphql_handler))

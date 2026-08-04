@@ -39,4 +39,20 @@ pub trait ActivitySlotRepository: Send + Sync {
 
     /// Delete an activity slot by its identifier.
     async fn delete(&self, id: ActivitySlotId) -> Result<(), RepositoryError>;
+
+    /// Stamp `source` on the given slots. Returns how many rows moved.
+    ///
+    /// Loud default, like the rest of the added trait methods in this crate: a double
+    /// that silently reported `0` would make the classification pass look finished
+    /// while every row stayed NULL — and a NULL row is one a rebuild will not touch,
+    /// so the failure would surface weeks later as a double-counted morning.
+    async fn set_source(
+        &self,
+        _ids: &[ActivitySlotId],
+        _source: SlotSource,
+    ) -> Result<u64, RepositoryError> {
+        Err(RepositoryError::Database(
+            "set_source is not implemented by this repository".into(),
+        ))
+    }
 }
