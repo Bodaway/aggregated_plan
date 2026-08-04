@@ -168,4 +168,109 @@ mod migration_tests {
         .await
         .expect("timesheet_ready must be storable after 013");
     }
+
+    #[tokio::test]
+    async fn migrations_create_the_sessions_table() {
+        let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1, "014 must create the sessions table");
+    }
+
+    #[tokio::test]
+    async fn migrations_add_the_authorship_and_provenance_columns() {
+        let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
+        for (table, column) in [
+            ("worklog_entries", "session_id"),
+            ("activity_slots", "session_id"),
+            ("activity_slots", "source"),
+        ] {
+            let names: Vec<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info(?)")
+                    .bind(table)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert!(
+                names.iter().any(|(n,)| n == column),
+                "{table}.{column} should exist after 014"
+            );
+        }
+    }
+
+    /// `mode` is the one column a wrong write would make meaningless: a session
+    /// neither tracking nor off has no defined behaviour, so the store refuses it.
+    #[tokio::test]
+    async fn the_sessions_table_rejects_an_unknown_mode() {
+        let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
+        let result = sqlx::query(
+            "INSERT INTO sessions (id, user_id, mode, started_at, last_seen_at)
+             VALUES ('s1', '00000000-0000-0000-0000-000000000001', 'maybe',
+                     '2026-08-04T09:00:00+00:00', '2026-08-04T09:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(result.is_err(), "the CHECK on mode must reject `maybe`");
+    }
+
+    /// Adding a column to a populated table is the failure mode of an `ALTER`
+    /// that SQLite would rather reject than migrate: the existing rows must all
+    /// still be there, with the new columns null.
+    #[tokio::test]
+    async fn the_new_columns_leave_existing_rows_untouched() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let mut migrator = sqlx::migrate!("../../../migrations/sqlite");
+        let all = migrator.migrations.to_vec();
+        assert!(
+            all.iter().any(|m| m.version == 14),
+            "014 must be part of the embedded set"
+        );
+
+        migrator.migrations = Cow::Owned(all.iter().filter(|m| m.version < 14).cloned().collect());
+        migrator.run(&pool).await.expect("001..013 apply");
+
+        sqlx::query(
+            "INSERT INTO users (id, name, email, created_at)
+             VALUES ('00000000-0000-0000-0000-000000000001', 'T', 't@example.test', '2026-08-04T09:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tasks (id, user_id, title, source, status, urgency, impact, created_at, updated_at)
+             VALUES ('t1', '00000000-0000-0000-0000-000000000001', 'Tâche', 'personal', 'todo', 2, 2,
+                     '2026-08-04T09:00:00+00:00', '2026-08-04T09:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO activity_slots (id, user_id, task_id, start_time, end_time, half_day, date, created_at)
+             VALUES ('sl1', '00000000-0000-0000-0000-000000000001', 't1',
+                     '2026-08-04T09:00:00+00:00', '2026-08-04T11:00:00+00:00', 'morning',
+                     '2026-08-04', '2026-08-04T11:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrator.ignore_missing = true;
+        migrator.migrations = Cow::Owned(all.iter().filter(|m| m.version == 14).cloned().collect());
+        migrator.run(&pool).await.expect("014 applies");
+
+        let rows: Vec<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT id, session_id, source FROM activity_slots ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![("sl1".to_string(), None, None)],
+            "the row survives and its new columns are null"
+        );
+    }
 }
