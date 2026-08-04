@@ -28,9 +28,11 @@ pub const MIN_BLOCK_MINUTES: i64 = 1;
 /// a build wait, with the work never interrupted. A fifteen-minute threshold assumes a
 /// dense cadence the journal does not have, and under-counts badly — measured at −73% on
 /// a real day. Forty-five excludes a genuine break while tolerating a sparse cadence.
-/// The gap distribution of 2026-08-03 says the same (45 gaps): 43 of 15 minutes or less,
-/// **none** between 16 and 30 minutes, two between 31 and 45, and one of 2h53 — the
-/// inflection sits between 30 and 45, not at 15.
+/// The gap distribution of 2026-08-03 says the same (25 gaps between its 26 distinct
+/// timestamps): 20 of five to fifteen minutes, two of **15'02 and 15'10** — cut by a
+/// fifteen-minute threshold on seconds alone — two of 37'08 and 43'02, nothing between
+/// 46 and 60 minutes, and one stop of 2h53. The inflection sits between 45 minutes and
+/// an hour, not at 15.
 ///
 /// A constant rather than a configuration key: it is a business rule, and a threshold
 /// that varied per user would make two people's hours incomparable.
