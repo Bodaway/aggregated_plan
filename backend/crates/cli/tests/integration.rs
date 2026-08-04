@@ -22,8 +22,16 @@ async fn mock_graphql(body: serde_json::Value) -> MockServer {
     server
 }
 
+/// The harness exports `CLAUDE_CODE_SESSION_ID` into every Bash call, including
+/// the one running this suite. Stripped here, once, so every test is env-clean
+/// by construction instead of by discipline: a test that does not deliberately
+/// set the variable can never silently exercise the session branch and pass
+/// for the wrong reason. A test that wants the opposite sets it explicitly —
+/// see `the_session_id_is_picked_up_from_the_environment`.
 fn aplan() -> Command {
-    Command::cargo_bin("aplan").unwrap()
+    let mut cmd = Command::cargo_bin("aplan").unwrap();
+    cmd.env_remove("CLAUDE_CODE_SESSION_ID");
+    cmd
 }
 
 /// Canonical hydrated task title. `resolve_task` now issues `GetTask` to
@@ -1125,13 +1133,10 @@ async fn start_log_stop_pointer_lifecycle_stop_clears_pointer() {
 // Task 9 — `--session`, resolution order, `session`/`sessions` commands
 // ---------------------------------------------------------------------------
 
-/// Session-aware flows must never inherit the developer's own session id: the suite
-/// runs inside a Claude Code session, where `CLAUDE_CODE_SESSION_ID` is exported into
-/// every command. Without this the test exercises a different branch than it claims.
+/// `aplan()` is env-clean by construction now; this is kept as a readable alias
+/// for the tests below that want to say explicitly "no session is bound here".
 fn aplan_no_session() -> Command {
-    let mut cmd = Command::cargo_bin("aplan").unwrap();
-    cmd.env_remove("CLAUDE_CODE_SESSION_ID");
-    cmd
+    aplan()
 }
 
 /// `claudeSession(id:)` response body. The field is `claudeSession`, not `session` —
@@ -1332,4 +1337,64 @@ async fn session_off_persists_the_decision() {
         .assert()
         .success()
         .stdout(predicate::str::contains("not tracking"));
+}
+
+/// `aplan remember` deliberately does not follow the worklog verbs' refusal
+/// rule. With no `--task`, no session, and nothing tracked, it must still
+/// succeed — an unattached memory, not exit 4.
+fn remember_body() -> serde_json::Value {
+    json!({
+        "data": { "remember": {
+            "id": "00000000-0000-0000-0000-000000000040",
+            "kind": "FACT",
+            "title": "les tests passent",
+            "body": null,
+            "occurredAt": "2026-08-04T10:00:00+00:00",
+            "recordedAt": "2026-08-04T10:00:00+00:00",
+            "status": "PENDING",
+            "source": "CLAUDE_SESSION",
+            "projectId": null,
+            "taskId": null,
+            "stakeholders": [],
+            "proposedSupersedes": null,
+            "contradicts": null
+        } }
+    })
+}
+
+#[tokio::test]
+async fn remember_with_nothing_tracked_creates_an_unattached_memory() {
+    let server = mock_graphql(remember_body()).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "remember", "les tests passent"])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn remember_with_an_off_session_still_succeeds_unattached() {
+    // Unlike `log`, an `OFF` session must not refuse `remember`: the
+    // SessionStart hook already routes such a session to memories, not the
+    // worklog, so the worklog's exit-4 rule does not apply here.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("OFF", None)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Remember"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(remember_body()))
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "--session", "s1", "remember", "les tests passent"])
+        .assert()
+        .success();
 }

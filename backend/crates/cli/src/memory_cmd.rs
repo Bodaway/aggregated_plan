@@ -3,13 +3,14 @@
 
 use crate::cli::MemoryKindArg;
 use crate::client::{Client, ClientError};
-use crate::lookup::{resolve_target, resolve_task, LookupError};
+use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    brief as brief_query, get_memory, inbox_accept, inbox_merge, inbox_reject, list_projects,
-    memory_import, memory_supersede, pending_memories, recall_memories, remember as remember_op,
-    Brief as BriefQuery, GetMemory, InboxAccept, InboxMerge, InboxReject, ListProjects,
-    MemoryImport, MemorySupersede, PendingMemories, RecallMemories, Remember,
+    brief as brief_query, claude_session, get_memory, inbox_accept, inbox_merge, inbox_reject,
+    list_projects, memory_import, memory_supersede, pending_memories, recall_memories,
+    remember as remember_op, Brief as BriefQuery, ClaudeSession, GetMemory, InboxAccept,
+    InboxMerge, InboxReject, ListProjects, MemoryImport, MemorySupersede, PendingMemories,
+    RecallMemories, Remember,
 };
 
 /// Map a transport/GraphQL failure onto the exit-code contract.
@@ -97,6 +98,50 @@ fn resolve_project(client: &Client, token: &str) -> Result<String, LookupError> 
     }
 }
 
+/// `remember`'s own task resolution — deliberately NOT `lookup::resolve_target`.
+///
+/// The worklog verbs (`log`/`note`/`status`/`done`) refuse with exit 4 when a
+/// session declined tracking, because a wrong attribution there is billable
+/// time on the wrong task — the whole point of this feature. A memory carries
+/// no such risk: the user's own SessionStart hook already tells an `OFF`
+/// session to write to `memories`, not to the worklog, because the worklog's
+/// rules do not apply there either. So "ne pas tracker" is a statement about
+/// time, not about whether a Claude may record what it learned — refusing a
+/// memory for it would lose information for no safety gain.
+///
+/// `--task` still wins outright. Otherwise: a session that is `TRACKING` with
+/// a task bound attaches to it; anything else — no session, `OFF`, ended, no
+/// task bound, or even a session id unknown to aplan — leaves the memory
+/// unattached and NEVER refuses. A future "fix" that routes this through
+/// `resolve_target` would reintroduce exactly the regression this asymmetry
+/// exists to avoid: today, a bare `aplan remember` with nothing tracked
+/// creates a task-less memory rather than erroring, and that must keep working
+/// whether or not a session happens to be present.
+fn resolve_remember_task(
+    client: &Client,
+    session: Option<&str>,
+    task: Option<&str>,
+) -> Result<Option<String>, LookupError> {
+    if let Some(token) = task {
+        return resolve_task(client, Some(token)).map(|t| Some(t.id));
+    }
+    let Some(sid) = session.filter(|s| !s.trim().is_empty()) else {
+        return Ok(None);
+    };
+
+    let result = client.run::<ClaudeSession>(claude_session::Variables { id: sid.to_string() })?;
+    let Some(found) = result.data.claude_session else {
+        return Ok(None);
+    };
+    if found.ended_at.is_some() {
+        return Ok(None);
+    }
+    if !matches!(found.mode, claude_session::SessionModeGql::TRACKING) {
+        return Ok(None);
+    }
+    Ok(found.task_id.filter(|t| !t.is_empty()))
+}
+
 /// Lowercase display form of a codegen'd GraphQL enum (`DECISION` → `decision`).
 fn enum_label<T: std::fmt::Debug>(value: &T) -> String {
     format!("{value:?}").to_lowercase()
@@ -174,29 +219,14 @@ pub fn remember(
         },
     };
 
-    // A memory is valid with no task at all — unlike log/note/status/done, this
-    // verb has never fallen back onto the global pointer when nothing is given.
-    // `--task` still wins outright; absent that, attach to the session's task
-    // when a session is present (refusing the same three ways `resolve_target`
-    // does), otherwise leave it unattached exactly as before.
-    let task_id = if let Some(token) = task {
-        match resolve_task(&client, Some(token)) {
-            Ok(t) => Some(t.id),
-            Err(e) => {
-                eprintln!("error: {e}");
-                return e.exit_code();
-            }
+    // See `resolve_remember_task` for why this never refuses, unlike the
+    // worklog verbs.
+    let task_id = match resolve_remember_task(&client, session, task) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return e.exit_code();
         }
-    } else if let Some(sid) = session.filter(|s| !s.trim().is_empty()) {
-        match resolve_target(&client, Some(sid), None) {
-            Ok(t) => Some(t.id),
-            Err(e) => {
-                eprintln!("error: {e}");
-                return e.exit_code();
-            }
-        }
-    } else {
-        None
     };
 
     let vars = remember_op::Variables {
