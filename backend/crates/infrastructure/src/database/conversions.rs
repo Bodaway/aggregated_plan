@@ -59,6 +59,39 @@ mod tests {
         assert_eq!(alert_type_to_str(AlertType::TimesheetReady), "timesheet_ready");
         assert_eq!(alert_type_from_str("timesheet_ready"), AlertType::TimesheetReady);
     }
+
+    #[test]
+    fn session_mode_round_trips() {
+        for mode in [SessionMode::Tracking, SessionMode::Off] {
+            assert_eq!(session_mode_from_str(session_mode_to_str(mode)), mode);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_session_mode_falls_back_to_off() {
+        // A row we cannot interpret must not be able to log. Reading it as
+        // `tracking` would make a corrupt row write to a task nobody chose.
+        assert_eq!(session_mode_from_str("garbage"), SessionMode::Off);
+    }
+
+    #[test]
+    fn slot_source_round_trips() {
+        for source in [SlotSource::Worklog, SlotSource::Manual] {
+            assert_eq!(
+                slot_source_from_str(Some(slot_source_to_str(source))),
+                source
+            );
+        }
+    }
+
+    #[test]
+    fn an_unclassified_slot_reads_as_manual() {
+        // Migration 014 leaves historical rows NULL until the classification pass
+        // runs. A NULL read as `worklog` would let a rebuild delete a slot whose
+        // provenance nobody has established yet.
+        assert_eq!(slot_source_from_str(None), SlotSource::Manual);
+        assert_eq!(slot_source_from_str(Some("nonsense")), SlotSource::Manual);
+    }
 }
 
 // --- TaskStatus ---
@@ -229,5 +262,35 @@ pub fn task_link_type_from_str(s: &str) -> TaskLinkType {
         "manual_merged" => TaskLinkType::ManualMerged,
         "rejected" => TaskLinkType::Rejected,
         _ => TaskLinkType::AutoMerged,
+    }
+}
+
+// --- SessionMode ---
+
+pub fn session_mode_to_str(m: SessionMode) -> &'static str {
+    m.as_str()
+}
+
+/// Anything unreadable is `Off`: a row we cannot interpret must not be able to log.
+pub fn session_mode_from_str(s: &str) -> SessionMode {
+    SessionMode::parse(s).unwrap_or(SessionMode::Off)
+}
+
+// --- SlotSource ---
+
+pub fn slot_source_to_str(s: SlotSource) -> &'static str {
+    match s {
+        SlotSource::Worklog => "worklog",
+        SlotSource::Manual => "manual",
+    }
+}
+
+/// NULL and anything unrecognised are `Manual` — the value nothing rebuilds.
+/// Migration 014 leaves pre-existing rows NULL on purpose, and the safe reading of
+/// "provenance unknown" is "do not touch it".
+pub fn slot_source_from_str(s: Option<&str>) -> SlotSource {
+    match s {
+        Some("worklog") => SlotSource::Worklog,
+        _ => SlotSource::Manual,
     }
 }

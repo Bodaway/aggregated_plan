@@ -68,9 +68,8 @@ fn map_activity_slot_row(row: &SqliteRow) -> Result<ActivitySlot, RepositoryErro
             RepositoryError::Database(format!("Failed to parse date '{}': {}", date_str, e))
         })?,
         created_at: parse_datetime(&created_at_str)?,
-        // Task 6 reads the `session_id`/`source` columns migration 014 added.
-        session_id: None,
-        source: SlotSource::Manual,
+        session_id: Row::get(row, "session_id"),
+        source: slot_source_from_str(Row::get::<Option<String>, _>(row, "source").as_deref()),
     })
 }
 
@@ -126,8 +125,8 @@ impl ActivitySlotRepository for SqliteActivitySlotRepository {
 
     async fn save(&self, slot: &ActivitySlot) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT INTO activity_slots (id, user_id, task_id, start_time, end_time, half_day, date, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO activity_slots (id, user_id, task_id, start_time, end_time, half_day, date, created_at, session_id, source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(slot.id.to_string())
         .bind(slot.user_id.to_string())
@@ -137,6 +136,8 @@ impl ActivitySlotRepository for SqliteActivitySlotRepository {
         .bind(half_day_to_str(slot.half_day))
         .bind(slot.date.format("%Y-%m-%d").to_string())
         .bind(slot.created_at.to_rfc3339())
+        .bind(slot.session_id.as_deref())
+        .bind(slot_source_to_str(slot.source))
         .execute(&self.pool)
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
@@ -146,13 +147,15 @@ impl ActivitySlotRepository for SqliteActivitySlotRepository {
 
     async fn update(&self, slot: &ActivitySlot) -> Result<(), RepositoryError> {
         sqlx::query(
-            "UPDATE activity_slots SET task_id = ?, start_time = ?, end_time = ?, half_day = ?, date = ? WHERE id = ?",
+            "UPDATE activity_slots SET task_id = ?, start_time = ?, end_time = ?, half_day = ?, date = ?, session_id = ?, source = ? WHERE id = ?",
         )
         .bind(slot.task_id.map(|id| id.to_string()))
         .bind(slot.start_time.to_rfc3339())
         .bind(slot.end_time.map(|dt| dt.to_rfc3339()))
         .bind(half_day_to_str(slot.half_day))
         .bind(slot.date.format("%Y-%m-%d").to_string())
+        .bind(slot.session_id.as_deref())
+        .bind(slot_source_to_str(slot.source))
         .bind(slot.id.to_string())
         .execute(&self.pool)
         .await
@@ -206,11 +209,27 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            "INSERT INTO tasks (id, user_id, title, source, status, urgency, impact, created_at, updated_at)
+             VALUES (?, ?, 'Task', 'personal', 'todo', 2, 2, ?, ?)",
+        )
+        .bind(existing_task_id().to_string())
+        .bind(user_id().to_string())
+        .bind("2024-01-01T00:00:00+00:00")
+        .bind("2024-01-01T00:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
     }
 
     fn user_id() -> UserId {
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+    }
+
+    /// A task row `setup()` seeds, for tests whose slot carries a `task_id` FK.
+    fn existing_task_id() -> TaskId {
+        Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap()
     }
 
     fn make_slot(half_day: HalfDay, date: &str, active: bool) -> ActivitySlot {
@@ -321,5 +340,72 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2024, 6, 10).unwrap();
         let found = repo.find_by_user_and_date(user_id(), date).await.unwrap();
         assert!(found.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_slot_round_trips_its_provenance_and_author() {
+        let pool = setup().await;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 4).unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-08-04T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        // `session_id` is a FK onto `sessions(id)`: the session must exist before a
+        // slot can claim it as its author.
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, mode, started_at, last_seen_at)
+             VALUES ('sess-1', ?, 'tracking', ?, ?)",
+        )
+        .bind(user_id().to_string())
+        .bind(start.to_rfc3339())
+        .bind(start.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repo = SqliteActivitySlotRepository::new(pool);
+        let slot = ActivitySlot::from_worklog(
+            user_id(),
+            existing_task_id(),
+            Some("sess-1".into()),
+            start,
+            start + chrono::Duration::hours(2),
+            HalfDay::Morning,
+            date,
+            start,
+        );
+
+        repo.save(&slot).await.unwrap();
+        let found = repo.find_by_id(slot.id).await.unwrap().unwrap();
+
+        assert_eq!(found.source, SlotSource::Worklog);
+        assert_eq!(found.session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[tokio::test]
+    async fn a_slot_written_before_014_reads_as_manual() {
+        // The NULL the migration leaves behind must be the protected value.
+        let pool = setup().await;
+        sqlx::query(
+            "INSERT INTO activity_slots (id, user_id, task_id, start_time, end_time, half_day, date, created_at)
+             VALUES (?, ?, ?, '2026-08-04T09:00:00+00:00', '2026-08-04T11:00:00+00:00',
+                     'morning', '2026-08-04', '2026-08-04T11:00:00+00:00')",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user_id().to_string())
+        .bind(existing_task_id().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repo = SqliteActivitySlotRepository::new(pool);
+
+        // A row written before 014 has `session_id` and `source` NULL: the migration
+        // only adds the columns, it does not classify existing rows.
+        let slots = repo
+            .find_by_user_and_date(user_id(), NaiveDate::from_ymd_opt(2026, 8, 4).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].source, SlotSource::Manual);
+        assert!(slots[0].session_id.is_none());
     }
 }

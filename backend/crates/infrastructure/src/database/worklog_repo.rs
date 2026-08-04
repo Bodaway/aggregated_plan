@@ -53,8 +53,7 @@ fn map_row(row: &SqliteRow) -> Result<WorklogEntry, RepositoryError> {
         logged_at: parse_datetime(&logged_at_str)?,
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
-        // Task 6 reads the `session_id` column migration 014 added.
-        session_id: None,
+        session_id: Row::get(row, "session_id"),
     })
 }
 
@@ -62,8 +61,8 @@ fn map_row(row: &SqliteRow) -> Result<WorklogEntry, RepositoryError> {
 impl WorklogRepository for SqliteWorklogRepository {
     async fn create(&self, entry: &WorklogEntry) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT INTO worklog_entries (id, user_id, task_id, body, logged_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO worklog_entries (id, user_id, task_id, body, logged_at, created_at, updated_at, session_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(entry.id.to_string())
         .bind(entry.user_id.to_string())
@@ -72,12 +71,15 @@ impl WorklogRepository for SqliteWorklogRepository {
         .bind(entry.logged_at.to_rfc3339())
         .bind(entry.created_at.to_rfc3339())
         .bind(entry.updated_at.to_rfc3339())
+        .bind(entry.session_id.as_deref())
         .execute(&self.pool)
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
         Ok(())
     }
 
+    // `session_id` is deliberately absent from this SET clause: editing an entry's
+    // body does not change who wrote it.
     async fn update(&self, entry: &WorklogEntry) -> Result<(), RepositoryError> {
         sqlx::query(
             "UPDATE worklog_entries
@@ -1147,5 +1149,69 @@ mod tests {
         let bodies: Vec<&str> = results.iter().map(|e| e.body.as_str()).collect();
         assert!(bodies.contains(&"occ1"), "should include occ1");
         assert!(bodies.contains(&"occ2"), "should include occ2");
+    }
+
+    // ─── Session authorship (session_id) ─────────────────────────────────────
+
+    async fn seed_session(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, mode, started_at, last_seen_at)
+             VALUES (?, ?, 'tracking', ?, ?)",
+        )
+        .bind(id)
+        .bind(USER_ID)
+        .bind(now().to_rfc3339())
+        .bind(now().to_rfc3339())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_then_find_by_id_roundtrips_the_session_id() {
+        let pool = setup().await;
+        seed_session(&pool, "sess-1").await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let entry = WorklogEntry::new(uid(), tid(), "hello".into(), now(), now())
+            .unwrap()
+            .by_session(Some("sess-1".into()));
+        repo.create(&entry).await.unwrap();
+
+        let found = repo.find_by_id(entry.id, uid()).await.unwrap().unwrap();
+        assert_eq!(found.session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[tokio::test]
+    async fn an_entry_written_by_a_human_has_no_session_id() {
+        let pool = setup().await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let entry = WorklogEntry::new(uid(), tid(), "hand-written".into(), now(), now()).unwrap();
+        repo.create(&entry).await.unwrap();
+
+        let found = repo.find_by_id(entry.id, uid()).await.unwrap().unwrap();
+        assert!(found.session_id.is_none(), "NULL is the human, working by hand");
+    }
+
+    #[tokio::test]
+    async fn update_does_not_clear_the_session_id() {
+        let pool = setup().await;
+        seed_session(&pool, "sess-1").await;
+        let repo = SqliteWorklogRepository::new(pool);
+        let mut entry = WorklogEntry::new(uid(), tid(), "v1".into(), now(), now())
+            .unwrap()
+            .by_session(Some("sess-1".into()));
+        repo.create(&entry).await.unwrap();
+
+        entry.body = "v2".into();
+        entry.updated_at = now() + chrono::Duration::seconds(30);
+        repo.update(&entry).await.unwrap();
+
+        let found = repo.find_by_id(entry.id, uid()).await.unwrap().unwrap();
+        assert_eq!(found.body, "v2");
+        assert_eq!(
+            found.session_id.as_deref(),
+            Some("sess-1"),
+            "editing the body must not change who wrote the entry"
+        );
     }
 }
