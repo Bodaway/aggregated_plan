@@ -87,8 +87,10 @@ mois.
 ### Combien tu proposes — au plus 5 par passage
 
 **Plafond dur : 5 candidats.** Si tu en as identifié davantage, garde les 5 qui resteront vrais le
-plus longtemps et **ne marque pas** les entrées des candidats écartés : la prochaine exécution les
-reverra.
+plus longtemps. **Note au fur et à mesure les ids des entrées derrière les candidats que tu écartes** :
+ce sont les seules que l'étape 5 ne marquera pas, et la prochaine exécution les reverra. Toutes les
+autres entrées lues sont marquées, y compris celles dont il ne sortait rien — sinon la même liste
+revient chaque soir et rien n'avance jamais.
 
 Ce plafond ne protège pas la base, il protège le tri du matin. Un `aplan inbox` qui affiche trente
 lignes ne se trie pas, il se contourne — et un dispositif contourné trois matins de suite est
@@ -210,8 +212,28 @@ Une fois **toutes** les écritures de l'étape 2 et 4 revenues en code 0 :
 aplan consolidate mark --json <id> <id> <id> …
 ```
 
-Passe les ids des entrées que tu as réellement traitées — y compris celles dont tu as conclu qu'il
-n'y avait rien à en tirer : elles ont été lues, elles ne doivent pas revenir demain.
+### Quoi marquer, exactement
+
+C'est une procédure de décision, pas une appréciation. Pour chaque entrée que tu as lue :
+
+| Cas | Marquer ? |
+|---|---|
+| elle n'a produit aucun candidat | **oui** |
+| elle est derrière un candidat que tu as écrit avec succès | **oui** |
+| elle est derrière un candidat que tu as **identifié puis écarté pour tenir le plafond de 5** | **non** |
+| une de ses écritures a échoué | **non** |
+| tu hésites | **oui** |
+
+Tiens la liste des entrées du troisième cas **pendant** l'étape 2, au moment où tu écartes le
+candidat — pas reconstituée à la fin. Nomme-les dans le compte rendu.
+
+**Pourquoi « en cas de doute, marquer ».** Ne pas marquer une entrée coûte une relecture demain.
+Ne rien marquer du tout coûte le dispositif entier : la même liste reviendrait chaque soir, la
+déduplication bloquerait toute nouvelle proposition, et rien n'avancerait jamais. Le premier risque
+est borné, le second est fatal.
+
+Cette règle ne contredit pas l'ordre imposé plus bas : « marquer en dernier » dit *quand* marquer,
+ce tableau dit *quoi* marquer. Les deux tiennent ensemble.
 
 **L'ordre est la propriété qui compte.** Marquer avant d'écrire échange une panne récupérable (un
 candidat en double, que le rejet transforme en pierre tombale) contre une panne irrécupérable (une
