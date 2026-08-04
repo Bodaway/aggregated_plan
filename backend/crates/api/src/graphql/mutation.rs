@@ -135,17 +135,31 @@ impl MutationRoot {
         let user_id = *ctx.data::<UserId>()?;
         let tid = Uuid::parse_str(&task_id)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+        let now = chrono::Utc::now();
         let entry = worklog_uc::add_worklog_entry(
             repo.as_ref(),
             user_id,
             tid,
             body,
             logged_at,
-            chrono::Utc::now(),
-            session_id,
+            now,
+            session_id.clone(),
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        // Refresh the session's `last_seen_at` in the same write, so a session bound
+        // in the morning and logging all day does not look idle to the reaper. The
+        // worklog entry is the valuable part of this call: a touch failure (or a
+        // `sessionId` with no row, since nothing on this branch creates rows yet) is
+        // logged and swallowed rather than failing the write that already succeeded.
+        if let Some(sid) = session_id {
+            let session_repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+            let _ = session_repo.touch(&sid, user_id, now).await.map_err(|e| {
+                tracing::warn!("touch session {sid} after addWorklogEntry failed: {e}")
+            });
+        }
+
         Ok(WorklogEntryGql(entry))
     }
 

@@ -155,16 +155,19 @@ pub fn session(
             });
             match result {
                 Ok(r) => {
+                    // Same call `aplan start` makes: time behaviour is unchanged. This
+                    // must run before the `--json` branch's early return, not after it
+                    // — `--json` is exactly the path the (future) hooks will use, and a
+                    // rebind that skips it loses the previous task's time silently.
+                    if let Some(prev) = &r.data.bind_session.previous_task_id {
+                        flush_task(&client, prev);
+                    }
                     if json {
                         if let Err(e) = print_json(&r.raw) {
                             eprintln!("error writing output: {}", e);
                             return ExitCode::Generic;
                         }
                         return ExitCode::Success;
-                    }
-                    // Same call `aplan start` makes: time behaviour is unchanged.
-                    if let Some(prev) = &r.data.bind_session.previous_task_id {
-                        flush_task(&client, prev);
                     }
                     println!("\u{25b6} session {} \u{2192} {}", sid, target.title);
                     ExitCode::Success
