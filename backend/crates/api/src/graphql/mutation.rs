@@ -278,10 +278,12 @@ impl MutationRoot {
     ///
     /// A `sessionId` reads and advances that session's own flush window
     /// (`Session::flush_window_start()` / `SessionRepository::set_last_flush`); no
-    /// `sessionId`, or one naming no row, reads and advances the human's
-    /// `aplan.active_since` pointer instead. The two must never be crossed: sharing
-    /// one key across every task is what made flushing task B advance the mark for
-    /// task A too, losing A's time whenever two tasks interleaved.
+    /// `sessionId` at all reads and advances the human's `aplan.active_since`
+    /// pointer instead. The two must never be crossed: sharing one key across every
+    /// task is what made flushing task B advance the mark for task A too, losing
+    /// A's time whenever two tasks interleaved. A `sessionId` naming no row is
+    /// refused with an error — never a silent fallback onto the human's pointer,
+    /// which would advance a key this call never should have touched.
     async fn flush_worklog_time(
         &self,
         ctx: &Context<'_>,
@@ -292,6 +294,7 @@ impl MutationRoot {
         let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
         let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let sessions = ctx.data::<Arc<dyn SessionRepository>>()?;
         let tid = Uuid::parse_str(&task_id)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
 
@@ -299,15 +302,21 @@ impl MutationRoot {
 
         // A session flushes against its own window; the human keeps the global key.
         // Sharing one key across tasks is what made flushing task B advance the mark
-        // for task A, so the pair must never be crossed.
+        // for task A, so the pair must never be crossed. A `sessionId` naming no row
+        // is refused outright, not folded into "no session" below: a silent fallback
+        // to the human's pointer here is exactly the shape that loses track of whose
+        // time is whose. Past this point, `session == None` therefore always means
+        // no `sessionId` was given at all.
         let session = match &session_id {
-            Some(sid) => {
-                let sessions = ctx.data::<Arc<dyn SessionRepository>>()?;
+            Some(sid) => Some(
                 sessions
                     .find_by_id(sid, user_id)
                     .await
                     .map_err(|e| async_graphql::Error::new(e.to_string()))?
-            }
+                    .ok_or_else(|| {
+                        async_graphql::Error::new(format!("no session {sid} is known to aplan"))
+                    })?,
+            ),
             None => None,
         };
 
@@ -338,17 +347,17 @@ impl MutationRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
-        match (&session, &session_id) {
-            (Some(_), Some(sid)) => {
-                let sessions = ctx.data::<Arc<dyn SessionRepository>>()?;
+        // The unknown-id case already returned above, so `session` alone now
+        // expresses the two real states: found (advance its own window) or
+        // genuinely absent (advance the human's).
+        match &session {
+            Some(s) => {
                 sessions
-                    .set_last_flush(sid, user_id, outcome.active_since)
+                    .set_last_flush(&s.id, user_id, outcome.active_since)
                     .await
                     .map_err(|e| async_graphql::Error::new(e.to_string()))?;
             }
-            // No session, or an id naming no row: the human's pointer answered, so
-            // the human's key is the one to advance.
-            _ => {
+            None => {
                 configuration::set_config(
                     config_repo.as_ref(),
                     user_id,

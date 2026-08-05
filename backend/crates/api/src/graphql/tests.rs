@@ -2689,6 +2689,37 @@ async fn a_flush_without_a_session_still_uses_the_humans_pointer() {
     );
 }
 
+/// A `sessionId` naming no row must be refused outright, never folded into "no
+/// session" and silently answered from the human's pointer instead — plan 3's
+/// hooks lean on a session-scoped call never touching `aplan.active_since`
+/// (SPEC_TECHNIQUE.md §15.1). Before the fix, the unmatched `(None, Some(sid))`
+/// case fell into the catch-all arm and advanced the human's key anyway.
+#[tokio::test]
+async fn flush_with_an_unknown_session_id_is_refused_not_a_silent_fallback() {
+    let (schema, task_id) = schema_with_one_task().await;
+
+    let flushed = schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{task_id}", sessionId: "ghost") {{ slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(
+        !flushed.errors.is_empty(),
+        "an unknown sessionId must be refused, not silently answered"
+    );
+    assert!(
+        flushed.errors[0].message.contains("ghost"),
+        "the error should name the unknown session id, got: {:?}",
+        flushed.errors
+    );
+
+    let config = schema.execute(r#"{ configuration }"#).await;
+    assert!(
+        config.data.into_json().unwrap()["configuration"]["aplan.active_since"].is_null(),
+        "the human's pointer must be untouched by a refused session-scoped flush"
+    );
+}
+
 // ─── Reattribution Tests ───
 
 /// Seed two tasks and a local morning of worklog entries on the first one, then
