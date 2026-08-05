@@ -84,7 +84,10 @@ pub async fn list_worklog_entries(
     Ok(worklog_repo.list(user_id, &filter).await?)
 }
 
-/// Outcome of a flush: how many slots were written and the new watermark.
+/// Outcome of a flush: how many slots were written, and where the next flush's
+/// window should start from. `active_since` is always `now`, pairing exactly with
+/// the repository's half-open `[from, to)`: an entry logged at precisely `now`
+/// falls to the next flush, with no gap and no double-read.
 pub struct FlushOutcome {
     pub slots_written: u32,
     pub active_since: DateTime<Utc>,
@@ -114,8 +117,13 @@ pub async fn user_timezone(
 /// rebuild, and every entry of this task in those half-days then decides what the
 /// slots are. That inversion is the point of the whole plan. The old
 /// implementation appended slots for entries newer than a single global watermark,
-/// so flushing task B advanced the mark for task A too and A's entries were never
-/// materialized; and re-running it duplicated whatever it had already written.
+/// duplicating whatever it had already written on every re-run — this rebuild fixes
+/// that on its own. That watermark was also one key shared by every caller, so
+/// flushing one session's task could advance the mark another session's task
+/// depended on, losing that task's entries; closing that needed a caller that reads
+/// and advances each session's own window instead of the shared key
+/// (`SessionRepository::set_last_flush`), which is what plan 2's flush resolver now
+/// does.
 ///
 /// Widening the window is therefore free, and re-running is free: the operation is
 /// idempotent because it derives everything from the entries and owns only the slots
@@ -131,27 +139,37 @@ pub async fn materialize_worklog_time(
 ) -> Result<FlushOutcome, AppError> {
     let tz = user_timezone(config_repo, user_id).await?;
 
-    let filter = WorklogFilter {
-        task_ids: Some(vec![task_id]),
-        from: Some(from),
-        to: Some(now),
-        limit: WORKLOG_FILTER_MAX_LIMIT,
-        offset: 0,
-    };
-    let entries = worklog_repo.list(user_id, &filter).await?;
-    let entries = refuse_a_truncated_page(entries, "the task's affected half-days")?;
-
-    // The window's only job: which half-days did this task touch?
+    // The window's only job: which half-days did this task touch? That needs the
+    // distinct half-days, not every entry, so page through `offset` rather than
+    // refusing once a page reaches `WORKLOG_FILTER_MAX_LIMIT` — a task can carry
+    // far more than that many entries across its whole history and still have a
+    // handful of half-days to rebuild.
     let mut half_days: Vec<AffectedHalfDay> = Vec::new();
-    for entry in &entries {
-        let local = tz.from_utc_datetime(&entry.logged_at.naive_utc()).naive_local();
-        let unit = AffectedHalfDay {
-            date: local.date(),
-            half_day: half_day_of(local.time().hour()),
+    let mut offset = 0u32;
+    loop {
+        let filter = WorklogFilter {
+            task_ids: Some(vec![task_id]),
+            from: Some(from),
+            to: Some(now),
+            limit: WORKLOG_FILTER_MAX_LIMIT,
+            offset,
         };
-        if !half_days.iter().any(|u| u.date == unit.date && u.half_day == unit.half_day) {
-            half_days.push(unit);
+        let page = worklog_repo.list(user_id, &filter).await?;
+        let page_len = page.len() as u32;
+        for entry in &page {
+            let local = tz.from_utc_datetime(&entry.logged_at.naive_utc()).naive_local();
+            let unit = AffectedHalfDay {
+                date: local.date(),
+                half_day: half_day_of(local.time().hour()),
+            };
+            if !half_days.iter().any(|u| u.date == unit.date && u.half_day == unit.half_day) {
+                half_days.push(unit);
+            }
         }
+        if page_len < WORKLOG_FILTER_MAX_LIMIT {
+            break;
+        }
+        offset += WORKLOG_FILTER_MAX_LIMIT;
     }
 
     let mut written = 0u32;
@@ -917,5 +935,87 @@ mod tests {
 
         let still_there = activity.find_by_id(theirs.id).await.unwrap();
         assert!(still_there.is_some(), "another task's slot survives our flush");
+    }
+
+    /// `from` is a selector, not a watermark — but it still bounds *something*: a
+    /// half-day entirely before it must be left alone. Without this, relaxing the
+    /// selector to `from: None` on "the rebuild is idempotent anyway" reasoning
+    /// would make every flush rebuild a task's entire history, and no other test
+    /// here would go red.
+    #[tokio::test]
+    async fn a_half_day_before_the_selector_window_is_left_untouched() {
+        // Two half-days back from the current one (2026-08-04 Morning): 2026-08-03
+        // Morning, with 2026-08-03 Afternoon in between.
+        let old_at = Utc.with_ymd_and_hms(2026, 8, 3, 7, 0, 0).unwrap();
+        let (activity, worklog, config) =
+            fakes_with_entries(&[old_at, t(7, 0), t(7, 30)]).await;
+
+        let stale = ActivitySlot::from_worklog(
+            user_id(), task_id(), None,
+            old_at, old_at + chrono::Duration::minutes(MIN_BLOCK_MINUTES),
+            HalfDay::Morning, date(2026, 8, 3), old_at,
+        );
+        activity.save(&stale).await.unwrap();
+
+        // `t(6, 0)` (2026-08-04 06:00 UTC) lands well after `old_at`'s entire local
+        // half-day, so the selector must never surface it.
+        materialize_worklog_time(
+            &worklog, &activity, &config, user_id(), task_id(), t(6, 0), t(12, 0),
+        ).await.unwrap();
+
+        let untouched = activity.find_by_user_and_date(user_id(), date(2026, 8, 3)).await.unwrap();
+        assert_eq!(untouched.len(), 1, "a half-day before `from` must not be rebuilt");
+        assert_eq!(untouched[0].id, stale.id);
+        assert_eq!(untouched[0].start_time, stale.start_time);
+    }
+
+    /// The selector read only needs the *set of distinct half-days* a task
+    /// touched, not every entry — so a task whose window holds more than
+    /// `WORKLOG_FILTER_MAX_LIMIT` entries must still flush, by paging through
+    /// `offset` instead of refusing. Before this, the read's own remedy
+    /// ("narrow the range") named a parameter `flushWorklogTime` has no way to
+    /// pass, so such a task could never flush at all.
+    ///
+    /// Three half-days sized so no single one ever reaches
+    /// `plan_task_projection`'s own per-half-day cap (500, 500, 5), yet their sum
+    /// exceeds the page cap and the oldest half-day is entirely beyond the
+    /// selector's first page.
+    #[tokio::test]
+    async fn a_task_past_the_selector_page_cap_still_flushes_and_finds_every_half_day() {
+        use chrono::Duration;
+
+        let newest = Utc.with_ymd_and_hms(2026, 8, 5, 7, 0, 0).unwrap();
+        let middle = Utc.with_ymd_and_hms(2026, 8, 4, 7, 0, 0).unwrap();
+        let oldest = Utc.with_ymd_and_hms(2026, 8, 3, 7, 0, 0).unwrap();
+
+        let mut logged_ats = Vec::new();
+        for i in 0..500i64 {
+            logged_ats.push(newest + Duration::seconds(i));
+        }
+        for i in 0..500i64 {
+            logged_ats.push(middle + Duration::seconds(i));
+        }
+        for i in 0..5i64 {
+            logged_ats.push(oldest + Duration::seconds(i));
+        }
+        assert!(logged_ats.len() as u32 > WORKLOG_FILTER_MAX_LIMIT);
+
+        let (activity, worklog, config) = fakes_with_entries(&logged_ats).await;
+
+        let from = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 8, 6, 0, 0, 0).unwrap();
+        let outcome = materialize_worklog_time(
+            &worklog, &activity, &config, user_id(), task_id(), from, now,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.slots_written, 3, "each of the three half-days is one stretch");
+        for d in [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)] {
+            assert!(
+                !activity.find_by_user_and_date(user_id(), d).await.unwrap().is_empty(),
+                "half-day {d} must have been found and materialized"
+            );
+        }
     }
 }
