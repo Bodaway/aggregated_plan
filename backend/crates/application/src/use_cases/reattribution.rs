@@ -524,7 +524,16 @@ pub(crate) fn refuse_a_truncated_page(
 
 /// UTC half-open window `[start of `since`, start of the day after `until`)`,
 /// matching the repository's `logged_at >= from AND logged_at < to`.
-fn local_window(tz: &Tz, since: NaiveDate, until: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
+///
+/// `pub(crate)`: [`crate::use_cases::worklog::plan_task_projection`] needs the same
+/// local-day-to-UTC conversion to scope its own worklog read, not a second copy of
+/// it — two implementations of "which UTC instants a local day spans" could
+/// disagree, and a disagreement there puts one entry on two different local days.
+pub(crate) fn local_window(
+    tz: &Tz,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> (DateTime<Utc>, DateTime<Utc>) {
     (
         local_day_start(tz, since),
         local_day_start(tz, until.succ_opt().unwrap_or(until)),

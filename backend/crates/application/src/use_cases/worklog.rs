@@ -9,7 +9,7 @@ use crate::repositories::{
     ActivitySlotRepository, ConfigRepository, WorklogFilter, WorklogRepository,
     WORKLOG_FILTER_DEFAULT_LIMIT, WORKLOG_FILTER_MAX_LIMIT,
 };
-use crate::use_cases::reattribution::refuse_a_truncated_page;
+use crate::use_cases::reattribution::{local_window, refuse_a_truncated_page};
 
 /// Add a new worklog entry. `logged_at` defaults to `now` when `None`.
 ///
@@ -192,9 +192,16 @@ pub struct RebuildPlan {
 /// Compute the rebuild of `task_id`'s projection over `half_days`. Reads only.
 ///
 /// `half_days` bounds the blast radius; it never decides truth. Truth is every entry
-/// of this task falling in those half-days — which is why widening the caller's
-/// window is harmless, and why an entry logged with a backdated `logged_at` is
-/// picked up rather than skipped by a watermark comparison.
+/// of this task falling in those half-days — which is why naming an extra half-day
+/// is harmless, and why an entry logged with a backdated `logged_at` is picked up
+/// rather than skipped by a watermark comparison, as long as its own local day
+/// falls in the range `half_days` spans. The worklog read is itself scoped to that
+/// same span (the earliest to the latest named date) rather than to the task's
+/// whole history: the two are equivalent for which entries end up in the plan —
+/// membership is decided by half-day match either way — but the scoped read keeps
+/// the page cap meaning what it says, "this window may have been cut", instead of
+/// firing on how much unrelated history the task happens to carry.
+/// An empty `half_days` returns an empty plan without touching either repository.
 pub async fn plan_task_projection(
     activity_repo: &dyn ActivitySlotRepository,
     worklog_repo: &dyn WorklogRepository,
@@ -204,6 +211,16 @@ pub async fn plan_task_projection(
     tz: chrono_tz::Tz,
     now: DateTime<Utc>,
 ) -> Result<RebuildPlan, AppError> {
+    let dates: Vec<NaiveDate> = half_days.iter().map(|unit| unit.date).collect();
+    let (Some(&first), Some(&last)) = (dates.iter().min(), dates.iter().max()) else {
+        // Nothing named: nothing to rebuild, and no reason to read either repository.
+        return Ok(RebuildPlan {
+            task_id,
+            delete: Vec::new(),
+            write: Vec::new(),
+        });
+    };
+
     let mut delete = Vec::new();
     let mut seen_dates: Vec<NaiveDate> = Vec::new();
     for unit in half_days {
@@ -222,10 +239,15 @@ pub async fn plan_task_projection(
         }
     }
 
+    // Scoped to the local-day window the named half-days actually span: reading
+    // this task's whole history and filtering in memory would make the page cap
+    // fire on how much history the task has, rather than on how much of the
+    // window we could not see.
+    let (from, to) = local_window(&tz, first, last);
     let filter = WorklogFilter {
         task_ids: Some(vec![task_id]),
-        from: None,
-        to: None,
+        from: Some(from),
+        to: Some(to),
         limit: WORKLOG_FILTER_MAX_LIMIT,
         offset: 0,
     };
@@ -487,6 +509,9 @@ mod tests {
     #[derive(Default)]
     struct FakeRepo {
         entries: Mutex<Vec<WorklogEntry>>,
+        /// Every filter `list` was called with, in order — so a test can check the
+        /// query was actually bounded, not merely that its result happened to be.
+        list_calls: Mutex<Vec<WorklogFilter>>,
     }
 
     #[async_trait]
@@ -539,6 +564,7 @@ mod tests {
             user_id: UserId,
             filter: &WorklogFilter,
         ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+            self.list_calls.lock().unwrap().push(filter.clone());
             let v = self.entries.lock().unwrap();
             let mut out: Vec<WorklogEntry> = v
                 .iter()
@@ -799,5 +825,44 @@ mod tests {
             "the afternoon slot is outside the named half-day"
         );
         assert!(plan.write.iter().all(|s| s.half_day == HalfDay::Morning));
+    }
+
+    /// The worklog read is scoped to the window the named half-days span, not to
+    /// the task's whole history: a full page would otherwise mean "this task has a
+    /// long history" rather than "this window may have been cut", and a task with
+    /// enough lifetime entries would have every reattribution and every flush
+    /// refuse regardless of how small the day actually being rebuilt is.
+    #[tokio::test]
+    async fn the_plan_reads_a_window_not_the_tasks_whole_history() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+        // A day the plan never named, months away — the entry an unbounded read
+        // would still have to fetch and then discard.
+        let stray_at = Utc.with_ymd_and_hms(2026, 9, 3, 7, 0, 0).unwrap();
+        let stray = WorklogEntry::new(user_id(), task_id(), "x".into(), stray_at, stray_at)
+            .unwrap();
+        worklog.create(&stray).await.unwrap();
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-08-04", HalfDay::Morning)], tz, t(12, 0),
+        ).await.unwrap();
+
+        assert!(
+            plan.write.iter().all(|s| s.date == date(2026, 8, 4)),
+            "an entry from a day the plan never named must not appear in the rebuild"
+        );
+
+        let bounded = worklog
+            .list_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| f.from.is_some() && f.to.is_some());
+        assert!(
+            bounded,
+            "the read itself must be scoped to the named half-days' window, not \
+             merely filtered afterwards"
+        );
     }
 }
