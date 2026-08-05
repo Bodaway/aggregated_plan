@@ -1186,8 +1186,9 @@ pub fn block_duration(block: &LocalBlock) -> Duration
 pub fn total_block_hours(blocks: &[LocalBlock]) -> f64
 ```
 
-La conversion UTC ↔ local (clé `aplan.timezone`) et le filtrage par filigrane
-(`aplan.active_since`) restent dans la couche application : le domaine ne devine
+La conversion UTC ↔ local (clé `aplan.timezone`) et la résolution de la fenêtre-sélecteur
+du flush (`aplan.active_since` pour l'humain, `sessions.last_flush_at` pour une session
+Claude — jamais les deux, § 7.3.4) restent dans la couche application : le domaine ne devine
 jamais un fuseau.
 
 #### 5.1.3 Domain Errors
@@ -1738,29 +1739,35 @@ pub async fn stop_activity(/* ... */) -> Result<Option<ActivitySlot>, AppError> 
 pub async fn update_activity_slot(/* ... */) -> Result<ActivitySlot, AppError> { /* ... */ }
 pub async fn get_activity_journal(/* ... */) -> Result<Vec<ActivitySlot>, AppError> { /* ... */ }
 
-/// Materialize closed activity slots from worklog entries logged after `since`.
+/// Rebuild `task_id`'s closed activity slots from its worklog entries. Superseded
+/// (plan 2, § 7.3.4): this once loaded entries with `logged_at > since` and appended
+/// a slot per derived block — a single global watermark that lost another task's
+/// entries whenever two tasks interleaved, and duplicated slots on any re-run.
 ///
-/// 1. Loads all worklog entries for `task_id` whose `logged_at > since`.
-/// 2. Converts each `logged_at` to local wall-clock with `aplan.timezone`, then calls
-///    `derive_time_blocks` (domain rule).
-/// 3. For each derived block, inserts an `ActivitySlot` whose `start_time`/`end_time`
-///    are the UTC instants of the block's first and last entry — so a half-day carrying
-///    several stretches of work yields several slots (R-WL-13), and the idle time
-///    between them is charged to nobody. A block reduced to a single timestamp lasts
-///    `MIN_BLOCK_MINUTES`.
-/// 5. Does **not** modify `aplan.active_task_id` — the session link is preserved.
-/// 6. Updates `aplan.active_since` to `Utc::now()` so the next flush does not re-process
-///    already-materialized entries.
+/// `from` is now a **selector, not a watermark**: it only picks which local
+/// half-days to rebuild (paged via `WorklogFilter`, `[from, now)`), and every entry
+/// of this task in those half-days — not only the ones after `from` — then decides
+/// what the slots are, via `derive_time_blocks`. For each named half-day:
+/// `plan_task_projection` reads the task's `source == Worklog` slots already there
+/// (`is_rebuildable`) as the deletion candidates, and computes the fresh set from
+/// every entry of the task in that half-day; `apply_task_projection` deletes the
+/// stale slots and then writes the fresh ones, delete before write so no reader
+/// sees the half-day doubled. Does **not** modify `aplan.active_task_id` — the
+/// session link is preserved. Re-running is a no-op, and a backdated entry is
+/// picked up as soon as its half-day is named, whatever `from` was.
 ///
-/// Called by the `flushWorklogTime` mutation and by `stop_activity`/`complete_task`.
+/// Called by the `flushWorklogTime` mutation, which resolves `from` to either a
+/// Claude session's own `sessions.last_flush_at` or the human's `aplan.active_since`
+/// — never both.
 pub async fn materialize_worklog_time(
     worklog_repo: &dyn WorklogRepository,
     activity_repo: &dyn ActivitySlotRepository,
     config_repo: &dyn ConfigRepository,
     user_id: UserId,
     task_id: TaskId,
-    since: DateTime<Utc>,
-) -> Result<Vec<ActivitySlot>, AppError> { /* ... */ }
+    from: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<FlushOutcome, AppError> { /* ... */ }
 ```
 
 ```rust
