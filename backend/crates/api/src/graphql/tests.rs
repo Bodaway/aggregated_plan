@@ -672,10 +672,16 @@ impl application::repositories::SessionRepository for InMemorySessionRepository 
         let mut rows = self.rows.lock().unwrap();
         match rows.iter_mut().find(|s| s.id == session.id) {
             Some(existing) => {
+                // Mirrors the SQL `ON CONFLICT ... DO UPDATE SET` list exactly:
+                // `task_id`, `mode`, `label`, `last_seen_at`, `ended_at`.
+                // `started_at` and `last_flush_at` are deliberately absent — a
+                // rebind is the same session, and plan 2 anchors its flush
+                // window on `started_at`.
                 existing.task_id = session.task_id;
                 existing.mode = session.mode;
                 existing.label = session.label.clone();
                 existing.last_seen_at = session.last_seen_at;
+                existing.ended_at = session.ended_at;
             }
             None => rows.push(session.clone()),
         }
@@ -3732,6 +3738,64 @@ async fn open_sessions_excludes_an_ended_one() {
     let list = open.data.into_json().unwrap()["openClaudeSessions"].clone();
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["id"], "s1");
+}
+
+/// The end-to-end regression for the defect fixed by `bind_session` reviving a
+/// session (commit 9c8d8c6): a bind after an end used to report success while
+/// leaving the row closed, poisoning the id for its whole life. This drives the
+/// sequence through the resolvers — `bindSession` -> `endSession` ->
+/// `bindSession` again — so it would have caught the defect at the API layer,
+/// not just at the repository layer.
+#[tokio::test]
+async fn a_bind_after_end_revives_the_session_through_the_resolvers() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+
+    let ended = schema
+        .execute(r#"mutation { endSession(sessionId: "s1") { id endedAt } }"#)
+        .await;
+    assert!(ended.errors.is_empty(), "{:?}", ended.errors);
+    assert!(
+        !ended.data.into_json().unwrap()["endSession"]["endedAt"].is_null(),
+        "endSession must close the session"
+    );
+
+    let new_task = schema
+        .execute(r#"mutation { createTask(input: { title: "Second task" }) { id } }"#)
+        .await;
+    assert!(new_task.errors.is_empty(), "{:?}", new_task.errors);
+    let new_task_id = new_task.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rebind = schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{new_task_id}") {{
+                 session {{ id endedAt taskId }} }} }}"#
+        ))
+        .await;
+    assert!(rebind.errors.is_empty(), "{:?}", rebind.errors);
+    let data = rebind.data.into_json().unwrap();
+    assert!(
+        data["bindSession"]["session"]["endedAt"].is_null(),
+        "a bind after end must revive the session — endedAt must read back null"
+    );
+    assert_eq!(data["bindSession"]["session"]["taskId"], new_task_id);
+
+    let open = schema.execute(r#"{ openClaudeSessions { id } }"#).await;
+    assert!(open.errors.is_empty(), "{:?}", open.errors);
+    let ids = open.data.into_json().unwrap()["openClaudeSessions"].clone();
+    assert_eq!(
+        ids.as_array().unwrap().len(),
+        1,
+        "openClaudeSessions must list the revived session again"
+    );
+    assert_eq!(ids[0]["id"], "s1");
 }
 
 #[tokio::test]
