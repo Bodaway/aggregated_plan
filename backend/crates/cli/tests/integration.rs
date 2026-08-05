@@ -1624,6 +1624,44 @@ async fn session_bind_flushes_the_previous_task_on_the_human_output_path() {
         .stdout(predicate::str::contains("session s1"));
 }
 
+/// Task 6 — the flush a bind issues for the task it is leaving must carry
+/// *this session's* id, not the global pointer's. A body matcher that only
+/// accepts `"sessionId":"s1"` makes an unscoped flush fail the test instead
+/// of passing quietly against a lenient stub.
+#[tokio::test]
+async fn session_bind_flushes_the_previous_task_against_its_own_session() {
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("BindSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "bindSession": {
+                "session": { "id": "s1", "taskId": "00000000-0000-0000-0000-000000000001",
+                             "mode": "TRACKING", "label": null, "endedAt": null },
+                "previousTaskId": "00000000-0000-0000-0000-0000000000bb" } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(wiremock::matchers::body_string_contains("\"sessionId\":\"s1\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": { "slotsWritten": 1, "activeSince": "2026-08-05T09:00:00+00:00" } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "--session", "s1", "session", "bind",
+               "00000000-0000-0000-0000-000000000001"])
+        .assert()
+        .success();
+}
+
 /// `aplan remember` deliberately does not follow the worklog verbs' refusal
 /// rule. With no `--task`, no session, and nothing tracked, it must still
 /// succeed — an unattached memory, not exit 4.

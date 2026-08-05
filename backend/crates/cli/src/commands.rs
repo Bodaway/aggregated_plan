@@ -40,15 +40,15 @@ fn set_config_key(client: &Client, key: &str, value: &str) {
 
 /// Flush the worklog window of `task_id` into closed activity slots.
 ///
-/// `pub(crate)`: `session_cmd::bind` makes the same call `start` does, so a
-/// bind that repoints a session away from its previous task loses no time
-/// either.
-pub(crate) fn flush_task(client: &Client, task_id: &str) {
-    // No session is threaded through here yet — every caller of this helper
-    // flushes against the human's own global pointer, not a session's window.
+/// `session`: `None` flushes the human's global pointer — `start`, `done`,
+/// and `stop` all read `aplan.active_task_id`, so none of them owns a
+/// session's window. `Some(id)` flushes that session's own window instead;
+/// `session_cmd::bind` passes its own id so a rebind never consumes the
+/// global window it does not own.
+pub(crate) fn flush_task(client: &Client, task_id: &str, session: Option<&str>) {
     if let Err(e) = client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
         task_id: task_id.to_string(),
-        session_id: None,
+        session_id: session.map(|s| s.to_string()),
     }) {
         eprintln!("warning: failed to flush worklog time: {}", e);
     }
@@ -64,7 +64,7 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
         }
     };
     if let Some(prev) = active_task_id(&client) {
-        flush_task(&client, &prev);
+        flush_task(&client, &prev, None);
     }
     let now = chrono::Utc::now().to_rfc3339();
     set_config_key(&client, "aplan.active_task_id", &target.id);
@@ -129,7 +129,7 @@ pub fn done(
     let active = active_task_id(&client);
     let was_tracking_target = active.as_deref() == Some(target_id.as_str());
     if !keep_running && was_tracking_target {
-        flush_task(&client, &target_id);
+        flush_task(&client, &target_id, None);
         set_config_key(&client, "aplan.active_task_id", "");
     }
 
@@ -337,7 +337,7 @@ pub fn stop(api_url: &str, json: bool) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let active = active_task_id(&client);
     if let Some(ref tid) = active {
-        flush_task(&client, tid);
+        flush_task(&client, tid, None);
     }
     set_config_key(&client, "aplan.active_task_id", "");
     if json {

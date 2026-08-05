@@ -155,12 +155,15 @@ pub fn session(
             });
             match result {
                 Ok(r) => {
-                    // Same call `aplan start` makes: time behaviour is unchanged. This
-                    // must run before the `--json` branch's early return, not after it
-                    // — `--json` is exactly the path the (future) hooks will use, and a
-                    // rebind that skips it loses the previous task's time silently.
+                    // Flush the task this session is leaving, against *this session's*
+                    // window — not the global one. `aplan start` flushes the human's
+                    // pointer and re-arms the human's key; a session bind must do the
+                    // same for its own, or it consumes a window it does not own and
+                    // leaves the next flush of some other task looking at a mark that
+                    // already moved. Above the `--json` return on purpose: that is the
+                    // path the hooks use.
                     if let Some(prev) = &r.data.bind_session.previous_task_id {
-                        flush_task(&client, prev);
+                        flush_task(&client, prev, Some(sid));
                     }
                     if json {
                         if let Err(e) = print_json(&r.raw) {
