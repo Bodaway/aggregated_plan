@@ -446,29 +446,54 @@ impl SyncStatusRepository for StubSyncStatusRepository {
     }
 }
 
-struct StubConfigRepository;
+/// Was a pure discard-everything stub — `get`/`get_all` always answered empty
+/// regardless of prior `set` calls. That made the config store unobservable from a
+/// GraphQL test: no assertion could tell a key that was actually written from one
+/// that never was. Now a real in-memory map, so `{ configuration }` is a faithful
+/// instrument on what a resolver wrote via `ConfigRepository::set`.
+struct StubConfigRepository {
+    values: Mutex<HashMap<(UserId, String), String>>,
+}
+impl StubConfigRepository {
+    fn new() -> Self {
+        Self {
+            values: Mutex::new(HashMap::new()),
+        }
+    }
+}
 #[async_trait]
 impl ConfigRepository for StubConfigRepository {
     async fn get(
         &self,
-        _user_id: UserId,
-        _key: &str,
+        user_id: UserId,
+        key: &str,
     ) -> Result<Option<String>, RepositoryError> {
-        Ok(None)
+        Ok(self.values.lock().unwrap().get(&(user_id, key.to_string())).cloned())
     }
     async fn set(
         &self,
-        _user_id: UserId,
-        _key: &str,
-        _value: &str,
+        user_id: UserId,
+        key: &str,
+        value: &str,
     ) -> Result<(), RepositoryError> {
+        self.values
+            .lock()
+            .unwrap()
+            .insert((user_id, key.to_string()), value.to_string());
         Ok(())
     }
     async fn get_all(
         &self,
-        _user_id: UserId,
+        user_id: UserId,
     ) -> Result<Vec<(String, String)>, RepositoryError> {
-        Ok(vec![])
+        Ok(self
+            .values
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((uid, _), _)| *uid == user_id)
+            .map(|((_, k), v)| (k.clone(), v.clone()))
+            .collect())
     }
 }
 
@@ -1235,7 +1260,7 @@ fn build_test_schema_with_memory(
     let tag_repo: Arc<dyn TagRepository> = Arc::new(InMemoryTagRepository::new());
     let task_link_repo: Arc<dyn TaskLinkRepository> = Arc::new(StubTaskLinkRepository);
     let sync_repo: Arc<dyn SyncStatusRepository> = Arc::new(StubSyncStatusRepository);
-    let config_repo: Arc<dyn ConfigRepository> = Arc::new(StubConfigRepository);
+    let config_repo: Arc<dyn ConfigRepository> = Arc::new(StubConfigRepository::new());
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(StubRecurrenceRepository);
     let graph_token_provider: Arc<dyn application::services::GraphTokenProvider> =
@@ -2589,6 +2614,15 @@ async fn flush_advances_the_sessions_own_window_not_the_global_key() {
         !read.data.into_json().unwrap()["claudeSession"]["lastFlushAt"].is_null(),
         "the session's own window must have advanced"
     );
+
+    // Not the global key: a session flush must leave the human's own pointer alone,
+    // or a later agent flush would jerk it to `now` and the human's next flush would
+    // stop selecting the day they actually worked.
+    let config = schema.execute(r#"{ configuration }"#).await;
+    assert!(
+        config.data.into_json().unwrap()["configuration"]["aplan.active_since"].is_null(),
+        "a session flush must not touch the human's aplan.active_since key"
+    );
 }
 
 /// The defect this task closes: one shared watermark meant flushing task B's session
@@ -2622,12 +2656,37 @@ async fn flushing_one_sessions_task_does_not_move_another_sessions_window() {
 #[tokio::test]
 async fn a_flush_without_a_session_still_uses_the_humans_pointer() {
     let (schema, task_id) = schema_with_one_task().await;
+
+    let before = schema.execute(r#"{ configuration }"#).await;
+    assert!(
+        before.data.into_json().unwrap()["configuration"]["aplan.active_since"].is_null(),
+        "aplan.active_since should be unset before the first human flush"
+    );
+
     let flushed = schema
         .execute(format!(
             r#"mutation {{ flushWorklogTime(taskId: "{task_id}") {{ slotsWritten activeSince }} }}"#
         ))
         .await;
     assert!(flushed.errors.is_empty(), "{:?}", flushed.errors);
+    let flushed_data = flushed.data.into_json().unwrap();
+    let returned_active_since = flushed_data["flushWorklogTime"]["activeSince"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The write, not just the response: `activeSince` on `FlushOutcome` proves
+    // nothing about the config store on its own — assert the human's pointer was
+    // actually advanced there, to the same value the mutation returned.
+    let after = schema.execute(r#"{ configuration }"#).await;
+    let stored = after.data.into_json().unwrap()["configuration"]["aplan.active_since"]
+        .as_str()
+        .map(str::to_string);
+    assert_eq!(
+        stored,
+        Some(returned_active_since),
+        "flushing without a session must advance the human's aplan.active_since key"
+    );
 }
 
 // ─── Reattribution Tests ───
