@@ -1,5 +1,18 @@
 [workspace]
 members = ["crates/*"]
+# `crates/mcp` has never compiled. It entered the repo in 0b0c559
+# ("chore: WIP snapshot before search bar implementation") as unfinished work:
+# `AggregatedPlanServer` implements neither `ServerHandler` nor
+# `rmcp::Service<RoleServer>`, and the tool-router macro rejects its `tool_box`
+# field. Not a dependency regression — no 1.x of rmcp compiles it (1.0.0, 1.1.0
+# and the locked 1.2.0 all fail with the same nine errors), so pinning cannot
+# help. Nothing depends on it; it builds a standalone `aggregated-plan-mcp` bin.
+#
+# Excluded so that `cargo build` and `cargo test` are green for the whole
+# workspace instead of requiring every invocation to remember
+# `--exclude mcp`. Delete this line to resume the work: the crate is untouched
+# on disk and the errors above are the to-do list.
+exclude = ["crates/mcp"]
 resolver = "2"
 
 [workspace.dependencies]
