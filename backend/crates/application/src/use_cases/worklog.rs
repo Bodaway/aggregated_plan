@@ -9,7 +9,8 @@ use crate::repositories::{
     ActivitySlotRepository, ConfigRepository, WorklogFilter, WorklogRepository,
     WORKLOG_FILTER_DEFAULT_LIMIT, WORKLOG_FILTER_MAX_LIMIT,
 };
-use crate::use_cases::reattribution::{local_window, refuse_a_truncated_page};
+use crate::time::local_window;
+use crate::use_cases::reattribution::refuse_a_truncated_page;
 
 /// Add a new worklog entry. `logged_at` defaults to `now` when `None`.
 ///
@@ -256,7 +257,7 @@ pub async fn plan_task_projection(
     // this task's whole history and filtering in memory would make the page cap
     // fire on how much history the task has, rather than on how much of the
     // window we could not see.
-    let (from, to) = local_window(&tz, first, last);
+    let (from, to) = local_window(tz, first, last);
     let filter = WorklogFilter {
         task_ids: Some(vec![task_id]),
         from: Some(from),

@@ -53,7 +53,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use domain::rules::reattribution::{
     plan_reattribution, slot_hours, AffectedHalfDay, EntryAttribution, ReattributionRefusal,
@@ -68,6 +68,7 @@ use crate::repositories::{
     ActivitySlotRepository, ConfigRepository, WorklogFilter, WorklogRepository,
     WORKLOG_FILTER_MAX_LIMIT,
 };
+use crate::time::{local_window, to_local};
 use crate::use_cases::worklog::{apply_task_projection, plan_task_projection, user_timezone};
 
 /// How many candidates an entry-reference lookup pulls before reporting a
@@ -191,7 +192,7 @@ pub async fn reattribute_worklog_entries(
                 "the range ends before it starts ({since} → {until})"
             )));
         }
-        let (from_utc, to_utc) = local_window(&tz, since, until);
+        let (from_utc, to_utc) = local_window(tz, since, until);
         let page = worklog_repo
             .list(
                 user_id,
@@ -212,7 +213,7 @@ pub async fn reattribute_worklog_entries(
         .map(|entry| EntryAttribution {
             id: entry.id,
             task_id: entry.task_id,
-            local_logged_at: to_local(&tz, entry.logged_at),
+            local_logged_at: to_local(entry.logged_at, tz),
         })
         .collect();
 
@@ -225,7 +226,7 @@ pub async fn reattribute_worklog_entries(
     // ── The half-days' full picture, for both tasks ──────────────────────────
     let day_entries = read_affected_half_days(
         worklog_repo,
-        &tz,
+        tz,
         user_id,
         &tasks,
         &plan.affected_half_days,
@@ -444,7 +445,7 @@ struct LocalEntry {
 /// the days in between, and an afternoon correction must not pull in the morning.
 async fn read_affected_half_days(
     worklog_repo: &dyn WorklogRepository,
-    tz: &Tz,
+    tz: Tz,
     user_id: UserId,
     tasks: &[TaskId],
     units: &[AffectedHalfDay],
@@ -473,7 +474,7 @@ async fn read_affected_half_days(
         .map(|entry| LocalEntry {
             id: entry.id,
             task_id: entry.task_id,
-            local_logged_at: to_local(tz, entry.logged_at),
+            local_logged_at: to_local(entry.logged_at, tz),
         })
         .filter(|entry| covers(units, entry.local_logged_at.date(), local_half_day(entry)))
         .collect())
@@ -520,44 +521,6 @@ pub(crate) fn refuse_a_truncated_page(
         )));
     }
     Ok(entries)
-}
-
-/// UTC half-open window `[start of `since`, start of the day after `until`)`,
-/// matching the repository's `logged_at >= from AND logged_at < to`.
-///
-/// `pub(crate)`: [`crate::use_cases::worklog::plan_task_projection`] needs the same
-/// local-day-to-UTC conversion to scope its own worklog read, not a second copy of
-/// it — two implementations of "which UTC instants a local day spans" could
-/// disagree, and a disagreement there puts one entry on two different local days.
-pub(crate) fn local_window(
-    tz: &Tz,
-    since: NaiveDate,
-    until: NaiveDate,
-) -> (DateTime<Utc>, DateTime<Utc>) {
-    (
-        local_day_start(tz, since),
-        local_day_start(tz, until.succ_opt().unwrap_or(until)),
-    )
-}
-
-/// The instant a local day begins, in UTC.
-///
-/// A local midnight that does not exist — a zone whose DST jump lands on 00:00 —
-/// is walked forward to the first instant that does, rather than dropped: a window
-/// that silently started at the wrong instant would select the wrong day.
-fn local_day_start(tz: &Tz, date: NaiveDate) -> DateTime<Utc> {
-    let midnight = date.and_time(NaiveTime::MIN);
-    if let Some(local) = tz.from_local_datetime(&midnight).earliest() {
-        return local.with_timezone(&Utc);
-    }
-    tz.from_local_datetime(&(midnight + Duration::hours(1)))
-        .earliest()
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|| Utc.from_utc_datetime(&midnight))
-}
-
-fn to_local(tz: &Tz, at: DateTime<Utc>) -> NaiveDateTime {
-    tz.from_utc_datetime(&at.naive_utc()).naive_local()
 }
 
 #[cfg(test)]
@@ -924,7 +887,7 @@ mod tests {
                 start_time: start,
                 end_time: end,
                 half_day,
-                date: to_local(&paris(), start).date(),
+                date: to_local(start, paris()).date(),
                 created_at: start,
                 session_id: None,
                 source,

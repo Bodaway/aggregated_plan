@@ -16,7 +16,7 @@ use crate::repositories::{
     WorklogRepository, WORKLOG_FILTER_MAX_LIMIT,
 };
 use crate::services::git_connector::{jira_key_in, GitConnector};
-use crate::time::{local_day_bounds, resolve_tz, to_local};
+use crate::time::{local_window, resolve_tz, to_local};
 
 /// Upper bound when scanning the Gryzzly catalog to derive the set of live project
 /// ids. Set well above any realistic catalog size (the catalog is task-grained and
@@ -73,7 +73,7 @@ pub async fn reconstruct_timesheet(
     date: NaiveDate,
 ) -> Result<ReconstructedDay, AppError> {
     let tz = resolve_tz(config_repo.get(user_id, "aplan.timezone").await?);
-    let (from_utc, to_utc) = local_day_bounds(date, tz);
+    let (from_utc, to_utc) = local_window(tz, date, date);
     let cfg = load_reconstruction_config(config_repo, user_id).await?;
 
     let rules = mapping_repo.list_enabled(user_id).await?;
