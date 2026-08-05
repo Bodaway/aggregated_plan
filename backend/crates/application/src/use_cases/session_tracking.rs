@@ -32,6 +32,11 @@ pub async fn bind_session(
             let previous_task = existing.task_id.filter(|prev| *prev != task_id);
             existing.task_id = Some(task_id);
             existing.mode = SessionMode::Tracking;
+            // A bind is a request to work, and a session the user is binding is
+            // alive by definition. Leaving `ended_at` set would make this call
+            // report success while changing nothing — worse than refusing,
+            // because `end`'s own guard then makes the id unrecoverable.
+            existing.ended_at = None;
             existing.last_seen_at = now;
             if label.is_some() {
                 existing.label = label;
@@ -171,6 +176,7 @@ mod tests {
                     existing.mode = session.mode;
                     existing.label = session.label.clone();
                     existing.last_seen_at = session.last_seen_at;
+                    existing.ended_at = session.ended_at;
                 }
                 None => rows.push(session.clone()),
             }
@@ -308,6 +314,29 @@ mod tests {
         let task = Uuid::new_v4();
         let out = bind_session(&repo, uid(), "s1", task, None, t(10)).await.unwrap();
 
+        assert_eq!(out.session.mode, SessionMode::Tracking);
+        assert_eq!(out.session.target(), Ok(task));
+    }
+
+    #[tokio::test]
+    async fn binding_revives_a_session_that_has_ended() {
+        // The bug this pins: `session end` then `session bind` reported success
+        // and changed nothing, because the existing-row arm never touched
+        // `ended_at`. That poisons the id forever, since `end`'s own guard
+        // requires an open row to close. The only way to reach a bind is the
+        // user asking to work, so reviving is what a bind means — same
+        // reasoning as `binding_revives_a_session_that_was_off` above, just for
+        // `ended_at` instead of `mode`.
+        let repo = InMemorySessionRepository::default();
+        bind_session(&repo, uid(), "s1", Uuid::new_v4(), None, t(9))
+            .await
+            .unwrap();
+        end_session(&repo, uid(), "s1", t(12)).await.unwrap();
+
+        let task = Uuid::new_v4();
+        let out = bind_session(&repo, uid(), "s1", task, None, t(14)).await.unwrap();
+
+        assert!(out.session.ended_at.is_none(), "a bind must reopen the session");
         assert_eq!(out.session.mode, SessionMode::Tracking);
         assert_eq!(out.session.target(), Ok(task));
     }

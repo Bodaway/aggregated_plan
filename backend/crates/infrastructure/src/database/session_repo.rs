@@ -83,6 +83,11 @@ impl SessionRepository for SqliteSessionRepository {
         // `started_at` is absent from the UPDATE clause on purpose: a rebind is the
         // same session, and plan 2's flush window is anchored on it. Letting a
         // caller rewrite it would move a window that has already been used.
+        //
+        // `ended_at` IS in the UPDATE clause: a bind is a request to work, and the
+        // use case clears it on the row it passes in when reviving a closed
+        // session. Without this, that clear would never persist and `end`'s own
+        // `WHERE ended_at IS NULL` guard would make the id unrecoverable.
         sqlx::query(
             "INSERT INTO sessions
                 (id, user_id, task_id, mode, label, started_at, last_seen_at, last_flush_at, ended_at)
@@ -91,7 +96,8 @@ impl SessionRepository for SqliteSessionRepository {
                 task_id      = excluded.task_id,
                 mode         = excluded.mode,
                 label        = excluded.label,
-                last_seen_at = excluded.last_seen_at",
+                last_seen_at = excluded.last_seen_at,
+                ended_at     = excluded.ended_at",
         )
         .bind(&session.id)
         .bind(session.user_id.to_string())
@@ -257,6 +263,32 @@ mod tests {
         assert_eq!(found.last_seen_at, t(15));
         assert_eq!(found.mode, SessionMode::Off);
         assert!(found.task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_bind_after_end_reopens_the_session() {
+        // The end-to-end regression for the defect: `session bind` after
+        // `session end` used to report success and change nothing, because
+        // `ended_at` was absent from the UPDATE clause. This is the sequence
+        // that poisoned an id for good — `end`'s own `WHERE ended_at IS NULL`
+        // guard means no shipped verb could otherwise reopen the row.
+        let repo = SqliteSessionRepository::new(setup().await);
+        let mut session =
+            Session::tracking("s1".into(), user_id(), task_id(), None, t(9)).unwrap();
+        repo.upsert(&session).await.unwrap();
+        repo.end("s1", user_id(), t(12)).await.unwrap();
+
+        session.ended_at = None;
+        session.last_seen_at = t(14);
+        repo.upsert(&session).await.unwrap();
+
+        let found = repo.find_by_id("s1", user_id()).await.unwrap().unwrap();
+        assert!(found.ended_at.is_none(), "the bind must reopen the row");
+        assert_eq!(found.task_id, Some(task_id()));
+
+        let open = repo.list_open(user_id()).await.unwrap();
+        let ids: Vec<&str> = open.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["s1"], "list_open must show the revived session again");
     }
 
     #[tokio::test]
