@@ -27,8 +27,13 @@
 //!   many that is. Dropping the old projection first is what makes that exact: without
 //!   it, a destination that already had a slot that morning would keep it *and* gain
 //!   the rebuilt one, and the same morning would be billed twice.
-//! - Only **closed** slots are replaced. An open slot is a running timer: it holds
-//!   no hours yet and stopping it is not this verb's business.
+//! - Only a slot that is both **closed** and **owned by the worklog projection** is
+//!   replaced ([`domain::rules::reattribution::is_rebuildable`]). An open slot is a
+//!   running timer: it holds no hours yet and stopping it is not this verb's
+//!   business. A slot the projection does not own — a hand-made entry, a live
+//!   timer's leftover, a row whose provenance the one-shot classification could not
+//!   establish — was not derived from these entries in the first place, so rewriting
+//!   it from them would destroy time no entry can reproduce.
 //!
 //! ## What it deliberately does not promise
 //!
@@ -51,11 +56,10 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use domain::rules::reattribution::{
-    is_rebuildable, plan_reattribution, slot_hours, AffectedHalfDay, EntryAttribution,
-    ReattributionRefusal,
+    plan_reattribution, slot_hours, AffectedHalfDay, EntryAttribution, ReattributionRefusal,
 };
 use domain::rules::workload::half_day_of;
-use domain::rules::worklog_time::{derive_time_blocks, total_block_hours, MIN_BLOCK_MINUTES};
+use domain::rules::worklog_time::{derive_time_blocks, total_block_hours};
 use domain::types::*;
 use uuid::Uuid;
 
@@ -64,7 +68,7 @@ use crate::repositories::{
     ActivitySlotRepository, ConfigRepository, WorklogFilter, WorklogRepository,
     WORKLOG_FILTER_MAX_LIMIT,
 };
-use crate::use_cases::worklog::user_timezone;
+use crate::use_cases::worklog::{apply_task_projection, plan_task_projection, user_timezone};
 
 /// How many candidates an entry-reference lookup pulls before reporting a
 /// collision. Mirrors the memory resolver: enough to name the ambiguity, never
@@ -229,8 +233,26 @@ pub async fn reattribute_worklog_entries(
     .await?;
 
     // ── Hours before, from the projection currently persisted ────────────────
-    let existing =
-        rebuildable_slots(activity_repo, user_id, &tasks, &plan.affected_half_days).await?;
+    //
+    // One `plan_task_projection` call per task, sharing the same arithmetic the
+    // apply below uses: its `delete` field does not depend on the worklog at all,
+    // only on the activity slots that already exist, so calling it here — before
+    // any entry has moved — reads the same slots the apply's own call will find
+    // once it runs.
+    let mut existing = Vec::new();
+    for task in tasks {
+        let rebuild = plan_task_projection(
+            activity_repo,
+            worklog_repo,
+            user_id,
+            task,
+            &plan.affected_half_days,
+            tz,
+            now,
+        )
+        .await?;
+        existing.extend(rebuild.delete);
+    }
     let hours_before = |task: TaskId| {
         slot_hours(
             &existing
@@ -288,31 +310,28 @@ pub async fn reattribute_worklog_entries(
         )
         .await?;
 
-    // Drop the stale projection of these two tasks in these half-days, and only there.
-    for slot in &existing {
-        activity_repo.delete(slot.id).await?;
-    }
-
-    // Rebuild from what the entries now say, re-read rather than assumed: the hours
-    // reported are then measured, not predicted.
-    let fresh = read_affected_half_days(
-        worklog_repo,
-        &tz,
-        user_id,
-        &tasks,
-        &plan.affected_half_days,
-    )
-    .await?;
-
+    // Drop the stale projection of these two tasks in these half-days, and rebuild
+    // it from what the entries now say — re-read rather than assumed, so the hours
+    // reported are measured, not predicted. One `plan_task_projection` call per
+    // task, now that the move above has landed: its `delete` finds the same slots
+    // `existing` already named (activity_slots did not change), and its `write` is
+    // this task's entries as they now stand.
     let mut slots_rebuilt = 0u32;
     let mut written: Vec<ActivitySlot> = Vec::new();
     for task in tasks {
-        let mine: Vec<&LocalEntry> = fresh.iter().filter(|e| e.task_id == task).collect();
-        for slot in project_slots(user_id, task, &mine, now) {
-            activity_repo.save(&slot).await?;
-            slots_rebuilt += 1;
-            written.push(slot);
-        }
+        let rebuild = plan_task_projection(
+            activity_repo,
+            worklog_repo,
+            user_id,
+            task,
+            &plan.affected_half_days,
+            tz,
+            now,
+        )
+        .await?;
+        apply_task_projection(activity_repo, &rebuild).await?;
+        slots_rebuilt += rebuild.write.len() as u32;
+        written.extend(rebuild.write);
     }
     let hours_after = |task: TaskId| {
         slot_hours(
@@ -415,7 +434,6 @@ fn refused(refusal: ReattributionRefusal) -> AppError {
 struct LocalEntry {
     id: WorklogEntryId,
     task_id: TaskId,
-    logged_at: DateTime<Utc>,
     local_logged_at: NaiveDateTime,
 }
 
@@ -455,7 +473,6 @@ async fn read_affected_half_days(
         .map(|entry| LocalEntry {
             id: entry.id,
             task_id: entry.task_id,
-            logged_at: entry.logged_at,
             local_logged_at: to_local(tz, entry.logged_at),
         })
         .filter(|entry| covers(units, entry.local_logged_at.date(), local_half_day(entry)))
@@ -471,77 +488,6 @@ fn covers(units: &[AffectedHalfDay], date: NaiveDate, half_day: HalfDay) -> bool
     units
         .iter()
         .any(|unit| unit.date == date && unit.half_day == half_day)
-}
-
-/// The closed slots of `tasks` in `units` — the projection this correction replaces.
-///
-/// Scoped to the half-day, not merely to the day: a slot the rebuild will not write
-/// over has no business being deleted. Open slots are excluded too — a running timer
-/// holds no hours and must keep running.
-async fn rebuildable_slots(
-    activity_repo: &dyn ActivitySlotRepository,
-    user_id: UserId,
-    tasks: &[TaskId],
-    units: &[AffectedHalfDay],
-) -> Result<Vec<ActivitySlot>, AppError> {
-    let mut out = Vec::new();
-    let mut seen: Vec<NaiveDate> = Vec::new();
-    for unit in units {
-        if seen.contains(&unit.date) {
-            continue;
-        }
-        seen.push(unit.date);
-        for slot in activity_repo
-            .find_by_user_and_date(user_id, unit.date)
-            .await?
-        {
-            let mine = slot.task_id.map(|t| tasks.contains(&t)).unwrap_or(false);
-            if mine && is_rebuildable(&slot) && covers(units, slot.date, slot.half_day) {
-                out.push(slot);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// The slots one task's entries project to, closed and ready to persist — one per
-/// stretch of work, so an affected half-day may well yield several.
-fn project_slots(
-    user_id: UserId,
-    task_id: TaskId,
-    entries: &[&LocalEntry],
-    now: DateTime<Utc>,
-) -> Vec<ActivitySlot> {
-    let mut local_to_utc: HashMap<NaiveDateTime, DateTime<Utc>> = HashMap::new();
-    let mut times = Vec::with_capacity(entries.len());
-    for entry in entries {
-        local_to_utc.insert(entry.local_logged_at, entry.logged_at);
-        times.push(entry.local_logged_at);
-    }
-
-    derive_time_blocks(&times)
-        .into_iter()
-        .filter_map(|block| {
-            // Both ends came out of `times`, so both are in the map; a miss would
-            // mean the projection invented a timestamp, and inventing a slot from it
-            // is worse than skipping it.
-            let start_time = *local_to_utc.get(&block.start)?;
-            let mut end = *local_to_utc.get(&block.end)?;
-            if end <= start_time {
-                end = start_time + Duration::minutes(MIN_BLOCK_MINUTES);
-            }
-            Some(ActivitySlot::from_worklog(
-                user_id,
-                task_id,
-                None,
-                start_time,
-                end,
-                block.half_day,
-                block.date,
-                now,
-            ))
-        })
-        .collect()
 }
 
 /// Local wall-clock timestamps of the entries a predicate keeps.

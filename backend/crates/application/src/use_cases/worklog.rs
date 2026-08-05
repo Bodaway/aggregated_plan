@@ -1,4 +1,6 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike, Utc};
+use domain::rules::reattribution::{is_rebuildable, AffectedHalfDay};
+use domain::rules::workload::half_day_of;
 use domain::rules::worklog_time::{derive_time_blocks, MIN_BLOCK_MINUTES};
 use domain::types::*;
 
@@ -7,6 +9,7 @@ use crate::repositories::{
     ActivitySlotRepository, ConfigRepository, WorklogFilter, WorklogRepository,
     WORKLOG_FILTER_DEFAULT_LIMIT, WORKLOG_FILTER_MAX_LIMIT,
 };
+use crate::use_cases::reattribution::refuse_a_truncated_page;
 
 /// Add a new worklog entry. `logged_at` defaults to `now` when `None`.
 ///
@@ -170,6 +173,119 @@ pub async fn materialize_worklog_time(
     Ok(FlushOutcome { slots_written: written, active_since: now })
 }
 
+/// What a rebuild of one task's projection over some half-days would do.
+///
+/// Separated from the applying so the reattribution preview and the flush share one
+/// piece of arithmetic: a preview that computed its figures differently from the
+/// write would report numbers nobody could reproduce.
+pub struct RebuildPlan {
+    pub task_id: TaskId,
+    /// Slots the projection owns in these half-days, to be dropped first. Dropping
+    /// them is what makes the rewrite exact: without it, a half-day that already
+    /// carried a slot would keep it *and* gain the rebuilt one, and the same morning
+    /// would be billed twice.
+    pub delete: Vec<ActivitySlot>,
+    /// What this task's entries in these half-days say the time was.
+    pub write: Vec<ActivitySlot>,
+}
+
+/// Compute the rebuild of `task_id`'s projection over `half_days`. Reads only.
+///
+/// `half_days` bounds the blast radius; it never decides truth. Truth is every entry
+/// of this task falling in those half-days — which is why widening the caller's
+/// window is harmless, and why an entry logged with a backdated `logged_at` is
+/// picked up rather than skipped by a watermark comparison.
+pub async fn plan_task_projection(
+    activity_repo: &dyn ActivitySlotRepository,
+    worklog_repo: &dyn WorklogRepository,
+    user_id: UserId,
+    task_id: TaskId,
+    half_days: &[AffectedHalfDay],
+    tz: chrono_tz::Tz,
+    now: DateTime<Utc>,
+) -> Result<RebuildPlan, AppError> {
+    let mut delete = Vec::new();
+    let mut seen_dates: Vec<NaiveDate> = Vec::new();
+    for unit in half_days {
+        if seen_dates.contains(&unit.date) {
+            continue;
+        }
+        seen_dates.push(unit.date);
+        for slot in activity_repo.find_by_user_and_date(user_id, unit.date).await? {
+            let mine = slot.task_id == Some(task_id);
+            let named = half_days
+                .iter()
+                .any(|u| u.date == slot.date && u.half_day == slot.half_day);
+            if mine && named && is_rebuildable(&slot) {
+                delete.push(slot);
+            }
+        }
+    }
+
+    let filter = WorklogFilter {
+        task_ids: Some(vec![task_id]),
+        from: None,
+        to: None,
+        limit: WORKLOG_FILTER_MAX_LIMIT,
+        offset: 0,
+    };
+    let entries = worklog_repo.list(user_id, &filter).await?;
+    let entries = refuse_a_truncated_page(entries, "the task's affected half-days")?;
+
+    let mut local_to_utc: std::collections::HashMap<chrono::NaiveDateTime, DateTime<Utc>> =
+        std::collections::HashMap::new();
+    let mut local_times = Vec::new();
+    for entry in &entries {
+        let local = tz.from_utc_datetime(&entry.logged_at.naive_utc()).naive_local();
+        let in_scope = half_days.iter().any(|u| {
+            u.date == local.date() && u.half_day == half_day_of(local.time().hour())
+        });
+        if !in_scope {
+            continue;
+        }
+        local_to_utc.insert(local, entry.logged_at);
+        local_times.push(local);
+    }
+
+    let mut write = Vec::new();
+    for block in derive_time_blocks(&local_times) {
+        // Both ends came out of `local_times`, so both are in the map. A miss would
+        // mean the projection invented a timestamp, and writing a slot from an
+        // invented instant is worse than writing none.
+        let (Some(start), Some(raw_end)) =
+            (local_to_utc.get(&block.start), local_to_utc.get(&block.end))
+        else {
+            continue;
+        };
+        let mut end = *raw_end;
+        if end <= *start {
+            end = *start + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
+        }
+        write.push(ActivitySlot::from_worklog(
+            user_id, task_id, None, *start, end, block.half_day, block.date, now,
+        ));
+    }
+
+    Ok(RebuildPlan { task_id, delete, write })
+}
+
+/// Persist a plan: drop the stale projection, then write the fresh one.
+///
+/// Deletion precedes writing on purpose. The reverse order would leave a window in
+/// which the half-day carries both, and a reader landing there sees doubled hours.
+pub async fn apply_task_projection(
+    activity_repo: &dyn ActivitySlotRepository,
+    plan: &RebuildPlan,
+) -> Result<(), AppError> {
+    for slot in &plan.delete {
+        activity_repo.delete(slot.id).await?;
+    }
+    for slot in &plan.write {
+        activity_repo.save(slot).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,7 +350,8 @@ mod tests {
         async fn update(&self, _slot: &ActivitySlot) -> Result<(), RepositoryError> {
             Ok(())
         }
-        async fn delete(&self, _id: ActivitySlotId) -> Result<(), RepositoryError> {
+        async fn delete(&self, id: ActivitySlotId) -> Result<(), RepositoryError> {
+            self.slots.lock().unwrap().retain(|s| s.id != id);
             Ok(())
         }
     }
@@ -539,5 +656,148 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.len(), 1);
+    }
+
+    // ─── `plan_task_projection` / `apply_task_projection` ───────────────────────
+    //
+    // Fixed ids and a fixed calendar day, so two calls in the same test refer to
+    // the same entity without randomness threading them through — the same
+    // convention `slot_classification`'s test module keeps in parallel.
+
+    fn user_id() -> UserId {
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+    }
+
+    fn task_id() -> TaskId {
+        Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap()
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// August, so `Europe/Paris` (the default when no `aplan.timezone` config is
+    /// set) is UTC+2: a UTC hour here reads two hours later locally.
+    fn t(h: u32, m: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 8, 4, h, m, 0).unwrap()
+    }
+
+    /// The three fakes, with `logged_ats` stored as entries on one task. No
+    /// timezone is set, so the plan is computed against the default
+    /// `Europe/Paris`.
+    async fn fakes_with_entries(
+        logged_ats: &[DateTime<Utc>],
+    ) -> (FakeActivityRepo, FakeRepo, FakeConfigRepo) {
+        let activity = FakeActivityRepo::default();
+        let worklog = FakeRepo::default();
+        let config = FakeConfigRepo::default();
+        for logged_at in logged_ats {
+            let entry =
+                WorklogEntry::new(user_id(), task_id(), "x".into(), *logged_at, *logged_at)
+                    .unwrap();
+            worklog.create(&entry).await.unwrap();
+        }
+        (activity, worklog, config)
+    }
+
+    fn half_day(date: &str, hd: HalfDay) -> AffectedHalfDay {
+        AffectedHalfDay {
+            date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+            half_day: hd,
+        }
+    }
+
+    /// The plan deletes only what the projection owns and rewrites from the entries.
+    #[tokio::test]
+    async fn the_plan_replaces_a_worklog_slot_and_spares_a_manual_one() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+
+        let mine = ActivitySlot::from_worklog(
+            user_id(), task_id(), None, t(7, 0), t(7, 30),
+            HalfDay::Morning, date(2026, 8, 4), t(9, 0),
+        );
+        let hand_made = ActivitySlot::manual(
+            user_id(), Some(task_id()), t(10, 0), Some(t(11, 0)),
+            HalfDay::Morning, date(2026, 8, 4), t(11, 0),
+        );
+        activity.save(&mine).await.unwrap();
+        activity.save(&hand_made).await.unwrap();
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-08-04", HalfDay::Morning)], tz, t(12, 0),
+        ).await.unwrap();
+
+        let deleted: Vec<_> = plan.delete.iter().map(|s| s.id).collect();
+        assert!(deleted.contains(&mine.id), "the projection's own slot is replaced");
+        assert!(!deleted.contains(&hand_made.id), "a hand-made slot is never deleted");
+        assert_eq!(plan.write.len(), 1, "the two entries are one stretch of work");
+        assert_eq!(plan.write[0].source, SlotSource::Worklog);
+    }
+
+    /// Applying twice leaves the same slots — the property the flush needs.
+    #[tokio::test]
+    async fn applying_the_plan_twice_is_idempotent() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let units = [half_day("2026-08-04", HalfDay::Morning)];
+
+        for _ in 0..2 {
+            let plan = plan_task_projection(
+                &activity, &worklog, user_id(), task_id(), &units, tz, t(12, 0),
+            ).await.unwrap();
+            apply_task_projection(&activity, &plan).await.unwrap();
+        }
+
+        let slots = activity
+            .find_by_user_and_date(user_id(), date(2026, 8, 4))
+            .await
+            .unwrap();
+        assert_eq!(slots.len(), 1, "the second apply replaced rather than appended");
+    }
+
+    /// One task's rebuild never reads or writes another task's slots.
+    #[tokio::test]
+    async fn the_plan_leaves_another_tasks_slots_alone() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+        let other = Uuid::new_v4();
+        let theirs = ActivitySlot::from_worklog(
+            user_id(), other, None, t(7, 0), t(7, 30),
+            HalfDay::Morning, date(2026, 8, 4), t(9, 0),
+        );
+        activity.save(&theirs).await.unwrap();
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-08-04", HalfDay::Morning)], tz, t(12, 0),
+        ).await.unwrap();
+
+        assert!(plan.delete.iter().all(|s| s.task_id == Some(task_id())));
+        assert!(plan.write.iter().all(|s| s.task_id == Some(task_id())));
+    }
+
+    /// A half-day the caller did not name is not touched, even for the same task.
+    #[tokio::test]
+    async fn the_plan_is_scoped_to_the_named_half_days() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(14, 0)]).await;
+        let morning_slot = ActivitySlot::from_worklog(
+            user_id(), task_id(), None, t(14, 0), t(14, 1),
+            HalfDay::Afternoon, date(2026, 8, 4), t(15, 0),
+        );
+        activity.save(&morning_slot).await.unwrap();
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-08-04", HalfDay::Morning)], tz, t(16, 0),
+        ).await.unwrap();
+
+        assert!(
+            plan.delete.is_empty(),
+            "the afternoon slot is outside the named half-day"
+        );
+        assert!(plan.write.iter().all(|s| s.half_day == HalfDay::Morning));
     }
 }
