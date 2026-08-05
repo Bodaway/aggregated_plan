@@ -2644,11 +2644,18 @@ async fn flushing_one_sessions_task_does_not_move_another_sessions_window() {
             ))
             .await;
     }
-    schema
+    let flushed = schema
         .execute(format!(
             r#"mutation {{ flushWorklogTime(taskId: "{task_id}", sessionId: "s1") {{ slotsWritten }} }}"#
         ))
         .await;
+    assert!(flushed.errors.is_empty(), "{:?}", flushed.errors);
+
+    let this = schema.execute(r#"{ claudeSession(id: "s1") { lastFlushAt } }"#).await;
+    assert!(
+        !this.data.into_json().unwrap()["claudeSession"]["lastFlushAt"].is_null(),
+        "s1's own window must have advanced"
+    );
 
     let other = schema.execute(r#"{ claudeSession(id: "s2") { lastFlushAt } }"#).await;
     assert!(
