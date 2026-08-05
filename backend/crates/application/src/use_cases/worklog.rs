@@ -268,37 +268,72 @@ pub async fn plan_task_projection(
     let entries = worklog_repo.list(user_id, &filter).await?;
     let entries = refuse_a_truncated_page(entries, "the task's affected half-days")?;
 
-    let mut local_to_utc: std::collections::HashMap<chrono::NaiveDateTime, DateTime<Utc>> =
-        std::collections::HashMap::new();
+    // Keyed by the UTC instant, not the local wall-clock: during a DST fall-back,
+    // two distinct UTC instants read as the same local time, and a map keyed by
+    // local time would let the second `insert` silently overwrite the first. Keyed
+    // by the instant, the local time carried alongside, two instants can never
+    // collide.
+    let mut by_utc: Vec<(DateTime<Utc>, chrono::NaiveDateTime)> = Vec::new();
     let mut local_times = Vec::new();
     for entry in &entries {
-        let local = tz.from_utc_datetime(&entry.logged_at.naive_utc()).naive_local();
+        let local = crate::time::to_local(entry.logged_at, tz);
         let in_scope = half_days.iter().any(|u| {
             u.date == local.date() && u.half_day == half_day_of(local.time().hour())
         });
         if !in_scope {
             continue;
         }
-        local_to_utc.insert(local, entry.logged_at);
+        by_utc.push((entry.logged_at, local));
         local_times.push(local);
     }
 
     let mut write = Vec::new();
     for block in derive_time_blocks(&local_times) {
-        // Both ends came out of `local_times`, so both are in the map. A miss would
-        // mean the projection invented a timestamp, and writing a slot from an
-        // invented instant is worse than writing none.
-        let (Some(start), Some(raw_end)) =
-            (local_to_utc.get(&block.start), local_to_utc.get(&block.end))
-        else {
+        // Every entry whose local time falls in this block's span. Both
+        // `block.start` and `block.end` came out of `local_times`, so this is
+        // never empty — a miss would mean the projection invented a timestamp,
+        // and writing a slot from an invented instant is worse than writing none.
+        let mut members: Vec<DateTime<Utc>> = by_utc
+            .iter()
+            .filter(|(_, local)| *local >= block.start && *local <= block.end)
+            .map(|(utc, _)| *utc)
+            .collect();
+        if members.is_empty() {
             continue;
-        };
-        let mut end = *raw_end;
-        if end <= *start {
-            end = *start + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
+        }
+        members.sort_unstable();
+
+        // A fall-back's ambiguous hour puts two distinct UTC instants at the same
+        // local wall-clock, so the block degenerates to a single local point that
+        // still holds more than one member. Persisting it as one slot would pick
+        // whichever instant happened to be looked up — the "depends on row order"
+        // failure this replaces — and even a slot spanning both would charge the
+        // real gap between them as worked time, which is exactly what the
+        // 45-minute rule says not to do for two instants an hour apart. Each
+        // becomes its own minimal slot instead.
+        if block.start == block.end && members.len() > 1 {
+            for utc in &members {
+                write.push(ActivitySlot::from_worklog(
+                    user_id,
+                    task_id,
+                    None,
+                    *utc,
+                    *utc + chrono::Duration::minutes(MIN_BLOCK_MINUTES),
+                    block.half_day,
+                    block.date,
+                    now,
+                ));
+            }
+            continue;
+        }
+
+        let start = *members.first().expect("checked non-empty above");
+        let mut end = *members.last().expect("checked non-empty above");
+        if end <= start {
+            end = start + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
         }
         write.push(ActivitySlot::from_worklog(
-            user_id, task_id, None, *start, end, block.half_day, block.date, now,
+            user_id, task_id, None, start, end, block.half_day, block.date, now,
         ));
     }
 
@@ -774,6 +809,34 @@ mod tests {
         assert!(!deleted.contains(&hand_made.id), "a hand-made slot is never deleted");
         assert_eq!(plan.write.len(), 1, "the two entries are one stretch of work");
         assert_eq!(plan.write[0].source, SlotSource::Worklog);
+    }
+
+    /// The 2026 fall-back in Europe/Paris: clocks go from 03:00 CEST back to 02:00
+    /// CET at 01:00 UTC, so 00:30 UTC (+2, still CEST) and 01:30 UTC (+1, already
+    /// CET) both read as local 02:30 — the same wall-clock, an hour apart in real
+    /// time. The two are 60 real minutes apart, past the 45-minute gap rule, so
+    /// they must survive as two one-minute slots, never as one slot that either
+    /// drops an instant or spans the whole hour.
+    #[tokio::test]
+    async fn a_dst_fall_back_collision_keeps_both_instants_as_separate_slots() {
+        let first = Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 10, 25, 1, 30, 0).unwrap();
+        let (activity, worklog, config) = fakes_with_entries(&[first, second]).await;
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-10-25", HalfDay::Morning)], tz, second + chrono::Duration::hours(1),
+        ).await.unwrap();
+
+        assert_eq!(plan.write.len(), 2, "two real instants must not collapse into one slot");
+        let starts: std::collections::BTreeSet<DateTime<Utc>> =
+            plan.write.iter().map(|s| s.start_time).collect();
+        assert!(starts.contains(&first), "the earlier instant must survive");
+        assert!(
+            starts.contains(&second),
+            "the later instant must survive, not merely overwrite the earlier one"
+        );
     }
 
     /// Applying twice leaves the same slots — the property the flush needs.
