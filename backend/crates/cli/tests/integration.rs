@@ -1721,3 +1721,141 @@ async fn remember_with_an_off_session_still_succeeds_unattached() {
         .assert()
         .success();
 }
+
+// ---------------------------------------------------------------------------
+// Task 9 — the data-loss path: `done` must flush against whoever was tracking
+// the task (session or human), not gate the flush on the human's pointer
+// alone. Before the fix, a session bound to task X running `done` on X while
+// the human's pointer sat elsewhere — the steady state once sessions are in
+// use — never flushed at all, silently dropping the session's worklog time.
+// ---------------------------------------------------------------------------
+
+/// A session's `done` must flush its own window (carrying its own session id)
+/// even though the human's global pointer sits on an unrelated task — and
+/// that unrelated pointer must be left alone, not blanked by a session's
+/// `done`. `.expect(1)` / `.expect(0)` make either failure mode fail the test
+/// instead of passing quietly: a flush that silently didn't happen, or a
+/// human pointer that got cleared by someone else's `done`.
+#[tokio::test]
+async fn done_via_a_session_flushes_the_sessions_window_and_leaves_the_human_pointer_alone() {
+    let task_id = "00000000-0000-0000-0000-000000000001"; // what the session is tracking
+    let human_pointer = "00000000-0000-0000-0000-000000000002"; // unrelated, human's own task
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some(task_id),
+        )))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "completeTask": {
+                "id": task_id, "title": "Auth migration",
+                "sourceId": "AP-1234", "status": "DONE" } }
+        })))
+        .mount(&server)
+        .await;
+    // The "was this the tracked task" check reads the human's pointer, which
+    // sits on a different task entirely — the steady state this task fixes.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": human_pointer } }
+        })))
+        .mount(&server)
+        .await;
+    // The regression gate: pre-fix, this request was never made at all — the
+    // flush was gated on the human's pointer, which does not match here.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(wiremock::matchers::body_string_contains(r#""sessionId":"s1""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The human's pointer must never be cleared by a session completing its
+    // own task: clearing is keyed on the pointer alone, not on this flush.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdateConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "updateConfiguration": true }
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "done"])
+        .assert()
+        .success();
+    // wiremock verifies .expect(1) on FlushWorklogTime and .expect(0) on
+    // UpdateConfiguration when `server` drops.
+}
+
+/// The human's own path, unchanged by the fix: no session, the pointer on the
+/// task being completed (`via` is `GlobalPointer`, not `Session`). The flush
+/// must still run, and it must carry no session id — reusing
+/// `NoSessionIdOnTheWire` rather than a looser matcher that would accept
+/// `"sessionId":"s1"` just as quietly.
+#[tokio::test]
+async fn done_without_a_session_still_flushes_the_humans_own_window_with_no_session_id() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": task_id } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "completeTask": {
+                "id": task_id, "title": "Auth migration",
+                "sourceId": "AP-1234", "status": "DONE" } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(NoSessionIdOnTheWire)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdateConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "updateConfiguration": true }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "done"])
+        .assert()
+        .success();
+    // wiremock verifies .expect(1) on FlushWorklogTime when `server` drops.
+}
