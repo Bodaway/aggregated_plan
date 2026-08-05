@@ -164,12 +164,22 @@ pub fn slot_hours(slots: &[ActivitySlot]) -> f64 {
         + 0.0
 }
 
-/// Is this slot one the reattribution repair may replace?
+/// Is this slot one the reattribution repair — or the flush — may replace?
 ///
-/// Only closed slots are. An open slot is a *running* activity: deleting it would
-/// stop a timer nobody asked to stop, and it accounts for no hours yet anyway.
+/// Two conditions, and each rules out a different disaster.
+///
+/// **Closed.** An open slot is a *running* activity: deleting it would stop a timer
+/// nobody asked to stop, and it accounts for no hours anyway.
+///
+/// **Owned by the projection.** `source == Worklog` means the flush wrote this slot
+/// from worklog entries, so rewriting it from those same entries is a no-op or a
+/// correction. A `Manual` slot came from somewhere else — the live timer, the UI, a
+/// row whose provenance the one-shot classification could not establish — and
+/// deleting it destroys time no entry can reproduce. The infrastructure layer's
+/// `slot_source_from_str` reads an unreadable or NULL value as `Manual` precisely so
+/// that the unknown lands on the protected side of this line.
 pub fn is_rebuildable(slot: &ActivitySlot) -> bool {
-    slot.end_time.is_some()
+    slot.source.is_projection() && slot.end_time.is_some()
 }
 
 #[cfg(test)]
@@ -435,6 +445,35 @@ mod tests {
             Some(utc(2026, 8, 3, 9, 0)),
         );
         assert!(is_rebuildable(&closed));
+    }
+
+    /// The gate this whole feature exists for: a slot the user made by hand is not
+    /// the projection's to delete, however closed it is.
+    #[test]
+    fn a_manual_slot_is_never_rebuildable_even_when_closed() {
+        let mut s = slot(
+            Some(Uuid::new_v4()),
+            utc(2026, 8, 4, 8, 0),
+            Some(utc(2026, 8, 4, 9, 0)),
+        );
+        s.source = SlotSource::Manual;
+        assert!(!is_rebuildable(&s));
+    }
+
+    /// And an unclassified row reads as manual, so it is protected too — that is
+    /// what makes the one-shot classification safe to have missed a row.
+    #[test]
+    fn a_closed_worklog_slot_is_the_only_rebuildable_shape() {
+        let mut s = slot(
+            Some(Uuid::new_v4()),
+            utc(2026, 8, 4, 8, 0),
+            Some(utc(2026, 8, 4, 9, 0)),
+        );
+        s.source = SlotSource::Worklog;
+        assert!(is_rebuildable(&s), "closed + worklog is the projection's own");
+
+        s.end_time = None;
+        assert!(!is_rebuildable(&s), "a running timer holds no hours");
     }
 
     /// A task that ends the day with nothing left must report `0.0`, not `-0.0`: the
