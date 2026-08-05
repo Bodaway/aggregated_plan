@@ -1859,3 +1859,138 @@ async fn done_without_a_session_still_flushes_the_humans_own_window_with_no_sess
         .success();
     // wiremock verifies .expect(1) on FlushWorklogTime when `server` drops.
 }
+
+// ---------------------------------------------------------------------------
+// Task 9 left a third argument shape unfixed: an explicit TASK argument
+// naming the very task a bound session is tracking. `resolve_target` gives
+// an explicit target absolute precedence (`via == Task`), so the gate fell
+// back to the human's pointer alone — and when that pointer sits elsewhere,
+// no flush ran at all, silently losing the session's time on the task it
+// just completed.
+// ---------------------------------------------------------------------------
+
+/// `aplan --session s1 done X` where `s1` is bound to `X` and the human's
+/// pointer sits elsewhere. The explicit `X` still wins the resolution (`via`
+/// is `Task`, not `Session`), but the flush must still carry `s1`'s id.
+/// `.expect(1)` is the regression gate: pre-fix, this request was never made
+/// at all — the gate consulted only the human's unrelated pointer.
+#[tokio::test]
+async fn done_with_task_naming_a_bound_sessions_own_task_still_flushes_that_session() {
+    let task_id = "00000000-0000-0000-0000-000000000001"; // what s1 is tracking, and the explicit target
+    let human_pointer = "00000000-0000-0000-0000-000000000002"; // unrelated, human's own task
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("Session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some(task_id),
+        )))
+        .mount(&server)
+        .await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "completeTask": {
+                "id": task_id, "title": "Auth migration",
+                "sourceId": "AP-1234", "status": "DONE" } }
+        })))
+        .mount(&server)
+        .await;
+    // The gate's own pointer read sits on an unrelated task — the steady
+    // state this test fixes.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": human_pointer } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(wiremock::matchers::body_string_contains(r#""sessionId":"s1""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The human's unrelated pointer must never be cleared by this `done`.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdateConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "updateConfiguration": true }
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "done", task_id])
+        .assert()
+        .success();
+    // wiremock verifies .expect(1) on FlushWorklogTime and .expect(0) on
+    // UpdateConfiguration when `server` drops.
+}
+
+/// The human's bare `done` path (no `--session`, pointer on the target) is
+/// unaffected by the fix above: `via` is `GlobalPointer`, `session_tracks_target`
+/// is never even evaluated (no session to query), and the flush still runs
+/// with no `sessionId` on the wire.
+#[tokio::test]
+async fn done_with_task_and_no_session_still_flushes_the_humans_own_window() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("CompleteTask"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "completeTask": {
+                "id": task_id, "title": "Auth migration",
+                "sourceId": "AP-1234", "status": "DONE" } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("GetConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "configuration": {
+                "aplan.active_task_id": task_id } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(NoSessionIdOnTheWire)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": null }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("UpdateConfiguration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "updateConfiguration": true }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "done", task_id])
+        .assert()
+        .success();
+    // wiremock verifies .expect(1) on FlushWorklogTime when `server` drops.
+}

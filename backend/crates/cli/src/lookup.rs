@@ -204,6 +204,31 @@ fn resolve_from_session(client: &Client, id: &str) -> Result<(TaskRef, ResolvedV
     hydrate_by_id(client, &task_id).map(|t| (t, ResolvedVia::Session))
 }
 
+/// The task id a Claude session is currently bound to, or `None` if it must
+/// not be treated as "this session tracks that task": no row for `id`, the
+/// session ended, logging is off, or no task is bound. Errors talking to the
+/// server fold into `None` too — the caller (`done`'s explicit-`--task` gate)
+/// already has a pointer-based answer to fall back on, and refusing over a
+/// transient GraphQL error would be a worse failure than falling back to it.
+///
+/// Unlike `resolve_from_session`, an unknown id is not distinguished from any
+/// other "no" here: this is used only to decide *whether* a session owns the
+/// task `--task` already picked, never to resolve the task itself, so there
+/// is nothing left to report to the user either way.
+pub fn session_task_id(client: &Client, id: &str) -> Option<String> {
+    let result = client
+        .run::<ClaudeSession>(claude_session::Variables { id: id.to_string() })
+        .ok()?;
+    let found = result.data.claude_session?;
+    if found.ended_at.is_some() {
+        return None;
+    }
+    if !matches!(found.mode, claude_session::SessionModeGql::TRACKING) {
+        return None;
+    }
+    found.task_id.filter(|t| !t.is_empty())
+}
+
 /// Fetch a task by its UUID and return a fully hydrated `TaskRef`. A `null`
 /// task in the response means the id is unknown (`NotFound`); transport and
 /// GraphQL errors propagate as `LookupError::Client`.

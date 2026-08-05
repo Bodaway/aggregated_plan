@@ -3,7 +3,7 @@
 
 use crate::cli::{ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg};
 use crate::client::Client;
-use crate::lookup::{resolve_target, resolve_task, LookupError, ResolvedVia};
+use crate::lookup::{resolve_target, resolve_task, session_task_id, LookupError, ResolvedVia};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, add_worklog_entry, append_task_notes, complete_task, create_task,
@@ -144,16 +144,30 @@ pub fn done(
     // purpose: a session's `done` must never blank the human's unrelated
     // tracking. The two watermarks (`sessions.last_flush_at` and
     // `aplan.active_since`) must never cross.
+    // `--task` wins the resolution (`via == Task`) even when it names exactly
+    // the task a bound session is tracking — that is what "always wins" means.
+    // But it must not cost that session its time: ask once whether `session`
+    // (if any) is itself bound to `target_id`, and if so treat this `done`
+    // as session-tracked for both the gate and the flush below, same as an
+    // implicit `ResolvedVia::Session` resolution would. `--task` still
+    // decided *which* task; this only decides *whose* window flushes.
+    let session_tracks_target = via == ResolvedVia::Task
+        && session
+            .filter(|s| !s.trim().is_empty())
+            .is_some_and(|id| session_task_id(&client, id).as_deref() == Some(target_id.as_str()));
+
     let active = active_task_id(&client);
     let pointer_on_target = active.as_deref() == Some(target_id.as_str());
     let was_tracking_target = match via {
         ResolvedVia::Session => true,
-        ResolvedVia::Task | ResolvedVia::GlobalPointer => pointer_on_target,
+        ResolvedVia::Task => pointer_on_target || session_tracks_target,
+        ResolvedVia::GlobalPointer => pointer_on_target,
     };
     if !keep_running {
         if was_tracking_target {
             let flush_session = match via {
                 ResolvedVia::Session => session.map(|s| s.to_string()),
+                ResolvedVia::Task if session_tracks_target => session.map(|s| s.to_string()),
                 ResolvedVia::Task | ResolvedVia::GlobalPointer => None,
             };
             flush_task(&client, &target_id, flush_session.as_deref());
