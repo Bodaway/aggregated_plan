@@ -432,4 +432,56 @@ mod tests {
         assert_eq!(slots[0].source, SlotSource::Manual);
         assert!(slots[0].session_id.is_none());
     }
+
+    /// The `UPDATE` path writes `source` and `session_id` like the `INSERT` does.
+    /// Nothing exercises it today because every caller reads the slot first, mutates
+    /// it and writes it back — so a regression here would be invisible until a
+    /// rebuild refused to replace a slot it had itself written.
+    #[tokio::test]
+    async fn update_preserves_a_slots_provenance_and_author() {
+        let pool = setup().await;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 4).unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-08-04T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        // `session_id` is a FK onto `sessions(id)`: the session must exist before a
+        // slot can claim it as its author.
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, mode, started_at, last_seen_at)
+             VALUES ('sess-update', ?, 'tracking', ?, ?)",
+        )
+        .bind(user_id().to_string())
+        .bind(start.to_rfc3339())
+        .bind(start.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repo = SqliteActivitySlotRepository::new(pool);
+
+        let slot = ActivitySlot::from_worklog(
+            user_id(),
+            existing_task_id(),
+            Some("sess-update".into()),
+            start,
+            start + chrono::Duration::hours(2),
+            HalfDay::Morning,
+            date,
+            start,
+        );
+        repo.save(&slot).await.unwrap();
+
+        // Read-mutate-write, the shape every real caller uses.
+        let mut round_tripped = repo.find_by_id(slot.id).await.unwrap().unwrap();
+        round_tripped.end_time = Some(start + chrono::Duration::hours(3));
+        repo.update(&round_tripped).await.unwrap();
+
+        let after = repo.find_by_id(slot.id).await.unwrap().unwrap();
+        assert_eq!(after.end_time, Some(start + chrono::Duration::hours(3)));
+        assert_eq!(
+            after.source,
+            SlotSource::Worklog,
+            "an update must not downgrade the projection's own slot to Manual"
+        );
+        assert_eq!(after.session_id.as_deref(), Some("sess-update"));
+    }
 }
