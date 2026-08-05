@@ -2159,6 +2159,12 @@ async fn update_configuration_mutation() {
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
     let data = result.data.into_json().unwrap();
     assert_eq!(data["updateConfiguration"], true);
+
+    let read = schema.execute(r#"{ configuration }"#).await;
+    assert_eq!(
+        read.data.into_json().unwrap()["configuration"]["jira.url"],
+        "https://jira.test.com"
+    );
 }
 
 // ─── Deduplication Tests ───
