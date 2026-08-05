@@ -67,7 +67,9 @@ pub struct FlushResultGql(pub FlushOutcome);
 
 #[Object]
 impl FlushResultGql {
-    /// New watermark: entries at/after this instant are not yet materialized.
+    /// Start of the next flush's selector window (not a watermark): entries at/after
+    /// this instant are left for that flush, which picks them up by half-day rather
+    /// than by comparing timestamps against this value.
     async fn active_since(&self) -> chrono::DateTime<chrono::Utc> {
         self.0.active_since
     }

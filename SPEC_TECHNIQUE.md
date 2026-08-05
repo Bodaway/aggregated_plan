@@ -164,7 +164,7 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
 - **Claude integration:** a `.claude/skills/aplan/SKILL.md` ships in-repo so Claude Code uses the CLI instead of crafting GraphQL queries by hand.
 - **Worklog CLI verbs:**
   - `aplan log [--task <TASK>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
-  - `aplan flush [--json] <TASK>` — materializes closed activity slots from pending worklog entries (entries whose `logged_at` falls after `aplan.active_since`), grouped by day and half-day via `derive_time_blocks`. Does **not** clear the active-task pointer (`aplan.active_task_id`). Calls the `flushWorklogTime` GraphQL mutation internally. Used by the `SessionEnd` hook.
+  - `aplan flush [--json] <TASK>` — rebuilds the task's closed activity slots for the local half-days its window touched. The window is only a **selector**: it decides which half-days to rebuild, and every worklog entry of the task in each of those half-days — not only the ones inside the window — then decides what the slots are, via `derive_time_blocks`. Re-running is a no-op; a backdated entry is still picked up. This verb carries no `--session` flag yet, so it resolves against the human's `aplan.active_since`; the `flushWorklogTime` mutation it calls internally also accepts an optional `sessionId` to select a Claude session's own window (`sessions.last_flush_at`) instead — wired up by a later plan's hook rewrite. Does **not** clear the active-task pointer (`aplan.active_task_id`). Used by the `SessionEnd` hook.
   - `aplan reattribute --from <TASK> --to <TASK> {--date AAAA-MM-JJ | --since D [--until D] | --entry <ID>…} [--confirm]` — déplace des entrées de journal **et redérive** les créneaux d'activité qui en découlent (US-RE, R23b). Appelle la mutation `reattributeWorklogEntries`. `--from`/`--to` passent par le résolveur de tâche habituel ; les références d'entrée (`--entry`) sont résolues **côté serveur** par préfixe d'identifiant (`WorklogRepository::find_by_id_prefix`, même contrat que `MemoryRepository::find_by_id_prefix`), une collision étant signalée (code 3) et jamais devinée. `--date` et `--entry` sont mutuellement exclusifs à l'analyse des arguments (clap `conflicts_with`), `--until` exige `--since`. **Aperçu par défaut** : sans `--confirm` la mutation résout tout, calcule le même compte rendu et n'écrit rien — un seul chemin de code, donc l'aperçu ne peut pas dériver de l'écriture. Codes de sortie : 2 tâche/entrée introuvable, 3 référence ambiguë, 4 refus (source = destination, entrée d'une autre tâche, sélection vide, plafond de page atteint), 1 réseau/GraphQL.
 - **Verbe de mémoire du démarrage :**
   - `aplan brief [--morning] [--project <P>] [--date AAAA-MM-JJ]` — imprime le brief de session
@@ -2900,7 +2900,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
   - Mutation `addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntry!`
   - Mutation `updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntry!`
   - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
-  - Mutation `flushWorklogTime(taskId: ID!): [ActivitySlot!]!` — calls `materialize_worklog_time` for the given task, using `aplan.active_since` as the watermark. Returns the newly created activity slots. Does not modify the active-task pointer. Idempotent: re-running produces no duplicate slots.
+  - Mutation `flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!` — calls `materialize_worklog_time` for the given task. The window (`sessionId`'s own `sessions.last_flush_at` when provided, otherwise `aplan.active_since`) only selects which local half-days to rebuild; every entry of the task in those half-days then decides the slots. Returns `{ activeSince, slotsWritten }`. Does not modify the active-task pointer. Idempotent: re-running produces the same slots, never duplicates, and a backdated entry is still picked up.
   - Mutation `reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!` — moves entries between tasks and rebuilds the derived slots. Calls `use_cases::reattribution::reattribute_worklog_entries`. See "Réattribution" below.
 - `WorklogRepository::find_by_id_prefix(user_id, prefix, limit)` — `id LIKE ? ESCAPE '\'` on the hyphenated lowercase id, ordered `logged_at DESC`, `limit.max(1)` bound (never `LIMIT 0`). The `escape_like` helper (shared with the memory repository via `database::conversions`) keeps `_` and `%` literal: `_` is a LIKE wildcard, and an unescaped token would resolve a mistyped reference to an arbitrary entry.
 - `WorklogRepository::reassign_task(user_id, ids, from_task, to_task, now)` — one transaction, chunked at 400 binds like `mark_consolidated`. `task_id = ?` is part of the `WHERE`: an id list assembled from an earlier read must not pull an entry off a task the caller never named, and the returned count says what actually moved. `consolidated_at` is left untouched — attribution and consolidation are different questions.
@@ -3007,6 +3007,67 @@ d'aucun fuseau horaire**.
 La passe s'exécute **après** le retour anticipé d'`export-schema` : cette commande de génération
 de code ne doit pas effectuer une écriture irréversible dont la trace serait avalée par la
 redirection de sortie.
+
+#### 7.3.4 Le flush devient une reconstruction idempotente
+
+Avant le plan 2, `flushWorklogTime` lisait un filigrane unique et global
+(`aplan.active_since`), matérialisait les entrées plus récentes que lui, puis avançait ce
+filigrane pour tout le monde. Le défaut n'exigeait aucune concurrence pour se manifester : dès
+que deux tâches s'entrelaçaient, flusher la tâche B avançait le filigrane que la tâche A
+attendait encore, et les entrées de A journalisées avant ce flush n'étaient jamais matérialisées
+— perdues en silence. Une ré-exécution, elle, dupliquait ce qui avait déjà été écrit, puisque le
+filigrane ne portait aucune notion d'idempotence.
+
+**La fenêtre devient un sélecteur, jamais une vérité.** Elle ne sert plus qu'à répondre à une
+question : quelles demi-journées locales cette tâche a-t-elle touchées ? Une fois ces
+demi-journées identifiées, ce sont **toutes** les entrées de la tâche qui s'y trouvent — pas
+seulement celles tombées dans la fenêtre — qui décident des créneaux à écrire. Élargir la fenêtre
+ne coûte donc rien : au pire elle nomme une demi-journée déjà à jour, jamais elle n'en oublie
+une. C'est ce renversement qui rend une entrée antidatée récupérable : son admission dépend de
+la demi-journée locale où elle tombe, jamais d'une comparaison d'horodatage contre le filigrane.
+
+**La reconstruction est bornée à (tâche, demi-journée).** `plan_task_projection` (lecture) et
+`apply_task_projection` (écriture), `crates/application/src/use_cases/worklog.rs`, sont le
+primitif partagé : pour chaque demi-journée nommée, on supprime les créneaux que la tâche
+possède dans cette demi-journée, puis on les réécrit depuis les entrées de cette même tâche dans
+cette même demi-journée, via `derive_time_blocks`. Rien d'une autre tâche n'est lu ni écrit —
+c'est ce qui garantit l'isolation entre tâches : le flush de B ne touche ni les créneaux ni la
+fenêtre de A.
+
+**`source` est le verrou de suppression.** `is_rebuildable` (`domain::rules::reattribution`)
+n'autorise la suppression que d'un créneau fermé dont `source == Worklog` : c'est la trace que le
+flush lui-même a écrit ce créneau, donc le réécrire depuis les mêmes entrées est un no-op ou une
+correction. Un créneau `Manual` — minuterie live, saisie UI, provenance que la passe de
+classification (§7.3.3) n'a pas pu établir — n'est jamais une cible de suppression, et une valeur
+NULL ou illisible est lue côté infrastructure comme `Manual` précisément pour tomber du côté
+protégé de cette ligne. Le mode de défaillance de l'inconnu est donc un créneau qui survit sans
+être reconstruit, jamais un créneau détruit.
+
+**Un seul primitif, deux appelants.** `plan_task_projection` / `apply_task_projection` ne sont pas
+propres au flush : `reattribute_worklog_entries` (§ « Réattribution ») effectue exactement la
+même opération sur les demi-journées affectées par un déplacement d'entrées. Un même calcul de
+reconstruction, appelé par les deux chemins, ferme la possibilité qu'un aperçu de réattribution
+et un flush en arrivent à des chiffres différents pour la même demi-journée.
+
+**Deux fenêtres qui ne se croisent jamais.** `flushWorklogTime` en lit et en avance une des deux,
+jamais les deux : avec un `sessionId`, c'est la fenêtre propre à cette session Claude
+(`sessions.last_flush_at`, lue par `Session::flush_window_start()`, avancée par
+`SessionRepository::set_last_flush`) ; sans lui, c'est le pointeur de l'humain,
+`aplan.active_since`. Partager une clé entre tâches est exactement le défaut d'origine — le
+partitionnement par acteur (session vs humain) est ce qui l'empêche de se reproduire une fois la
+reconstruction elle-même rendue sans état partagé.
+
+De ce renversement découlent trois propriétés, toutes vérifiées par les tests d'application :
+
+- **Idempotence.** Deux flushs de la même tâche sur la même demi-journée produisent le même jeu
+  de créneaux ; une ré-exécution — ou deux flushs concurrents qui convergent — n'ajoute jamais de
+  doublon.
+- **Reprise d'une entrée antidatée.** Une entrée journalisée avec un `logged_at` dans le passé est
+  matérialisée dès que sa demi-journée locale est reconstruite, qu'elle tombe ou non dans la
+  fenêtre qui a déclenché le flush.
+- **Isolation entre tâches.** Flusher une tâche ne lit ni n'écrit rien des créneaux ou de la
+  fenêtre d'une autre tâche ; deux sessions sur deux tâches distinctes s'exécutent sans jamais se
+  gêner.
 
 ### 7.2 Migration `012_create_memories.sql` — mémoire sémantique
 
@@ -3720,10 +3781,12 @@ type Mutation {
   # Append text to a task's user-owned `notes` field (used by the activity quick-note input)
   appendTaskNotes(taskId: ID!, text: String!): Task!
 
-  # Worklog time materialization — creates closed activity slots from worklog-entry timestamps.
-  # Uses aplan.active_since as watermark; does not clear the active-task pointer.
-  # Idempotent: re-running never creates duplicate slots.
-  flushWorklogTime(taskId: ID!): [ActivitySlot!]!
+  # Worklog time materialization — rebuilds a task's closed activity slots in the
+  # local half-days its window touched. The window (sessionId's own last-flush
+  # mark, or aplan.active_since when sessionId is omitted) only selects which
+  # half-days to rebuild; it does not clear the active-task pointer.
+  # Idempotent: re-running produces the same slots, never duplicates.
+  flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!
 
   # Réattribution — moves worklog entries between tasks and REBUILDS the slots they
   # project to, in the affected half-days only. `confirm` defaults to false: the call
@@ -3809,6 +3872,11 @@ type Mutation {
   # Écrit `memory.consolidation.last_run` dans `configuration` — la clé que lit le
   # brief (R57). `at` vaut maintenant par défaut.
   recordConsolidationRun(at: DateTime): ConsolidationRunGql!
+}
+
+type FlushResultGql {
+  activeSince: DateTime!       # début de la fenêtre-sélecteur du prochain flush (pas un filigrane)
+  slotsWritten: Int!           # nombre de créneaux écrits par ce flush
 }
 
 type MarkConsolidatedResultGql {
@@ -4626,8 +4694,8 @@ When Claude Code drives the cockpit via the `aplan` CLI, time is tracked through
 | **Session link** | `aplan start <task>` writes `aplan.active_task_id` (config key). No `ActivitySlot` is opened. |
 | **Time materialization** | Closed `ActivitySlot` records are derived from worklog-entry `logged_at` timestamps via `derive_time_blocks` (domain rule) and persisted by `materialize_worklog_time` (use case). |
 | **Granularity** | One slot per (task, continuous stretch of work). A stretch runs from its first to its last entry and stops wherever two consecutive entries are more than `MAX_CONTINUATION_GAP_MINUTES` apart (R-WL-13), so one half-day may hold several slots; it never straddles the half-day boundary (morning = local hour < 13, afternoon >= 13, per `aplan.timezone`). |
-| **Trigger** | Materialization runs on `aplan stop`, `aplan done`, and on every Claude Code `SessionEnd` hook (`~/.claude/hooks/aplan-session-end.sh`). The hook calls `aplan flush <task_id>`, which calls the `flushWorklogTime` mutation. |
-| **Watermark** | `aplan.active_since` tracks the last flush timestamp. Only entries after this timestamp are processed, preventing duplicate slots across sessions. |
+| **Trigger** | Materialization runs on `aplan stop`, `aplan done`, and on every Claude Code `SessionEnd` hook (`~/.claude/hooks/aplan-session-end.sh`). The hook calls `aplan flush <task_id>`, which calls the `flushWorklogTime` mutation — still against the human's window today, since the hook does not yet pass a session id (a later plan rewrites the hooks to flush the ending session's own window instead). |
+| **Flush window** | Not a watermark: it only selects which local half-days to rebuild, and every entry of the task in those half-days decides the slots, so re-running never duplicates and a backdated entry is still picked up. `flushWorklogTime` reads and advances one of two windows, never both: a Claude session's own `sessions.last_flush_at` when a `sessionId` is passed, otherwise the human's `aplan.active_since`. |
 | **No open slots** | There is never an open (`end_time IS NULL`) slot associated with the active-task pointer. The existing `start_activity` / `stop_activity` use cases are unaffected and continue to work for UI-driven tracking. |
 | **Correction** | A wrong attribution is fixed with `aplan reattribute --from <task> --to <task> {--date D \| --since D --until D \| --entry ID…} [--confirm]`: the entries move and the slots of the two tasks are **re-derived in the affected half-days**. Preview by default. Because slots are a projection, correcting the entries is the only way to correct the time — editing a slot would leave it disagreeing with the journal it came from. |
 | **Agents** | A subagent must never run `aplan start` / `new` / `stop` / `done` / `flush` / `triage`: the active-task pointer belongs to the parent session, and an agent that moves it redirects the parent's time onto its own task. See `.claude/skills/aplan/SKILL.md`. |
@@ -4694,7 +4762,7 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `outlook.calendar_days` | integer | `14` | Horizon en jours pour la synchronisation du calendrier Outlook |
 | `outlook.exclude_patterns` | string (multiligne) | `""` | Liste de titres de réunions à exclure de la synchronisation
 | `aplan.active_task_id` | string (UUID) | `""` | Task UUID the current Claude Code session is linked to. Set by `aplan start`, cleared by `aplan stop`/`aplan done`. No open activity slot is associated — time is derived from worklog timestamps. |
-| `aplan.active_since` | string (ISO 8601 UTC) | `""` | Watermark: only worklog entries with `logged_at > active_since` are considered by `materialize_worklog_time`. Updated to `now()` by each successful `flushWorklogTime` call. |
+| `aplan.active_since` | string (ISO 8601 UTC) | `""` | Selector for the **human's** flush window, not a watermark: `materialize_worklog_time` uses it only to pick which local half-days a task touched, then rebuilds from every entry of that task in each of them. Updated to `now()` by each `flushWorklogTime` call made without a `sessionId`; a session-scoped call (`sessionId` set) reads and advances `sessions.last_flush_at` instead and never touches this key. |
 | `aplan.timezone` | string (IANA tz) | `"Europe/Paris"` | Timezone used by `derive_time_blocks` to convert UTC worklog timestamps into local day/half-day boundaries. | (une entrée par ligne) ; exclusion par sous-chaîne insensible à la casse, appliquée dans `sync_outlook` via `domain::rules::meeting::is_excluded` ; les réunions déjà synchronisées correspondant à un nouveau motif sont purgées par `delete_stale` au prochain sync ; appliqué de façon cohérente par `sync_source` ET `sync_all` |
 | `excel_sharepoint_path` | string | `""` | SharePoint path to Excel file |
 | `excel_sheet_name` | string | `""` | Sheet name in Excel |

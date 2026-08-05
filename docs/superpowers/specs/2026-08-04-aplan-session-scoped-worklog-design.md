@@ -302,6 +302,11 @@ Three plans, each independently shippable and testable:
    pass, GraphQL surface, CLI resolution order + `sessions`/`session` commands. Flush still
    behaves as today.
 2. **Idempotent flush** — extract `rebuild_task_projection`, rewire `flushWorklogTime` and
-   `reattribute_worklog_entries` onto it, retire the global-watermark read.
+   `reattribute_worklog_entries` onto it, retire the global-watermark read. **Shipped**
+   `36e9a23..a5bbf7e`. The primitive landed as a read/write pair, `plan_task_projection` +
+   `apply_task_projection` (`crates/application/src/use_cases/worklog.rs`), rather than a
+   single `rebuild_task_projection`, but it is the shared primitive this plan calls for, used
+   by both the flush and `reattribute_worklog_entries`. § "Flush becomes an idempotent
+   rebuild" above now describes shipped behaviour, not intent.
 3. **Hooks and overlap** — rewrite both hooks against `session show`, overlap rule + its
    display in `journal` / `timesheet` / `dash`, update the `aplan` SKILL.md.
