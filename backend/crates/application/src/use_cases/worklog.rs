@@ -271,9 +271,9 @@ pub async fn plan_task_projection(
     // Keyed by the UTC instant, not the local wall-clock: during a DST fall-back,
     // two distinct UTC instants read as the same local time, and a map keyed by
     // local time would let the second `insert` silently overwrite the first. Keyed
-    // by the instant, the local time carried alongside, two instants can never
-    // collide.
-    let mut by_utc: Vec<(DateTime<Utc>, chrono::NaiveDateTime)> = Vec::new();
+    // by the instant, the local time and the entry's author carried alongside, two
+    // instants can never collide.
+    let mut by_utc: Vec<(DateTime<Utc>, chrono::NaiveDateTime, Option<SessionId>)> = Vec::new();
     let mut local_times = Vec::new();
     for entry in &entries {
         let local = crate::time::to_local(entry.logged_at, tz);
@@ -283,7 +283,7 @@ pub async fn plan_task_projection(
         if !in_scope {
             continue;
         }
-        by_utc.push((entry.logged_at, local));
+        by_utc.push((entry.logged_at, local, entry.session_id.clone()));
         local_times.push(local);
     }
 
@@ -293,15 +293,15 @@ pub async fn plan_task_projection(
         // `block.start` and `block.end` came out of `local_times`, so this is
         // never empty — a miss would mean the projection invented a timestamp,
         // and writing a slot from an invented instant is worse than writing none.
-        let mut members: Vec<DateTime<Utc>> = by_utc
-            .iter()
-            .filter(|(_, local)| *local >= block.start && *local <= block.end)
-            .map(|(utc, _)| *utc)
-            .collect();
+        let mut members: Vec<&(DateTime<Utc>, chrono::NaiveDateTime, Option<SessionId>)> =
+            by_utc
+                .iter()
+                .filter(|(_, local, _)| *local >= block.start && *local <= block.end)
+                .collect();
         if members.is_empty() {
             continue;
         }
-        members.sort_unstable();
+        members.sort_by_key(|(utc, _, _)| *utc);
 
         // A fall-back's ambiguous hour puts two distinct UTC instants at the same
         // local wall-clock, so the block degenerates to a single local point that
@@ -310,13 +310,13 @@ pub async fn plan_task_projection(
         // failure this replaces — and even a slot spanning both would charge the
         // real gap between them as worked time, which is exactly what the
         // 45-minute rule says not to do for two instants an hour apart. Each
-        // becomes its own minimal slot instead.
+        // becomes its own minimal slot instead, with its own contributor as author.
         if block.start == block.end && members.len() > 1 {
-            for utc in &members {
+            for (utc, _, session_id) in &members {
                 write.push(ActivitySlot::from_worklog(
                     user_id,
                     task_id,
-                    None,
+                    session_id.clone(),
                     *utc,
                     *utc + chrono::Duration::minutes(MIN_BLOCK_MINUTES),
                     block.half_day,
@@ -327,17 +327,36 @@ pub async fn plan_task_projection(
             continue;
         }
 
-        let start = *members.first().expect("checked non-empty above");
-        let mut end = *members.last().expect("checked non-empty above");
+        let start = members.first().expect("checked non-empty above").0;
+        let mut end = members.last().expect("checked non-empty above").0;
         if end <= start {
             end = start + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
         }
         write.push(ActivitySlot::from_worklog(
-            user_id, task_id, None, start, end, block.half_day, block.date, now,
+            user_id, task_id, same_author(&members), start, end, block.half_day, block.date, now,
         ));
     }
 
     Ok(RebuildPlan { task_id, delete, write })
+}
+
+/// The rebuilt slot's author, when every entry it spans agrees on one.
+///
+/// A slot spans however many entries fell in its stretch, and those entries may
+/// belong to different sessions — precisely the concurrency this feature exists to
+/// enable — so a single `session_id` has no defined value in general. `None`
+/// covers both "every contributor is the human, working by hand" and "they
+/// disagree": a slot's own single field cannot tell the two apart, which is
+/// exactly why it must not claim an author unless every contributor agrees on one.
+fn same_author(
+    members: &[&(DateTime<Utc>, chrono::NaiveDateTime, Option<SessionId>)],
+) -> Option<SessionId> {
+    let first = &members[0].2;
+    if members.iter().all(|(_, _, session_id)| session_id == first) {
+        first.clone()
+    } else {
+        None
+    }
 }
 
 /// Persist a plan: drop the stale projection, then write the fresh one.
@@ -836,6 +855,55 @@ mod tests {
         assert!(
             starts.contains(&second),
             "the later instant must survive, not merely overwrite the earlier one"
+        );
+    }
+
+    /// Every contributing entry sharing one author: the rebuilt slot may claim it.
+    #[tokio::test]
+    async fn the_plan_derives_the_slot_author_when_every_entry_agrees() {
+        let (activity, worklog, config) = fakes_with_entries(&[]).await;
+        for at in [t(7, 0), t(7, 30)] {
+            let entry = WorklogEntry::new(user_id(), task_id(), "x".into(), at, at)
+                .unwrap()
+                .by_session(Some("sess-1".into()));
+            worklog.create(&entry).await.unwrap();
+        }
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-08-04", HalfDay::Morning)], tz, t(12, 0),
+        ).await.unwrap();
+
+        assert_eq!(plan.write.len(), 1, "one stretch of work");
+        assert_eq!(plan.write[0].session_id.as_deref(), Some("sess-1"));
+    }
+
+    /// Entries that disagree on their author leave the slot's authorship
+    /// undefined — a rebuilt slot spanning two sessions' work has no single
+    /// author, which is exactly the concurrency this feature exists to enable.
+    #[tokio::test]
+    async fn the_plan_leaves_the_slot_author_none_when_entries_disagree() {
+        let (activity, worklog, config) = fakes_with_entries(&[]).await;
+        let mine = WorklogEntry::new(user_id(), task_id(), "x".into(), t(7, 0), t(7, 0))
+            .unwrap()
+            .by_session(Some("sess-1".into()));
+        let theirs = WorklogEntry::new(user_id(), task_id(), "x".into(), t(7, 30), t(7, 30))
+            .unwrap()
+            .by_session(Some("sess-2".into()));
+        worklog.create(&mine).await.unwrap();
+        worklog.create(&theirs).await.unwrap();
+
+        let tz = user_timezone(&config, user_id()).await.unwrap();
+        let plan = plan_task_projection(
+            &activity, &worklog, user_id(), task_id(),
+            &[half_day("2026-08-04", HalfDay::Morning)], tz, t(12, 0),
+        ).await.unwrap();
+
+        assert_eq!(plan.write.len(), 1, "one stretch of work, from two different authors");
+        assert!(
+            plan.write[0].session_id.is_none(),
+            "no single session owns a slot two different authors contributed to"
         );
     }
 
