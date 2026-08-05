@@ -108,12 +108,18 @@ pub async fn user_timezone(
         .unwrap_or_else(|| DEFAULT_TZ.parse().expect("default tz parses")))
 }
 
-/// Materialize worklog entries logged in `[from, now]` for `task_id` into closed
-/// activity slots — one per stretch of work the entries document, as
-/// [`derive_time_blocks`] cuts them: a half-day yields several slots when the entries
-/// stopped for more than
-/// [`MAX_CONTINUATION_GAP_MINUTES`](domain::rules::worklog_time::MAX_CONTINUATION_GAP_MINUTES).
-/// Returns new watermark + count.
+/// Materialize the worklog time of `task_id` into closed activity slots.
+///
+/// `from` is a **selector, not a watermark**: it picks which local half-days to
+/// rebuild, and every entry of this task in those half-days then decides what the
+/// slots are. That inversion is the point of the whole plan. The old
+/// implementation appended slots for entries newer than a single global watermark,
+/// so flushing task B advanced the mark for task A too and A's entries were never
+/// materialized; and re-running it duplicated whatever it had already written.
+///
+/// Widening the window is therefore free, and re-running is free: the operation is
+/// idempotent because it derives everything from the entries and owns only the slots
+/// it wrote (`SlotSource::Worklog`).
 pub async fn materialize_worklog_time(
     worklog_repo: &dyn WorklogRepository,
     activity_repo: &dyn ActivitySlotRepository,
@@ -133,41 +139,30 @@ pub async fn materialize_worklog_time(
         offset: 0,
     };
     let entries = worklog_repo.list(user_id, &filter).await?;
+    let entries = refuse_a_truncated_page(entries, "the task's affected half-days")?;
 
-    let mut local_to_utc: std::collections::HashMap<chrono::NaiveDateTime, DateTime<Utc>> =
-        std::collections::HashMap::new();
-    let mut local_times = Vec::with_capacity(entries.len());
-    for e in &entries {
-        let local = tz.from_utc_datetime(&e.logged_at.naive_utc()).naive_local();
-        local_to_utc.insert(local, e.logged_at);
-        local_times.push(local);
+    // The window's only job: which half-days did this task touch?
+    let mut half_days: Vec<AffectedHalfDay> = Vec::new();
+    for entry in &entries {
+        let local = tz.from_utc_datetime(&entry.logged_at.naive_utc()).naive_local();
+        let unit = AffectedHalfDay {
+            date: local.date(),
+            half_day: half_day_of(local.time().hour()),
+        };
+        if !half_days.iter().any(|u| u.date == unit.date && u.half_day == unit.half_day) {
+            half_days.push(unit);
+        }
     }
 
-    let blocks = derive_time_blocks(&local_times);
     let mut written = 0u32;
-    for block in blocks {
-        let start_utc = local_to_utc[&block.start];
-        let mut end_utc = local_to_utc[&block.end];
-        if end_utc <= start_utc {
-            // The domain owns how long a single-timestamp block lasts, so the flush
-            // and the reattribution repair persist the same duration for it.
-            end_utc = start_utc + chrono::Duration::minutes(MIN_BLOCK_MINUTES);
-        }
-        // Session attribution on materialized slots arrives with plan 2, which is
-        // where the flush learns which session asked; `None` keeps this plan's
-        // behaviour identical to today's.
-        let slot = ActivitySlot::from_worklog(
-            user_id,
-            task_id,
-            None,
-            start_utc,
-            end_utc,
-            block.half_day,
-            block.date,
-            Utc::now(),
-        );
-        activity_repo.save(&slot).await?;
-        written += 1;
+    for unit in &half_days {
+        let plan = plan_task_projection(
+            activity_repo, worklog_repo, user_id, task_id,
+            std::slice::from_ref(unit), tz, now,
+        )
+        .await?;
+        written += plan.write.len() as u32;
+        apply_task_projection(activity_repo, &plan).await?;
     }
 
     Ok(FlushOutcome { slots_written: written, active_since: now })
@@ -864,5 +859,63 @@ mod tests {
             "the read itself must be scoped to the named half-days' window, not \
              merely filtered afterwards"
         );
+    }
+
+    // ─── `materialize_worklog_time` rewired onto the rebuild ─────────────────────
+    //
+    // `from` is now a selector, not a watermark: these three exercise exactly the
+    // properties a watermark-and-append implementation could not have.
+
+    /// Two flushes over the same window produce one set of slots. This is the
+    /// property the old append-with-a-watermark implementation could not have.
+    #[tokio::test]
+    async fn flushing_twice_does_not_double_the_half_day() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+
+        for _ in 0..2 {
+            materialize_worklog_time(
+                &worklog, &activity, &config, user_id(), task_id(), t(6, 0), t(12, 0),
+            ).await.unwrap();
+        }
+
+        let slots = activity.find_by_user_and_date(user_id(), date(2026, 8, 4)).await.unwrap();
+        assert_eq!(slots.len(), 1);
+    }
+
+    /// An entry logged with a past `logged_at` — under any watermark the caller might
+    /// pass — still reaches the projection, because membership is by half-day.
+    #[tokio::test]
+    async fn a_backdated_entry_is_still_materialized() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+
+        materialize_worklog_time(
+            &worklog, &activity, &config, user_id(), task_id(),
+            t(7, 15), // a window that starts *after* the first entry
+            t(12, 0),
+        ).await.unwrap();
+
+        let slots = activity.find_by_user_and_date(user_id(), date(2026, 8, 4)).await.unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].start_time, t(7, 0), "the earlier entry set the boundary");
+    }
+
+    /// Flushing one task neither reads nor writes another task's slots — the whole
+    /// point of the plan: two sessions on two tasks stop losing each other's hours.
+    #[tokio::test]
+    async fn flushing_one_task_leaves_another_intact() {
+        let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
+        let other = Uuid::new_v4();
+        let theirs = ActivitySlot::from_worklog(
+            user_id(), other, None, t(8, 0), t(8, 30),
+            HalfDay::Morning, date(2026, 8, 4), t(9, 0),
+        );
+        activity.save(&theirs).await.unwrap();
+
+        materialize_worklog_time(
+            &worklog, &activity, &config, user_id(), task_id(), t(6, 0), t(12, 0),
+        ).await.unwrap();
+
+        let still_there = activity.find_by_id(theirs.id).await.unwrap();
+        assert!(still_there.is_some(), "another task's slot survives our flush");
     }
 }
