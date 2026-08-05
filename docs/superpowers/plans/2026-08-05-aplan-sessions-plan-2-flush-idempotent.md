@@ -98,7 +98,12 @@ Append to the test module in `backend/crates/domain/src/rules/reattribution.rs`:
     }
 ```
 
-The file's existing `fn slot(half_day, date, active)` helper already derives `source` as closed⇒`Worklog` / open⇒`Manual`, so the two pre-existing tests (`an_open_slot_counts_for_nothing_and_is_never_rebuilt`, `a_closed_slot_is_rebuildable`) stay green without edits. If they go red, the helper's derivation is wrong — fix the helper, not the assertions.
+> **Corrected during execution:** the helper in this file is `slot(task_id, start, end)`, not
+> the `slot(half_day, date, active)` written above — that signature belongs to a different
+> module's fixture. Read the real helper and adapt the two snippets to it, keeping the names,
+> assertions and intent unchanged.
+
+The file's existing `slot` helper already derives `source` as closed⇒`Worklog` / open⇒`Manual`, so the two pre-existing tests (`an_open_slot_counts_for_nothing_and_is_never_rebuilt`, `a_closed_slot_is_rebuildable`) stay green without edits. If they go red, the helper's derivation is wrong — fix the helper, not the assertions.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -123,9 +128,9 @@ Expected: `a_manual_slot_is_never_rebuildable_even_when_closed` FAILS (`is_rebui
 /// from worklog entries, so rewriting it from those same entries is a no-op or a
 /// correction. A `Manual` slot came from somewhere else — the live timer, the UI, a
 /// row whose provenance the one-shot classification could not establish — and
-/// deleting it destroys time no entry can reproduce. `SlotSource::from_db` reads an
-/// unreadable or NULL value as `Manual` precisely so that the unknown lands on the
-/// protected side of this line.
+/// deleting it destroys time no entry can reproduce. `slot_source_from_str`
+/// (`infrastructure/database/conversions.rs`) reads an unreadable or NULL value as
+/// `Manual` precisely so that the unknown lands on the protected side of this line.
 pub fn is_rebuildable(slot: &ActivitySlot) -> bool {
     slot.source.is_projection() && slot.end_time.is_some()
 }
@@ -219,9 +224,28 @@ Append to the test module in `backend/crates/infrastructure/src/database/activit
 
 Use the file's existing `setup()`, `test_user_id()` and `existing_task_id()` helpers — plan 1's Task 6 added them. If `existing_task_id` does not exist, read the file's other tests and reuse whatever they seed; a slot's `task_id` carries a foreign key, and `tasks.source` has a `CHECK` allowing only `jira`, `excel`, `obsidian`, `personal`, `outlook`.
 
+> **CORRECTED during execution — the test above is vacuous.** It starts from a row that is
+> already `Worklog`, so removing `source = ?` from the `UPDATE` leaves the stored value untouched
+> and the assertion still passes. It cannot fail for the reason its name claims.
+>
+> The invariant worth pinning is the opposite, and it is the dangerous direction: **`update` must
+> persist a *changed* `source`.** If the clause were dropped, a caller that meant to reclassify a
+> slot as `manual` would have its intent silently discarded, the row would stay `worklog`, and a
+> later rebuild would delete time no entry can reproduce.
+>
+> So: save via `from_worklog` (row starts `Worklog` with a `session_id`), read it back, set
+> `source = SlotSource::Manual` and `session_id = None` on the struct, `update`, then assert the
+> row reads back **`Manual`** with no session. That fails if the clause is missing and fails if the
+> SQL hardcodes a constant. Keep the preservation test if you want, but rename it so it stops
+> overclaiming — `update_round_trips_provenance_unchanged`.
+>
+> Also note `test_user_id()` does not exist in that file; the real helper is `user_id()`. And the
+> snippet omits the `sessions` row insert that `session_id`'s foreign key requires, with
+> `.foreign_keys(true)` set on the pool — `save()` fails without it.
+
 - [ ] **Step 2: Run to verify it fails against a broken UPDATE**
 
-The test should PASS immediately — the `UPDATE` is already correct. That makes it a regression guard, not a bug fix, so **prove it can fail**: temporarily remove `source = ?` from the `UPDATE` statement's SET list, run the test, watch it go red on the `SlotSource::Worklog` assertion, then restore the statement.
+With the corrected test above, **prove it can fail**: temporarily remove `source = ?` from the `UPDATE` statement's SET list, run the test, watch it go red on the `Manual` assertion, then restore the statement.
 
 ```bash
 cd ~/appfactory/aggregated_plan/backend
@@ -724,6 +748,35 @@ EOF
 - Consumes: `SessionRepository::{find_by_id, set_last_flush}` and `Session::flush_window_start()` — all shipped by plan 1 with **no caller**.
 - Produces: `flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!` reading and advancing the session's own window when a `sessionId` is given, and the human's `aplan.active_since` otherwise.
 
+> **Four items folded in from task 4's review, added 2026-08-05.** This task owns the flush's
+> caller and its window, so they land here rather than as deferred minors.
+>
+> **5a — Pin the boundedness property.** `from` is now a selector and nothing tests that it still
+> bounds anything. Add a case with an entry two half-days back and `from` set past it, asserting
+> that older half-day's slots are untouched. Without it, someone later relaxing the filter to
+> `from: None` — a plausible "the rebuild is idempotent anyway" change — would make every flush
+> rebuild a task's entire history with no test going red.
+>
+> **5b — Page the selector read instead of refusing. Controller's ruling.** The selector's lower
+> bound is `aplan.active_since`, which defaults to **the epoch** when the key is absent, so a
+> first-ever flush reads a task's whole history and a task carrying ≥1000 entries in that span can
+> never flush at all. Worse, the refusal's own remedy — "narrow the range" — names a range
+> `flushWorklogTime` has no parameter for. But the selector does not need every entry: **it needs
+> only the set of distinct half-days.** So page through with `offset` until exhausted, accumulating
+> half-days, and drop `refuse_a_truncated_page` from that read entirely. Keep the guard inside
+> `plan_task_projection`, where it is meaningful: that read is bounded to one local day, and 1000
+> entries in a single day genuinely means something was cut.
+>
+> **5c — The docstring must stop claiming a fix that is not in yet.**
+> `materialize_worklog_time`'s doc narrates "flushing task B advanced the mark for task A too" in
+> the past tense, while the resolver still reads and writes the single global `aplan.active_since`.
+> This task is what makes the past tense true; correct the wording as part of it.
+>
+> **5d — `FlushOutcome`'s "new watermark" noun.** The *value* is right — `active_since = now` pairs
+> exactly with the repository's half-open `[from, to)`, so an entry logged at precisely `now` falls
+> to the next flush with no gap and no double-read. Only the noun is stale now that the window is a
+> selector. Rename what it is called, not what it holds.
+
 - [ ] **Step 1: Write the failing tests**
 
 Append to `backend/crates/api/src/graphql/tests.rs`:
@@ -1033,6 +1086,99 @@ cd ~/appfactory/aggregated_plan
 git add SPEC_TECHNIQUE.md docs/superpowers/specs/2026-08-04-aplan-session-scoped-worklog-design.md
 git commit -m "Document the idempotent rebuild and the per-session flush window"
 ```
+
+---
+
+---
+
+## Task 8: two pre-existing time hazards the extraction concentrated, and slot authorship
+
+**Added 2026-08-05 after task 3's review.** These are not regressions from this plan; they are
+hazards that lived in two places and now live in one, which is the cheapest moment they will ever
+be fixable. The third item is a design question the review surfaced and the controller answered.
+
+**Files:**
+- Modify: `backend/crates/application/src/time.rs`, `use_cases/reattribution.rs`, `use_cases/worklog.rs`
+
+**8a — One local-day→UTC conversion, not two.** `reattribution::local_day_start` walks a
+non-existent local midnight forward one hour; `crate::time::local_day_bounds` reinterprets the
+naive local time as UTC, which is off by the zone's whole offset. Failure: with
+`aplan.timezone` set to a zone whose DST jump lands at 00:00 (America/Havana), `timesheet.rs:76`
+asks for a day's entries ~5 h late while the rebuild gets it right, so the timesheet and the
+projection disagree about which local day an entry belongs to — the exact disagreement the
+`pub(crate)` doc comment warns about, one function pair over. Consolidate both into
+`crate::time`, keeping `local_day_start`'s forward-walk as the correct one, and move
+`local_window` / `to_local` there too: those primitives are lower-level than either use case, and
+moving them dissolves the mutual `worklog ↔ reattribution` import the extraction created.
+
+**8b — The DST fall-back overlap collapses an hour of work.** `local_to_utc` is keyed by local
+`NaiveDateTime`, so during a fall-back two distinct UTC instants map to the same wall-clock:
+entries at 00:30 and 01:30 UTC on 25 Oct 2026 both read as local 02:30, the second `insert`
+overwrites the first, `derive_time_blocks` sees one timestamp, and an hour is persisted as a
+one-minute slot whose instant depends on row order. One hour per year, billing-relevant, and now
+in exactly one place. Key the map by the UTC instant and carry the local time alongside, so two
+instants can never collide.
+
+**8c — Slot authorship is ill-defined under a rebuild, and the code should say so.**
+`worklog.rs:156-158` still promises "session attribution on materialized slots arrives with plan
+2", but `plan_task_projection` hardcodes `None` and this plan's task 5 is about the flush
+*window*, not authorship. **Controller's ruling:** a rebuilt slot spans several entries which may
+have different authors — precisely the concurrency this feature exists to enable — so a single
+`session_id` on the slot has no defined value in general. Derive it: set the slot's `session_id`
+when every contributing entry shares one author, and leave it `None` when they disagree. That is
+well-defined, strictly more informative than always-`None`, and it is what plan 3's per-actor
+journal grouping needs. Delete the stale comment either way.
+
+Each of the three gets its own failing test first, its own commit, and `cargo test --workspace`
+green before the next. 8b's test must assert the two instants survive as two blocks, not one.
+
+---
+
+---
+
+## Task 9: `aplan done` must flush against whoever was tracking
+
+**Added 2026-08-05 after task 6's review. This is the second half of plan 3's gate** — task 6 closed
+`session bind`; this closes `done`. Pre-existing, not a regression, and it loses time permanently
+once session binds become routine.
+
+**Files:** `backend/crates/cli/src/commands.rs` (the `done` verb), `backend/crates/cli/tests/integration.rs`
+
+**The failure, concretely.** `done` resolves its target through the session
+(`commands.rs:100`) but discards which level answered, then gates its flush on
+`was_tracking_target`, which compares the target against **`active_task_id()` — the global human
+pointer** (`:129-131`), and finally calls `flush_task(..., None)` (`:132`).
+
+So when a Claude session bound to task X runs `aplan done` (or `aplan done --task X`) while the
+human's pointer is on something else — the expected steady state once sessions are in use — the gate
+is false, **no flush runs at all**, and the session's accumulated time on X is never materialized.
+The task is then marked `done`, so it is lost with no way back. And in the rarer case where the
+global pointer happens to coincide with the session's task, it flushes against the *wrong* watermark:
+`aplan.active_since` instead of the session's `last_flush_at`.
+
+Note `log` already got this right (`commands.rs:308-311`): it threads `session_id` only when
+`ResolvedVia::Session` answered, precisely because attribution must follow whoever asked. `done`
+never made the same connection for its flush.
+
+**The fix, in two parts — both are needed.**
+
+1. **The gate must ask "was this task being tracked *by whoever is asking*"**, not "is it the human's
+   current pointer". For a session-resolved target, compare against the session's `task_id`; for the
+   human's, keep comparing against `active_task_id()`. `resolve_target` already reports which level
+   answered — stop discarding it.
+2. **The flush must carry the session** when the session answered, so the server reads and advances
+   that session's window rather than the human's.
+
+**Tests.** Existing coverage misses this: `done_with_an_unknown_session_id_falls_through_to_the_global_pointer`
+exercises only an *unknown* id falling through. Add two cases, and prove each red first:
+- a valid session bound to task X, human pointer elsewhere, `aplan done` on X → a `FlushWorklogTime`
+  request **is** made and carries `"sessionId"`. Pre-fix this must fail on an unmet `.expect(1)`,
+  because today no flush happens at all.
+- the human with no session, pointer on X, `aplan done` on X → the flush still happens and carries
+  **no** `sessionId`. This pins that the human's path did not move.
+
+Use the shared `aplan()` builder, which strips `CLAUDE_CODE_SESSION_ID` by construction, and pass
+`--session` explicitly where a session is the point.
 
 ---
 
