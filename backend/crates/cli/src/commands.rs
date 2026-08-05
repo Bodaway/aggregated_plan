@@ -90,15 +90,20 @@ pub fn done(
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
 
-    // `--task` or `--session` present: go through the three-level resolution order.
+    // `--task` or `--session` present: go through the three-level resolution order,
+    // keeping track of *which* level answered (`via`) — the flush gate below needs
+    // it to ask "was this task being tracked by whoever is asking" rather than
+    // always consulting the human's global pointer, the same distinction `log`
+    // already makes for `sessionId` attribution (see below).
     // Neither present: keep the original lightweight lookup, which reads only the
     // id (the title comes later from `CompleteTask`'s own response) — resolving
     // through `resolve_target` here would additionally hydrate via `GetTask` for
-    // no reason.
+    // no reason. It answers on behalf of the global pointer, same as `resolve_target`
+    // would with both arguments absent.
     let has_explicit_target = task.is_some() || session.filter(|s| !s.trim().is_empty()).is_some();
-    let target_id = if has_explicit_target {
+    let (target_id, via) = if has_explicit_target {
         match resolve_target(&client, session, task) {
-            Ok((t, _)) => t.id,
+            Ok((t, via)) => (t.id, via),
             Err(e) => {
                 eprintln!("error: {}", e);
                 return e.exit_code();
@@ -106,7 +111,7 @@ pub fn done(
         }
     } else {
         match active_task_id(&client) {
-            Some(id) => id,
+            Some(id) => (id, ResolvedVia::GlobalPointer),
             None => {
                 eprintln!("error: {}", LookupError::NoCurrentActivity);
                 return ExitCode::PreconditionFailed;
@@ -125,12 +130,37 @@ pub fn done(
         }
     };
 
-    // Flush + clear the pointer iff it was tracking this task (unless --keep-running).
+    // Flush against whoever was tracking this task, then clear the human's
+    // pointer iff it was the one pointing at it (unless --keep-running). These
+    // are two separate questions: a session-resolved target came *from* that
+    // session's own `task_id` (`resolve_from_session` hydrates exactly that id),
+    // so the session was tracking it by construction — the flush must carry
+    // that session so the server advances its own window, not the human's, and
+    // it must do so whether or not the global pointer happens to agree. A task-
+    // or pointer-resolved target has no session behind it, so whether it was
+    // tracked is still the human pointer question it always was.
+    //
+    // Clearing `aplan.active_task_id` stays keyed on the pointer alone, on
+    // purpose: a session's `done` must never blank the human's unrelated
+    // tracking. The two watermarks (`sessions.last_flush_at` and
+    // `aplan.active_since`) must never cross.
     let active = active_task_id(&client);
-    let was_tracking_target = active.as_deref() == Some(target_id.as_str());
-    if !keep_running && was_tracking_target {
-        flush_task(&client, &target_id, None);
-        set_config_key(&client, "aplan.active_task_id", "");
+    let pointer_on_target = active.as_deref() == Some(target_id.as_str());
+    let was_tracking_target = match via {
+        ResolvedVia::Session => true,
+        ResolvedVia::Task | ResolvedVia::GlobalPointer => pointer_on_target,
+    };
+    if !keep_running {
+        if was_tracking_target {
+            let flush_session = match via {
+                ResolvedVia::Session => session.map(|s| s.to_string()),
+                ResolvedVia::Task | ResolvedVia::GlobalPointer => None,
+            };
+            flush_task(&client, &target_id, flush_session.as_deref());
+        }
+        if pointer_on_target {
+            set_config_key(&client, "aplan.active_task_id", "");
+        }
     }
 
     if json {
