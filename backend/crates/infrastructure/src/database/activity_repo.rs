@@ -433,12 +433,16 @@ mod tests {
         assert!(slots[0].session_id.is_none());
     }
 
-    /// The `UPDATE` path writes `source` and `session_id` like the `INSERT` does.
-    /// Nothing exercises it today because every caller reads the slot first, mutates
-    /// it and writes it back — so a regression here would be invisible until a
-    /// rebuild refused to replace a slot it had itself written.
+    /// Weak on its own: a `Worklog` slot that is read, mutated on an unrelated field
+    /// and written back stays `Worklog` even if `UPDATE` dropped `source` from its SET
+    /// list entirely, because the column would simply be left holding the value it
+    /// already had. This does not prove the `UPDATE` writes `source` — see
+    /// `update_persists_a_reclassified_source_and_cleared_author` for the direction
+    /// that actually exercises the write. Kept because it still guards against the SQL
+    /// writing the *wrong* constant (e.g. a hardcoded `'manual'`), which this one would
+    /// catch and the other would not.
     #[tokio::test]
-    async fn update_preserves_a_slots_provenance_and_author() {
+    async fn update_round_trips_provenance_unchanged() {
         let pool = setup().await;
         let date = NaiveDate::from_ymd_opt(2026, 8, 4).unwrap();
         let start = DateTime::parse_from_rfc3339("2026-08-04T09:00:00+00:00")
@@ -483,5 +487,63 @@ mod tests {
             "an update must not downgrade the projection's own slot to Manual"
         );
         assert_eq!(after.session_id.as_deref(), Some("sess-update"));
+    }
+
+    /// The invariant with teeth: `UPDATE` must persist a *changed* `source`/
+    /// `session_id`, not just carry forward whatever the row already held. A caller
+    /// that legitimately reclassifies a slot — taking a `Worklog` row back under
+    /// manual control, clearing its authoring session — depends on the write actually
+    /// landing. If it were silently dropped, the row would stay `Worklog` and a later
+    /// rebuild would delete time no worklog entry can reproduce.
+    #[tokio::test]
+    async fn update_persists_a_reclassified_source_and_cleared_author() {
+        let pool = setup().await;
+        let date = NaiveDate::from_ymd_opt(2026, 8, 4).unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-08-04T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        // `session_id` is a FK onto `sessions(id)`: the session must exist before a
+        // slot can claim it as its author.
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, mode, started_at, last_seen_at)
+             VALUES ('sess-reclassify', ?, 'tracking', ?, ?)",
+        )
+        .bind(user_id().to_string())
+        .bind(start.to_rfc3339())
+        .bind(start.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repo = SqliteActivitySlotRepository::new(pool);
+
+        let slot = ActivitySlot::from_worklog(
+            user_id(),
+            existing_task_id(),
+            Some("sess-reclassify".into()),
+            start,
+            start + chrono::Duration::hours(2),
+            HalfDay::Morning,
+            date,
+            start,
+        );
+        repo.save(&slot).await.unwrap();
+
+        // A caller that legitimately reclassifies the slot: no longer the
+        // projection's, no longer authored by a session.
+        let mut reclassified = repo.find_by_id(slot.id).await.unwrap().unwrap();
+        reclassified.source = SlotSource::Manual;
+        reclassified.session_id = None;
+        repo.update(&reclassified).await.unwrap();
+
+        let after = repo.find_by_id(slot.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.source,
+            SlotSource::Manual,
+            "update must persist a changed source, not carry the old one forward"
+        );
+        assert!(
+            after.session_id.is_none(),
+            "update must persist a cleared session_id, not carry the old one forward"
+        );
     }
 }
