@@ -44,8 +44,11 @@ fn set_config_key(client: &Client, key: &str, value: &str) {
 /// bind that repoints a session away from its previous task loses no time
 /// either.
 pub(crate) fn flush_task(client: &Client, task_id: &str) {
+    // No session is threaded through here yet — every caller of this helper
+    // flushes against the human's own global pointer, not a session's window.
     if let Err(e) = client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
         task_id: task_id.to_string(),
+        session_id: None,
     }) {
         eprintln!("warning: failed to flush worklog time: {}", e);
     }
@@ -967,7 +970,10 @@ pub fn flush(api_url: &str, json: bool, task: &str) -> ExitCode {
             return e.exit_code();
         }
     };
-    match client.run::<FlushWorklogTime>(flush_worklog_time::Variables { task_id: target.id.clone() }) {
+    match client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
+        task_id: target.id.clone(),
+        session_id: None,
+    }) {
         Ok(r) => {
             if json {
                 if let Err(e) = print_json(&r.raw) {

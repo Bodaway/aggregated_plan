@@ -274,12 +274,19 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))
     }
 
-    /// Materialize worklog entries logged since `aplan.active_since` for the given
-    /// task into closed activity slots. Advances the stored watermark.
+    /// Materialize worklog entries into closed activity slots for the given task.
+    ///
+    /// A `sessionId` reads and advances that session's own flush window
+    /// (`Session::flush_window_start()` / `SessionRepository::set_last_flush`); no
+    /// `sessionId`, or one naming no row, reads and advances the human's
+    /// `aplan.active_since` pointer instead. The two must never be crossed: sharing
+    /// one key across every task is what made flushing task B advance the mark for
+    /// task A too, losing A's time whenever two tasks interleaved.
     async fn flush_worklog_time(
         &self,
         ctx: &Context<'_>,
         task_id: ID,
+        session_id: Option<String>,
     ) -> Result<FlushResultGql> {
         let user_id = *ctx.data::<UserId>()?;
         let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
@@ -289,14 +296,35 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
 
         let now = chrono::Utc::now();
-        let from = config_repo
-            .get(user_id, "aplan.active_since")
-            .await
-            .ok()
-            .flatten()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap());
+
+        // A session flushes against its own window; the human keeps the global key.
+        // Sharing one key across tasks is what made flushing task B advance the mark
+        // for task A, so the pair must never be crossed.
+        let session = match &session_id {
+            Some(sid) => {
+                let sessions = ctx.data::<Arc<dyn SessionRepository>>()?;
+                sessions
+                    .find_by_id(sid, user_id)
+                    .await
+                    .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            }
+            None => None,
+        };
+
+        let from = match &session {
+            Some(s) => s.flush_window_start(),
+            None => config_repo
+                .get(user_id, "aplan.active_since")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|| {
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)
+                        .expect("epoch is a valid timestamp")
+                }),
+        };
 
         let outcome = worklog_uc::materialize_worklog_time(
             worklog_repo.as_ref(),
@@ -310,9 +338,27 @@ impl MutationRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
-        configuration::set_config(config_repo.as_ref(), user_id, "aplan.active_since", &outcome.active_since.to_rfc3339())
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        match (&session, &session_id) {
+            (Some(_), Some(sid)) => {
+                let sessions = ctx.data::<Arc<dyn SessionRepository>>()?;
+                sessions
+                    .set_last_flush(sid, user_id, outcome.active_since)
+                    .await
+                    .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            }
+            // No session, or an id naming no row: the human's pointer answered, so
+            // the human's key is the one to advance.
+            _ => {
+                configuration::set_config(
+                    config_repo.as_ref(),
+                    user_id,
+                    "aplan.active_since",
+                    &outcome.active_since.to_rfc3339(),
+                )
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            }
+        }
 
         Ok(FlushResultGql(outcome))
     }

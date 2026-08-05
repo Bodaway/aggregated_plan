@@ -2560,6 +2560,76 @@ async fn flush_worklog_time_materializes_morning_slot() {
     );
 }
 
+/// `sessions.last_flush_at`/`set_last_flush` shipped with no caller in plan 1; this
+/// pins the caller: a flush given a `sessionId` advances that session's own row, not
+/// the global `aplan.active_since` key.
+#[tokio::test]
+async fn flush_advances_the_sessions_own_window_not_the_global_key() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+    schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "x", sessionId: "s1") {{ id }} }}"#
+        ))
+        .await;
+
+    let flushed = schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{task_id}", sessionId: "s1") {{ slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(flushed.errors.is_empty(), "{:?}", flushed.errors);
+
+    let read = schema.execute(r#"{ claudeSession(id: "s1") { lastFlushAt } }"#).await;
+    assert!(
+        !read.data.into_json().unwrap()["claudeSession"]["lastFlushAt"].is_null(),
+        "the session's own window must have advanced"
+    );
+}
+
+/// The defect this task closes: one shared watermark meant flushing task B's session
+/// advanced the mark for task A's session too, so A's entries were never
+/// materialized. Two sessions bound to the same task must keep independent windows.
+#[tokio::test]
+async fn flushing_one_sessions_task_does_not_move_another_sessions_window() {
+    let (schema, task_id) = schema_with_one_task().await;
+    for id in ["s1", "s2"] {
+        schema
+            .execute(format!(
+                r#"mutation {{ bindSession(sessionId: "{id}", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+            ))
+            .await;
+    }
+    schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{task_id}", sessionId: "s1") {{ slotsWritten }} }}"#
+        ))
+        .await;
+
+    let other = schema.execute(r#"{ claudeSession(id: "s2") { lastFlushAt } }"#).await;
+    assert!(
+        other.data.into_json().unwrap()["claudeSession"]["lastFlushAt"].is_null(),
+        "s2's window is not s1's to advance — this is the shared-watermark bug"
+    );
+}
+
+/// No `sessionId` at all — the human, working by hand — must still work, and must
+/// still advance the human's own `aplan.active_since` pointer.
+#[tokio::test]
+async fn a_flush_without_a_session_still_uses_the_humans_pointer() {
+    let (schema, task_id) = schema_with_one_task().await;
+    let flushed = schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{task_id}") {{ slotsWritten activeSince }} }}"#
+        ))
+        .await;
+    assert!(flushed.errors.is_empty(), "{:?}", flushed.errors);
+}
+
 // ─── Reattribution Tests ───
 
 /// Seed two tasks and a local morning of worklog entries on the first one, then

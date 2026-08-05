@@ -288,10 +288,16 @@ type CombinedMutation {
 	"""
 	deleteWorklogEntry(id: ID!): Boolean!
 	"""
-	Materialize worklog entries logged since `aplan.active_since` for the given
-	task into closed activity slots. Advances the stored watermark.
+	Materialize worklog entries into closed activity slots for the given task.
+	
+	A `sessionId` reads and advances that session's own flush window
+	(`Session::flush_window_start()` / `SessionRepository::set_last_flush`); no
+	`sessionId`, or one naming no row, reads and advances the human's
+	`aplan.active_since` pointer instead. The two must never be crossed: sharing
+	one key across every task is what made flushing task B advance the mark for
+	task A too, losing A's time whenever two tasks interleaved.
 	"""
-	flushWorklogTime(taskId: ID!): FlushResultGql!
+	flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!
 	"""
 	Move worklog entries — and the activity time derived from them — from one
 	task to another.

@@ -1,5 +1,5 @@
-mutation FlushWorklogTime($taskId: ID!) {
-  flushWorklogTime(taskId: $taskId) {
+mutation FlushWorklogTime($taskId: ID!, $sessionId: String) {
+  flushWorklogTime(taskId: $taskId, sessionId: $sessionId) {
     slotsWritten
     activeSince
   }
