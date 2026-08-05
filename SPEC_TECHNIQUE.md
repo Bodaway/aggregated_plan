@@ -3037,9 +3037,10 @@ la demi-journée locale où elle tombe, jamais d'une comparaison d'horodatage co
 `apply_task_projection` (écriture), `crates/application/src/use_cases/worklog.rs`, sont le
 primitif partagé : pour chaque demi-journée nommée, on supprime les créneaux que la tâche
 possède dans cette demi-journée, puis on les réécrit depuis les entrées de cette même tâche dans
-cette même demi-journée, via `derive_time_blocks`. Rien d'une autre tâche n'est lu ni écrit —
+cette même demi-journée, via `derive_time_blocks`. Rien d'une autre tâche n'est **écrit** —
 c'est ce qui garantit l'isolation entre tâches : le flush de B ne touche ni les créneaux ni la
-fenêtre de A.
+fenêtre de A. La lecture n'est pas bornée de la même façon : `find_by_user_and_date` renvoie tous
+les créneaux de l'utilisateur ce jour-là, et le filtrage par tâche a lieu en mémoire.
 
 **`source` est le verrou de suppression.** `is_rebuildable` (`domain::rules::reattribution`)
 n'autorise la suppression que d'un créneau fermé dont `source == Worklog` : c'est la trace que le
@@ -3072,9 +3073,9 @@ De ce renversement découlent trois propriétés, toutes vérifiées par les tes
 - **Reprise d'une entrée antidatée.** Une entrée journalisée avec un `logged_at` dans le passé est
   matérialisée dès que sa demi-journée locale est reconstruite, qu'elle tombe ou non dans la
   fenêtre qui a déclenché le flush.
-- **Isolation entre tâches.** Flusher une tâche ne lit ni n'écrit rien des créneaux ou de la
-  fenêtre d'une autre tâche ; deux sessions sur deux tâches distinctes s'exécutent sans jamais se
-  gêner.
+- **Isolation entre tâches.** Flusher une tâche n'écrit rien des créneaux ou de la fenêtre d'une
+  autre tâche (la lecture, elle, porte sur tous les créneaux du jour avant le filtrage en
+  mémoire) ; deux sessions sur deux tâches distinctes s'exécutent sans jamais se gêner.
 
 ### 7.2 Migration `012_create_memories.sql` — mémoire sémantique
 

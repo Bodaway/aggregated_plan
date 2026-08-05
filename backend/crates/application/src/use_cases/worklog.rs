@@ -1049,8 +1049,10 @@ mod tests {
         assert_eq!(slots[0].start_time, t(7, 0), "the earlier entry set the boundary");
     }
 
-    /// Flushing one task neither reads nor writes another task's slots — the whole
-    /// point of the plan: two sessions on two tasks stop losing each other's hours.
+    /// Flushing one task never *writes* another task's slots — the whole point of
+    /// the plan: two sessions on two tasks stop losing each other's hours. Reading
+    /// is not scoped the same way: `find_by_user_and_date` returns every slot the
+    /// user has that day, and the filtering down to this task happens in memory.
     #[tokio::test]
     async fn flushing_one_task_leaves_another_intact() {
         let (activity, worklog, config) = fakes_with_entries(&[t(7, 0), t(7, 30)]).await;
