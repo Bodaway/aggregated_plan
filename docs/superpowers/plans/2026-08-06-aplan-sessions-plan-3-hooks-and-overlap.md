@@ -447,44 +447,59 @@ EOF
 
 ---
 
-## Task 3: `start` and `stop` act on the session that is asking
+## Task 3: `start`, `stop` and `flush` act on the session that is asking
 
 **Files:**
-- Modify: `backend/crates/cli/src/commands.rs` (`start` at ~`:57`, `stop` at ~`:380`)
+- Modify: `backend/crates/cli/src/main.rs` (the `Start`, `Stop` and `Flush` match arms at `:32`, `:33`, `:34`)
+- Modify: `backend/crates/cli/src/commands.rs` (`start` at ~`:57`, `stop` at ~`:380`, `flush`)
 - Modify: `backend/crates/cli/tests/integration.rs`
 
 **Interfaces:**
 - Consumes: `bindSession` / `endSession` mutations, `flush_task(client, task_id, session: Option<&str>)`.
-- Produces: `start` and `stop` binding and closing **the session** when one is present, and keeping their current global-pointer behaviour when none is.
+- Produces: `start`, `stop` and `flush` acting on **the session** when one is present, and keeping their current global-pointer behaviour when none is.
 
 **This is the semantic change plan 1 deliberately deferred**, and the reason it waited is that the hooks depend on it: plan 1's note said it "lands with the hooks in plan 3, because that is the change the hooks depend on".
+
+**`flush` is in scope, and this is the part that is easy to miss.** `main.rs:32-34` reads:
+
+```rust
+        cli::Commands::Start { task } => commands::start(&args.api_url, args.json, &task),
+        cli::Commands::Stop => commands::stop(&args.api_url, args.json),
+        cli::Commands::Flush { task } => commands::flush(&args.api_url, args.json, &task),
+```
+
+None of the three receives `args.session`, while `Note` on the very next line does. `--session` is declared `global = true` with `env = "CLAUDE_CODE_SESSION_ID"`, so `aplan flush --session s1 <task>` **parses fine today and silently ignores the session**, flushing against the human's `aplan.active_since` window instead. That is the same shared-watermark defect, in a third place, and Task 5's hook cannot be correct until it is fixed.
 
 Behaviour:
 - `aplan start <task>` **with** a session id → `bindSession`, which flushes the session's previous task against that session's own window (plan 2 wired this). **The human's pointer must not move.**
 - `aplan start <task>` **without** a session id → today's behaviour exactly: flush the human's previous task, set `aplan.active_task_id` and re-arm `aplan.active_since`.
 - `aplan stop` **with** a session id → flush the session's task against its own window, then `endSession`. **The human's pointer must not be cleared.**
 - `aplan stop` **without** → today's behaviour.
+- `aplan flush <task>` **with** a session id → flush against **that session's** window and advance **that session's** `last_flush_at`. Touches no configuration key.
+- `aplan flush <task>` **without** → today's behaviour: the human's window, the human's `aplan.active_since`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Four cases. Every CLI integration test goes through the shared `aplan()` builder, which strips `CLAUDE_CODE_SESSION_ID` by construction; pass `--session` explicitly where a session is the point. Mount each matcher so it accepts only the body shape you intend, with `.expect(1)` — `reqwest`'s `.json()` serializes compactly, so `"sessionId":"s1"` and `"sessionId":null` are distinguishable as literal substrings, and plan 2 caught a vacuous test exactly here.
+Six cases. Every CLI integration test goes through the shared `aplan()` builder, which strips `CLAUDE_CODE_SESSION_ID` by construction; pass `--session` explicitly where a session is the point. Mount each matcher so it accepts only the body shape you intend, with `.expect(1)` — `reqwest`'s `.json()` serializes compactly, so `"sessionId":"s1"` and `"sessionId":null` are distinguishable as literal substrings, and plan 2 caught a vacuous test exactly here. Reuse the existing `NoSessionIdOnTheWire` matcher for the no-session cases.
 
 1. `aplan --session s1 start <task>` → a `BindSession` request is made, and **no** `UpdateConfiguration` touches `aplan.active_task_id` (`.expect(0)`).
 2. `aplan start <task>` with no session → `UpdateConfiguration` sets `aplan.active_task_id`, and no `BindSession` is made.
 3. `aplan --session s1 stop` → a `FlushWorklogTime` carrying `"sessionId":"s1"` and an `EndSession`, with **no** `UpdateConfiguration` clearing the pointer.
 4. `aplan stop` with no session → today's flush with no session id, and the pointer cleared.
+5. `aplan --session s1 flush <task>` → `FlushWorklogTime` carrying `"sessionId":"s1"`, and **no** `UpdateConfiguration` at all (`.expect(0)`) — a session's flush must not advance the human's `aplan.active_since`.
+6. `aplan flush <task>` with no session → `FlushWorklogTime` with no `sessionId` on the wire, and the human's `active_since` still advanced exactly as today.
 
-- [ ] **Step 2: Run to verify cases 1 and 3 fail**
+- [ ] **Step 2: Run to verify cases 1, 3 and 5 fail**
 
 ```bash
-cargo test -p cli start stop
+cargo test -p cli -- start stop flush
 ```
 
-Expected: 1 and 3 FAIL on unmet expectations — today `start` and `stop` always write the human's keys.
+Expected: 1, 3 and 5 FAIL on unmet expectations — today all three commands write the human's keys and drop the session.
 
 - [ ] **Step 3: Implement**
 
-Read the current `start` and `stop` first; both already take the `session: Option<&str>` plumbing that `log` and `done` use, or need it threaded from `main.rs` exactly as those did. Keep the two paths visibly separate — a reader must be able to see which keys each branch touches — and comment *why* the session branch must not touch the human's pointer: the two windows and the two pointers are never crossed, and a session moving the human's tracking is the mirror image of the defect this whole feature exists to fix.
+Thread `args.session.as_deref()` into all three arms in `main.rs`, exactly as the `Note` arm on line 40 already does, then use it inside each command. Keep the two paths visibly separate — a reader must be able to see which keys each branch touches — and comment *why* the session branch must not touch the human's pointer: the two windows and the two pointers are never crossed, and a session moving the human's tracking is the mirror image of the defect this whole feature exists to fix.
 
 - [ ] **Step 4: Run everything, including the env A/B**
 
@@ -590,10 +605,28 @@ EOF
 - Modify: `~/.claude/hooks/aplan-session-end.sh` (outside the repository)
 
 **Interfaces:**
-- Consumes: `aplan session show --session <id> --json`, `aplan --session <id> stop` (Task 3), or `flushWorklogTime` + `endSession` directly through the CLI.
-- Produces: a hook that flushes **the ending session's** task against that session's own window, then closes the session.
+- Consumes: `aplan session show --session <id> --json`, `aplan --session <id> flush --json <task_id>` (which only honours the session after Task 3).
+- Produces: a hook that flushes **the ending session's** task against that session's own window. **It does not close the session** — see below.
 
-**This is the last place the original defect is still live.** The installed hook reads `aplan current --json` and calls `aplan flush "$task_id"` with no session, so every Claude SessionEnd today flushes whatever **the human** is tracking and advances the human's global key. Plan 2's rebuild limits the damage — any later flush naming a half-day repairs it — but a half-day that never gets another flush keeps its time unmaterialized.
+**This is the last place the original defect is still live.** The installed hook is 16 lines and its body is:
+
+```bash
+current_json=$(aplan current --json 2>/dev/null) || exit 0
+task_id=$(printf '%s' "$current_json" | jq -r '.currentActivity.task.id // empty')
+[ -z "$task_id" ] && exit 0
+aplan flush --json "$task_id" >/dev/null 2>&1 || exit 0
+```
+
+`aplan current` is the **human's** pointer, and `aplan flush` with no session advances the human's `aplan.active_since`. So every Claude SessionEnd today flushes whatever the human is tracking. Plan 2's rebuild limits the damage — any later flush naming a half-day repairs it — but a half-day that never gets another flush keeps its time unmaterialized.
+
+**The hook must NOT end the session, and this is a correction to the plan's earlier draft.** Ending the row here looks tidy and breaks resume:
+
+- A Claude Code session id survives `claude --resume`. If SessionEnd closed the row, resuming that transcript would fire SessionStart with the same id against an **ended** session — a fifth state absent from the design spec's four-branch table, and one `Session::target()` already refuses by name.
+- `upsert` overwrites only `task_id`, `mode`, `label` and `last_seen_at`; it cannot clear `ended_at`. Re-opening would need a new repository method — machinery bought to undo something we chose to do.
+- **The reaper is the sole closer**, and Task 1 built it for exactly this. Plan 2's idempotent rebuild is what makes the reaper's later second flush harmless: it rebuilds the same half-days to the same slots.
+- The cost is that `aplan sessions` lists sessions seen in the last 12 hours as open. That is honest rather than wrong — `list_open` orders by `last_seen_at` so live sessions stay on top — and the reaper trims the rest.
+
+`aplan --session <id> stop` still ends the session. That is a deliberate act by whoever is driving, not a lifecycle event, and the distinction is the point.
 
 - [ ] **Step 1: Back up the installed hook**
 
@@ -606,9 +639,13 @@ cp ~/.claude/hooks/aplan-session-end.sh \
 
 Three payloads: a session with a task, a session in `mode = off`, and an unknown session id. Pipe the first to the **backup** copy while the human's pointer is on a *different* task, and show that it flushes the human's task rather than the session's. Record it — that is the defect.
 
+**Read this before running anything against a live backend:** the systemd service `aplan-api.service` is serving the user's real database on port 3001, and a flush **writes**. Prove the defect without mutating that data — read the backup hook's `aplan flush` invocation and show which task id it computes (e.g. by piping the payload to a copy whose last line is `echo` instead of `aplan flush`), rather than letting a real flush land. A stub-and-echo probe is sufficient evidence here and costs the user nothing.
+
 - [ ] **Step 3: Develop the replacement in the scratchpad**
 
-It must: read the session's row by the payload's `session_id`; if the session has a task, flush **that** task carrying the session id, then `endSession`; if `mode = off` or there is no task, close the session without flushing; if the session is unknown, do nothing and exit 0. Preserve the silent-no-op guards (`command -v aplan`, `command -v jq`, backend unreachable) exactly.
+It must: read the session's row by the payload's `session_id`; if the session has a task, run `aplan --session "$sid" flush --json "$task_id"`; if `mode = off`, there is no task, or the session is unknown, do nothing and exit 0. It never ends the session and never touches `aplan current`. Preserve the silent-no-op guards (`command -v aplan`, `command -v jq`, `|| exit 0` on every `aplan` call) exactly as the current 16-line hook has them.
+
+Take `session_id` from the stdin payload, not from `$CLAUDE_CODE_SESSION_ID`. The variable may well be present in the hook's environment, and `--session` would then default to it — but the payload is the contract, and relying on an inherited variable is the kind of implicit coupling that makes a failure invisible when it changes.
 
 **Do not fall back to the human's pointer when the session is unknown.** That fallback is the shape the design spec forbids by name, and plan 2 already removed the server-side version of it.
 
