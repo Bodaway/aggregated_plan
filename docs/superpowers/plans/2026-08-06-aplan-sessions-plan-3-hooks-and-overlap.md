@@ -594,6 +594,25 @@ The four branches, from the design spec, mapped onto that structure:
 
 **`base_rules` (`:38-48`) contains the defect in prose** and must change: `"This Claude Code session is linked to your currently-tracked aplan task — the active-task pointer IS the link."` That sentence is now false. The link is the session row; the pointer is the human. Line `:46` ("run `aplan start <task>` first") also needs the Task 3 semantics — inside a session that binds the session and leaves the pointer alone.
 
+### Hard prerequisite: the hooks call the INSTALLED binary, not this repo
+
+`~/.claude/hooks/*.sh` invoke `aplan`, which resolves to `~/.cargo/bin/aplan` — a **release build installed during plan 1's deployment**. It is not this working tree. I verified what it does and does not have:
+
+- ✅ It knows `session show|bind|off|end` (plan 1 shipped them).
+- ❌ It does **not** have Task 3's fix. Its `flush` still hardcodes `session_id: None`, so `aplan --session s1 flush <task>` parses the flag and **silently flushes the human's window**.
+- ❌ Its `claude_session` query does not select `task { id title }` — that selection is added in this task.
+
+**Therefore: installing the new hooks against the old binary is worse than leaving the old hooks in place.** The SessionEnd hook would confidently pass `--session` to a `flush` that ignores it, reproducing the original defect while looking correct in the script. Before installing either hook:
+
+```bash
+cd ~/appfactory/aggregated_plan/backend && cargo install --path crates/cli --force
+aplan --version && aplan session --help | head -5
+```
+
+Then confirm the new binary actually honours the flag — the cheap proof is that `aplan session show --session <a-real-open-session> --json | jq '.data.claudeSession.task'` returns an object rather than `null` or a jq error. Report which binary you tested against, its build time, and the output of that check. **Do not install a hook you have not exercised against the binary it will actually call.**
+
+Rebuilding the CLI is safe: it touches no database and does not restart `aplan-api.service`. Leave the server alone — the API-side work in this plan (Tasks 1, 2 and 8) needs a service restart the user has not authorised, and Tasks 4 and 5 do not depend on it.
+
 ### The wire format the hook must parse — verified, and three of these bite silently
 
 Both hooks read `aplan session show --session <id> --json`. With `--json`, `session_cmd.rs:103` prints `print_json(&r.raw)` — the **raw GraphQL response**, envelope included.
