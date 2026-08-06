@@ -24,13 +24,16 @@ command -v jq    >/dev/null 2>&1 || exit 0
 # This hook makes up to three sequential `aplan` calls and each carries reqwest's
 # own 10 s timeout (cli/src/client.rs:42), so a backend that accepts the connection
 # and then hangs would stall SessionStart for ~30 s — well past the 10 s budget the
-# hook is registered with, i.e. no context injected at all. Bounding each call at
-# 5 s keeps a hang on the second or third call from costing the whole injection.
-# A refused connection is already instant; this is only about the hang. A missing
-# `timeout` must not silently disable the hook, hence the fallback: reqwest's own
-# timeout still applies there.
+# hook is registered with, i.e. killed, injecting nothing at all. Three calls at
+# 3 s bounds it at 9 s and, measured, at 6 s — a hang on the first call ends the
+# hook, so only the second and third can both burn their budget. Either way it
+# stays inside 10 s and still delivers its context, where 5 s each measured 10 s
+# and sat exactly on the limit. A refused
+# connection is already instant; this is only about the hang. A missing `timeout`
+# must not silently disable the hook, hence the fallback: reqwest's own timeout
+# still applies there.
 if command -v timeout >/dev/null 2>&1; then
-  aplan_bounded() { timeout 5 aplan "$@"; }
+  aplan_bounded() { timeout 3 aplan "$@"; }
 else
   aplan_bounded() { aplan "$@"; }
 fi
@@ -47,24 +50,18 @@ payload=$(cat)
 source=$(printf '%s' "$payload" | jq -r '.source // "startup"' 2>/dev/null || echo startup)
 [ -z "$source" ] && source=startup
 
-# Where the session id comes from is the one thing about this payload that could
-# not be verified from the repository, so take it from the payload and fall back
-# to the environment rather than betting on either.
+# The payload is the ONLY source of the session id. There was a
+# `CLAUDE_CODE_SESSION_ID` fallback here and removing it was deliberate — please do
+# not helpfully re-add it. The harness exports that variable into tool
+# subprocesses, so a nested `claude` whose payload carried no `session_id` would
+# inherit its PARENT's id and speak about the parent session's task: the same
+# wrong-actor mistake this plan exists to remove, one actor over. The fallback
+# existed only because the payload's contents could not be verified statically, and
+# a temporary log of real payloads has since settled it (keys: cwd,
+# hook_event_name, session_id, source, transcript_path — the log lives at
+# ~/.claude/hooks/.aplan-session-start-payload.log and is no longer written).
+# Absence is handled by the guard below; saying nothing is the right failure.
 sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null || echo '')
-[ -z "$sid" ] && sid="${CLAUDE_CODE_SESSION_ID:-}"
-
-# TEMPORARY (plan 3, task 4): record the raw payload so the next real session
-# settles empirically whether SessionStart carries `session_id`. One compact line
-# per invocation. Remove this block once the answer is in the log. It must never
-# fail the hook, hence the discarded stderr and the `|| true`; and it must never
-# touch $HOME unguarded, because under `set -u` an unset HOME would abort the
-# script here — after reading stdin and before emitting anything.
-if [ -n "${HOME:-}" ]; then
-  {
-    log_line=$(printf '%s' "$payload" | jq -c . 2>/dev/null || printf '%s' "$payload" | tr -d '\n')
-    printf '%s\n' "$log_line" >>"$HOME/.claude/hooks/.aplan-session-start-payload.log"
-  } 2>/dev/null || true
-fi
 
 # An empty --session is NOT harmless: by an established contract an empty session
 # id falls back to the human's global pointer, which is how hooks outside any

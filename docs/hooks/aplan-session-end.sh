@@ -30,10 +30,12 @@ command -v jq    >/dev/null 2>&1 || exit 0
 # Every `aplan` call carries reqwest's own 10 s timeout (cli/src/client.rs:42) and
 # this hook is registered with a 10 s budget, so a backend that accepts the
 # connection and then hangs would spend the entire budget on the first call.
-# Bound each call instead. A missing `timeout` must not silently disable the hook,
-# hence the fallback — reqwest's own timeout still applies there.
+# Bound each call instead: two calls at 3 s bounds it at 6 s and, measured, at 3 s
+# — a hang on `session show` ends the hook, so only one call can burn its budget.
+# 5 s each would sit exactly on the 10 s limit. A missing `timeout` must not silently
+# disable the hook, hence the fallback — reqwest's own timeout still applies there.
 if command -v timeout >/dev/null 2>&1; then
-  aplan_bounded() { timeout 5 aplan "$@"; }
+  aplan_bounded() { timeout 3 aplan "$@"; }
 else
   aplan_bounded() { aplan "$@"; }
 fi
@@ -42,10 +44,17 @@ fi
 # an empty or non-JSON payload must never crash.
 payload=$(cat)
 
-# The payload is the contract; the environment variable is a fallback for the case
-# where it is absent, not a substitute for reading it.
+# The payload is the ONLY source of the session id. There was a
+# `CLAUDE_CODE_SESSION_ID` fallback here and removing it was deliberate — please do
+# not helpfully re-add it. The harness exports that variable into tool
+# subprocesses, so a nested `claude` whose payload carried no `session_id` would
+# inherit its PARENT's id and flush the parent's task against the parent's window:
+# this defect's exact shape, one actor over. The fallback existed only because the
+# payload's contents could not be verified statically, and the live payload log has
+# since settled that (keys: cwd, hook_event_name, session_id, source,
+# transcript_path). Absence is handled by the guard below, and a silent no-op is
+# the right failure here — a flush aimed at the wrong session is not.
 sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null || echo '')
-[ -z "$sid" ] && sid="${CLAUDE_CODE_SESSION_ID:-}"
 
 # An empty --session is NOT harmless: by an established contract an empty session
 # id falls back to the human's global pointer, which is how hooks outside any
