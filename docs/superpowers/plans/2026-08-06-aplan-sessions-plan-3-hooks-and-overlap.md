@@ -976,13 +976,15 @@ The numbering is verified: `### 7.3 Migration 014_create_sessions.sql — sessio
 
 Task 6's review found these outside its own diff. They were held back to keep that task's rounds reviewable; they are real and verified.
 
-1. **The `aplan current --json` example is wrong, near `:19-21` and again in the hot-path row at `:76`.** It shows `{"currentActivity":{"id":"…","task":{…},…}}`. Measured against the installed binary, the real shape is:
+1. **The `aplan current --json` example near `:19-21` shows a shape that does not exist.** It shows `{"currentActivity":{"id":"…","task":{…},…}}`. Measured against the installed binary, the real shape is:
 
    ```json
    {"actor": …, "currentActivity": {"task": {"id": …, "title": …, "sourceId": …}}}
    ```
 
-   Two errors: `currentActivity` has **no `id` field**, and there is a **top-level `actor` key the example omits entirely**. The second matters more than a typo — `actor` is how the JSON surfaces *which* of the two actors answered, so a Claude parsing this output from the documented shape would not know the key exists. Correct both places, and check the file for any other `current --json` example.
+   Two errors: `currentActivity` has **no `id` field**, and there is a **top-level `actor` key the example omits entirely**. The second matters more than a typo — `actor` is how the JSON surfaces *which* of the two actors answered, so a Claude parsing this output from the documented shape would not know the key exists. Check the file for any other `current --json` example.
+
+1b. **Separately, the hot-path row at `:76` is a different problem — a semantics one, not a shape one.** It maps "what am I working on" to `aplan current`. That is defensible when the asker is the human, since `current` *is* their pointer — but with several Claudes now tracking their own tasks, `aplan sessions` is the fuller answer, and it is the one that shows both actors. Decide which the row should recommend and say why. (Task 6's implementer read `:76` and `:19-21` as the same item; its reviewer established they are not. Treat them separately.)
 
 2. **The subagent section forbids the session-link and pointer verbs but not three other writes:** `aplan reattribute` (advertised at `:72`), `aplan config set`, and the memory-write verbs. Reattribution moves time between tasks; a subagent doing that on its own initiative is the same class of harm as `session bind`. Task 6 rebuilt that section around a stated principle plus an enumeration — extend the principle to cover writes beyond the session link, rather than only appending three names.
 
