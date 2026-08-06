@@ -47,10 +47,13 @@ aplan session end --json          # close this session's row now — SessionEnd 
 The SessionStart hook's injected context is authoritative for this session, and it
 does one of two things: either it reports a choice already recorded on this
 session's row (a bound task, or "ne pas tracker" — obey it, don't ask the user
-again), or, when no choice is recorded yet, it hands you a **mandatory**
-`AskUserQuestion` to make one — obey that instruction just as strictly; suppressing
-it is how a session ends up with neither a task nor a recorded "ne pas tracker",
-silently. Either way, never re-derive tracking state from `aplan current`, which
+again), or it hands you a **mandatory** `AskUserQuestion` to make one. Three
+things trigger the question, not just the obvious one: no choice recorded yet, an
+explicit `/clear` (which forces it even on a session with a fully recorded
+choice), or a recorded task that no longer resolves. Obey the question in all
+three cases just as strictly as a recorded choice — reasoning "this session
+already has a row, so it shouldn't be asking" is exactly how the question gets
+suppressed. Either way, never re-derive tracking state from `aplan current`, which
 answers for the human, not for this session.
 
 **`aplan start` / `aplan stop` are `aplan session bind` / `aplan session end` under
@@ -81,8 +84,8 @@ bind`, not just flipping back to tracking.
 | "that time went on the wrong task" | `aplan reattribute --json --from <wrong> --to <right> --date <day>` (preview first) |
 
 If you are a **subagent**, `start`, `stop`, `done` and `triage` in this table are
-forbidden — see "If you are a subagent" below, which also covers `aplan flush` and
-the writing `session` subcommands, none of which appear above.
+forbidden — see "If you are a subagent" below, which also covers `aplan new`,
+`aplan flush`, and the writing `session` subcommands, none of which appear above.
 
 ## Discovery commands (read-only, safe to ground yourself)
 
