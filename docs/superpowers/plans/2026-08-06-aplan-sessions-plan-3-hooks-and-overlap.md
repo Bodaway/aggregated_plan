@@ -61,6 +61,9 @@ Therefore, for tasks 4 and 5, without exception:
 |---|---|
 | `backend/crates/application/src/repositories/session_repository.rs` | `list_idle_open` — the method plan 1 deliberately deferred |
 | `backend/crates/infrastructure/src/database/session_repo.rs` | its SQL |
+| `backend/crates/application/src/use_cases/session_tracking.rs` | one of the four `SessionRepository` test doubles |
+| `backend/crates/api/src/graphql/tests.rs` | the other two test doubles |
+| `backend/crates/application/Cargo.toml` | adds the `tracing` dependency the reaper needs |
 | `backend/crates/api/src/jobs.rs` | the reaper joins the existing background scheduler |
 | `backend/crates/api/src/main.rs` | pass `session_repo` to the job's deps |
 | `backend/crates/cli/src/commands.rs` | `start` / `stop` bind the session when one is asking; `journal` prints overlaps |
@@ -80,6 +83,11 @@ Therefore, for tasks 4 and 5, without exception:
 - Modify: `backend/crates/infrastructure/src/database/session_repo.rs`
 - Create: `backend/crates/application/src/use_cases/session_reaper.rs`
 - Modify: `backend/crates/application/src/use_cases/mod.rs`
+- Modify: `backend/crates/application/src/use_cases/session_tracking.rs` — its test-module `InMemorySessionRepository` is one of the four implementors
+- Modify: `backend/crates/api/src/graphql/tests.rs` — the other two implementors live here
+- Modify: `backend/crates/application/Cargo.toml` — `application` has **no `tracing` dependency**; the `reap_idle_sessions` body below calls `tracing::warn!`, so add `tracing = { workspace = true }`
+
+> The three entries after `mod.rs` were missing from this list in the plan's first draft, and the commit recipe at the end of this task named only two directories. Following either literally produces a tree that does not compile (`E0046: missing list_idle_open`). Stage what the change actually needs, including `backend/Cargo.lock`.
 
 **Interfaces:**
 - Consumes: `SessionRepository::{end, set_last_flush}`, `Session::flush_window_start()`, `materialize_worklog_time(worklog_repo, activity_repo, config_repo, user_id, task_id, from, now)`.
