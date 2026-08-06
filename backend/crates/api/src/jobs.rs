@@ -79,15 +79,18 @@ pub async fn run_eod_scheduler(deps: EodDeps, user_id: UserId) {
         };
         let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
         health = next_health;
-        report(decision.log, failure.as_deref(), decision.retry_in);
+        report("end-of-day timesheet reconstruction", decision.log, failure.as_deref(), decision.retry_in);
 
         tokio::time::sleep(decision.retry_in).await;
     }
 }
 
-/// Turn the policy's verdict into a journal line. The policy already decided whether to
-/// speak and how loudly; this only decides the wording.
-fn report(entry: Option<LogEntry>, error: Option<&str>, retry_in: Duration) {
+/// Turn the policy's verdict into a journal line for `job`. The policy already
+/// decided whether to speak and how loudly; this only decides the wording. Shared
+/// between both scheduler loops -- the three message shapes below reproduce each
+/// job's previous, job-specific wording byte-for-byte, so extracting this changed
+/// no log output, only where it is written.
+fn report(job: &str, entry: Option<LogEntry>, error: Option<&str>, retry_in: Duration) {
     let Some(entry) = entry else {
         return;
     };
@@ -101,7 +104,7 @@ fn report(entry: Option<LogEntry>, error: Option<&str>, retry_in: Duration) {
                     consecutive_failures,
                     failing_for = %failing_for,
                     retry_in_s = retry_in.as_secs(),
-                    "end-of-day timesheet reconstruction failed"
+                    "{job} failed"
                 ),
                 // The line a three-week-old outage needs: not "failed" for the
                 // thousandth time, but for how long and how many times.
@@ -111,7 +114,7 @@ fn report(entry: Option<LogEntry>, error: Option<&str>, retry_in: Duration) {
                     failing_for = %failing_for,
                     suppressed_repeats,
                     retry_in_s = retry_in.as_secs(),
-                    "end-of-day timesheet reconstruction has been failing for {failing_for} \
+                    "{job} has been failing for {failing_for} \
                      ({consecutive_failures} consecutive attempts) -- it will not fix itself"
                 ),
             }
@@ -119,7 +122,7 @@ fn report(entry: Option<LogEntry>, error: Option<&str>, retry_in: Duration) {
         LogEntry::Recovered { after_failures, was_failing_for } => tracing::info!(
             after_failures,
             was_failing_for = %humanize_duration(was_failing_for),
-            "end-of-day timesheet reconstruction recovered"
+            "{job} recovered"
         ),
     }
 }
@@ -140,10 +143,24 @@ pub struct SessionReaperDeps {
 /// closes it.
 const SESSION_IDLE_TIMEOUT_KEY: &str = "aplan.session_idle_timeout_hours";
 
-/// Fallback used when the key above is unset or holds a value that fails to parse.
-/// A corrupt value must not make the reaper close every open session on the next
-/// tick, so a bad read falls back here rather than erroring.
+/// Fallback used when the key above is unset, holds a value that fails to parse,
+/// or holds a value outside `SESSION_IDLE_TIMEOUT_RANGE`. A corrupt value must not
+/// make the reaper close every open session on the next tick, so a bad read falls
+/// back here rather than erroring.
 const DEFAULT_SESSION_IDLE_TIMEOUT_HOURS: i64 = 12;
+
+/// Sane bounds for a parsed threshold, applied after parsing so an out-of-range
+/// value is treated the same as an unparseable one. Below `1`: `0` or a negative
+/// value parses fine, so the earlier "unparseable" fallback never sees it, and
+/// `idle_before = now - hours` would land at or after `now` -- `list_idle_open`
+/// would then return every open session, including the one asking right now.
+/// Above `8760` (one year): still a valid `i64`, but `chrono::Duration::hours`
+/// panics once `hours * 3_600_000` overflows an `i64` millisecond count -- past
+/// roughly 2.56e12 hours (`i64::MAX / 1_000 / 3_600`, verified against chrono
+/// 0.4.44's `TimeDelta::try_hours`/`try_seconds`) -- and that panic would kill this
+/// job for the rest of the process, silently, since it runs inside a dropped
+/// `tokio::spawn` handle.
+const SESSION_IDLE_TIMEOUT_RANGE: std::ops::RangeInclusive<i64> = 1..=8760;
 
 /// How many hours a session may go quiet before the reaper closes it, read fresh
 /// every pass so a live `updateConfiguration` takes effect on the next tick
@@ -156,6 +173,7 @@ async fn idle_timeout_hours(
         .get(user_id, SESSION_IDLE_TIMEOUT_KEY)
         .await?
         .and_then(|raw| raw.parse::<i64>().ok())
+        .filter(|hours| SESSION_IDLE_TIMEOUT_RANGE.contains(hours))
         .unwrap_or(DEFAULT_SESSION_IDLE_TIMEOUT_HOURS);
     Ok(hours)
 }
@@ -215,47 +233,9 @@ pub async fn run_session_reaper_scheduler(deps: SessionReaperDeps, user_id: User
         };
         let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
         health = next_health;
-        report_reaper(decision.log, failure.as_deref(), decision.retry_in);
+        report("idle-session reap", decision.log, failure.as_deref(), decision.retry_in);
 
         tokio::time::sleep(decision.retry_in).await;
-    }
-}
-
-/// Turn the policy's verdict into a journal line for the reaper. Same shape as
-/// `report()` above, different job -- see that function's comment for why the
-/// wording is kept separate from the deciding.
-fn report_reaper(entry: Option<LogEntry>, error: Option<&str>, retry_in: Duration) {
-    let Some(entry) = entry else {
-        return;
-    };
-    match entry {
-        LogEntry::Failure { level, consecutive_failures, failing_for, suppressed_repeats } => {
-            let error = error.unwrap_or("unknown");
-            let failing_for = humanize_duration(failing_for);
-            match level {
-                LogLevel::Warn => tracing::warn!(
-                    error,
-                    consecutive_failures,
-                    failing_for = %failing_for,
-                    retry_in_s = retry_in.as_secs(),
-                    "idle-session reap failed"
-                ),
-                LogLevel::Error => tracing::error!(
-                    error,
-                    consecutive_failures,
-                    failing_for = %failing_for,
-                    suppressed_repeats,
-                    retry_in_s = retry_in.as_secs(),
-                    "idle-session reap has been failing for {failing_for} \
-                     ({consecutive_failures} consecutive attempts) -- it will not fix itself"
-                ),
-            }
-        }
-        LogEntry::Recovered { after_failures, was_failing_for } => tracing::info!(
-            after_failures,
-            was_failing_for = %humanize_duration(was_failing_for),
-            "idle-session reap recovered"
-        ),
     }
 }
 
@@ -334,6 +314,38 @@ mod tests {
         // A corrupt value must not make the reaper close every session immediately.
         let config = StubConfigRepository::default();
         config.set(user_id(), "aplan.session_idle_timeout_hours", "soon").await.unwrap();
+        assert_eq!(idle_timeout_hours(&config, user_id()).await.unwrap(), 12);
+    }
+
+    #[tokio::test]
+    async fn a_zero_threshold_falls_back_to_the_default() {
+        // "0" parses fine, so it never reaches the unparseable fallback above. Left
+        // unfiltered, idle_before == now and every open session -- including the one
+        // asking right now -- would be reaped on the very next tick.
+        let config = StubConfigRepository::default();
+        config.set(user_id(), "aplan.session_idle_timeout_hours", "0").await.unwrap();
+        assert_eq!(idle_timeout_hours(&config, user_id()).await.unwrap(), 12);
+    }
+
+    #[tokio::test]
+    async fn a_negative_threshold_falls_back_to_the_default() {
+        let config = StubConfigRepository::default();
+        config.set(user_id(), "aplan.session_idle_timeout_hours", "-5").await.unwrap();
+        assert_eq!(idle_timeout_hours(&config, user_id()).await.unwrap(), 12);
+    }
+
+    #[tokio::test]
+    async fn a_threshold_too_large_for_a_duration_falls_back_to_the_default() {
+        // i64::MAX parses fine as a threshold but is many orders of magnitude past
+        // the ~2.56e12-hour bound `chrono::Duration::hours` panics beyond -- left
+        // unfiltered here, `run_reap_pass` would panic on it downstream instead of
+        // this function returning a merely-wrong number. See this test's assertion
+        // for what this function alone can prove; the report explains the rest.
+        let config = StubConfigRepository::default();
+        config
+            .set(user_id(), "aplan.session_idle_timeout_hours", &i64::MAX.to_string())
+            .await
+            .unwrap();
         assert_eq!(idle_timeout_hours(&config, user_id()).await.unwrap(), 12);
     }
 }

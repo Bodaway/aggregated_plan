@@ -42,16 +42,21 @@ impl RetryPolicy {
         }
     }
 
-    /// The idle-session reaper: a pass every 5 minutes while healthy, backing off
-    /// to 15 minutes -- a lower ceiling than the end-of-day job's, because a late
-    /// reap only delays closing a quiet session, not the timesheet reconstruction
-    /// the end-of-day back-off is tuned to protect. Same escalation shape as
-    /// `end_of_day()`: the third consecutive failure escalates, and an ongoing
-    /// outage reminds every twelfth attempt.
+    /// The idle-session reaper: a pass every 15 minutes while healthy, backing off
+    /// to 45 minutes. Slower than `end_of_day()`'s 5-minute base on purpose -- the
+    /// default idle threshold is 12 hours, so a 5-minute tick would poll 288
+    /// times a day for a boundary each session crosses exactly once; 15 minutes is
+    /// still fine enough that a session going idle is picked up well inside the
+    /// hour, at under a hundredth of the threshold it is checking against. Lower
+    /// ceiling than the end-of-day job's for the same reason as before: a late
+    /// reap only delays closing an already-idle session, not the timesheet
+    /// reconstruction the end-of-day back-off is tuned to protect. Same escalation
+    /// shape as `end_of_day()`: the third consecutive failure escalates, and an
+    /// ongoing outage reminds every twelfth attempt.
     pub const fn session_reaper() -> Self {
         Self {
-            base: Duration::from_secs(5 * 60),
-            ceiling: Duration::from_secs(15 * 60),
+            base: Duration::from_secs(15 * 60),
+            ceiling: Duration::from_secs(45 * 60),
             escalate_after: 3,
             reminder_every: 12,
         }
