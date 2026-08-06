@@ -2,6 +2,10 @@ query ClaudeSession($id: String!) {
   claudeSession(id: $id) {
     id
     taskId
+    task {
+      id
+      title
+    }
     mode
     label
     startedAt

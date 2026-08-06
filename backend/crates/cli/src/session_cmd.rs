@@ -114,9 +114,16 @@ pub fn session(
                         Some(s) => {
                             println!("session {}", s.id);
                             println!("mode: {:?}", s.mode);
-                            match s.task_id.filter(|t| !t.is_empty()) {
-                                Some(tid) => println!("task: {}", tid),
-                                None => println!("task: (none)"),
+                            // Prefer the title: a bare uuid is unreadable, and the
+                            // SessionStart hook quotes this same summary back to the
+                            // user. `task` resolves to None when the row is gone,
+                            // so fall back to the id rather than claiming "(none)".
+                            match (&s.task, s.task_id.as_deref()) {
+                                (Some(t), _) => println!("task: {} ({})", t.title, t.id),
+                                (None, Some(tid)) if !tid.is_empty() => {
+                                    println!("task: {} (unresolved)", tid)
+                                }
+                                _ => println!("task: (none)"),
                             }
                             if let Some(ended) = &s.ended_at {
                                 println!("ended: {}", ended);
