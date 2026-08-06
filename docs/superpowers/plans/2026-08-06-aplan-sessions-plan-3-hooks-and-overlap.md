@@ -508,8 +508,14 @@ Six cases. Every CLI integration test goes through the shared `aplan()` builder,
 2. `aplan start <task>` with no session → `UpdateConfiguration` sets `aplan.active_task_id`, and no `BindSession` is made.
 3. `aplan --session s1 stop` → a `FlushWorklogTime` carrying `"sessionId":"s1"` and an `EndSession`, with **no** `UpdateConfiguration` clearing the pointer.
 4. `aplan stop` with no session → today's flush with no session id, and the pointer cleared.
-5. `aplan --session s1 flush <task>` → `FlushWorklogTime` carrying `"sessionId":"s1"`, and **no** `UpdateConfiguration` at all (`.expect(0)`) — a session's flush must not advance the human's `aplan.active_since`.
-6. `aplan flush <task>` with no session → `FlushWorklogTime` with no `sessionId` on the wire, and the human's `active_since` still advanced exactly as today.
+5. `aplan --session s1 flush <task>` → `FlushWorklogTime` carrying `"sessionId":"s1"`.
+6. `aplan flush <task>` with no session → `FlushWorklogTime` with no string-valued `sessionId` on the wire (the `NoSessionIdOnTheWire` matcher).
+
+> **Do not assert `.expect(0)` on `UpdateConfiguration` for cases 5 and 6.** `flush` never calls that mutation — `commands.rs:1008-1031` issues only `FlushWorklogTime`, and the watermark advance happens **server-side** inside that resolver, which chooses between the session's `last_flush_at` and the human's `aplan.active_since`. An `.expect(0)` there would pass identically before and after your change: a vacuous assertion of exactly the kind this plan's reviews have caught three times. The wire-level `sessionId` is the only thing a CLI test can honestly observe here; the server's choice of watermark is already covered by plan 2's API tests.
+>
+> Cases 1 and 3 are different — `start` and `stop` *do* write `aplan.active_task_id` themselves, so `.expect(0)` on `UpdateConfiguration` is meaningful for those two and must stay.
+
+The exact defect in `flush` is not merely a missing parameter: `commands.rs:1019` passes `session_id: None` as a literal, so `aplan flush --session s1 <task>` sends `sessionId: null` and the session is dropped on the wire.
 
 - [ ] **Step 2: Run to verify cases 1, 3 and 5 fail**
 
