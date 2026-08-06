@@ -97,8 +97,12 @@ aplan alerts --json             # unresolved alerts
 
 The `<task>` argument accepts a UUID, a Jira-style key (`AP-1234`), a fuzzy
 title substring (`"auth migra"`), or `@` / `current` for the currently-tracked
-task. **Default to `@` for any verb that has an implicit current target** —
-notes, status, done.
+task — which is the **human's** `aplan.active_task_id`, always, on every verb.
+**For a verb with an implicit target — `log`, `note`, `status`, `done` — omit
+`--task` entirely** and let it resolve through the session (see "Sessions"
+above): that is what attributes the write to this session rather than to the
+human. Pass `--task @` only when you deliberately mean the human's own pointer,
+and know the write then lands unattributed to any session.
 
 ## Less-frequent operations
 
