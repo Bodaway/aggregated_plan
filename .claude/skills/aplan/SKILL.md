@@ -202,31 +202,44 @@ cd backend && cargo run -p api
 
 Don't try to run the backend yourself.
 
-## If you are a subagent: never move the pointer, never materialise time
+## If you are a subagent: never touch the parent session's row, never materialise its time
 
-**A subagent must never run `aplan start`, `aplan new`, `aplan stop`, `aplan done`,
-`aplan flush` or `aplan triage`.** Read freely — `ls`, `show`, `current`, `dash`,
-`brief`, `recall` are all safe — but do not write anything that touches the
-active-task pointer or turns worklog entries into activity slots.
+**A subagent must never run `aplan start`, `aplan stop`, `aplan done` or `aplan
+flush`.** Read freely — `ls`, `show`, `current`, `dash`, `brief`, `recall` are all
+safe. `aplan new` and `aplan triage` are also off-limits, for an unrelated reason
+given at the end of this section.
 
-The reason, not just the rule: `aplan.active_task_id` is **one** value, shared by
-every process that talks to this backend. It belongs to the parent session, which set
-it to the task the user is actually working on. When a subagent calls `aplan start` on
-a task it picked out of `aplan ls`, it silently repoints that single value — and from
-then on every `aplan log` in the session, and the `SessionEnd` flush, attribute the
-parent's work to the subagent's task. `aplan stop` / `done` / `flush` do the mirror
-image: they materialise slots and clear the pointer under the parent's feet.
+The reason, not just the rule: nothing in the environment tells `aplan` a subagent
+apart from its parent. The only variable set for a subagent is
+`CLAUDE_CODE_CHILD_SESSION=1`, and it is **also set in the main thread**, so it
+cannot be used to distinguish the two — every `aplan` call a subagent makes carries
+the same `CLAUDE_CODE_SESSION_ID` as its parent, because that is what the harness
+exports, and resolves to the **parent session's own row**, not a row of its own.
+`aplan start` on a task the subagent picked out of `aplan ls` silently rebinds the
+parent's tracking to it. `aplan stop` closes the parent's session outright (after
+flushing it — see "Sessions" above). `aplan done` completes, and flushes, whatever
+task the parent's session happens to be bound to, whether or not the subagent meant
+to touch it. `aplan flush` materialises the parent's worklog time into slots ahead of
+when the parent's own session would have.
 
 This has already happened in this repo: an agent read this skill, ran `aplan start` on
 a task it found interesting, and redirected roughly 4h35 of another session's time onto
 it. Nothing failed, nothing warned, and the wrong attribution reached the timesheet.
 Undoing it needs `aplan reattribute` and a human who noticed.
 
-`aplan note` / `aplan log` are the exception: they write to a task, not to the pointer,
-and Claude's own journalling depends on them. If a subagent needs to log against a
-specific task, pass `--task <id>` explicitly rather than relying on — or changing —
-whatever the pointer happens to be. If the work genuinely requires starting, stopping
-or triaging a task, say so and let the parent session (or the user) do it.
+`aplan note` / `aplan log` are correct for a subagent to run, not a tolerated
+exception: they write to a task, not to the session's row, and work a subagent does
+genuinely belongs to the parent session that spawned it — that attribution is the
+point, not a bug waiting to be closed. If a subagent needs to log against a specific
+task instead, pass `--task <id>` explicitly rather than relying on whichever task the
+parent session happens to be bound to. If the work genuinely requires starting,
+stopping, flushing or completing a task, say so and let the parent session (or the
+user) do it.
+
+`aplan new` and `aplan triage` are forbidden for a different reason: neither touches
+the session or the pointer at all. Creating a task, or changing what surfaces in the
+human's queue, is a judgement call — the parent's or the user's to make, not a
+subagent's to decide on its own.
 
 ## Things you must NOT do
 
