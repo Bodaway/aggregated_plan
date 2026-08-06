@@ -2238,6 +2238,10 @@ async fn activity_overlaps_reports_both_titles_and_minutes() {
         ))
         .await;
     assert!(slot_a.errors.is_empty(), "Errors: {:?}", slot_a.errors);
+    let slot_a_id = slot_a.data.into_json().unwrap()["createActivitySlot"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let slot_b = schema
         .execute(&format!(
@@ -2245,6 +2249,10 @@ async fn activity_overlaps_reports_both_titles_and_minutes() {
         ))
         .await;
     assert!(slot_b.errors.is_empty(), "Errors: {:?}", slot_b.errors);
+    let slot_b_id = slot_b.data.into_json().unwrap()["createActivitySlot"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let result = schema
         .execute(
@@ -2261,12 +2269,25 @@ async fn activity_overlaps_reports_both_titles_and_minutes() {
     assert_eq!(overlaps.len(), 1);
     assert_eq!(overlaps[0]["minutes"], 30);
 
-    let titles = [
-        overlaps[0]["a"]["task"]["title"].as_str().unwrap(),
-        overlaps[0]["b"]["task"]["title"].as_str().unwrap(),
-    ];
-    assert!(titles.contains(&"Saft cadrage"), "titles: {titles:?}");
-    assert!(titles.contains(&"Cartier"), "titles: {titles:?}");
+    // Per-side pairing, keyed by the slotId we captured at creation — not by
+    // GraphQL side ("a"/"b") or by title membership. `slotId` is asserted
+    // here, not merely selected: a `From` impl that kept each side's own
+    // `slot_id` but paired it with the *other* side's `task_id` (the swap
+    // the paired-struct design exists to prevent) would still satisfy an
+    // order-independent `titles.contains` check on both titles being present
+    // somewhere, but fails this, because the slot identified by
+    // `slot_a_id` would come back titled "Cartier" instead of its own task.
+    for side in ["a", "b"] {
+        let slot_id = overlaps[0][side]["slotId"].as_str().unwrap();
+        let title = overlaps[0][side]["task"]["title"].as_str().unwrap();
+        if slot_id == slot_a_id {
+            assert_eq!(title, "Saft cadrage", "side {side} (slot A) has the wrong title");
+        } else if slot_id == slot_b_id {
+            assert_eq!(title, "Cartier", "side {side} (slot B) has the wrong title");
+        } else {
+            panic!("side {side} has slotId {slot_id}, which matches neither slot_a_id nor slot_b_id");
+        }
+    }
 
     // Both slots are manual (no session), which must survive to the GraphQL layer.
     assert!(overlaps[0]["a"]["sessionId"].is_null());

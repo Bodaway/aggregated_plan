@@ -497,6 +497,74 @@ mod tests {
         assert_eq!(returned_b.task_id, Some(task_b));
     }
 
+    /// A worklog-authored slot's `session_id` must come back on the side that
+    /// is actually its own slot, not merely be present somewhere in the pair.
+    /// This is the field Task 9 renders as `session a1b2 ↔ manuel`: a bug that
+    /// dropped `session_id` while pairing (hardcoding `None`) or attached it
+    /// to the wrong side would still pass a test that only checked
+    /// `.is_some()` on one side and `.is_none()` on the other, since exactly
+    /// one side is `None` either way.
+    ///
+    /// Neither `create_manual_activity_slot` nor `start_activity` can mint a
+    /// slot carrying a session id — both always call `ActivitySlot::manual`,
+    /// which hardcodes `session_id: None` — so this test builds the
+    /// worklog-authored slot directly with `ActivitySlot::from_worklog` and
+    /// saves it through the repository, bypassing the use-case layer for
+    /// setup only.
+    #[tokio::test]
+    async fn get_activity_overlaps_carries_session_id_on_its_own_side() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let task_session = Uuid::new_v4();
+        let task_manual = Uuid::new_v4();
+        let now = Utc.with_ymd_and_hms(2026, 3, 9, 12, 0, 0).unwrap();
+
+        let session_slot = ActivitySlot::from_worklog(
+            test_user_id(),
+            task_session,
+            Some("sess-a".to_string()),
+            Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap(),
+            HalfDay::Morning,
+            date,
+            now,
+        );
+        repo.save(&session_slot).await.unwrap();
+
+        let manual_slot = create_manual_activity_slot(
+            &repo,
+            test_user_id(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 9, 30, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap(),
+            Some(task_manual),
+        )
+        .await
+        .unwrap();
+
+        let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
+            .await
+            .unwrap();
+        assert_eq!(overlaps.len(), 1);
+        let overlap = &overlaps[0];
+
+        let (returned_session_side, returned_manual_side) = if overlap.a.id == session_slot.id {
+            (&overlap.a, &overlap.b)
+        } else {
+            (&overlap.b, &overlap.a)
+        };
+        assert_eq!(returned_session_side.id, session_slot.id);
+        assert_eq!(
+            returned_session_side.session_id.as_deref(),
+            Some("sess-a"),
+            "the session-authored slot must keep its own session_id"
+        );
+        assert_eq!(returned_manual_side.id, manual_slot.id);
+        assert!(
+            returned_manual_side.session_id.is_none(),
+            "the manual slot must not inherit a session_id from the other side"
+        );
+    }
+
     /// A day with no colliding slots must report nothing — silence by
     /// construction, not a special case, so the caller never has to filter a
     /// zero-minute or empty-but-present entry back out.
@@ -543,17 +611,6 @@ mod tests {
         )
         .await
         .unwrap();
-
-        let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
-            .await
-            .unwrap();
-        assert!(overlaps.is_empty());
-    }
-
-    #[tokio::test]
-    async fn get_activity_overlaps_is_empty_for_a_quiet_day() {
-        let repo = InMemoryActivitySlotRepository::new();
-        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
 
         let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
             .await
