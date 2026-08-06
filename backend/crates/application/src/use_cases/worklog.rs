@@ -582,7 +582,9 @@ pub(crate) mod tests {
         entries: Mutex<Vec<WorklogEntry>>,
         /// Every filter `list` was called with, in order — so a test can check the
         /// query was actually bounded, not merely that its result happened to be.
-        list_calls: Mutex<Vec<WorklogFilter>>,
+        /// `pub(crate)`: `session_reaper`'s tests need to assert this stays empty
+        /// for a session that must never attempt a flush at all.
+        pub(crate) list_calls: Mutex<Vec<WorklogFilter>>,
     }
 
     #[async_trait]

@@ -421,4 +421,23 @@ mod tests {
         let other = Uuid::parse_str("00000000-0000-0000-0000-0000000000ff").unwrap();
         assert!(repo.list_idle_open(other, t(10)).await.unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn list_idle_open_orders_oldest_seen_first() {
+        // Processing order decides which session the reaper reaches first under a
+        // partial failure, so this is not merely cosmetic — insert out of order to
+        // prove the `ORDER BY` clause, not insertion order, decides it.
+        let repo = SqliteSessionRepository::new(setup().await);
+        repo.upsert(&Session::tracking("newer".into(), user_id(), task_id(), None, t(4)).unwrap())
+            .await
+            .unwrap();
+        repo.upsert(&Session::tracking("older".into(), user_id(), task_id(), None, t(2)).unwrap())
+            .await
+            .unwrap();
+
+        let idle = repo.list_idle_open(user_id(), t(10)).await.unwrap();
+
+        let ids: Vec<&str> = idle.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["older", "newer"]);
+    }
 }
