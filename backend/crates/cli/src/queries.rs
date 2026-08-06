@@ -114,6 +114,16 @@ pub struct PriorityMatrix;
 )]
 pub struct ActivityJournal;
 
+/// The day's flagged overlaps (Task 8), consumed by `journal`/`dash`/`timesheet`
+/// (Task 9) to show which tasks double-claimed the same stretch of time.
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/activity_overlaps.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct ActivityOverlaps;
+
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",

@@ -1,0 +1,15 @@
+query ActivityOverlaps($date: NaiveDate!) {
+  activityOverlaps(date: $date) {
+    minutes
+    a {
+      slotId
+      sessionId
+      task { id title }
+    }
+    b {
+      slotId
+      sessionId
+      task { id title }
+    }
+  }
+}

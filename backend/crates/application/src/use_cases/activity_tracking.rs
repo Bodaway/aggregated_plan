@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use domain::rules::overlap::find_overlaps;
 use domain::rules::workload::half_day_of;
 use domain::types::*;
 
@@ -56,6 +59,66 @@ pub async fn get_activity_journal(
         .find_by_user_and_date(user_id, date)
         .await
         .map_err(Into::into)
+}
+
+/// One flagged double-count: two different tasks' closed slots claiming an
+/// overlapping stretch of time, paired back to the two slots the domain rule
+/// only referenced by id.
+///
+/// Nothing here corrects the double count — the user's decision, recorded in
+/// the design: several sessions (and the human) can legitimately log time
+/// concurrently, each task keeps the time its own entries document, and the
+/// user arbitrates at the timesheet review. This only resolves *which* two
+/// slots collided, so the GraphQL resolver can turn a `task_id` into a title
+/// without `domain` doing any I/O of its own.
+#[derive(Debug, Clone)]
+pub struct ActivityOverlap {
+    pub minutes: i64,
+    pub a: ActivitySlot,
+    pub b: ActivitySlot,
+}
+
+/// Get the day's flagged double-counted stretches: every pair of different-task,
+/// closed slots whose times intersect.
+///
+/// Computed at read time on every call — nothing is stored. Fetches the same
+/// slots [`get_activity_journal`] would return for the same date and hands
+/// them to the pure domain rule, then pairs each reported
+/// [`domain::rules::overlap::Overlap`] back to the two slots it named by id.
+pub async fn get_activity_overlaps(
+    activity_repo: &dyn ActivitySlotRepository,
+    user_id: UserId,
+    date: NaiveDate,
+) -> Result<Vec<ActivityOverlap>, AppError> {
+    let slots = activity_repo.find_by_user_and_date(user_id, date).await?;
+    let by_id: HashMap<ActivitySlotId, &ActivitySlot> =
+        slots.iter().map(|slot| (slot.id, slot)).collect();
+
+    find_overlaps(&slots)
+        .into_iter()
+        .map(|overlap| {
+            // `find_overlaps` only ever names ids drawn from the slice we just
+            // gave it, so a miss here means that invariant broke — fail loudly
+            // rather than silently drop a flagged collision.
+            let a = by_id.get(&overlap.a).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "overlap referenced slot {} which was not in the fetched set",
+                    overlap.a
+                ))
+            })?;
+            let b = by_id.get(&overlap.b).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "overlap referenced slot {} which was not in the fetched set",
+                    overlap.b
+                ))
+            })?;
+            Ok(ActivityOverlap {
+                minutes: overlap.minutes,
+                a: (*a).clone(),
+                b: (*b).clone(),
+            })
+        })
+        .collect()
 }
 
 /// Get the currently active activity slot for a user.
@@ -389,6 +452,113 @@ mod tests {
             .unwrap();
 
         assert!(journal.is_empty());
+    }
+
+    /// Two different tasks' overlapping manual slots must come back paired with
+    /// both *full* slots, not merely their ids — resolving titles and actors at
+    /// the GraphQL layer needs each slot's own `task_id` and `session_id` to
+    /// travel with it. Pairing by id, not by position, is the property under
+    /// test: a bug that zipped the two slots positionally rather than by the
+    /// ids `find_overlaps` returned would still pass a test that only checked
+    /// `overlaps.len()`.
+    #[tokio::test]
+    async fn get_activity_overlaps_pairs_the_two_full_slots() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let task_a = Uuid::new_v4();
+        let task_b = Uuid::new_v4();
+        let start_a = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let end_a = Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap();
+        let start_b = Utc.with_ymd_and_hms(2026, 3, 9, 9, 30, 0).unwrap();
+        let end_b = Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
+
+        let slot_a = create_manual_activity_slot(&repo, test_user_id(), start_a, end_a, Some(task_a))
+            .await
+            .unwrap();
+        let slot_b = create_manual_activity_slot(&repo, test_user_id(), start_b, end_b, Some(task_b))
+            .await
+            .unwrap();
+
+        let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
+            .await
+            .unwrap();
+        assert_eq!(overlaps.len(), 1);
+        let overlap = &overlaps[0];
+        assert_eq!(overlap.minutes, 30);
+
+        let (returned_a, returned_b) = if overlap.a.id == slot_a.id {
+            (&overlap.a, &overlap.b)
+        } else {
+            (&overlap.b, &overlap.a)
+        };
+        assert_eq!(returned_a.id, slot_a.id);
+        assert_eq!(returned_a.task_id, Some(task_a));
+        assert_eq!(returned_b.id, slot_b.id);
+        assert_eq!(returned_b.task_id, Some(task_b));
+    }
+
+    /// A day with no colliding slots must report nothing — silence by
+    /// construction, not a special case, so the caller never has to filter a
+    /// zero-minute or empty-but-present entry back out.
+    #[tokio::test]
+    async fn get_activity_overlaps_empty_when_no_collision() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap();
+        create_manual_activity_slot(&repo, test_user_id(), start, end, Some(Uuid::new_v4()))
+            .await
+            .unwrap();
+
+        let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
+            .await
+            .unwrap();
+        assert!(overlaps.is_empty());
+    }
+
+    /// The same wiring, but on a task's own two stretches: the domain rule
+    /// excludes same-task pairs, so a caller must see this reported as
+    /// nothing, not as a self-collision.
+    #[tokio::test]
+    async fn get_activity_overlaps_excludes_same_task() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let task = Uuid::new_v4();
+
+        create_manual_activity_slot(
+            &repo,
+            test_user_id(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 10, 0, 0).unwrap(),
+            Some(task),
+        )
+        .await
+        .unwrap();
+        create_manual_activity_slot(
+            &repo,
+            test_user_id(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 9, 30, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 10, 30, 0).unwrap(),
+            Some(task),
+        )
+        .await
+        .unwrap();
+
+        let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
+            .await
+            .unwrap();
+        assert!(overlaps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_activity_overlaps_is_empty_for_a_quiet_day() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+
+        let overlaps = get_activity_overlaps(&repo, test_user_id(), date)
+            .await
+            .unwrap();
+        assert!(overlaps.is_empty());
     }
 
     #[tokio::test]

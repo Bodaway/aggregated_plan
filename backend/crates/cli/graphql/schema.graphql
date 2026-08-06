@@ -11,6 +11,30 @@ type AcceptMemoryResultGql {
 	nearDuplicates: [MemoryGql!]!
 }
 
+"""
+A pair of different tasks' slots claiming overlapping time, and how many
+minutes they share. Nothing here corrects the double count — see
+`domain::rules::overlap` — it only reports it; the user arbitrates at the
+timesheet review.
+"""
+type ActivityOverlapGql {
+	minutes: Int!
+	a: ActivityOverlapSideGql!
+	b: ActivityOverlapSideGql!
+}
+
+type ActivityOverlapSideGql {
+	slotId: ID!
+	sessionId: String
+	"""
+	The task this side's slot was logged against, resolved by looking up
+	`task_id`. Reuses `SessionTaskSummaryGql` rather than declaring a
+	second `{ id, title }` type — async-graphql registers type names
+	globally, and this repository has already paid for one collision.
+	"""
+	task: SessionTaskSummaryGql
+}
+
 type ActivitySlotGql {
 	id: ID!
 	taskId: ID
@@ -273,6 +297,16 @@ type CombinedMutation {
 	bindSession(sessionId: String!, taskId: ID!, label: String): BindSessionResultGql!
 	"""
 	Record what a session was told to do. `OFF` also clears its task.
+	
+	Switching to `OFF` clears `task_id` (`session_tracking::set_session_mode`),
+	and once cleared no later lookup can find it: `flushWorklogTime` requires a
+	non-null task id, and the reaper reads the same field, so nothing automatic
+	would ever flush whatever this session logged while it was tracking. Flush
+	that task first, against the session's own window, exactly as
+	`flush_worklog_time` does for its `sessionId` path at `:356` — this is the
+	same operation, just triggered by the mode switch instead of an explicit
+	flush. The clearing itself is not touched: a stale task on an opted-out
+	session is the original defect this whole feature exists to prevent.
 	"""
 	setSessionMode(sessionId: String!, mode: SessionModeGql!, label: String): ClaudeSessionGql!
 	"""
@@ -292,10 +326,12 @@ type CombinedMutation {
 	
 	A `sessionId` reads and advances that session's own flush window
 	(`Session::flush_window_start()` / `SessionRepository::set_last_flush`); no
-	`sessionId`, or one naming no row, reads and advances the human's
-	`aplan.active_since` pointer instead. The two must never be crossed: sharing
-	one key across every task is what made flushing task B advance the mark for
-	task A too, losing A's time whenever two tasks interleaved.
+	`sessionId` at all reads and advances the human's `aplan.active_since`
+	pointer instead. The two must never be crossed: sharing one key across every
+	task is what made flushing task B advance the mark for task A too, losing
+	A's time whenever two tasks interleaved. A `sessionId` naming no row is
+	refused with an error — never a silent fallback onto the human's pointer,
+	which would advance a key this call never should have touched.
 	"""
 	flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!
 	"""
@@ -589,6 +625,18 @@ type CombinedQuery {
 	Get the activity journal for a given date.
 	"""
 	activityJournal(date: NaiveDate!): [ActivitySlotGql!]!
+	"""
+	The day's flagged overlaps: pairs of different tasks' slots claiming the
+	same stretch of time.
+	
+	An additive sibling of `activityJournal`, not a field on it — wrapping
+	the existing field would break the frontend's `readonly ActivitySlot[]`
+	typing of `activityJournal`. Nothing is corrected here, nothing is
+	stored: computed at read time from the same slots `activityJournal`
+	would return, via the pure domain rule (`domain::rules::overlap`); the
+	user arbitrates at review (Task 9 displays this).
+	"""
+	activityOverlaps(date: NaiveDate!): [ActivityOverlapGql!]!
 	"""
 	Get the currently active activity slot.
 	"""

@@ -4,9 +4,11 @@ use async_graphql::{Context, InputObject, MaybeUndefined, Object, SimpleObject, 
 use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::TaskRepository;
-use domain::types::ActivitySlot;
+use application::use_cases::activity_tracking::ActivityOverlap;
+use domain::types::{ActivitySlot, ActivitySlotId, TaskId};
 
 use super::enums::HalfDayGql;
+use super::session::SessionTaskSummaryGql;
 
 /// Lightweight task summary returned on activity slots (stub until data loader is implemented).
 #[derive(SimpleObject)]
@@ -102,4 +104,72 @@ pub struct CreateActivitySlotInput {
     pub end_time: DateTime<Utc>,
     /// Optional task to associate with.
     pub task_id: Option<ID>,
+}
+
+/// One side of a flagged overlap: which slot claimed the time, whose work it
+/// was (`session_id`, null for the human working by hand), and the task it
+/// was logged against.
+///
+/// `task` is nullable because `ActivitySlot::task_id` is `Option<TaskId>` —
+/// but `find_overlaps` (Task 7) excludes untagged slots, so in practice this
+/// is only null if the task row was later deleted, which is a data question,
+/// not a reason to fail the whole query.
+pub struct ActivityOverlapSideGql {
+    pub slot_id: ActivitySlotId,
+    pub session_id: Option<String>,
+    pub task_id: Option<TaskId>,
+}
+
+#[Object]
+impl ActivityOverlapSideGql {
+    async fn slot_id(&self) -> ID {
+        ID(self.slot_id.to_string())
+    }
+
+    async fn session_id(&self) -> Option<String> {
+        self.session_id.clone()
+    }
+
+    /// The task this side's slot was logged against, resolved by looking up
+    /// `task_id`. Reuses `SessionTaskSummaryGql` rather than declaring a
+    /// second `{ id, title }` type — async-graphql registers type names
+    /// globally, and this repository has already paid for one collision.
+    async fn task(&self, ctx: &Context<'_>) -> Option<SessionTaskSummaryGql> {
+        let task_id = self.task_id?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>().ok()?;
+        let task = task_repo.find_by_id(task_id).await.ok()??;
+        Some(SessionTaskSummaryGql {
+            id: ID(task.id.to_string()),
+            title: task.title,
+        })
+    }
+}
+
+/// A pair of different tasks' slots claiming overlapping time, and how many
+/// minutes they share. Nothing here corrects the double count — see
+/// `domain::rules::overlap` — it only reports it; the user arbitrates at the
+/// timesheet review.
+#[derive(SimpleObject)]
+pub struct ActivityOverlapGql {
+    pub minutes: i64,
+    pub a: ActivityOverlapSideGql,
+    pub b: ActivityOverlapSideGql,
+}
+
+impl From<ActivityOverlap> for ActivityOverlapGql {
+    fn from(overlap: ActivityOverlap) -> Self {
+        Self {
+            minutes: overlap.minutes,
+            a: ActivityOverlapSideGql {
+                slot_id: overlap.a.id,
+                session_id: overlap.a.session_id,
+                task_id: overlap.a.task_id,
+            },
+            b: ActivityOverlapSideGql {
+                slot_id: overlap.b.id,
+                session_id: overlap.b.session_id,
+                task_id: overlap.b.task_id,
+            },
+        }
+    }
 }

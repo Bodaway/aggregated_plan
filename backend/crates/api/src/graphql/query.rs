@@ -384,6 +384,31 @@ impl QueryRoot {
         Ok(slots.into_iter().map(ActivitySlotGql).collect())
     }
 
+    /// The day's flagged overlaps: pairs of different tasks' slots claiming the
+    /// same stretch of time.
+    ///
+    /// An additive sibling of `activityJournal`, not a field on it — wrapping
+    /// the existing field would break the frontend's `readonly ActivitySlot[]`
+    /// typing of `activityJournal`. Nothing is corrected here, nothing is
+    /// stored: computed at read time from the same slots `activityJournal`
+    /// would return, via the pure domain rule (`domain::rules::overlap`); the
+    /// user arbitrates at review (Task 9 displays this).
+    async fn activity_overlaps(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+    ) -> Result<Vec<ActivityOverlapGql>> {
+        let user_id = ctx.data::<UserId>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+
+        let overlaps =
+            activity_tracking::get_activity_overlaps(activity_repo.as_ref(), *user_id, date)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(overlaps.into_iter().map(ActivityOverlapGql::from).collect())
+    }
+
     /// Get the currently active activity slot.
     async fn current_activity(&self, ctx: &Context<'_>) -> Result<Option<ActivitySlotGql>> {
         let user_id = ctx.data::<UserId>()?;

@@ -2206,6 +2206,89 @@ async fn activity_journal_query_returns_empty() {
     assert_eq!(data["activityJournal"].as_array().unwrap().len(), 0);
 }
 
+/// Two manual slots on different tasks, 30 minutes into each other, must be
+/// reported with both task titles and the exact minute count — not merely as
+/// a non-empty list, which a stub returning any single overlap would also
+/// satisfy.
+#[tokio::test]
+async fn activity_overlaps_reports_both_titles_and_minutes() {
+    let schema = build_test_schema();
+
+    let task_a = schema
+        .execute(r#"mutation { createTask(input: { title: "Saft cadrage" }) { id } }"#)
+        .await;
+    assert!(task_a.errors.is_empty(), "Errors: {:?}", task_a.errors);
+    let task_a_id = task_a.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let task_b = schema
+        .execute(r#"mutation { createTask(input: { title: "Cartier" }) { id } }"#)
+        .await;
+    assert!(task_b.errors.is_empty(), "Errors: {:?}", task_b.errors);
+    let task_b_id = task_b.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let slot_a = schema
+        .execute(&format!(
+            r#"mutation {{ createActivitySlot(input: {{ startTime: "2026-03-09T09:00:00Z", endTime: "2026-03-09T10:00:00Z", taskId: "{task_a_id}" }}) {{ id }} }}"#
+        ))
+        .await;
+    assert!(slot_a.errors.is_empty(), "Errors: {:?}", slot_a.errors);
+
+    let slot_b = schema
+        .execute(&format!(
+            r#"mutation {{ createActivitySlot(input: {{ startTime: "2026-03-09T09:30:00Z", endTime: "2026-03-09T11:00:00Z", taskId: "{task_b_id}" }}) {{ id }} }}"#
+        ))
+        .await;
+    assert!(slot_b.errors.is_empty(), "Errors: {:?}", slot_b.errors);
+
+    let result = schema
+        .execute(
+            r#"{ activityOverlaps(date: "2026-03-09") {
+                minutes
+                a { slotId sessionId task { title } }
+                b { slotId sessionId task { title } }
+            } }"#,
+        )
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let overlaps = data["activityOverlaps"].as_array().unwrap();
+    assert_eq!(overlaps.len(), 1);
+    assert_eq!(overlaps[0]["minutes"], 30);
+
+    let titles = [
+        overlaps[0]["a"]["task"]["title"].as_str().unwrap(),
+        overlaps[0]["b"]["task"]["title"].as_str().unwrap(),
+    ];
+    assert!(titles.contains(&"Saft cadrage"), "titles: {titles:?}");
+    assert!(titles.contains(&"Cartier"), "titles: {titles:?}");
+
+    // Both slots are manual (no session), which must survive to the GraphQL layer.
+    assert!(overlaps[0]["a"]["sessionId"].is_null());
+    assert!(overlaps[0]["b"]["sessionId"].is_null());
+}
+
+/// A clean day — no colliding slots — must report an empty list, not a
+/// zero-minute entry: a warning on a day with no overlap would train the
+/// user to ignore it (Task 9's concern, but the query must not manufacture
+/// the case in the first place).
+#[tokio::test]
+async fn activity_overlaps_empty_on_a_clean_day() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"{ activityOverlaps(date: "2026-03-09") { minutes } }"#)
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    assert_eq!(data["activityOverlaps"].as_array().unwrap().len(), 0);
+}
+
 // ─── Alerts Tests ───
 
 #[tokio::test]
