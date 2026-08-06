@@ -927,6 +927,10 @@ Each command gets one test asserting the overlap line appears with both task tit
 
 - [ ] **Step 1: Add § 7.3.5 (lifecycle) and § 7.3.6 (overlap) in French**
 
+The numbering is verified: `### 7.3 Migration 014_create_sessions.sql — sessions Claude Code` starts at `SPEC_TECHNIQUE.md:2940` and contains `#### 7.3.1` (`:2942`), `7.3.2` (`:2977`), `7.3.3` (`:2996`) and `7.3.4` (`:3018`). So `7.3.5` and `7.3.6` are the correct next numbers, and they belong **inside that section**, after § 7.3.4's body.
+
+**Watch where § 7.3's body actually ends:** there is a *second, unrelated* `### 7.3 Notes` heading at `:3262` — a pre-existing duplicate section number in this document. Insert before it, not after, and do **not** renumber anything to resolve the collision: that would ripple through cross-references for no benefit to this plan. Note the duplicate in your report so it can be fixed deliberately later.
+
 § 7.3.5: the four SessionStart branches and why `resume`/`compact` never re-ask; SessionEnd flushing the session's own task; `start`/`stop` acting on the session that asks; the reaper, its threshold key and the flush-then-close order. § 7.3.6: overlap computed at read time, never stored and never corrected, displayed in the three commands, with the user's decision — double counting accepted and flagged — stated as such.
 
 - [ ] **Step 2: Fix one inconsistency Task 2's review left behind**
