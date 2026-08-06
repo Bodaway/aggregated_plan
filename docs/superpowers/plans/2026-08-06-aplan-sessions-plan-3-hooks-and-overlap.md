@@ -907,7 +907,9 @@ The spec's wording, which is what the user approved:
 - `aplan timesheet` — the day's raw total and its gap against elapsed wall-clock time, so the arbitration happens where a human already reviews the day.
 - `aplan dash` — one summary line when the day carries any overlap.
 
-Match the language of each command's existing output — the CLI's user-facing strings are French in some places and English in others; read each before writing.
+**Language: use the spec's French wording, and do not "harmonise" it to English.** The CLI is genuinely mixed and I verified both sides: `journal` prints `total: {}h {}m` (`commands.rs:601`) and `session end` prints `session {} closed` (`:126`), both English — but `aplan sessions` prints `○ manuel (toi)` (`session_cmd.rs:74`), French. So a French user-facing line has precedent here, the user approved this exact wording in the design spec, and the user works in French. That settles it: the overlap line is French even though the surrounding `journal` labels are English.
+
+This is a controller decision, not a guess — if you think it is wrong, say so in your report rather than silently translating. Do not restyle any existing line while you are in these functions.
 
 - [ ] **Step 1: Write the failing integration tests, run, implement, run**
 
