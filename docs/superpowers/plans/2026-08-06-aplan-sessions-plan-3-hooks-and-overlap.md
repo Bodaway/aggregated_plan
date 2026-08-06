@@ -515,7 +515,11 @@ Six cases. Every CLI integration test goes through the shared `aplan()` builder,
 >
 > Cases 1 and 3 are different — `start` and `stop` *do* write `aplan.active_task_id` themselves, so `.expect(0)` on `UpdateConfiguration` is meaningful for those two and must stay.
 
+7. **An empty session id must behave exactly like an absent one** for all three commands — human pointer, no `sessionId` on the wire. This is an established contract, not a new decision: `integration.rs:1379-1414` pins it for `log` (`CLAUDE_CODE_SESSION_ID=""` is how a hook running outside any Claude session sets the variable — present but empty, and it must not resolve a session id of `""`). Add one test per command in that style, using `.env("CLAUDE_CODE_SESSION_ID", "")` and mounting **no** session mock, so resolving one would fail the test. Without these, `start`/`stop`/`flush` could diverge from `log` on the one input a hook is most likely to produce.
+
 The exact defect in `flush` is not merely a missing parameter: `commands.rs:1019` passes `session_id: None` as a literal, so `aplan flush --session s1 <task>` sends `sessionId: null` and the session is dropped on the wire.
+
+The verified helpers you will reuse: `fn aplan()` (`integration.rs:31`) builds the `Command` and calls `env_remove("CLAUDE_CODE_SESSION_ID")` at `:33`, so every test starts from a clean environment; `NoSessionIdOnTheWire` (`:1337`) is the matcher that rejects a request carrying a string `sessionId`.
 
 - [ ] **Step 2: Run to verify cases 1, 3 and 5 fail**
 
@@ -598,6 +602,7 @@ Both hooks read `aplan session show --session <id> --json`. With `--json`, `sess
 2. **`mode` is `"TRACKING"` or `"OFF"` — uppercase.** `SessionModeGql` is an async-graphql enum (`schema.graphql:1398-1401`) and serializes SCREAMING_SNAKE, while the database column and this plan's prose both use lowercase `tracking`/`off`. **A jq test against `"off"` never matches**, so every opted-out session would take the tracking branch — reintroducing the exact bug this task exists to fix, in a form no compiler or test would catch. Compare against `"OFF"`.
 3. **`claude_session.graphql` does not select the task's title, so add it: `task { id title }`.** The server-side resolver already exists — `ClaudeSessionGql::task` at `api/src/graphql/types/session.rs:30-38` returns `SessionTaskSummaryGql { id, title }` — only the CLI's selection set is missing it. No schema regeneration is needed. Without this the hook can only say `Currently tracking task 3f2a1b8c-…`, and `aplan session show`'s human output has the same problem (`session_cmd.rs:118` prints `task: <uuid>`); fix that line too while you are there.
 4. **An unknown session id is an error, not an empty success.** `session_cmd.rs:111` reports `LookupError::SessionUnknown`. Make sure your `|| exit 0` guard treats that as "no session row" and falls through to the unknown-session branch rather than aborting the hook before it emits anything.
+5. **Never invoke `aplan` with an empty `--session`, and this one is a trap with teeth.** By an established contract (`integration.rs:1379-1414`) an empty session id falls back to **the human's global pointer**, deliberately, because that is how a hook outside any Claude session sets the variable. So if the payload has no `session_id` and you pass `--session "$sid"` with `sid` empty, the CLI silently switches to the human's pointer — and in Task 5 that means the SessionEnd hook flushes **the human's task against the human's window**, which is the original defect reconstituted. Guard explicitly: `[ -z "$sid" ] && exit 0` right after extracting it, before any `aplan` call that takes `--session`.
 
 - [ ] **Step 1: Back up the installed hook**
 
