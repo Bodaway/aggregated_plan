@@ -972,7 +972,21 @@ The numbering is verified: `### 7.3 Migration 014_create_sessions.sql — sessio
 
 `SPEC_FONCTIONNELLE.md`'s `aplan.session_idle_timeout_hours` row writes the range as `1..8760`, which in Rust notation reads **exclusive**, while the code and `SPEC_TECHNIQUE.md` both say `1..=8760` (inclusive, and 8760 is a valid value). Make the French row unambiguous — either `1..=8760` or spell it out as `de 1 à 8760`. Deferred here rather than fixed in Task 2 because it is a documentation wording nit, not a behaviour defect.
 
-- [ ] **Step 3: Mark the design spec's staging item 3 complete** with the commit range, noting that its § "Lifecycle and hooks" and § "Overlap" now describe shipped behaviour.
+- [ ] **Step 3: Fix two stale items in `.claude/skills/aplan/SKILL.md`, deferred here from Task 6**
+
+Task 6's review found these outside its own diff. They were held back to keep that task's rounds reviewable; they are real and verified.
+
+1. **The `aplan current --json` example is wrong, near `:19-21` and again in the hot-path row at `:76`.** It shows `{"currentActivity":{"id":"…","task":{…},…}}`. Measured against the installed binary, the real shape is:
+
+   ```json
+   {"actor": …, "currentActivity": {"task": {"id": …, "title": …, "sourceId": …}}}
+   ```
+
+   Two errors: `currentActivity` has **no `id` field**, and there is a **top-level `actor` key the example omits entirely**. The second matters more than a typo — `actor` is how the JSON surfaces *which* of the two actors answered, so a Claude parsing this output from the documented shape would not know the key exists. Correct both places, and check the file for any other `current --json` example.
+
+2. **The subagent section forbids the session-link and pointer verbs but not three other writes:** `aplan reattribute` (advertised at `:72`), `aplan config set`, and the memory-write verbs. Reattribution moves time between tasks; a subagent doing that on its own initiative is the same class of harm as `session bind`. Task 6 rebuilt that section around a stated principle plus an enumeration — extend the principle to cover writes beyond the session link, rather than only appending three names.
+
+- [ ] **Step 4: Mark the design spec's staging item 3 complete** with the commit range, noting that its § "Lifecycle and hooks" and § "Overlap" now describe shipped behaviour.
 
 - [ ] **Step 3: Commit**
 
