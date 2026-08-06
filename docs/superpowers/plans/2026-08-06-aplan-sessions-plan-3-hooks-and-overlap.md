@@ -812,10 +812,10 @@ Pure, zero I/O, in `domain` beside the other projection rules. `crates/domain/sr
 
 ```rust
     #[test]
-    fn two_disjoint_slots_do_not_overlap() { /* 09:00-10:00 and 10:00-11:00 → none */ }
+    fn two_disjoint_slots_do_not_overlap() { /* 09:00-10:00 and 10:30-11:30 — a real gap → none */ }
 
     #[test]
-    fn touching_slots_do_not_overlap() { /* end == start is not an intersection */ }
+    fn touching_slots_do_not_overlap() { /* 09:00-10:00 and 10:00-11:00 — end == start is not an intersection */ }
 
     #[test]
     fn a_partial_intersection_is_measured_in_minutes() { /* 09:00-10:00 vs 09:30-11:00 → 30 */ }
