@@ -766,7 +766,14 @@ EOF
 The skill is what a Claude reads to drive the cockpit, so a stale instruction here is a stale instruction in every session. Three things changed under it:
 
 - **The session vocabulary.** `aplan sessions`, `aplan session show|bind|off|end`, the global `--session` flag defaulting from `CLAUDE_CODE_SESSION_ID`, and the fact that a session's task is separate from the human's pointer.
-- **The exit-4 row** (`SKILL.md:131`, in the exit-code table at `:126-131`) must gain the three session refusals: the session is not tracked, it has no task bound, it has ended. An unknown session id is exit **2**, not 4 — a lookup failure rather than a state.
+- **The exit-4 row** (`SKILL.md:131`, in the exit-code table at `:126-131`) must gain the three session refusals: the session is not tracked, it has no task bound, it has ended.
+
+  ⚠️ **This plan's first draft said "an unknown session id is exit 2, not 4". That is wrong — verified at `cli/src/lookup.rs:178-189`.** An unknown session id on an implicit-target verb (`log`, `note`, `status`) is **not an error at all**: `resolve_from_session` falls through to the global pointer, exactly as an absent `--session` would, and the command **succeeds**. Getting this wrong in the skill is worse than the other corrections in this plan, because a Claude told to expect exit 2 would instead get a silent success writing against the *human's* task while believing that outcome impossible.
+
+  Document the real behaviour, including the two details the code comment makes explicit and a reader would not guess:
+  - The fallthrough is deliberate — "no row named `id`, so nothing was decided for it, nothing to honour and nothing to misattribute".
+  - It reports `ResolvedVia::GlobalPointer`, **not** `Session`, and that is load-bearing: the write that follows is **not attributed to the session**. So the entry lands on the human's task with no `session_id`.
+  - `SessionUnknown` (exit 2) is reserved for **`aplan session show`**, where the user asked about that id directly and a silent fallback would hide a typo.
 
   **While you are in that row, it has a pre-existing gap:** it names `aplan note` and `aplan status` as the implicit-target verbs that can return 4, but not `aplan log` — even though `log` is a distinct command (`cli.rs:159`, "Append a timestamped entry to the worklog of the active task (or --task TARGET)") with the same implicit-target behaviour, and the SessionStart hook already tells every session "If `aplan log` returns exit 4 (no active worklog), tell the user and stop trying to log silently." `log`, `note` and `status` are three separate commands (`cli.rs:159`, `:119`, `:168`) that share this failure mode. List all three.
 - **`remember` is the deliberate exception**: it never refuses. `--task` wins, else a tracking session attaches, else the memory is unattached and the command succeeds — including for an `off` session. The reason belongs in the text, because someone will otherwise "fix" the inconsistency: memories sit outside the worklog rules, and an unattached memory misattributes nothing, where a misattributed worklog entry is billable time on the wrong task.
