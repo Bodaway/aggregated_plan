@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useQuery, useMutation } from 'urql';
 import { formatDate } from '@/lib/date-utils';
 import { sortTasksForPicker } from '@/lib/task-picker-sort';
@@ -179,10 +179,18 @@ export function useActivity(date: string) {
   const [, executeCreate] = useMutation(CREATE_ACTIVITY_SLOT_MUTATION);
   const [, executeAddWorklogEntry] = useMutation(ADD_WORKLOG_ENTRY_FROM_TIMER_MUTATION);
 
+  // Mutation failures (e.g. the backend refusing to edit a worklog-owned slot) are
+  // surfaced here instead of being silently swallowed. Cleared on the next mutation
+  // that succeeds, so a stale error never lingers over a later success.
+  const [mutationError, setMutationError] = useState<string | null>(null);
+
   const startActivity = useCallback(
     async (taskId?: string) => {
       const res = await executeStart({ taskId: taskId ?? null });
-      if (!res.error) {
+      if (res.error) {
+        setMutationError(res.error.message);
+      } else {
+        setMutationError(null);
         reexecute({ requestPolicy: 'network-only' });
       }
       return res;
@@ -192,7 +200,10 @@ export function useActivity(date: string) {
 
   const stopActivity = useCallback(async () => {
     const res = await executeStop({});
-    if (!res.error) {
+    if (res.error) {
+      setMutationError(res.error.message);
+    } else {
+      setMutationError(null);
       reexecute({ requestPolicy: 'network-only' });
     }
     return res;
@@ -201,7 +212,10 @@ export function useActivity(date: string) {
   const deleteSlot = useCallback(
     async (id: string) => {
       const res = await executeDelete({ id });
-      if (!res.error) {
+      if (res.error) {
+        setMutationError(res.error.message);
+      } else {
+        setMutationError(null);
         reexecute({ requestPolicy: 'network-only' });
       }
       return res;
@@ -212,7 +226,10 @@ export function useActivity(date: string) {
   const updateSlot = useCallback(
     async (id: string, input: { taskId?: string | null; startTime?: string; endTime?: string }) => {
       const res = await executeUpdate({ id, input });
-      if (!res.error) {
+      if (res.error) {
+        setMutationError(res.error.message);
+      } else {
+        setMutationError(null);
         reexecute({ requestPolicy: 'network-only' });
       }
       return res;
@@ -223,7 +240,10 @@ export function useActivity(date: string) {
   const createSlot = useCallback(
     async (input: { startTime: string; endTime: string; taskId?: string | null }) => {
       const res = await executeCreate({ input });
-      if (!res.error) {
+      if (res.error) {
+        setMutationError(res.error.message);
+      } else {
+        setMutationError(null);
         reexecute({ requestPolicy: 'network-only' });
       }
       return res;
@@ -253,6 +273,7 @@ export function useActivity(date: string) {
     availableTasks,
     loading: result.fetching,
     error: result.error ?? null,
+    mutationError,
     startActivity,
     stopActivity,
     deleteSlot,

@@ -11,7 +11,7 @@ export function ActivityJournalPage() {
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const dateStr = formatDate(currentDate);
 
-  const { slots, currentActivity, availableTasks, loading, error, startActivity, stopActivity, deleteSlot, updateSlot, createSlot, appendTaskNote } =
+  const { slots, currentActivity, availableTasks, loading, error, mutationError, startActivity, stopActivity, deleteSlot, updateSlot, createSlot, appendTaskNote } =
     useActivity(dateStr);
 
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -109,6 +109,15 @@ export function ActivityJournalPage() {
 
   return (
     <div className="space-y-4 max-w-4xl">
+      {/* Mutation failure (e.g. a refused edit on a worklog-owned slot). Kept separate
+          from the full-page error above: a failed save/delete must not blank out the
+          rest of the journal the user is still looking at. */}
+      {mutationError && (
+        <div className="p-2.5 bg-red-50 border border-red-200 rounded-md">
+          <p className="text-sm text-red-600">{mutationError}</p>
+        </div>
+      )}
+
       {/* Timer section */}
       <ActivityTimer
         currentActivity={currentActivity}
