@@ -610,6 +610,379 @@ async fn dash_prints_summary_sections() {
         .stdout(predicate::str::contains("due in 3 days"));
 }
 
+// ─── Task 9: flagged overlaps in journal / dash / timesheet ───
+//
+// `journal` and `dash` each make a *second*, best-effort round trip on
+// `ActivityOverlaps` beyond their main query; `timesheet` makes one on
+// `ActivityJournal` beyond `ReconstructTimesheet` (not `ActivityOverlaps` —
+// its gap line is computed from the day's raw slots directly, not from
+// overlap pairs). Every test here mounts *both* operations explicitly,
+// including an explicit empty/no-gap response for the "clean day" cases:
+// omitting the second mock would make wiremock 404 it, `Client::run` would
+// return `Err`, and the best-effort `if let Ok(..)` would swallow it —
+// passing for the wrong reason (a broken fetch), not for the right one (a
+// real empty result).
+
+/// Mount a mock for `operation` (matched by substring on the request body,
+/// same as `mount_get_task` above) returning `body` as the full GraphQL
+/// response.
+async fn mount_operation(server: &MockServer, operation: &str, body: serde_json::Value) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains(operation))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// One `activityOverlaps` pair, shaped exactly as `graphql/activity_overlaps.graphql`
+/// selects it. `session_a`/`session_b` of `None` serialize to a null `sessionId`,
+/// matching a manual (human) slot.
+fn overlap_pair(
+    minutes: i64,
+    title_a: &str,
+    session_a: Option<&str>,
+    title_b: &str,
+    session_b: Option<&str>,
+) -> serde_json::Value {
+    json!({
+        "minutes": minutes,
+        "a": {
+            "slotId": "00000000-0000-0000-0000-0000000000a1",
+            "sessionId": session_a,
+            "task": { "id": "00000000-0000-0000-0000-000000000001", "title": title_a }
+        },
+        "b": {
+            "slotId": "00000000-0000-0000-0000-0000000000b2",
+            "sessionId": session_b,
+            "task": { "id": "00000000-0000-0000-0000-000000000002", "title": title_b }
+        }
+    })
+}
+
+/// A single, unremarkable `activityJournal` slot — enough for `journal`'s own
+/// listing (and its total) to render; the tests in this section care about the
+/// overlap line printed below it, not this slot's own content.
+fn one_activity_journal_slot() -> serde_json::Value {
+    json!({
+        "data": {
+            "activityJournal": [{
+                "id": "00000000-0000-0000-0000-000000000010",
+                "taskId": "00000000-0000-0000-0000-000000000001",
+                "startTime": "2026-04-08T09:00:00Z",
+                "endTime": "2026-04-08T10:00:00Z",
+                "halfDay": "MORNING",
+                "durationMinutes": 60,
+                "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Auth migration" }
+            }]
+        }
+    })
+}
+
+/// A `dailyDashboard` response with empty tasks/meetings/alerts — the tests in
+/// this section care about the overlap summary line, not the dashboard's own
+/// sections (those are covered by `dash_prints_summary_sections` above).
+fn empty_daily_dashboard(date: &str) -> serde_json::Value {
+    json!({
+        "data": {
+            "dailyDashboard": { "date": date, "tasks": [], "meetings": [], "alerts": [] }
+        }
+    })
+}
+
+/// A minimal `runTimesheetReconstruction` response — every field
+/// `graphql/reconstruct_timesheet.graphql` selects, with empty lists so
+/// `render_day` has nothing to iterate. The tests in this section care about
+/// the overlap gap line printed below the rendered day, not the day itself.
+fn minimal_reconstruct_timesheet(date: &str) -> serde_json::Value {
+    json!({
+        "data": {
+            "runTimesheetReconstruction": {
+                "date": date,
+                "status": "DRAFT",
+                "targetHours": 8.0,
+                "roundingIncrement": 0.25,
+                "totalHours": 8.0,
+                "dayConfidence": "HIGH",
+                "unattributedHours": 0.0,
+                "lines": [],
+                "unresolved": [],
+                "blocks": []
+            }
+        }
+    })
+}
+
+/// An `activityJournal` response built from explicit `(startTime, endTime,
+/// durationMinutes)` triples — `timesheet`'s gap line sums `durationMinutes`
+/// for "brut" and re-derives the union of `(startTime, endTime)` for
+/// "couvert", so both must be supplied consistently (as a real server would).
+fn activity_journal_slots(entries: &[(&str, &str, i64)]) -> serde_json::Value {
+    let items: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, (start, end, duration))| {
+            json!({
+                "id": format!("00000000-0000-0000-0000-0000000000{:02}", 50 + i),
+                "taskId": "00000000-0000-0000-0000-000000000001",
+                "startTime": start,
+                "endTime": end,
+                "halfDay": "MORNING",
+                "durationMinutes": duration,
+                "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Some task" }
+            })
+        })
+        .collect();
+    json!({ "data": { "activityJournal": items } })
+}
+
+/// A day whose journal carries one flagged overlap: 47 minutes between "Saft
+/// cadrage" (a session, abbreviated `a1b2`) and "Cartier" (manual/no session)
+/// — the brief's own reference example, used by both the titles/minutes test
+/// and the actor-rendering test below (they assert different things about the
+/// same line).
+async fn journal_day_with_one_overlap() -> MockServer {
+    let server = MockServer::start().await;
+    mount_operation(&server, "ActivityJournal", one_activity_journal_slot()).await;
+    mount_operation(
+        &server,
+        "ActivityOverlaps",
+        json!({ "data": { "activityOverlaps": [
+            overlap_pair(47, "Saft cadrage", Some("a1b2c3d4-eeee"), "Cartier", None)
+        ] } }),
+    )
+    .await;
+    server
+}
+
+/// A day with two flagged pairs (30 + 20 = 50 minutes) — `dash`'s summary
+/// counts pairs and sums their minutes, so this must disagree with a single
+/// pair's own minute count to catch a mutation that reports the first pair's
+/// figures instead of the aggregate.
+async fn dash_day_with_two_overlaps() -> MockServer {
+    let server = MockServer::start().await;
+    mount_operation(&server, "DailyDashboard", empty_daily_dashboard("2026-04-08")).await;
+    mount_operation(
+        &server,
+        "ActivityOverlaps",
+        json!({ "data": { "activityOverlaps": [
+            overlap_pair(30, "Saft cadrage", Some("a1b2c3d4-eeee"), "Cartier", None),
+            overlap_pair(20, "Refonte API", None, "Support client", Some("f00dcafe-1111"))
+        ] } }),
+    )
+    .await;
+    server
+}
+
+/// A. `journal`'s overlap line names both tasks and the minutes. A mutation
+/// dropping either title, or printing the wrong minute count, fails this.
+#[tokio::test]
+async fn journal_prints_overlap_line_with_both_titles_and_minutes() {
+    let server = journal_day_with_one_overlap().await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "journal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Saft cadrage"))
+        .stdout(predicate::str::contains("Cartier"))
+        .stdout(predicate::str::contains("47 min"));
+}
+
+/// A. A clean day (an explicit empty `activityOverlaps` list, not a missing
+/// mock) must print no overlap warning at all — never a "0 recouvrements"
+/// line, which would train the user to ignore the marker.
+#[tokio::test]
+async fn journal_clean_day_prints_no_overlap_warning() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "ActivityJournal", one_activity_journal_slot()).await;
+    mount_operation(
+        &server,
+        "ActivityOverlaps",
+        json!({ "data": { "activityOverlaps": [] } }),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "journal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recouvrement").not())
+        .stdout(predicate::str::contains("\u{26a0}").not());
+}
+
+/// B. CLI actor rendering: a real `activityOverlaps` wire response (not a
+/// direct call into `format_overlap_line`, which `commands.rs`'s own unit
+/// tests already pin) whose one side carries a session id and whose other
+/// carries a null `sessionId` must render `(session a1b2 ↔ manuel)` — never
+/// an empty parenthesis on the null side.
+#[tokio::test]
+async fn journal_overlap_line_renders_session_prefix_and_manuel_for_the_null_side() {
+    let server = journal_day_with_one_overlap().await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "journal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "(session a1b2 \u{2194} manuel)",
+        ));
+}
+
+/// C. A pair whose `minutes` truncates to 0 must print nothing — not even a
+/// blank line before it — for `journal`'s own filter (`commands.rs`, the
+/// journal handler).
+#[tokio::test]
+async fn journal_zero_minute_overlap_pair_is_suppressed() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "ActivityJournal", one_activity_journal_slot()).await;
+    mount_operation(
+        &server,
+        "ActivityOverlaps",
+        json!({ "data": { "activityOverlaps": [
+            overlap_pair(0, "Saft cadrage", Some("a1b2c3d4-eeee"), "Cartier", None)
+        ] } }),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "journal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recouvrement").not());
+}
+
+/// A. `dash`'s one-line summary names the pair count and the *sum* of their
+/// minutes (30 + 20 = 50, not either pair's own 30 or 20), plus the
+/// "aplan journal" pointer to the detail. No task titles here — that is
+/// `journal`'s job, not `dash`'s.
+#[tokio::test]
+async fn dash_prints_overlap_summary_with_pair_count_and_total_minutes() {
+    let server = dash_day_with_two_overlaps().await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "dash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "2 recouvrements aujourd'hui (50 min au total)",
+        ))
+        .stdout(predicate::str::contains("aplan journal"));
+}
+
+/// A. A clean day must print no overlap summary at all.
+#[tokio::test]
+async fn dash_clean_day_prints_no_overlap_warning() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "DailyDashboard", empty_daily_dashboard("2026-04-08")).await;
+    mount_operation(
+        &server,
+        "ActivityOverlaps",
+        json!({ "data": { "activityOverlaps": [] } }),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "dash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recouvrement").not());
+}
+
+/// C. `dash` filters zero-minute pairs at its own call site, independently of
+/// `journal`'s — a mutation removing only *this* filter would not be caught
+/// by `journal_zero_minute_overlap_pair_is_suppressed` above.
+#[tokio::test]
+async fn dash_zero_minute_overlap_pair_is_suppressed() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "DailyDashboard", empty_daily_dashboard("2026-04-08")).await;
+    mount_operation(
+        &server,
+        "ActivityOverlaps",
+        json!({ "data": { "activityOverlaps": [
+            overlap_pair(0, "Saft cadrage", Some("a1b2c3d4-eeee"), "Cartier", None)
+        ] } }),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "dash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recouvrement").not());
+}
+
+/// A. `timesheet`'s gap line: raw (sum of `durationMinutes`) minus covered
+/// (union of the slots' own intervals) — the brief's own reference figures,
+/// 8 h 20 raw / 7 h 30 covered / 50 min gap. No task titles here either:
+/// `timesheet` answers "how much of today's total is double-counted", not
+/// "which two tasks collided" (that's `journal`'s line).
+#[tokio::test]
+async fn timesheet_prints_overlap_gap_with_raw_and_covered_totals() {
+    let server = MockServer::start().await;
+    mount_operation(
+        &server,
+        "ReconstructTimesheet",
+        minimal_reconstruct_timesheet("2026-04-08"),
+    )
+    .await;
+    mount_operation(
+        &server,
+        "ActivityJournal",
+        activity_journal_slots(&[
+            ("2026-04-08T09:00:00Z", "2026-04-08T13:00:00Z", 240),
+            ("2026-04-08T12:10:00Z", "2026-04-08T16:30:00Z", 260),
+        ]),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "timesheet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "recouvrement 50 min sur la journ\u{e9}e",
+        ))
+        .stdout(predicate::str::contains("brut 8 h 20"))
+        .stdout(predicate::str::contains("couvert 7 h 30"));
+}
+
+/// A. A clean day (raw == covered, so the gap is exactly 0 "by construction",
+/// per the brief) must print no overlap warning — no special-cased check for
+/// zero is needed in `timesheet_cmd.rs` itself, but this pins that the `gap >
+/// 0` guard is still there to begin with.
+#[tokio::test]
+async fn timesheet_clean_day_prints_no_overlap_warning() {
+    let server = MockServer::start().await;
+    mount_operation(
+        &server,
+        "ReconstructTimesheet",
+        minimal_reconstruct_timesheet("2026-04-08"),
+    )
+    .await;
+    mount_operation(
+        &server,
+        "ActivityJournal",
+        activity_journal_slots(&[("2026-04-08T09:00:00Z", "2026-04-08T17:00:00Z", 480)]),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "timesheet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recouvrement").not());
+}
+
 #[tokio::test]
 async fn show_prints_task_detail() {
     let server = mock_graphql(json!({

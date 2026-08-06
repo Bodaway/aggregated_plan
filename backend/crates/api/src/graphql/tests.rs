@@ -2310,6 +2310,157 @@ async fn activity_overlaps_empty_on_a_clean_day() {
     assert_eq!(data["activityOverlaps"].as_array().unwrap().len(), 0);
 }
 
+/// Task 9's carried-in gap: Task 8 shipped with no assertion able to fail on
+/// `sessionId` at this layer — both its tests above assert only `is_null()`
+/// on two *manual* slots, so a hardcoded or swapped `None` in the
+/// `From<ActivityOverlap> for ActivityOverlapGql` impl (`types/activity.rs`)
+/// or in `ActivityOverlapSideGql::session_id` passes everything, because the
+/// application layer (which is covered) hands the whole `ActivitySlot`
+/// across intact — a swap there is near-impossible. This impl is the only
+/// place a `manuel ↔ manuel` pair can be born from a real session's work.
+///
+/// Neither `createActivitySlot` nor `startActivity(taskId)` can mint a slot
+/// carrying a session id, so this uses the real route that can:
+/// `bindSession` → `addWorklogEntry(sessionId:)` → `flushWorklogTime(sessionId:)`.
+/// `aplan.timezone` is pinned to UTC first so the materialized slot's LOCAL
+/// half-day date (`derive_time_blocks` classifies by local wall-clock) can
+/// never land on a different calendar day than the manual slot's UTC date
+/// around midnight — with the timezone fixed to UTC the two computations
+/// coincide by construction, not by luck of when the suite happens to run.
+#[tokio::test]
+async fn activity_overlaps_keeps_a_real_session_id_on_its_own_side_not_the_other() {
+    let schema = build_test_schema();
+
+    let tz = schema
+        .execute(r#"mutation { updateConfiguration(key: "aplan.timezone", value: "UTC") }"#)
+        .await;
+    assert!(tz.errors.is_empty(), "Errors: {:?}", tz.errors);
+
+    // Task A: manual, no session — the human, working by hand.
+    let task_a = schema
+        .execute(r#"mutation { createTask(input: { title: "Manuel task" }) { id } }"#)
+        .await;
+    assert!(task_a.errors.is_empty(), "Errors: {:?}", task_a.errors);
+    let task_a_id = task_a.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Task B: session-tracked, materialized via the real route.
+    let task_b = schema
+        .execute(r#"mutation { createTask(input: { title: "Session task" }) { id } }"#)
+        .await;
+    assert!(task_b.errors.is_empty(), "Errors: {:?}", task_b.errors);
+    let task_b_id = task_b.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bound = schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_b_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+    assert!(bound.errors.is_empty(), "Errors: {:?}", bound.errors);
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_b_id}", body: "did the thing", sessionId: "s1") {{ loggedAt }} }}"#
+        ))
+        .await;
+    assert!(added.errors.is_empty(), "Errors: {:?}", added.errors);
+    let logged_at_str = added.data.into_json().unwrap()["addWorklogEntry"]["loggedAt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let logged_at = chrono::DateTime::parse_from_rfc3339(&logged_at_str)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let flushed = schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{task_b_id}", sessionId: "s1") {{ slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(flushed.errors.is_empty(), "Errors: {:?}", flushed.errors);
+    let slots_written = flushed.data.into_json().unwrap()["flushWorklogTime"]["slotsWritten"]
+        .as_i64()
+        .unwrap();
+    assert!(
+        slots_written >= 1,
+        "expected the session's own entry to materialize at least one slot"
+    );
+
+    // Task A's manual slot, spanning generously around the entry's own
+    // instant so it is guaranteed to overlap the materialized (>= 1 minute)
+    // session slot, whatever its exact bounds turned out to be.
+    let start = (logged_at - chrono::Duration::minutes(30)).to_rfc3339();
+    let end = (logged_at + chrono::Duration::minutes(30)).to_rfc3339();
+    let slot_a = schema
+        .execute(format!(
+            r#"mutation {{ createActivitySlot(input: {{ startTime: "{start}", endTime: "{end}", taskId: "{task_a_id}" }}) {{ id }} }}"#
+        ))
+        .await;
+    assert!(slot_a.errors.is_empty(), "Errors: {:?}", slot_a.errors);
+    let slot_a_id = slot_a.data.into_json().unwrap()["createActivitySlot"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let date = logged_at.date_naive().to_string();
+    let result = schema
+        .execute(format!(
+            r#"{{ activityOverlaps(date: "{date}") {{
+                minutes
+                a {{ slotId sessionId }}
+                b {{ slotId sessionId }}
+            }} }}"#
+        ))
+        .await;
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let data = result.data.into_json().unwrap();
+    let overlaps = data["activityOverlaps"].as_array().unwrap();
+    assert_eq!(
+        overlaps.len(),
+        1,
+        "expected exactly one overlapping pair, got {:?}",
+        overlaps
+    );
+
+    // Per-side, keyed by the slotId captured at creation — not by GraphQL
+    // side ("a"/"b") and not merely "a session id is present somewhere". A
+    // hardcoded or swapped `None` in the `From` impl (or the side resolver)
+    // would put "s1" on the wrong side, or drop it to null on both, and
+    // still satisfy an unkeyed "s1 appears somewhere" check — it fails this
+    // one either way, because task A's own slot is asserted null and task
+    // B's own slot is asserted "s1", by id.
+    let mut found_manual = false;
+    let mut found_session = false;
+    for side in ["a", "b"] {
+        let slot_id = overlaps[0][side]["slotId"].as_str().unwrap();
+        let session_id = overlaps[0][side]["sessionId"].as_str();
+        if slot_id == slot_a_id {
+            assert_eq!(
+                session_id, None,
+                "task A's own manual slot must carry a null sessionId, not s1"
+            );
+            found_manual = true;
+        } else {
+            assert_eq!(
+                session_id,
+                Some("s1"),
+                "the session-materialized slot's own side must carry sessionId s1"
+            );
+            found_session = true;
+        }
+    }
+    assert!(
+        found_manual && found_session,
+        "expected one manual side and one session side, got {:?}",
+        overlaps[0]
+    );
+}
+
 // ─── Alerts Tests ───
 
 #[tokio::test]
