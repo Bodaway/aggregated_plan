@@ -743,6 +743,8 @@ git commit -m "Teach the aplan skill the session vocabulary and its refusals"
 
 Pure, zero I/O, in `domain` beside the other projection rules. Two closed slots on **different tasks** whose `[start_time, end_time]` intervals intersect overlap by the length of the intersection. Same-task pairs are not overlaps — a task legitimately has several stretches in a half-day. Open slots hold no hours and are excluded.
 
+**`ActivitySlot::task_id` is `Option<TaskId>`, and that is not a formality** — `startActivity(taskId: null)` is reachable from the UI, so untagged slots exist in the real data. A slot with `task_id: None` is time attributed to nobody, so it cannot constitute "two tasks claim the same hour" and must be excluded before pairing. Excluding it also keeps Task 9 honest: the display names both tasks, and a `None` slot has no name to print. The relevant fields are `id`, `task_id: Option<TaskId>`, `start_time: DateTime<Utc>`, `end_time: Option<DateTime<Utc>>` and `session_id: Option<SessionId>` (`None` = the human) — that last one is what Task 9 needs to say `session a1b2 ↔ manuel`.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
@@ -763,6 +765,9 @@ Pure, zero I/O, in `domain` beside the other projection rules. Two closed slots 
 
     #[test]
     fn an_open_slot_is_never_an_overlap() { /* end_time None → none */ }
+
+    #[test]
+    fn an_untagged_slot_is_never_an_overlap() { /* task_id None, intersecting a tagged slot → none */ }
 
     #[test]
     fn three_mutually_overlapping_slots_yield_three_pairs() { /* pairs, not a merged span */ }
@@ -837,7 +842,7 @@ sqlite3 aggregated_plan.db "SELECT MAX(version) FROM _sqlx_migrations;"   # must
 ## Task 9: Show overlaps in `journal`, `dash` and `timesheet`
 
 **Files:**
-- Modify: `backend/crates/cli/src/commands.rs` (`journal` at ~`:434`, `dash`, and the timesheet command)
+- Modify: `backend/crates/cli/src/commands.rs` — the three commands are `Dash` (`cli.rs:189`), `Journal` (`cli.rs:197`) and `Timesheet` (`cli.rs:252`); `journal`'s handler is at ~`commands.rs:434`
 - Modify: `backend/crates/cli/tests/integration.rs`
 
 The spec's wording, which is what the user approved:
