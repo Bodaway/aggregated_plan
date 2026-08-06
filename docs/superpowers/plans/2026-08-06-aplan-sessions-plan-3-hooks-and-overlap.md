@@ -962,6 +962,14 @@ This is a controller decision, not a guess — if you think it is wrong, say so 
 
 Each command gets one test asserting the overlap line appears with both task titles and the minutes, and one asserting a clean day prints no warning at all. A warning on a day with no overlap would train the user to ignore it.
 
+**Two required `sessionId` tests, carried in from Task 8's review. They are different tests at different layers — do not write one and think you have covered both.**
+
+1. **CLI display (your own layer).** Mock an `activityOverlaps` response whose one side has `sessionId: "a1b2…"` and whose other has `sessionId: null`, then assert the rendered line reads `(session a1b2 ↔ manuel)`. This is what proves the display distinguishes the two actors at all — and `manuel` for a null side, never an empty parenthesis.
+
+2. **The api mapping (`api/src/graphql/`).** Task 8 shipped with **no assertion that could fail** on `sessionId` at this layer: both its api tests assert only `is_null()` on two manual slots, so a hardcoded or swapped `None` in the `From` impl (`api/src/graphql/types/activity.rs:270`, `:275`) or the side resolver (`:234-236`) passes everything. That impl is **the only place `manuel ↔ manuel` can be born** — the application layer was covered and a swap there is near-impossible, because the whole `ActivitySlot` travels intact.
+
+   Neither `createActivitySlot` nor `startActivity(taskId)` can mint a slot carrying a session id, so the fixture needs the real route: `bindSession` → `addWorklogEntry(sessionId:)` → `flushWorklogTime(sessionId:)`, then query `activityOverlaps`. Assert the session id lands on **its own slot's side**, keyed by `slotId` — not merely that it is present somewhere. Prove it fails against a hardcoded `None`.
+
 **Skip any overlap whose `minutes` is 0.** Task 7's review found that `Duration::num_minutes()` truncates toward zero, so a sub-minute intersection yields a pair with `minutes: 0`. It is unreachable with today's data — activity-slot timestamps are minute-granular — and the truncation is a pre-existing idiom shared with `workload.rs`, `worklog_time.rs` and `reattribution.rs`, so the rule was left alone deliberately. But `⚠ recouvrement 0 min` is exactly the kind of noise that teaches a user to stop reading warnings, and the display layer is the right place to refuse it: one filter, and a test that a 0-minute pair prints nothing.
 
 - [ ] **Step 2: Run the suite and the env A/B, then commit**
