@@ -895,7 +895,11 @@ Each command gets one test asserting the overlap line appears with both task tit
 
 § 7.3.5: the four SessionStart branches and why `resume`/`compact` never re-ask; SessionEnd flushing the session's own task; `start`/`stop` acting on the session that asks; the reaper, its threshold key and the flush-then-close order. § 7.3.6: overlap computed at read time, never stored and never corrected, displayed in the three commands, with the user's decision — double counting accepted and flagged — stated as such.
 
-- [ ] **Step 2: Mark the design spec's staging item 3 complete** with the commit range, noting that its § "Lifecycle and hooks" and § "Overlap" now describe shipped behaviour.
+- [ ] **Step 2: Fix one inconsistency Task 2's review left behind**
+
+`SPEC_FONCTIONNELLE.md`'s `aplan.session_idle_timeout_hours` row writes the range as `1..8760`, which in Rust notation reads **exclusive**, while the code and `SPEC_TECHNIQUE.md` both say `1..=8760` (inclusive, and 8760 is a valid value). Make the French row unambiguous — either `1..=8760` or spell it out as `de 1 à 8760`. Deferred here rather than fixed in Task 2 because it is a documentation wording nit, not a behaviour defect.
+
+- [ ] **Step 3: Mark the design spec's staging item 3 complete** with the commit range, noting that its § "Lifecycle and hooks" and § "Overlap" now describe shipped behaviour.
 
 - [ ] **Step 3: Commit**
 
