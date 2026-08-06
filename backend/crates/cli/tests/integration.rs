@@ -2111,7 +2111,7 @@ async fn stop_with_session_flushes_and_ends_it_without_touching_the_human_pointe
         .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
         .and(wiremock::matchers::body_string_contains(r#""sessionId":"s1""#))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": { "flushWorklogTime": null }
+            "data": { "flushWorklogTime": { "slotsWritten": 1, "activeSince": "2026-08-05T09:00:00+00:00" } }
         })))
         .expect(1)
         .mount(&server)
@@ -2166,7 +2166,7 @@ async fn stop_without_session_flushes_with_no_session_id_and_does_not_end_a_sess
         .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
         .and(NoSessionIdOnTheWire)
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": { "flushWorklogTime": null }
+            "data": { "flushWorklogTime": { "slotsWritten": 1, "activeSince": "2026-08-05T09:00:00+00:00" } }
         })))
         .expect(1)
         .mount(&server)
@@ -2305,7 +2305,7 @@ async fn stop_with_empty_session_env_behaves_like_no_session() {
         .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
         .and(NoSessionIdOnTheWire)
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": { "flushWorklogTime": null }
+            "data": { "flushWorklogTime": { "slotsWritten": 1, "activeSince": "2026-08-05T09:00:00+00:00" } }
         })))
         .mount(&server)
         .await;
@@ -2349,4 +2349,73 @@ async fn flush_with_empty_session_env_behaves_like_no_session() {
         .args(["--api-url", &url, "flush", "00000000-0000-0000-0000-000000000001"])
         .assert()
         .success();
+}
+
+// ---------------------------------------------------------------------------
+// Task 3 review round 1 — `aplan session end` must flush before it closes.
+// `EndSession` performs no flush of its own, and once the row is closed no
+// future window will ever select this session's entries again: the time
+// would be gone for good, not delayed. `stop --session` already got this
+// right; `session end` did not, and the two had already diverged.
+// ---------------------------------------------------------------------------
+
+/// Two independent `.expect(1)`s cannot tell "flushed, then ended" apart
+/// from "ended, then flushed too late to matter" — both would satisfy them
+/// identically. This test checks the wire order directly against
+/// `MockServer::received_requests()` instead.
+#[tokio::test]
+async fn session_end_flushes_its_own_task_before_closing_it() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("ClaudeSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some(task_id),
+        )))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(wiremock::matchers::body_string_contains(r#""sessionId":"s1""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": { "slotsWritten": 1, "activeSince": "2026-08-05T09:00:00+00:00" } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("EndSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "endSession": { "id": "s1", "endedAt": "2026-08-06T09:00:00+00:00" } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "session", "end", "--session", "s1"])
+        .assert()
+        .success();
+
+    let received = server
+        .received_requests()
+        .await
+        .expect("request recording is on by default");
+    let flush_at = received
+        .iter()
+        .position(|r| String::from_utf8_lossy(&r.body).contains("FlushWorklogTime"))
+        .expect("a FlushWorklogTime request was made");
+    let end_at = received
+        .iter()
+        .position(|r| String::from_utf8_lossy(&r.body).contains("EndSession"))
+        .expect("an EndSession request was made");
+    assert!(
+        flush_at < end_at,
+        "FlushWorklogTime (index {flush_at}) must precede EndSession (index {end_at})"
+    );
 }

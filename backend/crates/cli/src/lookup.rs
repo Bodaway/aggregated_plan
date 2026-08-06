@@ -204,29 +204,38 @@ fn resolve_from_session(client: &Client, id: &str) -> Result<(TaskRef, ResolvedV
     hydrate_by_id(client, &task_id).map(|t| (t, ResolvedVia::Session))
 }
 
-/// The task id a Claude session is currently bound to, or `None` if it must
-/// not be treated as "this session tracks that task": no row for `id`, the
-/// session ended, logging is off, or no task is bound. Errors talking to the
-/// server fold into `None` too — the caller (`done`'s explicit-`--task` gate)
-/// already has a pointer-based answer to fall back on, and refusing over a
-/// transient GraphQL error would be a worse failure than falling back to it.
+/// The task id a Claude session is currently bound to, or `Ok(None)` if it
+/// must not be treated as "this session tracks that task": no row for `id`,
+/// the session ended, logging is off, or no task is bound. Transport and
+/// GraphQL errors are `Err`, distinct from all of those — a caller about to
+/// take an action it cannot undo (closing the session) must be able to
+/// refuse rather than silently treat a failed lookup as "nothing to flush".
 ///
 /// Unlike `resolve_from_session`, an unknown id is not distinguished from any
-/// other "no" here: this is used only to decide *whether* a session owns the
-/// task `--task` already picked, never to resolve the task itself, so there
-/// is nothing left to report to the user either way.
-pub fn session_task_id(client: &Client, id: &str) -> Option<String> {
-    let result = client
-        .run::<ClaudeSession>(claude_session::Variables { id: id.to_string() })
-        .ok()?;
-    let found = result.data.claude_session?;
+/// other "no" here: this is used only to decide *whether* a session owns a
+/// task, never to resolve the task itself for the human to see.
+pub fn try_session_task_id(client: &Client, id: &str) -> Result<Option<String>, ClientError> {
+    let result = client.run::<ClaudeSession>(claude_session::Variables { id: id.to_string() })?;
+    let found = match result.data.claude_session {
+        None => return Ok(None),
+        Some(f) => f,
+    };
     if found.ended_at.is_some() {
-        return None;
+        return Ok(None);
     }
     if !matches!(found.mode, claude_session::SessionModeGql::TRACKING) {
-        return None;
+        return Ok(None);
     }
-    found.task_id.filter(|t| !t.is_empty())
+    Ok(found.task_id.filter(|t| !t.is_empty()))
+}
+
+/// `try_session_task_id`, folding a failed lookup into `None` — for callers
+/// (`done`'s explicit-`--task` gate) where a transient GraphQL error and
+/// "no task" are equally uninformative, and there is nothing left to report
+/// either way: `done` does not close anything, so a session's unattributed
+/// flush this time stays recoverable by its next `stop` or `flush`.
+pub fn session_task_id(client: &Client, id: &str) -> Option<String> {
+    try_session_task_id(client, id).ok().flatten()
 }
 
 /// Fetch a task by its UUID and return a fully hydrated `TaskRef`. A `null`

@@ -3,12 +3,12 @@
 
 use crate::cli::SessionAction;
 use crate::client::Client;
-use crate::commands::flush_task;
+use crate::commands::{bind_session_flushing_previous, end_session_flushing_first};
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    bind_session, claude_session, end_session, open_claude_sessions, set_session_mode,
-    BindSession, ClaudeSession, EndSession, OpenClaudeSessions, SetSessionMode,
+    claude_session, open_claude_sessions, set_session_mode, ClaudeSession, OpenClaudeSessions,
+    SetSessionMode,
 };
 
 /// The message every branch that needs a session id and has none exits with.
@@ -148,23 +148,12 @@ pub fn session(
                     .map(|p| p.display().to_string())
                     .unwrap_or_default()
             });
-            let result = client.run::<BindSession>(bind_session::Variables {
-                session_id: sid.to_string(),
-                task_id: target.id.clone(),
-                label: Some(resolved_label),
-            });
-            match result {
+            // Flushes the task this session is leaving, against *this
+            // session's* window — not the global one — before returning.
+            // Shared with `aplan start`'s session branch, which is the same
+            // operation under another name; see `bind_session_flushing_previous`.
+            match bind_session_flushing_previous(&client, sid, &target.id, Some(resolved_label)) {
                 Ok(r) => {
-                    // Flush the task this session is leaving, against *this session's*
-                    // window — not the global one. `aplan start` flushes the human's
-                    // pointer and re-arms the human's key; a session bind must do the
-                    // same for its own, or it consumes a window it does not own and
-                    // leaves the next flush of some other task looking at a mark that
-                    // already moved. Above the `--json` return on purpose: that is the
-                    // path the hooks use.
-                    if let Some(prev) = &r.data.bind_session.previous_task_id {
-                        flush_task(&client, prev, Some(sid));
-                    }
                     if json {
                         if let Err(e) = print_json(&r.raw) {
                             eprintln!("error writing output: {}", e);
@@ -217,29 +206,11 @@ pub fn session(
                 eprintln!("error: {}", NO_SESSION_ID);
                 return ExitCode::PreconditionFailed;
             };
-            let result = client.run::<EndSession>(end_session::Variables {
-                session_id: sid.to_string(),
-            });
-            match result {
-                Ok(r) => {
-                    if json {
-                        if let Err(e) = print_json(&r.raw) {
-                            eprintln!("error writing output: {}", e);
-                            return ExitCode::Generic;
-                        }
-                        return ExitCode::Success;
-                    }
-                    match r.data.end_session {
-                        Some(s) => println!("\u{25a0} session {} closed", s.id),
-                        None => println!("\u{25a0} session {} was already closed", sid),
-                    }
-                    ExitCode::Success
-                }
-                Err(e) => {
-                    eprintln!("error: {}", e);
-                    ExitCode::Generic
-                }
-            }
+            // Flushes this session's own task first — closing the row
+            // without flushing loses that time for good, not delayed; see
+            // `end_session_flushing_first`, shared with `aplan stop`'s
+            // session branch, which is the same operation under another name.
+            end_session_flushing_first(&client, sid, json)
         }
     }
 }
