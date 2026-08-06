@@ -101,8 +101,9 @@ task — which is the **human's** `aplan.active_task_id`, always, on every verb.
 **For a verb with an implicit target — `log`, `note`, `status`, `done` — omit
 `--task` entirely** and let it resolve through the session (see "Sessions"
 above): that is what attributes the write to this session rather than to the
-human. Pass `--task @` only when you deliberately mean the human's own pointer,
-and know the write then lands unattributed to any session.
+human. Pass `--task @` (or `--task current` — the same token, mechanically) only
+when you deliberately mean the human's own pointer, and know the write then lands
+unattributed to any session.
 
 ## Less-frequent operations
 
