@@ -95,7 +95,14 @@ async fn timesheet_default_render_shows_projects_unattributed_and_total() {
             "aplan timesheet set <project> <hours>",
         ))
         // total line (4.0 + 2.5 = 6.5)
-        .stdout(predicate::str::contains("total 6.50h"));
+        .stdout(predicate::str::contains("total 6.50h"))
+        // `mock_graphql` here answers *every* operation with this same
+        // `runTimesheetReconstruction`-shaped body, so the overlap-gap
+        // check's own round trip (`ActivityJournal`, not
+        // `ActivityOverlaps` — see `integration.rs`'s Task 9 section)
+        // gets a response it cannot deserialize and fails — noted on
+        // stderr since production commit 6029264 rather than swallowed.
+        .stderr(predicate::str::contains("note: overlap check unavailable"));
 }
 
 // ---------------------------------------------------------------------------

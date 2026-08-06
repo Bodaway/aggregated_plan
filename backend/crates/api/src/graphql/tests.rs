@@ -2391,10 +2391,18 @@ async fn activity_overlaps_keeps_a_real_session_id_on_its_own_side_not_the_other
         "expected the session's own entry to materialize at least one slot"
     );
 
-    // Task A's manual slot, spanning generously around the entry's own
-    // instant so it is guaranteed to overlap the materialized (>= 1 minute)
-    // session slot, whatever its exact bounds turned out to be.
-    let start = (logged_at - chrono::Duration::minutes(30)).to_rfc3339();
+    // Task A's manual slot starts exactly at the entry's own instant (not
+    // `logged_at - 30min`, which flaked once daily: `create_manual_activity_slot`
+    // files a slot under `start_time.date_naive()`, so between 00:00 and 00:30
+    // UTC a 30-minute-earlier start landed on the *previous* day, dropping this
+    // slot out of the `activityOverlaps(date: logged_at's day)` query below and
+    // failing the "exactly one pair" assertion. Starting exactly at `logged_at`
+    // makes `start.date_naive() == logged_at.date_naive()` true by construction
+    // — no floor/clamp arithmetic to get right — while `end` stays 30 minutes
+    // out for a generous margin over the materialized (>= 1 minute) session
+    // slot, whatever its exact bounds turn out to be; `end` crossing midnight
+    // is harmless since filing keys on `start_time` alone.
+    let start = logged_at.to_rfc3339();
     let end = (logged_at + chrono::Duration::minutes(30)).to_rfc3339();
     let slot_a = schema
         .execute(format!(

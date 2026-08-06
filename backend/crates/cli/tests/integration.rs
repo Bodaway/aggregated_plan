@@ -554,7 +554,16 @@ async fn journal_prints_slots_and_total() {
         .success()
         .stdout(predicate::str::contains("Auth migration"))
         .stdout(predicate::str::contains("1h 30m"))
-        .stdout(predicate::str::contains("total"));
+        .stdout(predicate::str::contains("total"))
+        // `mock_graphql` here answers *every* operation with this same
+        // `activityJournal`-shaped body, so journal's second, best-effort
+        // round trip on `ActivityOverlaps` gets a response it cannot
+        // deserialize and fails — noted on stderr since production commit
+        // 6029264 (previously silently swallowed). Asserted now that the
+        // note exists, rather than left unchecked: a test that only checks
+        // stdout can no longer tell "the overlap check ran and found
+        // nothing" apart from "the overlap check never ran".
+        .stderr(predicate::str::contains("note: overlap check unavailable"));
 }
 
 #[tokio::test]
@@ -607,7 +616,13 @@ async fn dash_prints_summary_sections() {
         .success()
         .stdout(predicate::str::contains("Auth migration"))
         .stdout(predicate::str::contains("Standup"))
-        .stdout(predicate::str::contains("due in 3 days"));
+        .stdout(predicate::str::contains("due in 3 days"))
+        // Same collision as `journal_prints_slots_and_total` above: the
+        // catch-all mock answers dash's second `ActivityOverlaps` round trip
+        // with a `dailyDashboard`-shaped body it cannot deserialize, so the
+        // best-effort fetch fails and (since 6029264) notes it on stderr
+        // instead of staying silent.
+        .stderr(predicate::str::contains("note: overlap check unavailable"));
 }
 
 // ─── Task 9: flagged overlaps in journal / dash / timesheet ───
@@ -856,6 +871,30 @@ async fn journal_zero_minute_overlap_pair_is_suppressed() {
         .stdout(predicate::str::contains("recouvrement").not());
 }
 
+/// The graceful path (production commit 6029264) made observable: when the
+/// overlap round trip fails outright — here, no mock at all for
+/// `ActivityOverlaps`, so wiremock 404s it — `journal` must still exit 0,
+/// print its own listing/total untouched, print no overlap line (there was
+/// no successful check to report one from), and note the failure on stderr
+/// rather than staying silent, which would be indistinguishable from a
+/// clean day. Catches: the `match` collapsed back into a bare `if let Ok`
+/// (or the `Err` arm's `eprintln!` removed).
+#[tokio::test]
+async fn journal_notes_a_failed_overlap_check_on_stderr_without_failing() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "ActivityJournal", one_activity_journal_slot()).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "journal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Auth migration"))
+        .stdout(predicate::str::contains("total"))
+        .stdout(predicate::str::contains("recouvrement").not())
+        .stderr(predicate::str::contains("note: overlap check unavailable"));
+}
+
 /// A. `dash`'s one-line summary names the pair count and the *sum* of their
 /// minutes (30 + 20 = 50, not either pair's own 30 or 20), plus the
 /// "aplan journal" pointer to the detail. No task titles here — that is
@@ -917,6 +956,24 @@ async fn dash_zero_minute_overlap_pair_is_suppressed() {
         .assert()
         .success()
         .stdout(predicate::str::contains("recouvrement").not());
+}
+
+/// The graceful path, for `dash`: no mock for `ActivityOverlaps` at all, so
+/// the fetch 404s. `dash` must still exit 0, print its normal sections, print
+/// no summary line, and note the failure on stderr.
+#[tokio::test]
+async fn dash_notes_a_failed_overlap_check_on_stderr_without_failing() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "DailyDashboard", empty_daily_dashboard("2026-04-08")).await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "dash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("== 2026-04-08 =="))
+        .stdout(predicate::str::contains("recouvrement").not())
+        .stderr(predicate::str::contains("note: overlap check unavailable"));
 }
 
 /// A. `timesheet`'s gap line: raw (sum of `durationMinutes`) minus covered
@@ -981,6 +1038,83 @@ async fn timesheet_clean_day_prints_no_overlap_warning() {
         .assert()
         .success()
         .stdout(predicate::str::contains("recouvrement").not());
+}
+
+/// The case `union_minutes`'s own unit tests exist for
+/// (`timesheet_cmd.rs::overlap_gap_tests::a_days_gap_does_not_inflate_the_union_into_the_outer_span`),
+/// now proven at integration level too. The two slots in
+/// `timesheet_prints_overlap_gap_with_raw_and_covered_totals` above merge into
+/// one continuous stretch with no internal gap, so `covered` there equals
+/// both the correct union *and* the naive `last_end - first_start` — nothing
+/// at integration level would catch a regression to the naive span. Here, a
+/// real 3-hour lunch gap separates an overlapping morning pair from an
+/// afternoon slot:
+///
+/// - morning: 9:00–11:00 and 10:00–12:00, overlapping by 1h → raw 240 min,
+///   correct covered (union) 180 min (9:00–12:00).
+/// - afternoon: 15:00–16:00, disjoint from the morning — raw 60 min, adds
+///   60 min to both raw and covered.
+///
+/// Correct: raw = 300 (5h00), covered (union) = 240 (4h00), gap = 60 min —
+/// printed. Naive `last_end - first_start` = 16:00 − 9:00 = 420 min (7h00),
+/// which exceeds the union by exactly the 3-hour lunch gap; a regression to
+/// it would compute `gap = 300 - 420 = -120` and print **nothing** (`gap > 0`
+/// is false) — silently swallowing a real, legitimate overlap warning.
+#[tokio::test]
+async fn timesheet_prints_the_correct_gap_across_a_real_lunch_break_not_the_negative_naive_span() {
+    let server = MockServer::start().await;
+    mount_operation(
+        &server,
+        "ReconstructTimesheet",
+        minimal_reconstruct_timesheet("2026-04-08"),
+    )
+    .await;
+    mount_operation(
+        &server,
+        "ActivityJournal",
+        activity_journal_slots(&[
+            ("2026-04-08T09:00:00Z", "2026-04-08T11:00:00Z", 120),
+            ("2026-04-08T10:00:00Z", "2026-04-08T12:00:00Z", 120),
+            ("2026-04-08T15:00:00Z", "2026-04-08T16:00:00Z", 60),
+        ]),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "timesheet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "recouvrement 60 min sur la journ\u{e9}e",
+        ))
+        .stdout(predicate::str::contains("brut 5 h 00"))
+        .stdout(predicate::str::contains("couvert 4 h 00"));
+}
+
+/// The graceful path, for `timesheet`: its overlap-gap check's own round trip
+/// is on `ActivityJournal` (not `ActivityOverlaps` — that is journal/dash's
+/// operation), so this leaves *that* unmounted. `timesheet` must still exit
+/// 0, render the day normally, print no gap line, and note the failure on
+/// stderr.
+#[tokio::test]
+async fn timesheet_notes_a_failed_overlap_check_on_stderr_without_failing() {
+    let server = MockServer::start().await;
+    mount_operation(
+        &server,
+        "ReconstructTimesheet",
+        minimal_reconstruct_timesheet("2026-04-08"),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "timesheet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("timesheet 2026-04-08"))
+        .stdout(predicate::str::contains("recouvrement").not())
+        .stderr(predicate::str::contains("note: overlap check unavailable"));
 }
 
 #[tokio::test]
