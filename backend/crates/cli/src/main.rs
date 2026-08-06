@@ -29,9 +29,13 @@ fn main() -> ExitCode {
         cli::Commands::Session { action } => {
             session_cmd::session(&args.api_url, args.json, args.session.as_deref(), &action)
         }
-        cli::Commands::Start { task } => commands::start(&args.api_url, args.json, &task),
-        cli::Commands::Stop => commands::stop(&args.api_url, args.json),
-        cli::Commands::Flush { task } => commands::flush(&args.api_url, args.json, &task),
+        cli::Commands::Start { task } => {
+            commands::start(&args.api_url, args.json, &task, args.session.as_deref())
+        }
+        cli::Commands::Stop => commands::stop(&args.api_url, args.json, args.session.as_deref()),
+        cli::Commands::Flush { task } => {
+            commands::flush(&args.api_url, args.json, &task, args.session.as_deref())
+        }
         cli::Commands::Note { text, task } => commands::note(
             &args.api_url,
             args.json,

@@ -6,13 +6,14 @@ use crate::client::Client;
 use crate::lookup::{resolve_target, resolve_task, session_task_id, LookupError, ResolvedVia};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    activity_journal, add_worklog_entry, append_task_notes, complete_task, create_task,
-    daily_dashboard, delete_task, flush_worklog_time, force_sync, get_configuration, get_task,
-    list_alerts, list_tasks, priority_matrix, reset_urgency, resolve_alert, set_tracking_state,
-    update_configuration, update_priority, update_task_status, ActivityJournal, AddWorklogEntry,
-    AppendTaskNotes, CompleteTask, CreateTask, DailyDashboard, DeleteTask, FlushWorklogTime,
-    ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks, PriorityMatrix, ResetUrgency,
-    ResolveAlert, SetTrackingState, UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
+    activity_journal, add_worklog_entry, append_task_notes, bind_session, complete_task,
+    create_task, daily_dashboard, delete_task, end_session, flush_worklog_time, force_sync,
+    get_configuration, get_task, list_alerts, list_tasks, priority_matrix, reset_urgency,
+    resolve_alert, set_tracking_state, update_configuration, update_priority, update_task_status,
+    ActivityJournal, AddWorklogEntry, AppendTaskNotes, BindSession, CompleteTask, CreateTask,
+    DailyDashboard, DeleteTask, EndSession, FlushWorklogTime, ForceSync, GetConfiguration, GetTask,
+    ListAlerts, ListTasks, PriorityMatrix, ResetUrgency, ResolveAlert, SetTrackingState,
+    UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
 };
 
 /// Read `aplan.active_task_id` from configuration, if set and non-empty.
@@ -54,7 +55,7 @@ pub(crate) fn flush_task(client: &Client, task_id: &str, session: Option<&str>) 
     }
 }
 
-pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
+pub fn start(api_url: &str, json: bool, task: &str, session: Option<&str>) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let target = match resolve_task(&client, Some(task)) {
         Ok(t) => t,
@@ -63,6 +64,48 @@ pub fn start(api_url: &str, json: bool, task: &str) -> ExitCode {
             return e.exit_code();
         }
     };
+
+    // An empty string is how a hook running outside any Claude session sets
+    // `CLAUDE_CODE_SESSION_ID` — treat it exactly like an absent `--session`,
+    // never as a session id of `""`.
+    let sid = session.filter(|s| !s.trim().is_empty());
+
+    if let Some(sid) = sid {
+        // A session asked: bind *it* to `target`. This writes only the
+        // session's own row and, if it was tracking something else, flushes
+        // that session's own window — the human's `aplan.active_task_id` /
+        // `aplan.active_since` are a different pointer entirely and must not
+        // move here. Crossing that boundary is the mirror image of the
+        // shared-watermark defect this whole feature exists to fix, so this
+        // branch must never call `set_config_key`.
+        return match client.run::<BindSession>(bind_session::Variables {
+            session_id: sid.to_string(),
+            task_id: target.id.clone(),
+            label: None,
+        }) {
+            Ok(r) => {
+                if let Some(prev) = &r.data.bind_session.previous_task_id {
+                    flush_task(&client, prev, Some(sid));
+                }
+                if json {
+                    if let Err(e) = print_json(&r.raw) {
+                        eprintln!("error writing output: {}", e);
+                        return ExitCode::Generic;
+                    }
+                    return ExitCode::Success;
+                }
+                println!("▶ tracking: {}", target.title);
+                ExitCode::Success
+            }
+            Err(e) => {
+                eprintln!("error: {}", e);
+                ExitCode::Generic
+            }
+        };
+    }
+
+    // No session: today's behaviour exactly — flush and re-arm the human's
+    // own pointer, untouched by any session.
     if let Some(prev) = active_task_id(&client) {
         flush_task(&client, &prev, None);
     }
@@ -377,8 +420,49 @@ pub fn log(
     }
 }
 
-pub fn stop(api_url: &str, json: bool) -> ExitCode {
+pub fn stop(api_url: &str, json: bool, session: Option<&str>) -> ExitCode {
     let client = Client::new(api_url.to_string());
+
+    // An empty string is how a hook running outside any Claude session sets
+    // `CLAUDE_CODE_SESSION_ID` — treat it exactly like an absent `--session`.
+    let sid = session.filter(|s| !s.trim().is_empty());
+
+    if let Some(sid) = sid {
+        // A session asked: flush *its own* task against its own window, then
+        // close its own row via `EndSession`. The human's
+        // `aplan.active_task_id` is a different pointer entirely and must
+        // not be cleared by someone else's stop — the mirror image of the
+        // shared-watermark defect this whole feature exists to fix.
+        let active = session_task_id(&client, sid);
+        if let Some(ref tid) = active {
+            flush_task(&client, tid, Some(sid));
+        }
+        return match client.run::<EndSession>(end_session::Variables {
+            session_id: sid.to_string(),
+        }) {
+            Ok(r) => {
+                if json {
+                    if let Err(e) = print_json(&r.raw) {
+                        eprintln!("error writing output: {}", e);
+                        return ExitCode::Generic;
+                    }
+                    return ExitCode::Success;
+                }
+                match r.data.end_session {
+                    Some(s) => println!("\u{25a0} session {} closed", s.id),
+                    None => println!("\u{25a0} session {} was already closed", sid),
+                }
+                ExitCode::Success
+            }
+            Err(e) => {
+                eprintln!("error: {}", e);
+                ExitCode::Generic
+            }
+        };
+    }
+
+    // No session: today's behaviour exactly — flush and clear the human's
+    // own pointer, untouched by any session.
     let active = active_task_id(&client);
     if let Some(ref tid) = active {
         flush_task(&client, tid, None);
@@ -1005,7 +1089,7 @@ pub fn resolve(api_url: &str, json: bool, alert: &str) -> ExitCode {
     }
 }
 
-pub fn flush(api_url: &str, json: bool, task: &str) -> ExitCode {
+pub fn flush(api_url: &str, json: bool, task: &str, session: Option<&str>) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let target = match resolve_task(&client, Some(task)) {
         Ok(t) => t,
@@ -1014,9 +1098,15 @@ pub fn flush(api_url: &str, json: bool, task: &str) -> ExitCode {
             return e.exit_code();
         }
     };
+    // An empty string is how a hook running outside any Claude session sets
+    // `CLAUDE_CODE_SESSION_ID` — treat it exactly like an absent `--session`,
+    // never as a session id of `""`. With a session, this carries *that*
+    // session's window and advances its own `last_flush_at` server-side;
+    // without one, it is the human's own window, exactly as before.
+    let sid = session.filter(|s| !s.trim().is_empty());
     match client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
         task_id: target.id.clone(),
-        session_id: None,
+        session_id: sid.map(|s| s.to_string()),
     }) {
         Ok(r) => {
             if json {
