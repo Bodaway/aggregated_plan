@@ -3099,3 +3099,113 @@ async fn session_end_refuses_to_close_when_the_task_lookup_fails() {
         .stderr(predicate::str::contains("error:"));
     // wiremock verifies .expect(0) on EndSession when `server` drops.
 }
+
+// ---------------------------------------------------------------------------
+// Final whole-branch review — before `a39f62b`, `end_session_flushing_first`
+// called `flush_task` for the flush step, which swallows a failed flush into
+// a stderr warning and returns `()` unconditionally, so the row closed anyway.
+// Once closed, no later window ever selects that session's worklog entries
+// again: the unflushed time was gone for good, not delayed. The fix calls
+// `FlushWorklogTime` directly and refuses the close on `Err`, mirroring the
+// lookup refusal pinned just above. Both entry points share
+// `end_session_flushing_first`, so both get a test.
+// ---------------------------------------------------------------------------
+
+/// `aplan --session s1 stop`: the lookup succeeds (`ClaudeSession` resolves a
+/// bound task — `.expect(1)` on it, plus `.expect(1)` on `FlushWorklogTime`,
+/// proves the code took the `Ok(Some(tid))` branch and reached the flush; the
+/// lookup-failure branch returns before ever calling `FlushWorklogTime`), but
+/// the flush itself fails (HTTP 500, the same non-2xx shape `client.rs` turns
+/// into `Err`). `.expect(0)` on `EndSession` is the regression gate: before
+/// `a39f62b` this flow called `flush_task`, which discards that error into a
+/// warning, and the row closed anyway.
+#[tokio::test]
+async fn stop_with_session_refuses_to_close_when_the_flush_fails() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("ClaudeSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some(task_id),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("EndSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "endSession": { "id": "s1", "endedAt": "2026-08-06T09:00:00+00:00" } }
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "--session", "s1", "stop"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+    // wiremock verifies .expect(1) on ClaudeSession (lookup succeeded),
+    // .expect(1) on FlushWorklogTime (flush was attempted and failed), and
+    // .expect(0) on EndSession (no close) when `server` drops.
+}
+
+/// Same defect, the other entry point: `aplan session end --session s1`.
+/// `session_end_refuses_to_close_when_the_task_lookup_fails` above pins the
+/// sibling refusal (lookup fails, flush never attempted); this pins the one
+/// `a39f62b` added — lookup succeeds, the flush that follows it fails. Same
+/// three-property proof as the `stop` case above: `.expect(1)` on both
+/// `ClaudeSession` and `FlushWorklogTime` shows the code reached and ran the
+/// flush step (so the failure below is the flush's, not the lookup's), and
+/// `.expect(0)` on `EndSession` shows the close was refused.
+#[tokio::test]
+async fn session_end_refuses_to_close_when_the_flush_fails() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("ClaudeSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body(
+            "TRACKING",
+            Some(task_id),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("EndSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "endSession": { "id": "s1", "endedAt": "2026-08-06T09:00:00+00:00" } }
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "session", "end", "--session", "s1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+    // wiremock verifies .expect(1) on ClaudeSession and FlushWorklogTime, and
+    // .expect(0) on EndSession, when `server` drops.
+}
