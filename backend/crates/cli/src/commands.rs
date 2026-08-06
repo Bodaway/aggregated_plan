@@ -9,15 +9,67 @@ use crate::lookup::{
 };
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    activity_journal, add_worklog_entry, append_task_notes, bind_session, complete_task,
-    create_task, daily_dashboard, delete_task, end_session, flush_worklog_time, force_sync,
-    get_configuration, get_task, list_alerts, list_tasks, priority_matrix, reset_urgency,
-    resolve_alert, set_tracking_state, update_configuration, update_priority, update_task_status,
-    ActivityJournal, AddWorklogEntry, AppendTaskNotes, BindSession, CompleteTask, CreateTask,
-    DailyDashboard, DeleteTask, EndSession, FlushWorklogTime, ForceSync, GetConfiguration, GetTask,
-    ListAlerts, ListTasks, PriorityMatrix, ResetUrgency, ResolveAlert, SetTrackingState,
-    UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
+    activity_journal, activity_overlaps, add_worklog_entry, append_task_notes, bind_session,
+    complete_task, create_task, daily_dashboard, delete_task, end_session, flush_worklog_time,
+    force_sync, get_configuration, get_task, list_alerts, list_tasks, priority_matrix,
+    reset_urgency, resolve_alert, set_tracking_state, update_configuration, update_priority,
+    update_task_status, ActivityJournal, ActivityOverlaps, AddWorklogEntry, AppendTaskNotes,
+    BindSession, CompleteTask, CreateTask, DailyDashboard, DeleteTask, EndSession,
+    FlushWorklogTime, ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks, PriorityMatrix,
+    ResetUrgency, ResolveAlert, SetTrackingState, UpdateConfiguration, UpdatePriority,
+    UpdateTaskStatus,
 };
+
+/// Who logged one side of an overlap, as the pinned spec line prints it:
+/// `manuel` for the human (no session id), else the first 4 characters of
+/// the session id.
+///
+/// Contrary to the brief's claim, `aplan sessions` does *not* abbreviate —
+/// it prints the full id (`session_cmd.rs:63`). This 4-character form is
+/// introduced here to match the pinned overlap-line spec exactly; it has no
+/// other precedent in this crate.
+fn overlap_actor_label(session_id: &Option<String>) -> String {
+    match session_id {
+        Some(id) => id.chars().take(4).collect(),
+        None => "manuel".to_string(),
+    }
+}
+
+/// One flagged overlap's display line, e.g.
+/// `⚠ recouvrement 47 min — Saft cadrage ↔ Cartier (session a1b2 ↔ manuel)`.
+///
+/// French, deliberately (see the task-9 brief): the spec's own wording, with
+/// precedent (`○ manuel (toi)` in `aplan sessions`), even though the
+/// surrounding `journal` labels are English.
+fn format_overlap_line(
+    minutes: i64,
+    title_a: &str,
+    title_b: &str,
+    session_a: &Option<String>,
+    session_b: &Option<String>,
+) -> String {
+    format!(
+        "\u{26a0} recouvrement {minutes} min \u{2014} {title_a} \u{2194} {title_b} (session {} \u{2194} {})",
+        overlap_actor_label(session_a),
+        overlap_actor_label(session_b),
+    )
+}
+
+/// `dash`'s one-line summary when the day carries any overlap, e.g.
+/// `⚠ 2 recouvrements aujourd'hui (50 min au total) — détail : aplan journal`.
+///
+/// `total_minutes` is the **sum of the pairs' minutes**, which double-counts
+/// a slot involved in two pairs — deliberately: this line reports a
+/// magnitude of the problem, not a quantity of time to reconcile (that is
+/// `timesheet`'s job, using the union of the slots' intervals instead). Do
+/// not "fix" this into the union measure; the two commands answer different
+/// questions on purpose.
+fn format_dash_overlap_summary(count: usize, total_minutes: i64) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!(
+        "\u{26a0} {count} recouvrement{plural} aujourd'hui ({total_minutes} min au total) \u{2014} d\u{e9}tail : aplan journal"
+    )
+}
 
 /// Read `aplan.active_task_id` from configuration, if set and non-empty.
 fn active_task_id(client: &Client) -> Option<String> {
@@ -571,7 +623,9 @@ pub fn journal(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
         Some(s) => s.to_string(),
         None => chrono::Utc::now().date_naive().to_string(),
     };
-    let result = client.run::<ActivityJournal>(activity_journal::Variables { date: date_str });
+    let result = client.run::<ActivityJournal>(activity_journal::Variables {
+        date: date_str.clone(),
+    });
     match result {
         Ok(r) => {
             if json {
@@ -606,6 +660,58 @@ pub fn journal(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
                 );
             }
             println!("\ntotal: {}h {}m", total / 60, total % 60);
+
+            // Overlap warnings, one line per pair. A separate round trip on
+            // the additive sibling query (task 8) rather than merged into
+            // ActivityJournal's own selection: dash/timesheet need the same
+            // operation, and merging would have required their responses to
+            // always carry a field they don't otherwise use.
+            //
+            // Best-effort: this is a supplementary check layered on top of
+            // the journal that already printed successfully above. A
+            // failure here (network hiccup, an older server without the
+            // operation) must not turn a working `journal` into a hard
+            // error — it only means the warning is silently unavailable
+            // this time, not that nothing else printed matters.
+            if let Ok(or) = client.run::<ActivityOverlaps>(activity_overlaps::Variables {
+                date: date_str,
+            }) {
+                // A sub-minute intersection truncates to 0 (task 7) and would
+                // be pure noise here — never printed.
+                let pairs: Vec<_> = or
+                    .data
+                    .activity_overlaps
+                    .into_iter()
+                    .filter(|o| o.minutes > 0)
+                    .collect();
+                if !pairs.is_empty() {
+                    println!();
+                    for o in &pairs {
+                        let title_a = o
+                            .a
+                            .task
+                            .as_ref()
+                            .map(|t| t.title.as_str())
+                            .unwrap_or("(no task)");
+                        let title_b = o
+                            .b
+                            .task
+                            .as_ref()
+                            .map(|t| t.title.as_str())
+                            .unwrap_or("(no task)");
+                        println!(
+                            "{}",
+                            format_overlap_line(
+                                o.minutes,
+                                title_a,
+                                title_b,
+                                &o.a.session_id,
+                                &o.b.session_id,
+                            )
+                        );
+                    }
+                }
+            }
             ExitCode::Success
         }
         Err(e) => {
@@ -663,7 +769,9 @@ pub fn dash(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
         Some(s) => s.to_string(),
         None => chrono::Utc::now().date_naive().to_string(),
     };
-    let result = client.run::<DailyDashboard>(daily_dashboard::Variables { date: date_str });
+    let result = client.run::<DailyDashboard>(daily_dashboard::Variables {
+        date: date_str.clone(),
+    });
     match result {
         Ok(r) => {
             if json {
@@ -687,6 +795,26 @@ pub fn dash(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
             println!("\nalerts ({}):", d.alerts.len());
             for a in &d.alerts {
                 println!("  [{:?}] {:?}: {}", a.severity, a.alert_type, a.message);
+            }
+
+            // One summary line if the day carries any overlap — never a
+            // per-pair breakdown here, that is `journal`'s job. Best-effort,
+            // same reasoning as `journal`: a failure here must not turn a
+            // working `dash` into a hard error.
+            if let Ok(or) = client.run::<ActivityOverlaps>(activity_overlaps::Variables {
+                date: date_str,
+            }) {
+                let pairs: Vec<_> = or
+                    .data
+                    .activity_overlaps
+                    .into_iter()
+                    .filter(|o| o.minutes > 0)
+                    .collect();
+                if !pairs.is_empty() {
+                    let total: i64 = pairs.iter().map(|o| o.minutes).sum();
+                    println!();
+                    println!("{}", format_dash_overlap_summary(pairs.len(), total));
+                }
             }
             ExitCode::Success
         }
@@ -1238,5 +1366,72 @@ pub fn config(api_url: &str, json: bool, cmd: &ConfigCmd) -> ExitCode {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod overlap_display_tests {
+    use super::*;
+
+    #[test]
+    fn manuel_is_printed_for_the_human_never_an_empty_parenthesis() {
+        assert_eq!(overlap_actor_label(&None), "manuel");
+    }
+
+    #[test]
+    fn a_session_id_is_shortened_to_its_first_four_characters() {
+        assert_eq!(
+            overlap_actor_label(&Some("a1b2c3d4-ffff".to_string())),
+            "a1b2"
+        );
+    }
+
+    #[test]
+    fn a_session_id_shorter_than_four_characters_is_kept_whole() {
+        assert_eq!(overlap_actor_label(&Some("ab".to_string())), "ab");
+    }
+
+    /// Pins the spec's exact string. A wrong separator, a translated word, or
+    /// a dropped `⚠` would all fail this — not merely "prints something".
+    #[test]
+    fn the_journal_line_matches_the_pinned_spec_string() {
+        let line = format_overlap_line(
+            47,
+            "Saft cadrage",
+            "Cartier",
+            &Some("a1b2c3".to_string()),
+            &None,
+        );
+        assert_eq!(
+            line,
+            "\u{26a0} recouvrement 47 min \u{2014} Saft cadrage \u{2194} Cartier (session a1b2 \u{2194} manuel)"
+        );
+    }
+
+    /// The case task 8's review flagged as reachable and easy to get wrong:
+    /// two manual slots overlapping. Neither side may render as an empty
+    /// parenthesis.
+    #[test]
+    fn both_sides_manual_prints_manuel_twice() {
+        let line = format_overlap_line(10, "A", "B", &None, &None);
+        assert!(line.ends_with("(session manuel \u{2194} manuel)"), "{line}");
+    }
+
+    #[test]
+    fn a_single_overlap_is_not_pluralised() {
+        let line = format_dash_overlap_summary(1, 47);
+        assert!(line.contains("1 recouvrement "), "{line}");
+        assert!(!line.contains("recouvrements"), "{line}");
+    }
+
+    /// Pins the spec's exact dash string, including the plural agreement a
+    /// hardcoded "s" or a hardcoded singular would both fail.
+    #[test]
+    fn the_dash_line_matches_the_pinned_spec_string() {
+        let line = format_dash_overlap_summary(2, 50);
+        assert_eq!(
+            line,
+            "\u{26a0} 2 recouvrements aujourd'hui (50 min au total) \u{2014} d\u{e9}tail : aplan journal"
+        );
     }
 }

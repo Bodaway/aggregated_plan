@@ -2,12 +2,15 @@
 //! Gryzzly timesheet. No interactive REPL: the default action reconstructs
 //! and renders; `validate`/`set`/`off` are explicit subcommands.
 
+use chrono::{DateTime, Utc};
+
 use crate::client::Client;
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    learn_mapping, mark_day_off, reconstruct_timesheet, save_timesheet_draft, signal_mappings,
-    timesheet_draft, validate_timesheet, LearnMapping, MarkDayOff, ReconstructTimesheet,
-    SaveTimesheetDraft, SignalMappings, TimesheetDraft, ValidateTimesheet,
+    activity_journal, learn_mapping, mark_day_off, reconstruct_timesheet, save_timesheet_draft,
+    signal_mappings, timesheet_draft, validate_timesheet, ActivityJournal, LearnMapping,
+    MarkDayOff, ReconstructTimesheet, SaveTimesheetDraft, SignalMappings, TimesheetDraft,
+    ValidateTimesheet,
 };
 
 fn today() -> String {
@@ -31,6 +34,47 @@ pub fn timesheet(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
                 return ExitCode::Success;
             }
             render_day(&r.data.run_timesheet_reconstruction);
+
+            // The overlap gap, computed from the day's raw activity slots — a
+            // separate round trip on `ActivityJournal` (task 8's operation),
+            // not the Gryzzly reconstruction's `blocks`, which are already a
+            // deduplicated per-project view and would not carry the raw
+            // double-counted total this line needs.
+            //
+            // Best-effort, same reasoning as `journal`/`dash`: the day's
+            // reconstruction already rendered successfully above, and a
+            // failure fetching the supplementary overlap check must not turn
+            // that into a hard error.
+            if let Ok(jr) = client.run::<ActivityJournal>(activity_journal::Variables { date }) {
+                let raw: i64 = jr
+                    .data
+                    .activity_journal
+                    .iter()
+                    .filter_map(|s| s.duration_minutes)
+                    .sum();
+                let intervals: Vec<(DateTime<Utc>, DateTime<Utc>)> = jr
+                    .data
+                    .activity_journal
+                    .iter()
+                    .filter_map(|s| {
+                        let end = parse_instant(s.end_time.as_deref()?)?;
+                        let start = parse_instant(&s.start_time)?;
+                        Some((start, end))
+                    })
+                    .collect();
+                let covered = union_minutes(intervals);
+                let gap = raw - covered;
+                if gap > 0 {
+                    println!();
+                    println!(
+                        "\u{26a0} recouvrement {gap} min sur la journ\u{e9}e \u{2014} brut {} h {}, couvert {} h {}",
+                        raw / 60,
+                        raw % 60,
+                        covered / 60,
+                        covered % 60,
+                    );
+                }
+            }
             ExitCode::Success
         }
         Err(e) => {
@@ -38,6 +82,41 @@ pub fn timesheet(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
             ExitCode::Generic
         }
     }
+}
+
+/// Parse a server-emitted RFC 3339 instant. The server always emits a valid
+/// one; a slot whose timestamp fails to parse is excluded from the raw/
+/// covered calculation rather than aborting the whole command over one
+/// malformed string.
+fn parse_instant(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Minutes spanned by the union of closed intervals — merging
+/// overlapping/touching stretches so a minute covered by two slots at once
+/// is counted once, not twice. This is `timesheet`'s "elapsed", deliberately
+/// not `last_end - first_start`: a day with a gap (lunch, say) would
+/// otherwise make `raw - elapsed` negative.
+fn union_minutes(mut intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>) -> i64 {
+    intervals.sort_by_key(|(start, _)| *start);
+    let mut total = 0i64;
+    let mut current: Option<(DateTime<Utc>, DateTime<Utc>)> = None;
+    for (start, end) in intervals {
+        current = match current {
+            None => Some((start, end)),
+            Some((cur_start, cur_end)) if start <= cur_end => Some((cur_start, cur_end.max(end))),
+            Some((cur_start, cur_end)) => {
+                total += (cur_end - cur_start).num_minutes();
+                Some((start, end))
+            }
+        };
+    }
+    if let Some((start, end)) = current {
+        total += (end - start).num_minutes();
+    }
+    total
 }
 
 fn render_day(d: &reconstruct_timesheet::ReconstructTimesheetRunTimesheetReconstruction) {
@@ -350,5 +429,72 @@ pub fn map_list(api_url: &str, json: bool) -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::Generic
         }
+    }
+}
+
+#[cfg(test)]
+mod overlap_gap_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn t(h: u32, m: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 3, 9, h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn a_valid_instant_parses() {
+        assert_eq!(parse_instant("2026-03-09T09:00:00Z"), Some(t(9, 0)));
+    }
+
+    #[test]
+    fn a_malformed_instant_is_excluded_rather_than_panicking() {
+        assert_eq!(parse_instant("not-a-time"), None);
+    }
+
+    /// The defect the brief names explicitly: with a real gap (a lunch break)
+    /// between two stretches, the union is the *sum* of their lengths, not
+    /// the outer span `last_end - first_start` (which would be 8h here, not
+    /// 7h, and would make `raw - elapsed` negative for a day with no
+    /// overlap at all).
+    #[test]
+    fn a_days_gap_does_not_inflate_the_union_into_the_outer_span() {
+        let morning = (t(9, 0), t(12, 0)); // 3h
+        let afternoon = (t(13, 0), t(17, 0)); // 4h
+        let covered = union_minutes(vec![morning, afternoon]);
+        assert_eq!(covered, 7 * 60, "must be the sum of the two stretches");
+        assert_ne!(
+            covered,
+            (t(17, 0) - t(9, 0)).num_minutes(),
+            "must not equal the naive last_end - first_start (8h)"
+        );
+    }
+
+    /// The property the whole function exists for: two slots that overlap by
+    /// an hour must have that hour counted once, not twice.
+    #[test]
+    fn overlapping_intervals_count_the_shared_time_once() {
+        let a = (t(9, 0), t(11, 0)); // 2h
+        let b = (t(10, 0), t(12, 0)); // 2h, overlapping a by 1h
+        let covered = union_minutes(vec![a, b]);
+        assert_eq!(covered, 3 * 60, "9:00-12:00, not the naive sum of 4h");
+    }
+
+    #[test]
+    fn touching_intervals_cover_without_a_phantom_gap() {
+        let a = (t(9, 0), t(10, 0));
+        let b = (t(10, 0), t(11, 0));
+        assert_eq!(union_minutes(vec![a, b]), 2 * 60);
+    }
+
+    #[test]
+    fn a_fully_nested_interval_adds_nothing_extra() {
+        let outer = (t(9, 0), t(12, 0)); // 3h
+        let inner = (t(10, 0), t(10, 30)); // 30m, inside outer
+        assert_eq!(union_minutes(vec![outer, inner]), 3 * 60);
+    }
+
+    #[test]
+    fn union_of_nothing_is_zero() {
+        assert_eq!(union_minutes(vec![]), 0);
     }
 }
