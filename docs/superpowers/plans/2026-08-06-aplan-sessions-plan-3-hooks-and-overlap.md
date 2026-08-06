@@ -1010,7 +1010,15 @@ Task 6's review found these outside its own diff. They were held back to keep th
 
 2. **The subagent section forbids the session-link and pointer verbs but not three other writes:** `aplan reattribute` (advertised at `:72`), `aplan config set`, and the memory-write verbs. Reattribution moves time between tasks; a subagent doing that on its own initiative is the same class of harm as `session bind`. Task 6 rebuilt that section around a stated principle plus an enumeration — extend the principle to cover writes beyond the session link, rather than only appending three names.
 
-- [ ] **Step 4: Mark the design spec's staging item 3 complete** with the commit range, noting that its § "Lifecycle and hooks" and § "Overlap" now describe shipped behaviour.
+- [ ] **Step 4: Document two things about overlap that only show up in use**
+
+Both came out of Task 9's review and both are behaviour a reader will otherwise discover the hard way.
+
+1. **All three commands skip the overlap line under `--json`** (each returns early on the JSON path). So a Claude reading `aplan journal --json` cannot see a flagged collision at all, and neither can any other machine consumer. That is defensible — the JSON is the API's payload, not the human summary — but it means **the flag is human-only**, and the `aplan` skill tells Claudes to prefer `--json`. Say so explicitly in § 7.3.6, and consider whether `.claude/skills/aplan/SKILL.md` should tell a Claude to run the plain form when it wants to see overlaps. Do not change the behaviour in this task.
+
+2. **`timesheet`'s gap and `journal`'s pairs measure different populations, on purpose.** After Task 9's fix, `raw − covered` excludes untagged slots but still counts two overlapping stretches of the *same* task, which `find_overlaps` deliberately does not. So `timesheet` answers *how much of today's logged time is double-booked at all*, while `journal` answers *which two tasks collided*. A user can therefore see a `timesheet` gap with no corresponding `journal` line. Document both questions and why they differ — this is the paragraph that stops a future reader "aligning" the two and breaking one.
+
+- [ ] **Step 5: Mark the design spec's staging item 3 complete** with the commit range, noting that its § "Lifecycle and hooks" and § "Overlap" now describe shipped behaviour.
 
 - [ ] **Step 3: Commit**
 
