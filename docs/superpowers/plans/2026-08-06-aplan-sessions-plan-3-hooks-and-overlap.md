@@ -950,6 +950,8 @@ This is a controller decision, not a guess — if you think it is wrong, say so 
 
 Each command gets one test asserting the overlap line appears with both task titles and the minutes, and one asserting a clean day prints no warning at all. A warning on a day with no overlap would train the user to ignore it.
 
+**Skip any overlap whose `minutes` is 0.** Task 7's review found that `Duration::num_minutes()` truncates toward zero, so a sub-minute intersection yields a pair with `minutes: 0`. It is unreachable with today's data — activity-slot timestamps are minute-granular — and the truncation is a pre-existing idiom shared with `workload.rs`, `worklog_time.rs` and `reattribution.rs`, so the rule was left alone deliberately. But `⚠ recouvrement 0 min` is exactly the kind of noise that teaches a user to stop reading warnings, and the display layer is the right place to refuse it: one filter, and a test that a 0-minute pair prints nothing.
+
 - [ ] **Step 2: Run the suite and the env A/B, then commit**
 
 ---
