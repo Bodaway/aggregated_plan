@@ -935,7 +935,11 @@ sqlite3 aggregated_plan.db "SELECT MAX(version) FROM _sqlx_migrations;"   # must
 The spec's wording, which is what the user approved:
 
 - `aplan journal` — a line per overlapping pair, both tasks named and the actors identified: `⚠ recouvrement 47 min — Saft cadrage ↔ Cartier (session a1b2 ↔ manuel)`.
-- `aplan timesheet` — the day's raw total and its gap against elapsed wall-clock time, so the arbitration happens where a human already reviews the day.
+- `aplan timesheet` — the day's raw total and its gap against elapsed time, so the arbitration happens where a human already reviews the day.
+
+  **Define "elapsed" as the measure of the union of the slots' intervals — not `last_end − first_start`.** The spec says "elapsed wall-clock time", and the naive reading of that phrase is wrong in a way that produces visible nonsense: a day with a two-hour lunch gap would report a *negative* overlap, because the raw total is smaller than the span. Merge the intervals, sum the merged lengths, and the gap `raw − covered` is then exactly the double-counted time — which is the number the user is arbitrating. On a day with no overlap the gap is 0, so the line stays quiet by construction rather than by a special case.
+
+  This is a refinement of the spec's wording, not a departure from its intent; record it in your report so the next reader knows the phrase was operationalised deliberately.
 - `aplan dash` — one summary line when the day carries any overlap.
 
 **Language: use the spec's French wording, and do not "harmonise" it to English.** The CLI is genuinely mixed and I verified both sides: `journal` prints `total: {}h {}m` (`commands.rs:601`) and `session end` prints `session {} closed` (`:126`), both English — but `aplan sessions` prints `○ manuel (toi)` (`session_cmd.rs:74`), French. So a French user-facing line has precedent here, the user approved this exact wording in the design spec, and the user works in French. That settles it: the overlap line is French even though the surrounding `journal` labels are English.
