@@ -21,6 +21,20 @@ set -u
 command -v aplan >/dev/null 2>&1 || exit 0
 command -v jq    >/dev/null 2>&1 || exit 0
 
+# This hook makes up to three sequential `aplan` calls and each carries reqwest's
+# own 10 s timeout (cli/src/client.rs:42), so a backend that accepts the connection
+# and then hangs would stall SessionStart for ~30 s — well past the 10 s budget the
+# hook is registered with, i.e. no context injected at all. Bounding each call at
+# 5 s keeps a hang on the second or third call from costing the whole injection.
+# A refused connection is already instant; this is only about the hang. A missing
+# `timeout` must not silently disable the hook, hence the fallback: reqwest's own
+# timeout still applies there.
+if command -v timeout >/dev/null 2>&1; then
+  aplan_bounded() { timeout 5 aplan "$@"; }
+else
+  aplan_bounded() { aplan "$@"; }
+fi
+
 # Unattended (cron / scheduled) sessions: no user is present, so the mandatory
 # AskUserQuestion emitted below would block or burn the turn. Inject nothing —
 # the scheduled job's own prompt is the only instruction it needs, and it writes
@@ -64,7 +78,7 @@ fi
 #   - exit 0, a row          -> obey the row
 # `--json` prints the response's `data` block, so the path is `.claudeSession`
 # (no `.data` wrapper), and `mode` is the GraphQL enum: uppercase TRACKING / OFF.
-if ! session_json=$(aplan session show --session "$sid" --json 2>/dev/null); then
+if ! session_json=$(aplan_bounded session show --session "$sid" --json 2>/dev/null); then
   exit 0
 fi
 # If the key is absent the output shape changed under us; a silent no-op is the
@@ -89,7 +103,7 @@ EOF
 
 # Reusable formatter for the "Top followed tasks" block (up to 20 lines).
 task_lines_block() {
-  ls_json=$(aplan ls --json 2>/dev/null || echo '')
+  ls_json=$(aplan_bounded ls --json 2>/dev/null || echo '')
   printf '%s' "$ls_json" | jq -r '
     .tasks.edges[]?.node
     | "- \((.sourceId // (.id|.[0:8]))) — \(.title) [\(.status)]"
@@ -126,11 +140,17 @@ else
     cont_title=$sess_title
     cont_target=$sess_task_id
     cont_bound=yes
-  else
-    # The ONE legitimate use of the human's pointer: no session row exists, and
-    # the human has just opened a Claude on what they were doing by hand.
-    # Offering it is genuinely useful; moving it would be the original bug.
-    current_json=$(aplan current --json 2>/dev/null || echo '')
+  elif [ -z "$mode" ]; then
+    # The ONE legitimate use of the human's pointer: NO session row exists at all
+    # (hence the `-z "$mode"` gate), and the human has just opened a Claude on what
+    # they were doing by hand. Offering it is genuinely useful; moving it would be
+    # the original bug. The gate is what keeps that "one use" honest: without it,
+    # `/clear` on a session whose row says OFF fell through to here and offered the
+    # human's task as "(Recommended)" to a session that had explicitly opted out —
+    # a nudge rather than the old bug, since nothing moved the pointer, but still a
+    # breach of the rule that for a KNOWN session the pointer is never consulted.
+    # A known row with an unresolvable task takes the same path now: no Option 1.
+    current_json=$(aplan_bounded current --json 2>/dev/null || echo '')
     cont_title=$(printf '%s' "$current_json" | jq -r '.currentActivity.task.title // empty'    2>/dev/null || echo '')
     cont_target=$(printf '%s' "$current_json" | jq -r '.currentActivity.task.id // empty'       2>/dev/null || echo '')
     cont_key=$(printf '%s' "$current_json"   | jq -r '.currentActivity.task.sourceId // ""'    2>/dev/null || echo '')
