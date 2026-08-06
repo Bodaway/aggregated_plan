@@ -705,8 +705,8 @@ aplan flush --json "$task_id" >/dev/null 2>&1 || exit 0
 
 **The hook must NOT end the session, and this is a correction to the plan's earlier draft.** Ending the row here looks tidy and breaks resume:
 
-- A Claude Code session id survives `claude --resume`. If SessionEnd closed the row, resuming that transcript would fire SessionStart with the same id against an **ended** session — a fifth state absent from the design spec's four-branch table, and one `Session::target()` already refuses by name.
-- `upsert` overwrites only `task_id`, `mode`, `label` and `last_seen_at`; it cannot clear `ended_at`. Re-opening would need a new repository method — machinery bought to undo something we chose to do.
+- A Claude Code session id survives `claude --resume`. If SessionEnd closed the row, resuming that transcript would fire SessionStart with the same id against an **ended** session — a fifth state absent from the design spec's four-branch table, and one `Session::target()` already refuses by name. Every branch of the hook would need to learn about it.
+- **Correction to this plan's first draft:** it claimed re-opening a closed session would need a new repository method because `upsert` cannot clear `ended_at`. **That was wrong.** `ended_at` *is* in `upsert`'s `ON CONFLICT DO UPDATE SET` clause (`infrastructure/src/database/session_repo.rs:91-100`), deliberately — the comment there explains `bind_session` clears it when reviving a closed session, and without that the clear would never persist. So reviving is already supported. The decision below stands on the remaining reason alone (avoiding a fifth state in the hook's branch table), not on a machinery cost that does not exist.
 - **The reaper is the sole closer**, and Task 1 built it for exactly this. Plan 2's idempotent rebuild is what makes the reaper's later second flush harmless: it rebuilds the same half-days to the same slots.
 - The cost is that `aplan sessions` lists sessions seen in the last 12 hours as open. That is honest rather than wrong — `list_open` orders by `last_seen_at` so live sessions stay on top — and the reaper trims the rest.
 
