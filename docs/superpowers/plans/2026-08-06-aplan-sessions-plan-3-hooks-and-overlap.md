@@ -867,8 +867,30 @@ EOF
 - Modify: `backend/crates/cli/graphql/schema.graphql` (regenerated)
 
 **Interfaces:**
-- Consumes: `find_overlaps` (Task 7).
-- Produces: the journal query returning the day's overlaps alongside its slots, so `journal`, `dash` and `timesheet` can all read one computation.
+- Consumes: `find_overlaps` (Task 7), which returns `Vec<Overlap>` where `Overlap { a: ActivitySlotId, b: ActivitySlotId, minutes: i64 }`.
+- Produces, and **Task 9 depends on this exact shape** — pin it before writing anything else:
+
+```graphql
+activityOverlaps(date: NaiveDate!): [ActivityOverlapGql!]!
+
+type ActivityOverlapGql {
+  minutes: Int!
+  a: ActivityOverlapSideGql!
+  b: ActivityOverlapSideGql!
+}
+
+type ActivityOverlapSideGql {
+  slotId: ID!
+  sessionId: String        # null = the human, working by hand
+  task: SessionTaskSummaryGql   # reuse the existing type: { id, title }
+}
+```
+
+**Why the sides are structs rather than four flat fields:** Task 9's line is `⚠ recouvrement 47 min — <task A> ↔ <task B> (session a1b2 ↔ manuel)`, so it needs the title *and* the actor for each side, paired. Flattening to `taskATitle`/`sessionAId`/… invites a caller to mismatch them.
+
+`find_overlaps` deliberately returns only slot ids, because `domain` must stay free of I/O and titles live in another aggregate. So the **use case** is what pairs each `Overlap` back to its two slots — return `Vec<(Overlap, ActivitySlot, ActivitySlot)>` or an equivalent application-level struct — and the resolver turns `slot.task_id` into a title. `ClaudeSessionGql::task` (`api/src/graphql/types/session.rs:30-38`) is the pattern to copy: it pulls `Arc<dyn TaskRepository>` from the context and returns `SessionTaskSummaryGql { id, title }`. Reuse that type rather than declaring a second one — async-graphql registers type names globally, and this repository has already had one collision (`ClaudeSessionGql` exists precisely because a bare `Session` name clashed with the Microsoft-OAuth status query).
+
+`task` is nullable because `ActivitySlot::task_id` is `Option<TaskId>` — but Task 7 excludes untagged slots from overlaps, so in practice it is always present. Keep it nullable rather than unwrapping: a `None` here means the task row was deleted, which is a data question, not a reason to fail the whole query.
 
 Compute at read time. Nothing is stored and nothing is corrected — that is the spec's explicit non-goal, and the user's decision: each task keeps the time its own entries document, double counting is accepted and **flagged**.
 
