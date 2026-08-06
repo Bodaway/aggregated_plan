@@ -131,6 +131,30 @@ impl SessionRepository for SqliteSessionRepository {
         rows.iter().map(row_to_session).collect()
     }
 
+    async fn list_idle_open(
+        &self,
+        user_id: UserId,
+        idle_before: DateTime<Utc>,
+    ) -> Result<Vec<Session>, RepositoryError> {
+        // Comparison on RFC 3339 text, same as `list_open`'s ordering: harmless
+        // because real clocks carry fractional seconds uniformly, but here it is a
+        // `<` filter rather than an ordering.
+        let rows = sqlx::query(
+            "SELECT id, user_id, task_id, mode, label, started_at, last_seen_at,
+                    last_flush_at, ended_at
+             FROM sessions
+             WHERE user_id = ? AND ended_at IS NULL AND last_seen_at < ?
+             ORDER BY last_seen_at ASC",
+        )
+        .bind(user_id.to_string())
+        .bind(idle_before.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        rows.iter().map(row_to_session).collect()
+    }
+
     async fn touch(
         &self,
         id: &str,
@@ -362,5 +386,39 @@ mod tests {
 
         let ids: Vec<&str> = open.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["s2", "s1"]);
+    }
+
+    #[tokio::test]
+    async fn list_idle_open_returns_only_stale_open_sessions() {
+        let repo = SqliteSessionRepository::new(setup().await);
+        // Seen recently — alive.
+        repo.upsert(&Session::tracking("fresh".into(), user_id(), task_id(), None, t(16)).unwrap())
+            .await
+            .unwrap();
+        // Seen long ago — idle.
+        repo.upsert(&Session::tracking("stale".into(), user_id(), task_id(), None, t(2)).unwrap())
+            .await
+            .unwrap();
+        // Idle but already closed — not ours to reap twice.
+        repo.upsert(&Session::tracking("closed".into(), user_id(), task_id(), None, t(2)).unwrap())
+            .await
+            .unwrap();
+        repo.end("closed", user_id(), t(3)).await.unwrap();
+
+        let idle = repo.list_idle_open(user_id(), t(10)).await.unwrap();
+
+        let ids: Vec<&str> = idle.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["stale"]);
+    }
+
+    #[tokio::test]
+    async fn list_idle_open_is_scoped_to_the_user() {
+        let repo = SqliteSessionRepository::new(setup().await);
+        repo.upsert(&Session::tracking("stale".into(), user_id(), task_id(), None, t(2)).unwrap())
+            .await
+            .unwrap();
+
+        let other = Uuid::parse_str("00000000-0000-0000-0000-0000000000ff").unwrap();
+        assert!(repo.list_idle_open(other, t(10)).await.unwrap().is_empty());
     }
 }

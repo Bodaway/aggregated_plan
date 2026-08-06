@@ -377,7 +377,7 @@ pub async fn apply_task_projection(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::sync::Mutex;
@@ -388,8 +388,9 @@ mod tests {
     use chrono::NaiveDate;
     use domain::types::{ActivitySlot, ActivitySlotId, HalfDay};
 
+    /// Reused as-is by `session_reaper`'s test module.
     #[derive(Default)]
-    struct FakeActivityRepo {
+    pub(crate) struct FakeActivityRepo {
         slots: Mutex<Vec<ActivitySlot>>,
     }
 
@@ -446,8 +447,9 @@ mod tests {
         }
     }
 
+    /// Reused as-is by `session_reaper`'s test module.
     #[derive(Default)]
-    struct FakeConfigRepo {
+    pub(crate) struct FakeConfigRepo {
         map: Mutex<std::collections::HashMap<String, String>>,
     }
 
@@ -574,8 +576,9 @@ mod tests {
         assert!(acts.slots.lock().unwrap().is_empty());
     }
 
+    /// Reused as-is by `session_reaper`'s test module.
     #[derive(Default)]
-    struct FakeRepo {
+    pub(crate) struct FakeRepo {
         entries: Mutex<Vec<WorklogEntry>>,
         /// Every filter `list` was called with, in order — so a test can check the
         /// query was actually bounded, not merely that its result happened to be.

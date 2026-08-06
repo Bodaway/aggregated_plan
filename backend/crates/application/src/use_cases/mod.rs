@@ -15,5 +15,6 @@ pub mod timesheet;
 pub mod memory;
 pub mod brief;
 pub mod consolidation;
+pub mod session_reaper;
 pub mod session_tracking;
 pub mod slot_classification;

@@ -25,6 +25,14 @@ pub trait SessionRepository: Send + Sync {
     /// Open sessions, most recently seen first. What `aplan sessions` prints.
     async fn list_open(&self, user_id: UserId) -> Result<Vec<Session>, RepositoryError>;
 
+    /// Open sessions whose `last_seen_at` is older than `idle_before`, oldest first.
+    /// What the reaper reads.
+    async fn list_idle_open(
+        &self,
+        user_id: UserId,
+        idle_before: DateTime<Utc>,
+    ) -> Result<Vec<Session>, RepositoryError>;
+
     /// Bump `last_seen_at`. Returns false when no open session has that id.
     async fn touch(
         &self,

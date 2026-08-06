@@ -726,6 +726,23 @@ impl application::repositories::SessionRepository for InMemorySessionRepository 
         Ok(open)
     }
 
+    async fn list_idle_open(
+        &self,
+        user_id: UserId,
+        idle_before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Session>, RepositoryError> {
+        let mut idle: Vec<Session> = self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.user_id == user_id && s.is_open() && s.last_seen_at < idle_before)
+            .cloned()
+            .collect();
+        idle.sort_by(|a, b| a.last_seen_at.cmp(&b.last_seen_at));
+        Ok(idle)
+    }
+
     async fn touch(
         &self,
         id: &str,
@@ -805,6 +822,14 @@ impl application::repositories::SessionRepository for FailingTouchSessionReposit
 
     async fn list_open(&self, user_id: UserId) -> Result<Vec<Session>, RepositoryError> {
         self.0.list_open(user_id).await
+    }
+
+    async fn list_idle_open(
+        &self,
+        user_id: UserId,
+        idle_before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Session>, RepositoryError> {
+        self.0.list_idle_open(user_id, idle_before).await
     }
 
     async fn touch(

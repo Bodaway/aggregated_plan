@@ -138,7 +138,7 @@ pub async fn resolve_session_target(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
     use chrono::TimeZone;
@@ -147,8 +147,10 @@ mod tests {
 
     use crate::errors::RepositoryError;
 
+    /// Reused as-is by `session_reaper`'s test module: one more copy would make a
+    /// fifth implementor of a trait the reaper's brief counts at exactly four.
     #[derive(Default)]
-    struct InMemorySessionRepository {
+    pub(crate) struct InMemorySessionRepository {
         rows: Mutex<Vec<Session>>,
     }
 
@@ -194,6 +196,23 @@ mod tests {
                 .collect();
             open.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
             Ok(open)
+        }
+
+        async fn list_idle_open(
+            &self,
+            user_id: UserId,
+            idle_before: DateTime<Utc>,
+        ) -> Result<Vec<Session>, RepositoryError> {
+            let mut idle: Vec<Session> = self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.user_id == user_id && s.is_open() && s.last_seen_at < idle_before)
+                .cloned()
+                .collect();
+            idle.sort_by(|a, b| a.last_seen_at.cmp(&b.last_seen_at));
+            Ok(idle)
         }
 
         async fn touch(
