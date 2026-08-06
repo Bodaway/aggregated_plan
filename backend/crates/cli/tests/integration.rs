@@ -2419,3 +2419,104 @@ async fn session_end_flushes_its_own_task_before_closing_it() {
         "FlushWorklogTime (index {flush_at}) must precede EndSession (index {end_at})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 3 review round 2 — `session off` does not flush, so a session
+// switched off before it is ended still owes a flush of whatever it logged
+// while `on`. `try_session_task_id` (used by `done`'s attribution gate) is
+// deliberately gated on `mode == TRACKING`; closing must not reuse that gate,
+// or the exact permanent loss fix round 1 closed reopens through `off`.
+// ---------------------------------------------------------------------------
+
+/// Mirrors `session_end_flushes_its_own_task_before_closing_it`, but the
+/// session's own row reports `mode: "OFF"` (as it would after `session off`)
+/// while still carrying the task it was tracking before the switch. If
+/// closing gated the flush on `mode`, this task's time would be silently
+/// skipped and then permanently lost the moment `EndSession` succeeds.
+#[tokio::test]
+async fn session_end_flushes_a_bound_task_even_when_logging_is_off_for_it() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("ClaudeSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_body("OFF", Some(task_id))))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("FlushWorklogTime"))
+        .and(wiremock::matchers::body_string_contains(r#""sessionId":"s1""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "flushWorklogTime": { "slotsWritten": 1, "activeSince": "2026-08-05T09:00:00+00:00" } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("EndSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "endSession": { "id": "s1", "endedAt": "2026-08-06T09:00:00+00:00" } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "session", "end", "--session", "s1"])
+        .assert()
+        .success();
+
+    let received = server
+        .received_requests()
+        .await
+        .expect("request recording is on by default");
+    let flush_at = received
+        .iter()
+        .position(|r| String::from_utf8_lossy(&r.body).contains("FlushWorklogTime"))
+        .expect("a FlushWorklogTime request was made");
+    let end_at = received
+        .iter()
+        .position(|r| String::from_utf8_lossy(&r.body).contains("EndSession"))
+        .expect("an EndSession request was made");
+    assert!(
+        flush_at < end_at,
+        "FlushWorklogTime (index {flush_at}) must precede EndSession (index {end_at})"
+    );
+}
+
+/// The refusal `end_session_flushing_first` introduced in round 1 had no
+/// test: when the task lookup itself fails (here, `ClaudeSession` returns
+/// HTTP 500), closing must refuse rather than treat the failure as "nothing
+/// to flush" and end anyway. `.expect(0)` on `EndSession` is the regression
+/// gate — this is the exact guard that prevents the permanent loss above,
+/// so an untested guard here is a guard that can silently stop working.
+#[tokio::test]
+async fn session_end_refuses_to_close_when_the_task_lookup_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("ClaudeSession"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("EndSession"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "endSession": { "id": "s1", "endedAt": "2026-08-06T09:00:00+00:00" } }
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan_no_session()
+        .args(["--api-url", &url, "session", "end", "--session", "s1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+    // wiremock verifies .expect(0) on EndSession when `server` drops.
+}

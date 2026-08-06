@@ -4,7 +4,8 @@
 use crate::cli::{ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg};
 use crate::client::{Client, ClientError, RunResult};
 use crate::lookup::{
-    resolve_target, resolve_task, session_task_id, try_session_task_id, LookupError, ResolvedVia,
+    resolve_target, resolve_task, session_task_id, task_id_to_flush_before_closing, LookupError,
+    ResolvedVia,
 };
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
@@ -89,21 +90,27 @@ pub(crate) fn bind_session_flushing_previous(
     Ok(r)
 }
 
-/// Flush `session_id`'s own task (if it has one to flush), then close its
-/// row via `EndSession`, and report the outcome the same way for every
-/// caller. Flushing first is load-bearing: `endSession` performs no flush of
-/// its own, and once the row is closed no future window will ever select
-/// this session's worklog entries again — that time would be gone for good,
-/// not delayed. Refuses to end (surfaces the lookup's error instead of
-/// closing blind) when the task lookup itself failed — ending is
-/// irreversible, unlike `done`'s flush gate, which leaves the session open
-/// and its time recoverable by a later `stop` or `flush`.
+/// Flush `session_id`'s own bound task (if it has one — regardless of
+/// whether logging is currently `off` for it) then close its row via
+/// `EndSession`, and report the outcome the same way for every caller.
+/// Flushing first is load-bearing: `endSession` performs no flush of its
+/// own, and once the row is closed no future window will ever select this
+/// session's worklog entries again — that time would be gone for good, not
+/// delayed. The lookup is deliberately mode-independent
+/// (`task_id_to_flush_before_closing`, not `try_session_task_id`): `session
+/// off` does not flush, so a session switched off can still carry unflushed
+/// time against the task it was tracking while `on`, and this helper — not
+/// every mode-changing verb — is what promises that time survives the
+/// close. Refuses to end (surfaces the lookup's error instead of closing
+/// blind) when the task lookup itself failed — ending is irreversible,
+/// unlike `done`'s flush gate, which leaves the session open and its time
+/// recoverable by a later `stop` or `flush`.
 pub(crate) fn end_session_flushing_first(
     client: &Client,
     session_id: &str,
     json: bool,
 ) -> ExitCode {
-    match try_session_task_id(client, session_id) {
+    match task_id_to_flush_before_closing(client, session_id) {
         Ok(Some(tid)) => flush_task(client, &tid, Some(session_id)),
         Ok(None) => {}
         Err(e) => {

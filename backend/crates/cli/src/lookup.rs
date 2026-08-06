@@ -238,6 +238,30 @@ pub fn session_task_id(client: &Client, id: &str) -> Option<String> {
     try_session_task_id(client, id).ok().flatten()
 }
 
+/// The task id `id` is bound to, for the sole purpose of flushing it before
+/// the session's row closes. Deliberately **not** gated on `mode`, unlike
+/// `try_session_task_id`: `session off` does not flush, so a session
+/// switched off may still carry unflushed time against the task it was
+/// tracking while `on`, and closing without flushing that would be the same
+/// permanent loss ending exists to prevent. `mode` answers "is this session
+/// currently tracking", a different question from "does this row still owe
+/// a flush before it closes" — only a missing row or an already-ended
+/// session answer "no" to the second one; `mode` never does.
+pub fn task_id_to_flush_before_closing(
+    client: &Client,
+    id: &str,
+) -> Result<Option<String>, ClientError> {
+    let result = client.run::<ClaudeSession>(claude_session::Variables { id: id.to_string() })?;
+    let found = match result.data.claude_session {
+        None => return Ok(None),
+        Some(f) => f,
+    };
+    if found.ended_at.is_some() {
+        return Ok(None);
+    }
+    Ok(found.task_id.filter(|t| !t.is_empty()))
+}
+
 /// Fetch a task by its UUID and return a fully hydrated `TaskRef`. A `null`
 /// task in the response means the id is unknown (`NotFound`); transport and
 /// GraphQL errors propagate as `LookupError::Client`.
