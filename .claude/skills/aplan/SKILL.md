@@ -38,13 +38,20 @@ Two independent actors write to this backend, and they never share state:
 aplan sessions --json             # every open session + the human's pointer, read-only
 aplan session show --json         # THIS session's own link: task, mode, endedAt
 aplan session bind --json <task>  # link THIS session to <task>. Never touches the human's pointer.
-aplan session off --json          # disable aplan logging for this session, persistently
-aplan session end --json          # close this session's row — a deliberate act, not automatic
+aplan session off --json          # disable aplan logging for this session, persistently —
+                                   # also forgets the bound task; resuming means naming one again
+aplan session end --json          # close this session's row now — SessionEnd never does this on
+                                   # its own; the idle reaper is the only automatic closer
 ```
 
-The SessionStart hook already made this session's choice (a bound task, or "ne pas
-tracker") and told you in its injected context. Don't re-derive it from `aplan
-current` — that answers for the human — and don't ask the user again.
+The SessionStart hook's injected context is authoritative for this session, and it
+does one of two things: either it reports a choice already recorded on this
+session's row (a bound task, or "ne pas tracker" — obey it, don't ask the user
+again), or, when no choice is recorded yet, it hands you a **mandatory**
+`AskUserQuestion` to make one — obey that instruction just as strictly; suppressing
+it is how a session ends up with neither a task nor a recorded "ne pas tracker",
+silently. Either way, never re-derive tracking state from `aplan current`, which
+answers for the human, not for this session.
 
 **`aplan start` / `aplan stop` are `aplan session bind` / `aplan session end` under
 another name** whenever a session id is present, which inside a Claude Code session
@@ -55,7 +62,9 @@ Subsequent `aplan log` / `aplan note` / `aplan status` calls with no `--task`
 retarget automatically once the bind lands. `aplan stop` is the mirror image — it
 closes this session's row after flushing it, a bigger and less reversible act than
 "pause the timer"; if the user only wants logging paused rather than the session
-ended, use `aplan session off` instead.
+ended, use `aplan session off` instead — though "paused" undersells it: `off` also
+forgets the bound task, so resuming means naming one again with `aplan session
+bind`, not just flipping back to tracking.
 
 ## Hot-path recipes
 
@@ -71,8 +80,9 @@ ended, use `aplan session off` instead.
 | "triage AP-1234 as followed" | `aplan triage --json followed AP-1234` |
 | "that time went on the wrong task" | `aplan reattribute --json --from <wrong> --to <right> --date <day>` (preview first) |
 
-If you are a **subagent**, `start`, `new`, `stop`, `done`, `flush` and `triage` in this
-table are forbidden — see "If you are a subagent" below.
+If you are a **subagent**, `start`, `stop`, `done` and `triage` in this table are
+forbidden — see "If you are a subagent" below, which also covers `aplan flush` and
+the writing `session` subcommands, none of which appear above.
 
 ## Discovery commands (read-only, safe to ground yourself)
 
@@ -166,7 +176,7 @@ pass makes them invisible to the next one, and that is not recoverable.
 | `1` | generic error (network/GraphQL) | tell the user, don't retry blindly |
 | `2` | not found | the task or alert doesn't exist; ask the user for a better identifier. Also `aplan session show` on a session id aplan has never heard of — the one place an unknown session id **is** an error (with `--json` it's still exit `0` and `{"claudeSession":null}`; see "Sessions" above) |
 | `3` | ambiguous fuzzy match | re-run with a more specific query, or ask the user which match they meant |
-| `4` | precondition failed | `aplan log` / `aplan note` / `aplan status` with no running worklog, no `--task`, and no session bound to a task — ask the user to start one or pass `--task`. Also this session refusing outright: it's `off`, has no task bound, or has ended — `aplan session bind <task>` fixes all three, since a bind is a request to work and reopens an ended row. On the memory verbs `4` means a state the store refuses to leave (candidate already active or rejected, merge target not active, memory already invalidated, supersession cycle, nothing searchable in the query): **skip that item, never `--force`** |
+| `4` | precondition failed | `aplan log` / `aplan note` / `aplan status` with no running worklog, no `--task`, and no session bound to a task — ask the user to start one or pass `--task`. Also this session refusing outright: it's `off`, has no task bound, or has ended — `aplan session bind <task>` fixes all three, since a bind is a request to work and reopens an ended row. `aplan session show|bind|off|end` with no session id at all (no `--session`, no `CLAUDE_CODE_SESSION_ID`) is the same code, for the same reason: nothing to act on. On the memory verbs `4` means a state the store refuses to leave (candidate already active or rejected, merge target not active, memory already invalidated, supersession cycle, nothing searchable in the query): **skip that item, never `--force`** |
 
 `1` and `4` must not be treated alike. `4` is a normal outcome to skip; `1` means
 the call never landed, so anything that depends on it has to be retried whole.
@@ -177,9 +187,11 @@ title. Use that list to ask the user which one they meant.
 **An unknown session id on `log`/`note`/`status` is not an error.** Those three
 resolve their implicit target in order — `--task`, then the session, then the
 human's pointer — and an id with no matching row carries no decision to honour, so
-it falls through to the pointer exactly as an absent `--session` would: exit `0`,
-and the write lands on the human's task with no `session_id` attached, not on the
-session. That is different from the three `4`s above, which fire only for a session
+it falls through to the pointer exactly as an absent `--session` would: if the
+pointer names a task, exit `0` and the write lands there with no `session_id`
+attached; if it does not, the ordinary `4` (no active worklog) fires instead — the
+fallthrough is not itself an error, but it still needs somewhere to land. Either way
+this is different from the three `4`s above, which fire only for a session
 id aplan *does* recognise. `SessionUnknown` (exit `2`) exists only for `aplan
 session show`, where the user asked about that id directly and a silent fallback
 would hide a typo instead of reporting it.
@@ -204,10 +216,12 @@ Don't try to run the backend yourself.
 
 ## If you are a subagent: never touch the parent session's row, never materialise its time
 
-**A subagent must never run `aplan start`, `aplan stop`, `aplan done` or `aplan
-flush`.** Read freely — `ls`, `show`, `current`, `dash`, `brief`, `recall` are all
-safe. `aplan new` and `aplan triage` are also off-limits, for an unrelated reason
-given at the end of this section.
+**A subagent must never write to a session's own link, under any name.** That
+currently means `aplan start`, `aplan stop`, `aplan done`, `aplan flush`, and any
+*writing* `aplan session` subcommand — `bind`, `off`, `end`. Read freely — `ls`,
+`show`, `current`, `dash`, `brief`, `recall`, `sessions`, and `aplan session show`
+are all safe. `aplan new` and `aplan triage` are also off-limits, for an unrelated
+reason given at the end of this section.
 
 The reason, not just the rule: nothing in the environment tells `aplan` a subagent
 apart from its parent. The only variable set for a subagent is
@@ -220,7 +234,11 @@ parent's tracking to it. `aplan stop` closes the parent's session outright (afte
 flushing it — see "Sessions" above). `aplan done` completes, and flushes, whatever
 task the parent's session happens to be bound to, whether or not the subagent meant
 to touch it. `aplan flush` materialises the parent's worklog time into slots ahead of
-when the parent's own session would have.
+when the parent's own session would have. `aplan session bind` / `aplan session end`
+are `start` / `stop` under another name — the same two hazards, spelled differently.
+`aplan session off` has no bare-verb equivalent, but declaring "ne pas tracker" for
+the parent — and clearing its bound task while doing so — is exactly as much the
+parent's decision to make as the other four.
 
 This has already happened in this repo: an agent read this skill, ran `aplan start` on
 a task it found interesting, and redirected roughly 4h35 of another session's time onto
