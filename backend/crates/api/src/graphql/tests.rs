@@ -862,6 +862,89 @@ impl application::repositories::SessionRepository for FailingTouchSessionReposit
     }
 }
 
+/// Delegates every operation to a real in-memory session store, but records the
+/// order `set_last_flush` and `upsert` are called in. `setSessionMode(OFF)` must
+/// flush the session's bound task *before* the mode write clears it — presence
+/// of both calls is not enough to tell "flushed then cleared" apart from
+/// "cleared then flushed too late to matter" (by which point the task id is
+/// already gone and nothing is flushed at all), so the test asserts the
+/// recorded order directly, the same way round 1's CLI-level ordering test did
+/// against wire order.
+struct OrderRecordingSessionRepository {
+    inner: InMemorySessionRepository,
+    order: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl OrderRecordingSessionRepository {
+    fn new(order: Arc<Mutex<Vec<&'static str>>>) -> Self {
+        Self {
+            inner: InMemorySessionRepository::default(),
+            order,
+        }
+    }
+}
+
+#[async_trait]
+impl application::repositories::SessionRepository for OrderRecordingSessionRepository {
+    async fn find_by_id(
+        &self,
+        id: &str,
+        user_id: UserId,
+    ) -> Result<Option<Session>, RepositoryError> {
+        self.inner.find_by_id(id, user_id).await
+    }
+
+    async fn upsert(&self, session: &Session) -> Result<(), RepositoryError> {
+        let tag = if session.mode == SessionMode::Off {
+            "upsert_off"
+        } else {
+            "upsert_other"
+        };
+        self.order.lock().unwrap().push(tag);
+        self.inner.upsert(session).await
+    }
+
+    async fn list_open(&self, user_id: UserId) -> Result<Vec<Session>, RepositoryError> {
+        self.inner.list_open(user_id).await
+    }
+
+    async fn list_idle_open(
+        &self,
+        user_id: UserId,
+        idle_before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Session>, RepositoryError> {
+        self.inner.list_idle_open(user_id, idle_before).await
+    }
+
+    async fn touch(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        self.inner.touch(id, user_id, at).await
+    }
+
+    async fn set_last_flush(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        self.order.lock().unwrap().push("set_last_flush");
+        self.inner.set_last_flush(id, user_id, at).await
+    }
+
+    async fn end(
+        &self,
+        id: &str,
+        user_id: UserId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        self.inner.end(id, user_id, at).await
+    }
+}
+
 // ---- Timesheet-draft in-memory repo (captures upserts) ----
 struct InMemoryTimesheetDraftRepository {
     drafts: Mutex<HashMap<(UserId, chrono::NaiveDate), domain::types::TimesheetDraft>>,
@@ -3914,6 +3997,85 @@ async fn set_session_mode_off_clears_the_task() {
     let data = off.data.into_json().unwrap();
     assert_eq!(data["setSessionMode"]["mode"], "OFF");
     assert!(data["setSessionMode"]["taskId"].is_null());
+}
+
+/// `setSessionMode(OFF)` clears the session's task (locked above), and once
+/// cleared no later lookup — not `flushWorklogTime`, not the reaper — can ever
+/// find it again to flush it. A tracking session with a loggable entry must
+/// therefore be flushed *before* that clearing write, or the entry's time is
+/// gone for good. `.expect`-style presence is not enough here: the recorded
+/// order is what tells "flushed then cleared" apart from "cleared then
+/// flushed too late" (by which point the task id is already gone and nothing
+/// flushes at all) — the same distinction round 1's CLI-level ordering test
+/// drew against wire order, drawn here against repository call order instead.
+#[tokio::test]
+async fn set_session_mode_off_flushes_the_bound_task_before_clearing_it() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let schema = build_test_schema_with_memory(
+        Arc::new(InMemoryWorklogRepository::new()),
+        Arc::new(InMemoryTaskRepository::new()),
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+        Arc::new(InMemoryMemoryStore::default()),
+        Arc::new(OrderRecordingSessionRepository::new(order.clone())),
+    );
+
+    let created = schema
+        .execute(r#"mutation { createTask(input: { title: "Tracked task" }) { id } }"#)
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+    let task_id = created.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bind = schema
+        .execute(format!(
+            r#"mutation {{ bindSession(sessionId: "s1", taskId: "{task_id}") {{ session {{ id }} }} }}"#
+        ))
+        .await;
+    assert!(bind.errors.is_empty(), "{:?}", bind.errors);
+
+    let logged = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "did the thing", sessionId: "s1") {{ id }} }}"#
+        ))
+        .await;
+    assert!(logged.errors.is_empty(), "{:?}", logged.errors);
+
+    let off = schema
+        .execute(r#"mutation { setSessionMode(sessionId: "s1", mode: OFF) { mode taskId lastFlushAt } }"#)
+        .await;
+    assert!(off.errors.is_empty(), "{:?}", off.errors);
+
+    // Checked first and independently of the response below: the recorded
+    // repository call order is the direct evidence for "before", regardless
+    // of what the mutation's own return value happens to reflect.
+    let recorded = order.lock().unwrap();
+    let flush_at = recorded
+        .iter()
+        .position(|&e| e == "set_last_flush")
+        .expect("set_last_flush must be called — off must flush before clearing");
+    let clear_at = recorded
+        .iter()
+        .position(|&e| e == "upsert_off")
+        .expect("the OFF upsert must be called — off must still clear the task");
+    assert!(
+        flush_at < clear_at,
+        "set_last_flush (index {flush_at}) must precede the OFF upsert (index {clear_at})"
+    );
+    drop(recorded);
+
+    let data = off.data.into_json().unwrap();
+    assert_eq!(data["setSessionMode"]["mode"], "OFF");
+    assert!(
+        data["setSessionMode"]["taskId"].is_null(),
+        "the clearing behaviour must survive this fix — off still clears the task"
+    );
+    assert!(
+        !data["setSessionMode"]["lastFlushAt"].is_null(),
+        "off must flush the session's bound task, advancing its watermark"
+    );
 }
 
 #[tokio::test]

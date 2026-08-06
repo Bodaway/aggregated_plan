@@ -2421,20 +2421,35 @@ async fn session_end_flushes_its_own_task_before_closing_it() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 3 review round 2 — `session off` does not flush, so a session
-// switched off before it is ended still owes a flush of whatever it logged
-// while `on`. `try_session_task_id` (used by `done`'s attribution gate) is
-// deliberately gated on `mode == TRACKING`; closing must not reuse that gate,
-// or the exact permanent loss fix round 1 closed reopens through `off`.
+// Task 3 review round 2 — this round assumed `session off` might leave a
+// bound `task_id` in place, and made the CLI's closing lookup mode-independent
+// as a guard against that. Round 3 established that assumption was wrong at
+// the server: `session_tracking::set_session_mode` (`session_tracking.rs:77-79`)
+// always clears `task_id` on `Off`, `SessionMode` has exactly two variants, and
+// the only other writer (`bind_session`) always pairs a task with `Tracking`.
+// `mode: OFF` with a non-null `taskId` is therefore a state **no current
+// production path produces** — server-side flushing added in round 3 makes
+// that doubly true. The CLI guard below is kept anyway: flushing is always the
+// safe direction for a row shaped like this, whatever produced it (a legacy
+// row from before the invariant existed, a hand-edited database, a future
+// server-side regression). The test is renamed and redocumented here to say
+// exactly that, so a future reader does not conclude from it that OFF
+// sessions retain their task in ordinary operation — they cannot.
 // ---------------------------------------------------------------------------
 
-/// Mirrors `session_end_flushes_its_own_task_before_closing_it`, but the
-/// session's own row reports `mode: "OFF"` (as it would after `session off`)
-/// while still carrying the task it was tracking before the switch. If
-/// closing gated the flush on `mode`, this task's time would be silently
-/// skipped and then permanently lost the moment `EndSession` succeeds.
+/// Not a reachable scenario: builds the `mode: "OFF"` + bound-`taskId` row by
+/// hand (`session_body("OFF", Some(task_id))`), a shape no current path
+/// produces (see the block comment above). This is a defensive-guard test,
+/// not a regression test for real `session off` behaviour — that behaviour
+/// is fixed at the server in round 3 (`setSessionMode`'s resolver flushes
+/// before clearing) and has its own test there. What this pins is narrower:
+/// *if* a row like this were ever seen — a legacy row, a hand-edited
+/// database, a future server regression — `aplan session end`'s own lookup
+/// must still flush it rather than trust `mode` and skip. Red without the
+/// fix (see the report), so not vacuous; kept as defense in depth, not as
+/// evidence that this state occurs in practice.
 #[tokio::test]
-async fn session_end_flushes_a_bound_task_even_when_logging_is_off_for_it() {
+async fn session_end_defensively_flushes_a_task_on_an_off_row_shape_no_current_path_produces() {
     let task_id = "00000000-0000-0000-0000-000000000001";
     let server = MockServer::start().await;
     Mock::given(method("POST"))

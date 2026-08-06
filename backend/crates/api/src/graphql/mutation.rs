@@ -197,6 +197,16 @@ impl MutationRoot {
     }
 
     /// Record what a session was told to do. `OFF` also clears its task.
+    ///
+    /// Switching to `OFF` clears `task_id` (`session_tracking::set_session_mode`),
+    /// and once cleared no later lookup can find it: `flushWorklogTime` requires a
+    /// non-null task id, and the reaper reads the same field, so nothing automatic
+    /// would ever flush whatever this session logged while it was tracking. Flush
+    /// that task first, against the session's own window, exactly as
+    /// `flush_worklog_time` does for its `sessionId` path at `:356` — this is the
+    /// same operation, just triggered by the mode switch instead of an explicit
+    /// flush. The clearing itself is not touched: a stale task on an opted-out
+    /// session is the original defect this whole feature exists to prevent.
     async fn set_session_mode(
         &self,
         ctx: &Context<'_>,
@@ -206,13 +216,43 @@ impl MutationRoot {
     ) -> Result<ClaudeSessionGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn SessionRepository>>()?;
+        let now = chrono::Utc::now();
+
+        if mode == SessionModeGql::Off {
+            let existing = repo
+                .find_by_id(&session_id, user_id)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            if let Some(session) = existing {
+                if let Some(task_id) = session.task_id {
+                    let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+                    let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+                    let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+                    let outcome = worklog_uc::materialize_worklog_time(
+                        worklog_repo.as_ref(),
+                        activity_repo.as_ref(),
+                        config_repo.as_ref(),
+                        user_id,
+                        task_id,
+                        session.flush_window_start(),
+                        now,
+                    )
+                    .await
+                    .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                    repo.set_last_flush(&session_id, user_id, outcome.active_since)
+                        .await
+                        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                }
+            }
+        }
+
         let session = session_tracking::set_session_mode(
             repo.as_ref(),
             user_id,
             &session_id,
             mode.into(),
             label,
-            chrono::Utc::now(),
+            now,
         )
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
