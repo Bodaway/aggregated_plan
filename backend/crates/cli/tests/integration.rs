@@ -729,27 +729,36 @@ fn minimal_reconstruct_timesheet(date: &str) -> serde_json::Value {
 }
 
 /// An `activityJournal` response built from explicit `(startTime, endTime,
-/// durationMinutes)` triples — `timesheet`'s gap line sums `durationMinutes`
-/// for "brut" and re-derives the union of `(startTime, endTime)` for
-/// "couvert", so both must be supplied consistently (as a real server would).
-fn activity_journal_slots(entries: &[(&str, &str, i64)]) -> serde_json::Value {
+/// durationMinutes, taskId)` quadruples — `timesheet`'s gap line sums
+/// `durationMinutes` for "brut" and re-derives the union of `(startTime,
+/// endTime)` for "couvert", so both must be supplied consistently (as a real
+/// server would). `taskId: None` produces a null `taskId` and a null `task`
+/// — an untagged slot, which `timesheet_cmd.rs` must exclude from both sums
+/// (same exclusion `find_overlaps` applies, for the same reason: time
+/// attributed to nobody cannot be "double-booked").
+fn activity_journal_slots(entries: &[(&str, &str, i64, Option<&str>)]) -> serde_json::Value {
     let items: Vec<_> = entries
         .iter()
         .enumerate()
-        .map(|(i, (start, end, duration))| {
+        .map(|(i, (start, end, duration, task_id))| {
             json!({
                 "id": format!("00000000-0000-0000-0000-0000000000{:02}", 50 + i),
-                "taskId": "00000000-0000-0000-0000-000000000001",
+                "taskId": task_id,
                 "startTime": start,
                 "endTime": end,
                 "halfDay": "MORNING",
                 "durationMinutes": duration,
-                "task": { "id": "00000000-0000-0000-0000-000000000001", "title": "Some task" }
+                "task": task_id.map(|tid| json!({ "id": tid, "title": "Some task" }))
             })
         })
         .collect();
     json!({ "data": { "activityJournal": items } })
 }
+
+/// The task id every pre-existing `activity_journal_slots` fixture in this
+/// section tags its slots with — factored out so the untagged-slot test
+/// below reads as "one tagged, one not" rather than repeating the literal.
+const SOME_TASK_ID: &str = "00000000-0000-0000-0000-000000000001";
 
 /// A day whose journal carries one flagged overlap: 47 minutes between "Saft
 /// cadrage" (a session, abbreviated `a1b2`) and "Cartier" (manual/no session)
@@ -994,8 +1003,8 @@ async fn timesheet_prints_overlap_gap_with_raw_and_covered_totals() {
         &server,
         "ActivityJournal",
         activity_journal_slots(&[
-            ("2026-04-08T09:00:00Z", "2026-04-08T13:00:00Z", 240),
-            ("2026-04-08T12:10:00Z", "2026-04-08T16:30:00Z", 260),
+            ("2026-04-08T09:00:00Z", "2026-04-08T13:00:00Z", 240, Some(SOME_TASK_ID)),
+            ("2026-04-08T12:10:00Z", "2026-04-08T16:30:00Z", 260, Some(SOME_TASK_ID)),
         ]),
     )
     .await;
@@ -1028,7 +1037,12 @@ async fn timesheet_clean_day_prints_no_overlap_warning() {
     mount_operation(
         &server,
         "ActivityJournal",
-        activity_journal_slots(&[("2026-04-08T09:00:00Z", "2026-04-08T17:00:00Z", 480)]),
+        activity_journal_slots(&[(
+            "2026-04-08T09:00:00Z",
+            "2026-04-08T17:00:00Z",
+            480,
+            Some(SOME_TASK_ID),
+        )]),
     )
     .await;
     let url = format!("{}/graphql", server.uri());
@@ -1073,9 +1087,9 @@ async fn timesheet_prints_the_correct_gap_across_a_real_lunch_break_not_the_nega
         &server,
         "ActivityJournal",
         activity_journal_slots(&[
-            ("2026-04-08T09:00:00Z", "2026-04-08T11:00:00Z", 120),
-            ("2026-04-08T10:00:00Z", "2026-04-08T12:00:00Z", 120),
-            ("2026-04-08T15:00:00Z", "2026-04-08T16:00:00Z", 60),
+            ("2026-04-08T09:00:00Z", "2026-04-08T11:00:00Z", 120, Some(SOME_TASK_ID)),
+            ("2026-04-08T10:00:00Z", "2026-04-08T12:00:00Z", 120, Some(SOME_TASK_ID)),
+            ("2026-04-08T15:00:00Z", "2026-04-08T16:00:00Z", 60, Some(SOME_TASK_ID)),
         ]),
     )
     .await;
@@ -1090,6 +1104,49 @@ async fn timesheet_prints_the_correct_gap_across_a_real_lunch_break_not_the_nega
         ))
         .stdout(predicate::str::contains("brut 5 h 00"))
         .stdout(predicate::str::contains("couvert 4 h 00"));
+}
+
+/// `timesheet_cmd.rs` excludes untagged slots (`taskId: null`) from both
+/// `raw` and `covered`, matching `find_overlaps`' own exclusion of
+/// unattributed time (production commit 6029264). Until this test, nothing
+/// pinned that: every other fixture in this file hardcodes a `taskId` on
+/// every slot, so `.filter(|s| s.task_id.is_some())` could be replaced with
+/// `.filter(|_s| true)` and all 144 CLI tests would stay green.
+///
+/// This fixture has exactly one tagged slot (9:00–11:00, no overlap by
+/// itself) and one untagged slot (10:00–12:00, taskId null) that overlaps
+/// it by an hour. The untagged slot's duration is not a fixed margin here —
+/// its very presence is what moves the gap: correctly excluded, there is
+/// only one slot, so `raw == covered` and the gap is exactly 0 (no line).
+/// Wrongly included (treated as tagged), `raw` becomes 240, `covered`
+/// (union of 9:00–11:00 and 10:00–12:00) becomes 180, and a spurious 60-min
+/// overlap line prints for a day that has none — attributing "double
+/// booking" to time nobody logged against any task.
+#[tokio::test]
+async fn timesheet_excludes_untagged_slots_from_the_overlap_gap() {
+    let server = MockServer::start().await;
+    mount_operation(
+        &server,
+        "ReconstructTimesheet",
+        minimal_reconstruct_timesheet("2026-04-08"),
+    )
+    .await;
+    mount_operation(
+        &server,
+        "ActivityJournal",
+        activity_journal_slots(&[
+            ("2026-04-08T09:00:00Z", "2026-04-08T11:00:00Z", 120, Some(SOME_TASK_ID)),
+            ("2026-04-08T10:00:00Z", "2026-04-08T12:00:00Z", 120, None),
+        ]),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    aplan()
+        .args(["--api-url", &url, "timesheet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recouvrement").not());
 }
 
 /// The graceful path, for `timesheet`: its overlap-gap check's own round trip
