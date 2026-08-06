@@ -18,8 +18,10 @@ pub trait SessionRepository: Send + Sync {
     ) -> Result<Option<Session>, RepositoryError>;
 
     /// Insert, or overwrite the mutable columns of an existing row: `task_id`,
-    /// `mode`, `label`, `last_seen_at`. `started_at` is never rewritten — a session
-    /// that rebinds is the same session, and plan 2's flush window is anchored on it.
+    /// `mode`, `label`, `last_seen_at`, `ended_at`. `started_at` is never rewritten
+    /// — a session that rebinds is the same session, and plan 2's flush window is
+    /// anchored on it. `ended_at` *is* overwritten, deliberately: a bind is a
+    /// request to work, and this is what lets it revive a row the reaper closed.
     async fn upsert(&self, session: &Session) -> Result<(), RepositoryError>;
 
     /// Open sessions, most recently seen first. What `aplan sessions` prints.

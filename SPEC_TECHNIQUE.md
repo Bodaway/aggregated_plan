@@ -3092,14 +3092,18 @@ déjà connue d'y retomber.
 |---|---|
 | Ligne inconnue (`claudeSession` = null) | `AskUserQuestion` obligatoire (Option 1 = tâche humaine courante, lue via `aplan current`, si elle existe) |
 | Connue, `mode = OFF` | Une ligne : logging désactivé pour cette session, ne pas redemander |
-| Connue, `mode = TRACKING`, tâche résolue | Une ligne confirmant la tâche suivie |
+| Connue, `mode = TRACKING`, tâche résolue, ligne encore ouverte (`endedAt` vide) | Une ligne confirmant la tâche suivie |
+| Connue, `mode = TRACKING`, tâche résolue, mais ligne **fermée** par le ramasseur (`endedAt` non vide) | `AskUserQuestion` obligatoire ; l'option Continuer lance `aplan session bind` (jamais une simple confirmation) puisque la ligne, fermée, ne peut pas encore recevoir de worklog |
 | `source = clear` (sur n'importe quelle ligne) | `AskUserQuestion` obligatoire, même sur une ligne déjà connue |
 | Backend/CLI inaccessible, id de session absent, réponse sans clé `claudeSession`, ou session planifiée (`APLAN_UNATTENDED`) | Rien n'est injecté — no-op silencieux et délibéré : le hook préfère se taire plutôt que mal deviner |
 
-Le déclenchement de la question couvre en réalité **trois** conditions, pas seulement la
-première ligne du tableau : aucun choix enregistré, `source = clear`, ou une ligne `TRACKING`
-dont la tâche ne résout plus (supprimée entre-temps) — ce dernier cas se lit « connue » dans la
-table ci-dessus mais retombe sur la question faute de titre à confirmer. `resume` et `compact`
+Le déclenchement de la question couvre en réalité **quatre** conditions, pas seulement la
+première ligne du tableau : aucun choix enregistré, `source = clear`, une ligne `TRACKING` dont
+la tâche ne résout plus (supprimée entre-temps), ou une ligne `TRACKING` que le ramasseur a
+fermée entre-temps (`endedAt` non vide, voir plus bas) — ces deux derniers cas se lisent
+« connue » dans la table ci-dessus mais retombent sur la question, le premier faute de titre à
+confirmer, le second parce que confirmer un suivi sur une ligne fermée affirmerait quelque chose
+de faux : `aplan log` y échoue (exit 4) jusqu'à un `session bind`. `resume` et `compact`
 ne redemandent **jamais** parce qu'ils ne sont ni l'un ni l'autre : ils suivent la ligne
 enregistrée comme tout `source` hors `clear`. C'est exactement le correctif du défaut
 d'origine — la ligne injectée à un re-déclenchement vient désormais de l'enregistrement de la
@@ -3133,6 +3137,17 @@ bind qui n'a jamais eu lieu) n'a rien à matérialiser et est fermée directemen
 session — flush, avance du filigrane, ou fermeture — est journalisé et sauté, jamais propagé :
 le ramasseur tourne sans surveillance, et une session bloquée ne doit pas empêcher les suivantes
 d'être traitées dans le même passage.
+
+**« Inactive » veut dire « aucune écriture aplan », pas « aucune activité ».** `last_seen_at`
+n'avance qu'à `resolve_session_target` (`application/…/session_tracking.rs:136`) et à la
+résolution de session côté mutation (`api/…/mutation.rs:158`) — c'est-à-dire uniquement à une
+écriture `aplan`, jamais à une simple lecture ni à une conversation qui n'en déclenche aucune.
+Une session qui lit et discute pendant 12 h sans jamais appeler `aplan log`/`start`/`stop`/`flush`
+est donc « inactive » selon cette définition, et peut être fermée par le ramasseur en plein
+milieu de son travail, sans qu'aucun hook ne l'en avertisse. Le chemin de reprise est le même que
+pour toute ligne fermée : `aplan session bind`, qui rouvre la ligne (voir la table du hook
+SessionStart ci-dessus). Le seuil de 12 h lui-même n'est pas remis en cause ici — c'est un
+arbitrage produit, pas un défaut de code.
 
 #### 7.3.6 Recouvrement entre tâches : visible, jamais corrigé
 

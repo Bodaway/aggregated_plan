@@ -149,21 +149,38 @@ pub(crate) fn bind_session_flushing_previous(
 /// own, and once the row is closed no future window will ever select this
 /// session's worklog entries again — that time would be gone for good, not
 /// delayed. The lookup is deliberately mode-independent
-/// (`task_id_to_flush_before_closing`, not `try_session_task_id`): `session
-/// off` does not flush, so a session switched off can still carry unflushed
-/// time against the task it was tracking while `on`, and this helper — not
-/// every mode-changing verb — is what promises that time survives the
-/// close. Refuses to end (surfaces the lookup's error instead of closing
-/// blind) when the task lookup itself failed — ending is irreversible,
-/// unlike `done`'s flush gate, which leaves the session open and its time
-/// recoverable by a later `stop` or `flush`.
+/// (`task_id_to_flush_before_closing`, not `try_session_task_id`): `mode`
+/// says whether the session is currently tracking, not whether the row
+/// still holds a `task_id` this close would otherwise lose — the two agree
+/// for an `off` session anyway, since `session off` (`setSessionMode`)
+/// already flushed and cleared `task_id` up front, so this simply finds
+/// nothing left to do for it. Refuses to end (surfaces the lookup's error
+/// instead of closing blind) when the task lookup itself failed — ending is
+/// irreversible, unlike `done`'s flush gate, which leaves the session open
+/// and its time recoverable by a later `stop` or `flush`. And refuses the
+/// same way if the flush itself fails, for the same reason (see below).
 pub(crate) fn end_session_flushing_first(
     client: &Client,
     session_id: &str,
     json: bool,
 ) -> ExitCode {
     match task_id_to_flush_before_closing(client, session_id) {
-        Ok(Some(tid)) => flush_task(client, &tid, Some(session_id)),
+        Ok(Some(tid)) => {
+            // Not `flush_task`: that swallows a failed flush into a warning,
+            // which is the right call for its other (best-effort) callers
+            // but wrong here. Ending is irreversible — once the row closes,
+            // no later window ever selects this session's entries again —
+            // so a flush that failed must refuse the close, the same way
+            // the lookup failure above already does, rather than let it
+            // proceed and lose that time for good.
+            if let Err(e) = client.run::<FlushWorklogTime>(flush_worklog_time::Variables {
+                task_id: tid,
+                session_id: Some(session_id.to_string()),
+            }) {
+                eprintln!("error: {}", e);
+                return ExitCode::Generic;
+            }
+        }
         Ok(None) => {}
         Err(e) => {
             eprintln!("error: {}", e);
@@ -272,7 +289,7 @@ pub fn done(
     // through `resolve_target` here would additionally hydrate via `GetTask` for
     // no reason. It answers on behalf of the global pointer, same as `resolve_target`
     // would with both arguments absent.
-    let has_explicit_target = task.is_some() || session.filter(|s| !s.trim().is_empty()).is_some();
+    let has_explicit_target = task.is_some() || present_session(session).is_some();
     let (target_id, via) = if has_explicit_target {
         match resolve_target(&client, session, task) {
             Ok((t, via)) => (t.id, via),
@@ -324,8 +341,7 @@ pub fn done(
     // implicit `ResolvedVia::Session` resolution would. `--task` still
     // decided *which* task; this only decides *whose* window flushes.
     let session_tracks_target = via == ResolvedVia::Task
-        && session
-            .filter(|s| !s.trim().is_empty())
+        && present_session(session)
             .is_some_and(|id| session_task_id(&client, id).as_deref() == Some(target_id.as_str()));
 
     let active = active_task_id(&client);

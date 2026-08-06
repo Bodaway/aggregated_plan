@@ -3,6 +3,7 @@
 
 use crate::cli::MemoryKindArg;
 use crate::client::{Client, ClientError};
+use crate::commands::present_session;
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
@@ -125,7 +126,7 @@ fn resolve_remember_task(
     if let Some(token) = task {
         return resolve_task(client, Some(token)).map(|t| Some(t.id));
     }
-    let Some(sid) = session.filter(|s| !s.trim().is_empty()) else {
+    let Some(sid) = present_session(session) else {
         return Ok(None);
     };
 

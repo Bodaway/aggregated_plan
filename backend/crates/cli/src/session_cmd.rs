@@ -3,7 +3,7 @@
 
 use crate::cli::SessionAction;
 use crate::client::Client;
-use crate::commands::{bind_session_flushing_previous, end_session_flushing_first};
+use crate::commands::{bind_session_flushing_previous, end_session_flushing_first, present_session};
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
@@ -89,7 +89,7 @@ pub fn session(
     action: &SessionAction,
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    let sid = session_id.filter(|s| !s.trim().is_empty());
+    let sid = present_session(session_id);
 
     match action {
         SessionAction::Show => {

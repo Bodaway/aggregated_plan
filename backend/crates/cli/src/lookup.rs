@@ -240,13 +240,17 @@ pub fn session_task_id(client: &Client, id: &str) -> Option<String> {
 
 /// The task id `id` is bound to, for the sole purpose of flushing it before
 /// the session's row closes. Deliberately **not** gated on `mode`, unlike
-/// `try_session_task_id`: `session off` does not flush, so a session
-/// switched off may still carry unflushed time against the task it was
-/// tracking while `on`, and closing without flushing that would be the same
-/// permanent loss ending exists to prevent. `mode` answers "is this session
-/// currently tracking", a different question from "does this row still owe
-/// a flush before it closes" — only a missing row or an already-ended
-/// session answer "no" to the second one; `mode` never does.
+/// `try_session_task_id`: `mode` answers "is this session currently
+/// tracking", a different question from "does this row still hold a
+/// `task_id` that needs a flush before it disappears forever" — checking
+/// `task_id` directly answers that, rather than trusting `mode` to imply it.
+/// In practice the two agree for an `OFF` session anyway: `session off`
+/// (`setSessionMode`) already flushes the session's task and clears
+/// `task_id` before the row can read `OFF`, so this finds nothing to do for
+/// it — not because an off session "does not flush" (it does, up front, in
+/// `setSessionMode`), but because there is nothing left by the time this
+/// runs. Only a missing row or an already-ended session answer "no" for a
+/// reason other than "already flushed"; `mode` alone never does.
 pub fn task_id_to_flush_before_closing(
     client: &Client,
     id: &str,

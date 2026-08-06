@@ -80,9 +80,14 @@ printf '%s' "$session_json" | jq -e 'has("claudeSession")' >/dev/null 2>&1 || ex
 #   - ended:  whoever closed the row flushed it first, and an ended row refuses
 #             implicit targets (application/…/session_tracking.rs:112-136), so no
 #             entry can have accrued since.
-#   - OFF:    the session opted out. Anything it still carries stays recoverable,
-#             because the reaper's pre-close flush is deliberately NOT mode-gated
-#             (cli/src/lookup.rs:241-262, application/…/session_reaper.rs:43-45).
+#   - OFF:    the session opted out. Nothing is lost because `setSessionMode`
+#             flushes the session's own task *before* clearing `taskId`
+#             (api/…/mutation.rs:221-247) — by the time a row reads OFF here,
+#             its worklog is already flushed, not merely flushable later. The
+#             reaper's own pre-close flush being NOT mode-gated
+#             (cli/src/lookup.rs:241-262, application/…/session_reaper.rs:43-45)
+#             is a second, independent safety net for other paths, not the
+#             reason an OFF session is safe.
 # Anything other than TRACKING fails closed: a flush writes, so an unrecognised
 # mode must never trigger one.
 ended=$(printf '%s' "$session_json" | jq -r '.claudeSession.endedAt // empty' 2>/dev/null || echo '')

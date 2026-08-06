@@ -85,6 +85,14 @@ printf '%s' "$session_json" | jq -e 'has("claudeSession")' >/dev/null 2>&1 || ex
 mode=$(printf '%s' "$session_json"       | jq -r '.claudeSession.mode // empty'       2>/dev/null || echo '')
 sess_title=$(printf '%s' "$session_json" | jq -r '.claudeSession.task.title // empty' 2>/dev/null || echo '')
 sess_task_id=$(printf '%s' "$session_json" | jq -r '.claudeSession.task.id // empty'  2>/dev/null || echo '')
+# The idle-session reaper closes ANY open row past the idle timeout, tracking
+# or not, and idleness there means "no aplan write" — reading/discussing for
+# hours with no `aplan log` counts. `claude --resume` on a row it closed
+# lands here still `mode = TRACKING` with a resolvable title: without this
+# check the branch below would confirm a task this row is no longer able to
+# log against (a closed row fails `aplan log` with exit 4), stating something
+# untrue in the one place this plan exists to make trustworthy.
+ended=$(printf '%s' "$session_json" | jq -r '.claudeSession.endedAt // empty' 2>/dev/null || echo '')
 
 read -r -d '' base_rules <<EOF || true
 This Claude Code session has its own aplan link: the session row keyed by session id ${sid}. That row — not the global active-task pointer — is what says which task this session logs against; the pointer is the human working by hand, and nothing you do here may move it. Use the \`aplan\` CLI for all task interactions (see the \`aplan\` skill for the full set of recipes).
@@ -115,7 +123,7 @@ if [ "$source" != "clear" ] && [ "$mode" = "OFF" ]; then
 
 Do NOT ask the user about it again, and for the REST OF THIS SESSION never call \`aplan log\`, \`aplan start\`, \`aplan stop\` or \`aplan flush\`. Say nothing about aplan unless the user raises it; just proceed with whatever the user asks."
 
-elif [ "$source" != "clear" ] && [ "$mode" = "TRACKING" ] && [ -n "$sess_title" ]; then
+elif [ "$source" != "clear" ] && [ -z "$ended" ] && [ "$mode" = "TRACKING" ] && [ -n "$sess_title" ]; then
   context="This Claude Code session is tracking aplan task: \"${sess_title}\".
 
 ${base_rules}
@@ -131,12 +139,21 @@ else
   cont_target=""
   cont_key=""
   cont_bound=no
-  if [ "$mode" = "TRACKING" ] && [ -n "$sess_title" ]; then
+  if [ -z "$ended" ] && [ "$mode" = "TRACKING" ] && [ -n "$sess_title" ]; then
     # /clear on a session that already has a link: offer its own task, and the
     # human's pointer never enters the picture.
     cont_title=$sess_title
     cont_target=$sess_task_id
     cont_bound=yes
+  elif [ -n "$ended" ] && [ "$mode" = "TRACKING" ] && [ -n "$sess_title" ]; then
+    # The reaper closed this row while it was still tracking, and reviving it
+    # works: `session bind` clears `ended_at` (`session_repo.rs`'s upsert
+    # overwrites it). Offer the same task, but never as a bare confirm —
+    # `cont_bound=no` forces the Continuer action below to actually run the
+    # bind, since a confirm alone would leave the session linked to a row
+    # that still cannot log.
+    cont_title=$sess_title
+    cont_target=$sess_task_id
   elif [ -z "$mode" ]; then
     # The ONE legitimate use of the human's pointer: NO session row exists at all
     # (hence the `-z "$mode"` gate), and the human has just opened a Claude on what
