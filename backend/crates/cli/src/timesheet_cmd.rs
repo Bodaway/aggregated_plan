@@ -44,36 +44,53 @@ pub fn timesheet(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
             // Best-effort, same reasoning as `journal`/`dash`: the day's
             // reconstruction already rendered successfully above, and a
             // failure fetching the supplementary overlap check must not turn
-            // that into a hard error.
-            if let Ok(jr) = client.run::<ActivityJournal>(activity_journal::Variables { date }) {
-                let raw: i64 = jr
-                    .data
-                    .activity_journal
-                    .iter()
-                    .filter_map(|s| s.duration_minutes)
-                    .sum();
-                let intervals: Vec<(DateTime<Utc>, DateTime<Utc>)> = jr
-                    .data
-                    .activity_journal
-                    .iter()
-                    .filter_map(|s| {
-                        let end = parse_instant(s.end_time.as_deref()?)?;
-                        let start = parse_instant(&s.start_time)?;
-                        Some((start, end))
-                    })
-                    .collect();
-                let covered = union_minutes(intervals);
-                let gap = raw - covered;
-                if gap > 0 {
-                    println!();
-                    println!(
-                        "\u{26a0} recouvrement {gap} min sur la journ\u{e9}e \u{2014} brut {} h {}, couvert {} h {}",
-                        raw / 60,
-                        raw % 60,
-                        covered / 60,
-                        covered % 60,
-                    );
+            // that into a hard error — but is noted on stderr rather than
+            // swallowed outright, so a quiet day is never indistinguishable
+            // from a failed check.
+            match client.run::<ActivityJournal>(activity_journal::Variables { date }) {
+                Ok(jr) => {
+                    // Untagged slots (`taskId: null`) are excluded: they are
+                    // time attributed to nobody, so they have no business in
+                    // a number about double-booked *attribution* — the same
+                    // exclusion `find_overlaps` applies for the same reason
+                    // (`domain/rules/overlap.rs`).
+                    let tagged = jr
+                        .data
+                        .activity_journal
+                        .iter()
+                        .filter(|s| s.task_id.is_some());
+                    let raw: i64 = tagged.clone().filter_map(|s| s.duration_minutes).sum();
+                    let intervals: Vec<(DateTime<Utc>, DateTime<Utc>)> = tagged
+                        .filter_map(|s| {
+                            let end = parse_instant(s.end_time.as_deref()?)?;
+                            let start = parse_instant(&s.start_time)?;
+                            Some((start, end))
+                        })
+                        .collect();
+                    let covered = union_minutes(intervals);
+                    let gap = raw - covered;
+                    // Even after excluding untagged time, this residual still
+                    // counts two overlapping stretches of the *same* task —
+                    // which the pair rule deliberately does not (a task may
+                    // legitimately have several stretches in a half-day).
+                    // That is intentional, not a bug to align with `journal`:
+                    // this line answers "how much of today's logged time is
+                    // double-booked at all" (you cannot bill 8h20 inside
+                    // 7h30 of wall time, regardless of which task it was),
+                    // while `journal` answers "which two tasks collided".
+                    // The two measures can disagree and both be right.
+                    if gap > 0 {
+                        println!();
+                        println!(
+                            "\u{26a0} recouvrement {gap} min sur la journ\u{e9}e \u{2014} brut {} h {:02}, couvert {} h {:02}",
+                            raw / 60,
+                            raw % 60,
+                            covered / 60,
+                            covered % 60,
+                        );
+                    }
                 }
+                Err(e) => eprintln!("note: overlap check unavailable: {e}"),
             }
             ExitCode::Success
         }

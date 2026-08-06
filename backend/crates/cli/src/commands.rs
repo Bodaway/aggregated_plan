@@ -672,45 +672,50 @@ pub fn journal(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
             // failure here (network hiccup, an older server without the
             // operation) must not turn a working `journal` into a hard
             // error — it only means the warning is silently unavailable
-            // this time, not that nothing else printed matters.
-            if let Ok(or) = client.run::<ActivityOverlaps>(activity_overlaps::Variables {
-                date: date_str,
-            }) {
-                // A sub-minute intersection truncates to 0 (task 7) and would
-                // be pure noise here — never printed.
-                let pairs: Vec<_> = or
-                    .data
-                    .activity_overlaps
-                    .into_iter()
-                    .filter(|o| o.minutes > 0)
-                    .collect();
-                if !pairs.is_empty() {
-                    println!();
-                    for o in &pairs {
-                        let title_a = o
-                            .a
-                            .task
-                            .as_ref()
-                            .map(|t| t.title.as_str())
-                            .unwrap_or("(no task)");
-                        let title_b = o
-                            .b
-                            .task
-                            .as_ref()
-                            .map(|t| t.title.as_str())
-                            .unwrap_or("(no task)");
-                        println!(
-                            "{}",
-                            format_overlap_line(
-                                o.minutes,
-                                title_a,
-                                title_b,
-                                &o.a.session_id,
-                                &o.b.session_id,
-                            )
-                        );
+            // this time, not that nothing else printed matters. But the
+            // silence must not be *total*: a note on stderr (never stdout,
+            // which stays machine-clean) so "no overlaps today" is never
+            // indistinguishable from "the check failed" — the one case
+            // where a user would misread it is exactly an older server.
+            match client.run::<ActivityOverlaps>(activity_overlaps::Variables { date: date_str }) {
+                Ok(or) => {
+                    // A sub-minute intersection truncates to 0 (task 7) and would
+                    // be pure noise here — never printed.
+                    let pairs: Vec<_> = or
+                        .data
+                        .activity_overlaps
+                        .into_iter()
+                        .filter(|o| o.minutes > 0)
+                        .collect();
+                    if !pairs.is_empty() {
+                        println!();
+                        for o in &pairs {
+                            let title_a = o
+                                .a
+                                .task
+                                .as_ref()
+                                .map(|t| t.title.as_str())
+                                .unwrap_or("(no task)");
+                            let title_b = o
+                                .b
+                                .task
+                                .as_ref()
+                                .map(|t| t.title.as_str())
+                                .unwrap_or("(no task)");
+                            println!(
+                                "{}",
+                                format_overlap_line(
+                                    o.minutes,
+                                    title_a,
+                                    title_b,
+                                    &o.a.session_id,
+                                    &o.b.session_id,
+                                )
+                            );
+                        }
                     }
                 }
+                Err(e) => eprintln!("note: overlap check unavailable: {}", e),
             }
             ExitCode::Success
         }
@@ -800,21 +805,24 @@ pub fn dash(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
             // One summary line if the day carries any overlap — never a
             // per-pair breakdown here, that is `journal`'s job. Best-effort,
             // same reasoning as `journal`: a failure here must not turn a
-            // working `dash` into a hard error.
-            if let Ok(or) = client.run::<ActivityOverlaps>(activity_overlaps::Variables {
-                date: date_str,
-            }) {
-                let pairs: Vec<_> = or
-                    .data
-                    .activity_overlaps
-                    .into_iter()
-                    .filter(|o| o.minutes > 0)
-                    .collect();
-                if !pairs.is_empty() {
-                    let total: i64 = pairs.iter().map(|o| o.minutes).sum();
-                    println!();
-                    println!("{}", format_dash_overlap_summary(pairs.len(), total));
+            // working `dash` into a hard error, but must not be silent
+            // either — see the note there on why stdout stays clean and
+            // stderr gets the note instead.
+            match client.run::<ActivityOverlaps>(activity_overlaps::Variables { date: date_str }) {
+                Ok(or) => {
+                    let pairs: Vec<_> = or
+                        .data
+                        .activity_overlaps
+                        .into_iter()
+                        .filter(|o| o.minutes > 0)
+                        .collect();
+                    if !pairs.is_empty() {
+                        let total: i64 = pairs.iter().map(|o| o.minutes).sum();
+                        println!();
+                        println!("{}", format_dash_overlap_summary(pairs.len(), total));
+                    }
                 }
+                Err(e) => eprintln!("note: overlap check unavailable: {}", e),
             }
             ExitCode::Success
         }
