@@ -950,7 +950,7 @@ timesheet  ⚠ recouvrement 50 min sur la journée — brut 8 h 20, couvert 7 h 
 dash       ⚠ 2 recouvrements aujourd'hui (50 min au total) — détail : aplan journal
 ```
 
-The session identifier is the **first 4 characters** of the session id, as `aplan sessions` already abbreviates; `manuel` (no id) is the human, matching `○ manuel (toi)` in that command. On a side whose `sessionId` is null, print `manuel` — never an empty parenthesis.
+The session identifier is the **first 4 characters** of the session id. ⚠️ My justification for that was wrong — I wrote "as `aplan sessions` already abbreviates", and it does not: `session_cmd.rs` prints the full 36-character id (`● 364779b0-7ec1-4825-b885-f9fab70e5121  SAFT prod …`). The decision stands on its own merit instead: a full uuid inside `(session … ↔ manuel)` would dominate the line and bury the two task titles that are the point of it. Four characters is enough to tell two concurrent sessions apart, which is all this line needs. (That `aplan sessions` prints full ids is arguably its own wart, but it is out of scope here — do not change it.) `manuel` (no id) is the human, matching `○ manuel (toi)` in that command. On a side whose `sessionId` is null, print `manuel` — never an empty parenthesis.
 
 `dash`'s count is the number of pairs, not of distinct tasks, and its total is the sum of the pairs' minutes. That sum **double-counts a slot involved in two pairs**, and that is correct here: the number is a magnitude of the problem, not a quantity of time to reconcile. Say so in a comment, because the next reader will otherwise "fix" it into the union measure that `timesheet` uses — the two commands answer different questions on purpose.
 
