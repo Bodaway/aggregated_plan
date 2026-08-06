@@ -822,7 +822,7 @@ EOF
 ## Task 8: Expose overlap on the journal
 
 **Files:**
-- Modify: `backend/crates/application/src/use_cases/activity_reporting.rs`
+- Modify: `backend/crates/application/src/use_cases/activity_tracking.rs` — **not** `activity_reporting.rs`, which the plan's first draft named. That file exists but holds only `get_weekly_activity_summary`; the function you are pairing with, `get_activity_journal`, is at `activity_tracking.rs:50`, so its sibling belongs beside it.
 - Modify: `backend/crates/api/src/graphql/{query.rs,types/activity.rs}`
 - Modify: `backend/crates/cli/graphql/activity_journal.graphql`
 - Modify: `backend/crates/cli/graphql/schema.graphql` (regenerated)
@@ -844,7 +844,9 @@ query ActivityJournal($date: NaiveDate!) {
 }
 ```
 
-Decide where the overlap list attaches — a sibling field on a wrapper type, or a resolver-level query taking the same date — and say why. A wrapper changes the existing field's shape and every consumer; a sibling query is additive. **The frontend consumes `activityJournal`** (`frontend/src/hooks/use-activity.ts`), and frontend work is a non-goal, so **additive is almost certainly right**: verify what the frontend selects before choosing.
+**The decision is made: expose it as an additive sibling query, not as a field on a wrapper type.** I verified why rather than leaving it to judgment — `frontend/src/hooks/use-activity.ts:161` types `activityJournal` as `readonly ActivitySlot[]` and `:271` reads `result.data?.activityJournal ?? []`, so wrapping the existing field would break the frontend's types, and frontend work is a non-goal of this plan.
+
+The shape to mirror is `Query::activity_journal` (`api/src/graphql/query.rs:371-383`): it takes `date: NaiveDate`, pulls `UserId` and `Arc<dyn ActivitySlotRepository>` from the context, and delegates to `activity_tracking::get_activity_journal`. Add `activity_overlaps(date)` beside it, delegating to a new `activity_tracking::get_activity_overlaps` that fetches the same slots and applies the domain rule. Keep `find_overlaps` in `domain` — the use case fetches, the rule decides.
 
 - [ ] **Step 1: Write the failing resolver test, run it, implement, run again**
 
