@@ -393,7 +393,21 @@ EOF
 - Consumes: `reap_idle_sessions` and `ReapOutcome` (Task 1).
 - Produces: the reaper running on the existing background loop, with the idle threshold read from the config key `aplan.session_idle_timeout_hours` (default **12**).
 
-**Read `jobs.rs` before writing anything.** It already runs `run_eod_scheduler` in a `loop` with a `RetryPolicy` and a `JobHealth`, spawned once from `main.rs`. Follow that structure — do not add a second `tokio::spawn` with its own ad-hoc sleep if the existing loop can carry another pass. Report which shape you chose and why.
+**The existing shape, verified — build on it rather than beside it.**
+
+`api/src/jobs.rs:38` is `pub async fn run_eod_scheduler(deps: EodDeps, user_id: UserId)`: a `loop` that runs one `run_eod_pass`, converts the result into an `AttemptOutcome::{Succeeded, Failed}`, feeds it to `health.observe(observed, Utc::now(), &policy)`, logs via a local `report()`, and sleeps `decision.retry_in`. The policy is `RetryPolicy::end_of_day()` (`jobs.rs:39`) — a `const fn` in `application/src/jobs.rs:36` with `base: 5 min` and a ceiling it backs off to. `main.rs:203` spawns it once.
+
+**Reuse `RetryPolicy` + `JobHealth`; do not hand-roll a sleep.** Two shapes are defensible and you must pick one and justify it in your report:
+
+- **A second scheduler** — `run_session_reaper_scheduler(deps, user_id)` with its own `RetryPolicy::session_reaper()` constructor beside `end_of_day()`, its own `JobHealth`, spawned from `main.rs` next to line 203.
+- **The reaper inside the existing loop**, before or after the end-of-day pass.
+
+**A reaper failure must not feed the end-of-day health signal, whichever you choose.** That back-off exists to stop hammering a broken git/Gryzzly integration; folding an unrelated failure into it would slow timesheet reconstruction for a reason that has nothing to do with timesheets. If you put the reaper in the existing loop, its outcome stays out of `health.observe`.
+
+**Two concrete details that are easy to miss:**
+
+- `EodDeps` (`jobs.rs:18`) carries `worklog_repo` and `config_repo` but **not** `activity_repo` and **not** `session_repo`. The reaper needs all four. Prefer a separate deps struct over widening `EodDeps` with fields the end-of-day pass never reads.
+- `main.rs:135` moves `session_repo` into the GraphQL schema **without** `.clone()` (unlike `activity_repo` at `:119`). Passing it to a job as well means changing that line to `session_repo.clone()`.
 
 - [ ] **Step 1: Write the failing test**
 
