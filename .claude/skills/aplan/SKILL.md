@@ -20,6 +20,43 @@ aplan current --json
 # → {"currentActivity":{"id":"...","task":{"id":"...","title":"Auth migration"},...}}
 ```
 
+## Sessions: your own link, separate from the human's pointer
+
+Two independent actors write to this backend, and they never share state:
+
+- **The human**, working by hand, is `aplan.active_task_id` / `aplan.active_since` —
+  one pair of global config keys. `aplan current` and the bare global pointer speak
+  for the human, never for a session.
+- **You**, this Claude Code session, are one row in the `sessions` table, keyed by
+  `CLAUDE_CODE_SESSION_ID`. The harness exports that variable into every Bash call, so
+  the global `--session` flag every command accepts defaults to it and you never pass
+  it yourself. Your row carries its own task and its own flush watermark — several
+  sessions can run at once, on different tasks, without touching each other or the
+  human's pointer.
+
+```bash
+aplan sessions --json             # every open session + the human's pointer, read-only
+aplan session show --json         # THIS session's own link: task, mode, endedAt
+aplan session bind --json <task>  # link THIS session to <task>. Never touches the human's pointer.
+aplan session off --json          # disable aplan logging for this session, persistently
+aplan session end --json          # close this session's row — a deliberate act, not automatic
+```
+
+The SessionStart hook already made this session's choice (a bound task, or "ne pas
+tracker") and told you in its injected context. Don't re-derive it from `aplan
+current` — that answers for the human — and don't ask the user again.
+
+**`aplan start` / `aplan stop` are `aplan session bind` / `aplan session end` under
+another name** whenever a session id is present, which inside a Claude Code session
+is always. If the user wants to switch tasks mid-session, run `aplan start <task>`
+exactly as in the hot-path table below: it rebinds *this session's own* link
+(flushing the task it leaves first) and leaves the human's pointer untouched.
+Subsequent `aplan log` / `aplan note` / `aplan status` calls with no `--task`
+retarget automatically once the bind lands. `aplan stop` is the mirror image — it
+closes this session's row after flushing it, a bigger and less reversible act than
+"pause the timer"; if the user only wants logging paused rather than the session
+ended, use `aplan session off` instead.
+
 ## Hot-path recipes
 
 | User intent | Command |
@@ -127,15 +164,32 @@ pass makes them invisible to the next one, and that is not recoverable.
 |---|---|---|
 | `0` | success | parse `data.*` and proceed |
 | `1` | generic error (network/GraphQL) | tell the user, don't retry blindly |
-| `2` | not found | the task or alert doesn't exist; ask the user for a better identifier |
+| `2` | not found | the task or alert doesn't exist; ask the user for a better identifier. Also `aplan session show` on a session id aplan has never heard of — the one place an unknown session id **is** an error (with `--json` it's still exit `0` and `{"claudeSession":null}`; see "Sessions" above) |
 | `3` | ambiguous fuzzy match | re-run with a more specific query, or ask the user which match they meant |
-| `4` | precondition failed | `aplan note` / `aplan status` with no running worklog and no `--task` — ask the user to start one or pass `--task`. On the memory verbs it means a state the store refuses to leave (candidate already active or rejected, merge target not active, memory already invalidated, supersession cycle, nothing searchable in the query): **skip that item, never `--force`** |
+| `4` | precondition failed | `aplan log` / `aplan note` / `aplan status` with no running worklog, no `--task`, and no session bound to a task — ask the user to start one or pass `--task`. Also this session refusing outright: it's `off`, has no task bound, or has ended — `aplan session bind <task>` fixes all three, since a bind is a request to work and reopens an ended row. On the memory verbs `4` means a state the store refuses to leave (candidate already active or rejected, merge target not active, memory already invalidated, supersession cycle, nothing searchable in the query): **skip that item, never `--force`** |
 
 `1` and `4` must not be treated alike. `4` is a normal outcome to skip; `1` means
 the call never landed, so anything that depends on it has to be retried whole.
 
 When you get exit `3`, the stderr lists up to 5 candidates with their key and
 title. Use that list to ask the user which one they meant.
+
+**An unknown session id on `log`/`note`/`status` is not an error.** Those three
+resolve their implicit target in order — `--task`, then the session, then the
+human's pointer — and an id with no matching row carries no decision to honour, so
+it falls through to the pointer exactly as an absent `--session` would: exit `0`,
+and the write lands on the human's task with no `session_id` attached, not on the
+session. That is different from the three `4`s above, which fire only for a session
+id aplan *does* recognise. `SessionUnknown` (exit `2`) exists only for `aplan
+session show`, where the user asked about that id directly and a silent fallback
+would hide a typo instead of reporting it.
+
+**`aplan remember` never refuses on any of this.** `--task` wins if given, else a
+tracking session's task attaches, else the memory is stored unattached — even for
+a session that ran `aplan session off`. That is deliberate, not an inconsistency to
+fix: memories sit outside the worklog rules, and an unattached memory misattributes
+nothing, where a misattributed worklog entry is billable time landing on the wrong
+task.
 
 ## Failure mode: API unreachable
 
