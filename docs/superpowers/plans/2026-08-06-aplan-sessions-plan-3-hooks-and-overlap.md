@@ -590,6 +590,15 @@ The four branches, from the design spec, mapped onto that structure:
 
 **`base_rules` (`:38-48`) contains the defect in prose** and must change: `"This Claude Code session is linked to your currently-tracked aplan task — the active-task pointer IS the link."` That sentence is now false. The link is the session row; the pointer is the human. Line `:46` ("run `aplan start <task>` first") also needs the Task 3 semantics — inside a session that binds the session and leaves the pointer alone.
 
+### The wire format the hook must parse — verified, and three of these bite silently
+
+Both hooks read `aplan session show --session <id> --json`. With `--json`, `session_cmd.rs:103` prints `print_json(&r.raw)` — the **raw GraphQL response**, envelope included.
+
+1. **The jq path is `.data.claudeSession`, not a top-level field.** A hook written against `.mode` gets `null` and takes the wrong branch, silently.
+2. **`mode` is `"TRACKING"` or `"OFF"` — uppercase.** `SessionModeGql` is an async-graphql enum (`schema.graphql:1398-1401`) and serializes SCREAMING_SNAKE, while the database column and this plan's prose both use lowercase `tracking`/`off`. **A jq test against `"off"` never matches**, so every opted-out session would take the tracking branch — reintroducing the exact bug this task exists to fix, in a form no compiler or test would catch. Compare against `"OFF"`.
+3. **`claude_session.graphql` does not select the task's title, so add it: `task { id title }`.** The server-side resolver already exists — `ClaudeSessionGql::task` at `api/src/graphql/types/session.rs:30-38` returns `SessionTaskSummaryGql { id, title }` — only the CLI's selection set is missing it. No schema regeneration is needed. Without this the hook can only say `Currently tracking task 3f2a1b8c-…`, and `aplan session show`'s human output has the same problem (`session_cmd.rs:118` prints `task: <uuid>`); fix that line too while you are there.
+4. **An unknown session id is an error, not an empty success.** `session_cmd.rs:111` reports `LookupError::SessionUnknown`. Make sure your `|| exit 0` guard treats that as "no session row" and falls through to the unknown-session branch rather than aborting the hook before it emits anything.
+
 - [ ] **Step 1: Back up the installed hook**
 
 ```bash
@@ -667,6 +676,8 @@ aplan flush --json "$task_id" >/dev/null 2>&1 || exit 0
 - The cost is that `aplan sessions` lists sessions seen in the last 12 hours as open. That is honest rather than wrong — `list_open` orders by `last_seen_at` so live sessions stay on top — and the reaper trims the rest.
 
 `aplan --session <id> stop` still ends the session. That is a deliberate act by whoever is driving, not a lifecycle event, and the distinction is the point.
+
+**Read Task 4's "The wire format the hook must parse" section before starting.** All four items apply here identically: the jq path is `.data.claudeSession`, `mode` is uppercase `"OFF"`/`"TRACKING"`, an unknown session is an error rather than an empty success, and Task 4 adds `task { id title }` to the query. Two of the four fail silently if you get them wrong.
 
 - [ ] **Step 1: Back up the installed hook**
 
