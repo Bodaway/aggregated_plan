@@ -309,4 +309,6 @@ Three plans, each independently shippable and testable:
    by both the flush and `reattribute_worklog_entries`. § "Flush becomes an idempotent
    rebuild" above now describes shipped behaviour, not intent.
 3. **Hooks and overlap** — rewrite both hooks against `session show`, overlap rule + its
-   display in `journal` / `timesheet` / `dash`, update the `aplan` SKILL.md.
+   display in `journal` / `timesheet` / `dash`, update the `aplan` SKILL.md. **Shipped**
+   `a5bbf7e..9853f24`. § "Lifecycle and hooks" and § "Overlap — visible, never corrected"
+   above now describe shipped behaviour, not intent.

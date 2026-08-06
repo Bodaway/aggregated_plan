@@ -17,8 +17,20 @@ to stdout. Parse that — never parse the human output, which is for the user.
 
 ```bash
 aplan current --json
-# → {"currentActivity":{"id":"...","task":{"id":"...","title":"Auth migration"},...}}
+# → {"actor":"...","currentActivity":{"task":{"id":"...","title":"Auth migration","sourceId":"AP-1234"}}}
 ```
+
+`actor` names which of the two actors this answer speaks for — this session's
+id if it is bound to a task, or `"manual"` for the human's own pointer.
+`currentActivity` has no `id` of its own; only the nested `task` does.
+
+**One command family breaks the "always `--json`" rule from the other side:**
+`journal`, `dash` and `timesheet` compute the overlap warning — a flag for two
+tasks' time colliding — only on the plain-text path. Each returns before that
+check ever runs under `--json`, so no JSON field carries it: a Claude parsing
+`aplan journal --json` cannot see a collision that the plain form would print.
+Run the plain form instead when you specifically want to know whether today's
+time collided.
 
 ## Sessions: your own link, separate from the human's pointer
 
@@ -76,7 +88,7 @@ bind`, not just flipping back to tracking.
 | "log a note about X" (active worklog) | `aplan note --json "X"` |
 | "log a note on AP-1234" | `aplan note --json --task AP-1234 "X"` |
 | "start working on AP-1234" | `aplan start --json AP-1234` |
-| "what am I working on" | `aplan current --json` |
+| "what am I working on" | `aplan sessions --json` (shows both actors — `current` alone only ever speaks for the human) |
 | "stop the timer" | `aplan stop --json` |
 | "mark this done" | `aplan done --json` |
 | "set the status to in_progress" | `aplan status --json in_progress` |
@@ -224,12 +236,27 @@ Don't try to run the backend yourself.
 
 ## If you are a subagent: never touch the parent session's row, never materialise its time
 
-**A subagent must never write to a session's own link, under any name.** That
-currently means `aplan start`, `aplan stop`, `aplan done`, `aplan flush`, and any
-*writing* `aplan session` subcommand — `bind`, `off`, `end`. Read freely — `ls`,
-`show`, `current`, `dash`, `brief`, `recall`, `sessions`, and `aplan session show`
-are all safe. `aplan new` and `aplan triage` are also off-limits, for an unrelated
-reason given at the end of this section.
+**A subagent must never make a write that reassigns something already
+decided** — the session's own link, the human's pointer, already-logged time's
+attribution, persisted configuration, or a memory's place in its validation
+queue — under any name, whether or not the CLI would let it through without
+complaint. Session-link writes are the case this section was written for, and
+are still the clearest: `aplan start`, `aplan stop`, `aplan done`,
+`aplan flush`, and any *writing* `aplan session` subcommand — `bind`, `off`,
+`end`. The same reasoning reaches three more: `aplan reattribute` moves
+already-logged time from one task to another — the same class of harm as
+rebinding a session, aimed at history instead of the live link; `aplan config
+set` rewrites persisted configuration, including the very keys this skill
+documents; and the memory-write verbs — `aplan remember`, `aplan memory
+supersede`, `aplan memory import`, `aplan inbox accept|merge|supersede|reject`,
+`aplan consolidate mark|record-run` — each writes a memory, a validation
+verdict or a consolidation record that nothing then undoes. Deciding any of
+these is the parent session's or the user's call, not a subagent's, for the
+same reason a session-link write is. Read freely — `ls`, `show`, `current`,
+`dash`, `brief`, `recall`, `sessions`, `aplan session show`, `aplan inbox` with
+no subcommand, and `aplan consolidate pending` are all safe. `aplan new` and
+`aplan triage` are also off-limits, for an unrelated reason given at the end of
+this section.
 
 The reason, not just the rule: nothing in the environment tells `aplan` a subagent
 apart from its parent. The only variable set for a subagent is

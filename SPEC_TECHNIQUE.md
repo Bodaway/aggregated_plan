@@ -3077,6 +3077,114 @@ De ce renversement découlent trois propriétés, toutes vérifiées par les tes
   autre tâche (la lecture, elle, porte sur tous les créneaux du jour avant le filtrage en
   mémoire) ; deux sessions sur deux tâches distinctes s'exécutent sans jamais se gêner.
 
+#### 7.3.5 Cycle de vie : les hooks, `start`/`stop`, le ramasseur de sessions inactives
+
+**Le hook SessionStart** (`~/.claude/hooks/aplan-session-start.sh`) ne lit jamais le pointeur
+global : il interroge `aplan session show --session <id>` et trie la réponse en quatre issues.
+
+| État lu | Ce qui est injecté |
+|---|---|
+| Ligne inconnue (`claudeSession` = null) | `AskUserQuestion` obligatoire |
+| Connue, `mode = OFF` | Une ligne : logging désactivé pour cette session, ne pas redemander |
+| Connue, `mode = TRACKING`, tâche résolue | Une ligne confirmant la tâche suivie |
+| `source = clear` (sur n'importe quelle ligne) | `AskUserQuestion` obligatoire, même sur une ligne déjà connue |
+
+Le déclenchement de la question couvre en réalité **trois** conditions, pas seulement la
+première ligne du tableau : aucun choix enregistré, `source = clear`, ou une ligne `TRACKING`
+dont la tâche ne résout plus (supprimée entre-temps) — ce dernier cas se lit « connue » dans la
+table ci-dessus mais retombe sur la question faute de titre à confirmer. `resume` et `compact`
+ne redemandent **jamais** parce qu'ils ne sont ni l'un ni l'autre : ils suivent la ligne
+enregistrée comme tout `source` hors `clear`. C'est exactement le correctif du défaut
+d'origine — la ligne injectée à un re-déclenchement vient désormais de l'enregistrement de la
+session, jamais du pointeur global qu'elle aurait sinon relu.
+
+**`start` et `stop` agissent sur la session qui appelle, jamais sur le pointeur humain.** Dès
+qu'un id de session est présent (`--session`, ou `CLAUDE_CODE_SESSION_ID` que le harnais exporte
+dans chaque appel), `aplan start <tâche>` est `aplan session bind` sous un autre nom : il flush
+la tâche que la session quitte, puis la relie à la nouvelle, sans jamais appeler
+`set_config_key` sur `aplan.active_task_id` — la même frontière que la fenêtre de flush (§ 7.3.4)
+ne doit pas croiser. Sans id de session (terminal nu), le comportement d'avant ce plan est
+inchangé : c'est le pointeur humain qui bouge. `aplan stop` fait le même choix, en miroir.
+
+**Le hook SessionEnd** (`aplan-session-end.sh`) flush la tâche de **cette** session
+(`aplan --session <id> flush <task_id>`) et **ne ferme jamais la ligne**. Ce n'est pas un
+oubli : un id de session Claude Code survit à `claude --resume`, donc fermer la ligne ici ferait
+démarrer la session reprise contre une ligne `ended` — un état que `Session::target()`
+(`domain/src/types/session.rs:144-152`) refuse déjà par construction et que la table du hook
+SessionStart ci-dessus ne prévoit pas. Le ramasseur de sessions inactives est donc le seul point
+qui ferme une ligne, ce qui n'est sûr que parce que le flush est une reconstruction idempotente
+(§ 7.3.4) : un second flush sur la même fenêtre ne duplique rien.
+
+**Le ramasseur** (`reap_idle_sessions`, `crates/application/src/use_cases/session_reaper.rs`)
+tourne sur son propre ordonnancement (`run_session_reaper_scheduler`, `crates/api/src/jobs.rs`,
+`RetryPolicy::session_reaper()` : base 15 min, plafond 45 min) et ferme toute session dont
+`last_seen_at` dépasse le seuil `aplan.session_idle_timeout_hours` (défaut 12, borné à
+`1..=8760`, voir § 4). **L'ordre est flush puis fermeture, jamais l'inverse** : fermer une ligne
+avant de la flusher la priverait pour toujours de toute fenêtre qui la sélectionnerait encore —
+le temps serait perdu, pas seulement retardé. Une session sans tâche liée (`mode = off`, ou un
+bind qui n'a jamais eu lieu) n'a rien à matérialiser et est fermée directement. L'échec d'une
+session — flush, avance du filigrane, ou fermeture — est journalisé et sauté, jamais propagé :
+le ramasseur tourne sans surveillance, et une session bloquée ne doit pas empêcher les suivantes
+d'être traitées dans le même passage.
+
+#### 7.3.6 Recouvrement entre tâches : visible, jamais corrigé
+
+Rien n'est stocké ni réparé. `find_overlaps` (`crates/domain/src/rules/overlap.rs`) est un
+calcul pur, exécuté à la lecture, sur les créneaux **fermés** d'un utilisateur : deux créneaux
+sur des tâches **différentes** dont les intervalles `[start_time, end_time]` se croisent comptent
+pour un recouvrement, mesuré en minutes de l'intersection. Trois exclusions s'appliquent avant
+même de considérer une paire : un créneau **ouvert** ne porte encore aucune heure mesurée ; un
+créneau **non étiqueté** (`task_id = None`) est un temps attribué à personne, donc ne peut pas
+être « deux tâches qui réclament la même heure » ; et une paire sur la **même** tâche n'est
+jamais un recouvrement — une tâche a légitimement plusieurs plages dans une même demi-journée.
+Se toucher n'est pas se recouvrir : deux créneaux dont l'un se termine exactement où l'autre
+commence partagent zéro minute, donc une journée de créneaux bout-à-bout ne signale rien. La
+fonction rend des **paires**, jamais une plage fusionnée : trois créneaux qui se recouvrent
+mutuellement donnent trois paires, chacune nommant les deux créneaux en cause — une plage
+fusionnée dirait « quelque chose s'est recouvert ici » sans dire lesquelles des tâches sont
+entrées en collision, or c'est précisément ce dont l'utilisateur a besoin pour arbitrer.
+
+C'est une décision produit assumée, pas un défaut à corriger : chaque tâche garde le temps que
+ses propres entrées documentent, le double comptage est **accepté et signalé**, et l'arbitrage
+reste entre les mains de l'humain à la revue `aplan timesheet` qui existe déjà. Aucune alerte
+n'est levée pour un recouvrement — l'affichage seul suffit.
+
+Exposé de façon additive par `activityOverlaps(date)` en GraphQL — un second aller-retour, pas un
+champ ajouté aux requêtes existantes, puisque `journal`, `dash` et `timesheet` n'ont sinon aucune
+raison de porter un champ qu'elles n'utilisent pas autrement — et affiché dans les trois
+commandes :
+
+- **`aplan journal`** — une ligne par paire, les deux tâches nommées et l'acteur de chaque côté
+  identifié (session ou humain).
+- **`aplan dash`** — une ligne de résumé si la journée porte au moins un recouvrement : nombre de
+  paires et leur total de minutes **additionné**, pas dédupliqué — un créneau présent dans deux
+  paires compte deux fois. C'est volontaire : cette ligne rapporte l'ampleur du problème, pas une
+  quantité de temps à réconcilier (c'est le rôle de `timesheet`, avec l'union des intervalles) ;
+  jamais le détail par paire, qui reste celui de `journal`.
+- **`aplan timesheet`** — l'écart entre le total brut des créneaux étiquetés et la durée couverte
+  par leur **union** d'intervalles.
+
+**`timesheet` et `journal` répondent à deux questions différentes, et c'est volontaire.** L'écart
+de `timesheet` (`brut − couvert`) exclut les créneaux non étiquetés mais compte encore deux
+plages qui se recouvrent sur la **même** tâche — ce que `find_overlaps` exclut délibérément,
+une tâche ayant légitimement plusieurs plages dans la journée. `timesheet` répond donc à
+« combien du temps journalisé aujourd'hui est doublement compté, toutes causes confondues »
+(on ne peut pas facturer 8 h 20 dans 7 h 30 d'horloge murale, quelle que soit la tâche en cause),
+tandis que `journal` répond à « quelles deux tâches sont entrées en collision ». Les deux mesures
+peuvent légitimement diverger : un utilisateur peut voir un écart dans `timesheet` sans aucune
+ligne correspondante dans `journal`. Ne pas aligner l'une sur l'autre — les « corriger » pour
+qu'elles convergent ferait disparaître l'une des deux questions à laquelle chacune répond
+correctement.
+
+**Le recouvrement est absent de `--json`, dans les trois commandes.** `journal`, `dash` et
+`timesheet` retournent chacune leur résultat avant le second aller-retour dès que `--json` est
+demandé : le paquet JSON est le contrat de l'API, pas le résumé humain, et rien n'y porte de champ
+de recouvrement. Une Claude qui lit `aplan journal --json` ne peut donc voir aucune collision
+signalée, ni aucun autre consommateur programmatique — l'indicateur est **réservé à l'humain**.
+Le skill `aplan` (`.claude/skills/aplan/SKILL.md`) recommande pourtant `--json` par défaut ; il
+précise désormais qu'une Claude qui veut voir un recouvrement doit lancer la forme texte, faute
+de quoi rien ne le lui montrera.
+
 ### 7.2 Migration `012_create_memories.sql` — mémoire sémantique
 
 ```sql
