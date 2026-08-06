@@ -559,18 +559,30 @@ EOF
 - Consumes: `aplan session show --session <id> --json`, `aplan session bind --session <id> <task>`, `aplan session off --session <id>`, `aplan ls --json`.
 - Produces: a hook that reads **the session's own row** instead of re-deriving state from the human's pointer.
 
-**The defect this closes.** Today the hook reads `aplan current --json` — the human's pointer — and injects "Currently tracking aplan task: …" from it. That is the bug the user reported at the very start: a hook re-fire mid-session announced tracking of a task they had explicitly declined, because the session's decision was stored nowhere. Plan 1 gave the decision a home; this task makes the hook read it.
+**The defect this closes, located exactly.** The installed hook is 133 lines. Its `resume|compact` branch (`:60-86`) reads `current_id` from `aplan current --json` — **the human's pointer** — and injects `Currently tracking aplan task: "<title>"`. Its `*)` branch (`:88-129`, covering `startup`, `clear` and any unknown source) already emits the mandatory four-option question ending in `Ne pas tracker`, and `:121` already instructs the model never to log for the rest of the session.
 
-The four branches, from the design spec:
+**The choice is never persisted anywhere.** Nothing writes it, so the next SessionStart re-fire re-reads the human's pointer and announces tracking of a task the user declined. That is the bug that started this design, and it reproduced in the session that wrote this plan. Plan 1 gave the decision a home; this task makes the hook write and read it.
+
+Two properties of the current file must survive verbatim:
+- `[ -n "${APLAN_UNATTENDED:-}" ] && exit 0` (`:23`) — cron sessions have no user to answer a question.
+- The defensive stdin read (`:27-29`): `payload=$(cat)`, then `jq -r '.source // "startup"' 2>/dev/null || echo startup`, then `[ -z "$source" ] && source=startup`. Add `session_id` extraction in exactly this style.
+
+The output shape is `jq -nc --arg ctx "$context" '{hookSpecificOutput:{hookEventName:"SessionStart", additionalContext:$ctx}}'` (`:132`). Keep it.
+
+The four branches, from the design spec, mapped onto that structure:
 
 | State | Injected context |
 |---|---|
-| Unknown session | Today's mandatory `AskUserQuestion`, then `aplan session bind --session <id> <task>` or `aplan session off --session <id>` |
+| Unknown session | The existing mandatory `AskUserQuestion`, but the actions become `aplan session bind --session <id> <task>` and `aplan session off --session <id>` |
 | Known, `mode = off` | One line: logging is disabled for this session, **do not ask again**, never call `aplan log/start/stop/flush` |
-| Known, `mode = tracking` | One line confirming the session's task |
+| Known, `mode = tracking` | One line confirming **the session's** task |
 | `source = clear` | Force the re-choice even when known — the user wants that choice explicit at `/clear` |
 
-`source = resume` and `source = compact` follow the table: confirm, never re-ask. That is what fixes the original defect.
+`source = resume` and `source = compact` follow the table: confirm, never re-ask. **That is the fix.** The mandatory question's `Ne pas tracker` branch must now run `aplan session off --session <id>` so the decision survives the next re-fire — today it runs no command at all, which is the whole bug.
+
+**`aplan current` keeps exactly one legitimate use: the unknown-session branch.** When no session row exists and the human's pointer is set, offering `Continuer : <the human's task>` as Option 1 is genuinely good — the human is working on something by hand and has just opened a Claude on it. But the action behind that option becomes `aplan session bind --session <id> <task>`, **not** "no aplan command needed" as `:118` says today. The human's pointer must not move. For a *known* session the pointer is never consulted.
+
+**`base_rules` (`:38-48`) contains the defect in prose** and must change: `"This Claude Code session is linked to your currently-tracked aplan task — the active-task pointer IS the link."` That sentence is now false. The link is the session row; the pointer is the human. Line `:46` ("run `aplan start <task>` first") also needs the Task 3 semantics — inside a session that binds the session and leaves the pointer alone.
 
 - [ ] **Step 1: Back up the installed hook**
 
