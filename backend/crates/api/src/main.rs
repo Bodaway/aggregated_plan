@@ -132,7 +132,7 @@ async fn main() {
         memory_file_source,
         git_connector,
         graph_token_provider: graph_token_provider.clone(),
-        session_repo,
+        session_repo: session_repo.clone(),
     };
     let schema = graphql::schema::build_schema(deps);
 
@@ -201,6 +201,14 @@ async fn main() {
         });
 
     tokio::spawn(jobs::run_eod_scheduler(eod_deps, default_user_id));
+
+    let session_reaper_deps = jobs::SessionReaperDeps {
+        session_repo,
+        worklog_repo: worklog_repo.clone(),
+        activity_repo: activity_repo.clone(),
+        config_repo: config_repo.clone(),
+    };
+    tokio::spawn(jobs::run_session_reaper_scheduler(session_reaper_deps, default_user_id));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
     tracing::info!("Server running on http://{}", addr);
