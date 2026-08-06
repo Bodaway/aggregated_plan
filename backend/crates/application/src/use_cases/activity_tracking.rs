@@ -67,6 +67,14 @@ pub async fn get_current_activity(
 }
 
 /// Update an existing activity slot.
+///
+/// A slot whose `source` is `Worklog` is owned by the worklog projection: the
+/// flush rebuilds it from the worklog entries on every run and would silently
+/// discard a hand edit made here on the next pass. Refuse instead of accepting
+/// an edit the next flush would erase, and name the two real remedies so the
+/// caller isn't left to guess: fix the worklog entries, or move them to another
+/// task with `aplan reattribute`. A `Manual` slot is never rebuilt and keeps
+/// editing unchanged.
 pub async fn update_activity_slot(
     activity_repo: &dyn ActivitySlotRepository,
     slot_id: ActivitySlotId,
@@ -78,6 +86,16 @@ pub async fn update_activity_slot(
         .find_by_id(slot_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ActivitySlot {}", slot_id)))?;
+
+    if slot.source.is_projection() {
+        return Err(AppError::Validation(format!(
+            "ActivitySlot {} is owned by the worklog projection and is rebuilt from the \
+             worklog entries on every flush, so an edit here would be silently overwritten. \
+             Correct the underlying worklog entries instead, or move them to a different task \
+             with `aplan reattribute --from <task> --to <task>`.",
+            slot_id
+        )));
+    }
 
     if let Some(tid) = task_id {
         slot.task_id = tid;
@@ -568,5 +586,103 @@ mod tests {
 
         let found = repo.find_by_id(slot.id).await.unwrap();
         assert!(found.is_none());
+    }
+
+    /// A slot the worklog projection owns is a cache of the worklog entries, not a
+    /// fact of its own: the next flush rebuilds its half-day from those entries and
+    /// would silently discard a hand edit. `update_activity_slot` must refuse before
+    /// it ever reaches the repository.
+    #[tokio::test]
+    async fn update_activity_slot_refuses_edit_on_worklog_owned_slot() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
+        let original_task_id = Uuid::new_v4();
+
+        let slot = ActivitySlot::from_worklog(
+            test_user_id(),
+            original_task_id,
+            Some("sess-1".to_string()),
+            start,
+            end,
+            HalfDay::Morning,
+            date,
+            end,
+        );
+        repo.save(&slot).await.unwrap();
+
+        let other_task_id = Uuid::new_v4();
+        let result = update_activity_slot(&repo, slot.id, Some(Some(other_task_id)), None, None)
+            .await;
+
+        assert!(result.is_err(), "expected the edit to be refused");
+
+        // The repository double must show no write at all: same task, same source.
+        let stored = repo.find_by_id(slot.id).await.unwrap().unwrap();
+        assert_eq!(stored.task_id, Some(original_task_id));
+        assert_eq!(stored.source, SlotSource::Worklog);
+    }
+
+    /// A `Manual` slot is never rebuilt, so editing it must keep working exactly as
+    /// before: the change lands in the repository, not just in the returned value.
+    #[tokio::test]
+    async fn update_activity_slot_still_succeeds_on_manual_slot() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let now = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+
+        let slot = start_activity(&repo, test_user_id(), None, now)
+            .await
+            .unwrap();
+        assert_eq!(slot.source, SlotSource::Manual);
+
+        let new_task_id = Uuid::new_v4();
+        let updated = update_activity_slot(&repo, slot.id, Some(Some(new_task_id)), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(updated.task_id, Some(new_task_id));
+
+        // Confirm the double actually mutated its stored state, not just the
+        // returned value: re-fetch from the repository.
+        let stored = repo.find_by_id(slot.id).await.unwrap().unwrap();
+        assert_eq!(stored.task_id, Some(new_task_id));
+        assert_eq!(stored.source, SlotSource::Manual);
+    }
+
+    /// The refusal is only useful if it tells the caller where to act instead. Pin
+    /// both remedies verbatim so a future reword cannot quietly drop one.
+    #[tokio::test]
+    async fn update_activity_slot_refusal_names_both_remedies() {
+        let repo = InMemoryActivitySlotRepository::new();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 9).unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 3, 9, 9, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
+
+        let slot = ActivitySlot::from_worklog(
+            test_user_id(),
+            Uuid::new_v4(),
+            None,
+            start,
+            end,
+            HalfDay::Morning,
+            date,
+            end,
+        );
+        repo.save(&slot).await.unwrap();
+
+        let err = update_activity_slot(&repo, slot.id, None, None, Some(end))
+            .await
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(
+            message.contains("Correct the underlying worklog entries"),
+            "refusal must name the first remedy (fix the worklog entries): {message}"
+        );
+        assert!(
+            message.contains("aplan reattribute --from <task> --to <task>"),
+            "refusal must name the second remedy (move them with aplan reattribute): {message}"
+        );
     }
 }
