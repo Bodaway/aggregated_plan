@@ -942,6 +942,18 @@ The spec's wording, which is what the user approved:
   This is a refinement of the spec's wording, not a departure from its intent; record it in your report so the next reader knows the phrase was operationalised deliberately.
 - `aplan dash` — one summary line when the day carries any overlap.
 
+**The exact strings, so the three commands agree.** Only `journal`'s comes from the spec; the other two are mine, and an implementer inventing them would produce three different registers. Adjust the spacing to match each command's surrounding output if it differs, but keep the `⚠` marker, the French, and the word *recouvrement* in all three so they are greppable as one feature:
+
+```
+journal    ⚠ recouvrement 47 min — Saft cadrage ↔ Cartier (session a1b2 ↔ manuel)
+timesheet  ⚠ recouvrement 50 min sur la journée — brut 8 h 20, couvert 7 h 30
+dash       ⚠ 2 recouvrements aujourd'hui (50 min au total) — détail : aplan journal
+```
+
+The session identifier is the **first 4 characters** of the session id, as `aplan sessions` already abbreviates; `manuel` (no id) is the human, matching `○ manuel (toi)` in that command. On a side whose `sessionId` is null, print `manuel` — never an empty parenthesis.
+
+`dash`'s count is the number of pairs, not of distinct tasks, and its total is the sum of the pairs' minutes. That sum **double-counts a slot involved in two pairs**, and that is correct here: the number is a magnitude of the problem, not a quantity of time to reconcile. Say so in a comment, because the next reader will otherwise "fix" it into the union measure that `timesheet` uses — the two commands answer different questions on purpose.
+
 **Language: use the spec's French wording, and do not "harmonise" it to English.** The CLI is genuinely mixed and I verified both sides: `journal` prints `total: {}h {}m` (`commands.rs:601`) and `session end` prints `session {} closed` (`:126`), both English — but `aplan sessions` prints `○ manuel (toi)` (`session_cmd.rs:74`), French. So a French user-facing line has precedent here, the user approved this exact wording in the design spec, and the user works in French. That settles it: the overlap line is French even though the surrounding `journal` labels are English.
 
 This is a controller decision, not a guess — if you think it is wrong, say so in your report rather than silently translating. Do not restyle any existing line while you are in these functions.
