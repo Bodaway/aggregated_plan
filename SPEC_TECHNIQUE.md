@@ -3079,15 +3079,22 @@ De ce renversement découlent trois propriétés, toutes vérifiées par les tes
 
 #### 7.3.5 Cycle de vie : les hooks, `start`/`stop`, le ramasseur de sessions inactives
 
-**Le hook SessionStart** (`~/.claude/hooks/aplan-session-start.sh`) ne lit jamais le pointeur
-global : il interroge `aplan session show --session <id>` et trie la réponse en quatre issues.
+**Le hook SessionStart** (`~/.claude/hooks/aplan-session-start.sh`) ne **dérive** jamais l'état
+d'une session connue du pointeur global et ne le déplace jamais ; il interroge d'abord
+`aplan session show --session <id>` et trie la réponse en cinq issues. Une seule exception lit
+le pointeur : quand aucune ligne n'existe (`mode` vide), le hook appelle `aplan current --json`
+pour proposer la tâche humaine courante en Option 1 — le script consacre neuf lignes de
+commentaire à justifier ce cas précis comme « le seul usage légitime » : rien ne bouge, l'offre
+est simplement plus utile qu'une liste vide, et le garde-fou (`-z "$mode"`) empêche toute session
+déjà connue d'y retomber.
 
 | État lu | Ce qui est injecté |
 |---|---|
-| Ligne inconnue (`claudeSession` = null) | `AskUserQuestion` obligatoire |
+| Ligne inconnue (`claudeSession` = null) | `AskUserQuestion` obligatoire (Option 1 = tâche humaine courante, lue via `aplan current`, si elle existe) |
 | Connue, `mode = OFF` | Une ligne : logging désactivé pour cette session, ne pas redemander |
 | Connue, `mode = TRACKING`, tâche résolue | Une ligne confirmant la tâche suivie |
 | `source = clear` (sur n'importe quelle ligne) | `AskUserQuestion` obligatoire, même sur une ligne déjà connue |
+| Backend/CLI inaccessible, id de session absent, réponse sans clé `claudeSession`, ou session planifiée (`APLAN_UNATTENDED`) | Rien n'est injecté — no-op silencieux et délibéré : le hook préfère se taire plutôt que mal deviner |
 
 Le déclenchement de la question couvre en réalité **trois** conditions, pas seulement la
 première ligne du tableau : aucun choix enregistré, `source = clear`, ou une ligne `TRACKING`
@@ -3119,7 +3126,7 @@ qui ferme une ligne, ce qui n'est sûr que parce que le flush est une reconstruc
 tourne sur son propre ordonnancement (`run_session_reaper_scheduler`, `crates/api/src/jobs.rs`,
 `RetryPolicy::session_reaper()` : base 15 min, plafond 45 min) et ferme toute session dont
 `last_seen_at` dépasse le seuil `aplan.session_idle_timeout_hours` (défaut 12, borné à
-`1..=8760`, voir § 4). **L'ordre est flush puis fermeture, jamais l'inverse** : fermer une ligne
+`1..=8760`, voir § 15.1). **L'ordre est flush puis fermeture, jamais l'inverse** : fermer une ligne
 avant de la flusher la priverait pour toujours de toute fenêtre qui la sélectionnerait encore —
 le temps serait perdu, pas seulement retardé. Une session sans tâche liée (`mode = off`, ou un
 bind qui n'a jamais eu lieu) n'a rien à matérialiser et est fermée directement. L'échec d'une
@@ -3131,8 +3138,12 @@ d'être traitées dans le même passage.
 
 Rien n'est stocké ni réparé. `find_overlaps` (`crates/domain/src/rules/overlap.rs`) est un
 calcul pur, exécuté à la lecture, sur les créneaux **fermés** d'un utilisateur : deux créneaux
-sur des tâches **différentes** dont les intervalles `[start_time, end_time]` se croisent comptent
-pour un recouvrement, mesuré en minutes de l'intersection. Trois exclusions s'appliquent avant
+sur des tâches **différentes** dont les intervalles demi-ouverts `[start_time, end_time[` se
+croisent comptent pour un recouvrement, mesuré en minutes de l'intersection — une intersection de
+moins d'une minute vaut `0` après troncature, et le domaine la rend telle quelle : ce n'est
+**pas** lui qui la cache, mais l'affichage. `aplan journal` et `aplan dash` filtrent les paires à
+`minutes == 0` avant impression (`commands.rs:684`, `:813`), une décision d'affichage et non une
+règle du domaine. Trois exclusions s'appliquent avant
 même de considérer une paire : un créneau **ouvert** ne porte encore aucune heure mesurée ; un
 créneau **non étiqueté** (`task_id = None`) est un temps attribué à personne, donc ne peut pas
 être « deux tâches qui réclament la même heure » ; et une paire sur la **même** tâche n'est
@@ -3150,19 +3161,23 @@ reste entre les mains de l'humain à la revue `aplan timesheet` qui existe déj�
 n'est levée pour un recouvrement — l'affichage seul suffit.
 
 Exposé de façon additive par `activityOverlaps(date)` en GraphQL — un second aller-retour, pas un
-champ ajouté aux requêtes existantes, puisque `journal`, `dash` et `timesheet` n'ont sinon aucune
-raison de porter un champ qu'elles n'utilisent pas autrement — et affiché dans les trois
-commandes :
+champ ajouté aux requêtes existantes, puisque `journal` et `dash` n'ont sinon aucune raison de
+porter un champ qu'elles n'utilisent pas autrement — et affiché dans les trois commandes, mais
+**pas par le même chemin pour les trois** : seules `journal` et `dash` interrogent
+`activityOverlaps(date)` ; `timesheet` ne l'appelle jamais et recalcule son propre écart en
+relisant `activityJournal` (`timesheet_cmd.rs:50-71`), sans jamais passer par `find_overlaps` —
+c'est une des raisons pour lesquelles sa mesure diffère de celle de `journal` (voir plus bas).
 
-- **`aplan journal`** — une ligne par paire, les deux tâches nommées et l'acteur de chaque côté
-  identifié (session ou humain).
-- **`aplan dash`** — une ligne de résumé si la journée porte au moins un recouvrement : nombre de
-  paires et leur total de minutes **additionné**, pas dédupliqué — un créneau présent dans deux
-  paires compte deux fois. C'est volontaire : cette ligne rapporte l'ampleur du problème, pas une
-  quantité de temps à réconcilier (c'est le rôle de `timesheet`, avec l'union des intervalles) ;
-  jamais le détail par paire, qui reste celui de `journal`.
-- **`aplan timesheet`** — l'écart entre le total brut des créneaux étiquetés et la durée couverte
-  par leur **union** d'intervalles.
+- **`aplan journal`** — une ligne par paire (via `activityOverlaps`), les deux tâches nommées et
+  l'acteur de chaque côté identifié (session ou humain).
+- **`aplan dash`** — une ligne de résumé si la journée porte au moins un recouvrement (via
+  `activityOverlaps`) : nombre de paires et leur total de minutes **additionné**, pas dédupliqué
+  — un créneau présent dans deux paires compte deux fois. C'est volontaire : cette ligne rapporte
+  l'ampleur du problème, pas une quantité de temps à réconcilier (c'est le rôle de `timesheet`,
+  avec l'union des intervalles) ; jamais le détail par paire, qui reste celui de `journal`.
+- **`aplan timesheet`** — l'écart entre le total brut des créneaux étiquetés (relus via
+  `activityJournal`, jamais via `activityOverlaps`) et la durée couverte par leur **union**
+  d'intervalles, calculée localement dans le CLI (`union_minutes`, `timesheet_cmd.rs`).
 
 **`timesheet` et `journal` répondent à deux questions différentes, et c'est volontaire.** L'écart
 de `timesheet` (`brut − couvert`) exclut les créneaux non étiquetés mais compte encore deux

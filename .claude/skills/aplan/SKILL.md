@@ -20,9 +20,14 @@ aplan current --json
 # → {"actor":"...","currentActivity":{"task":{"id":"...","title":"Auth migration","sourceId":"AP-1234"}}}
 ```
 
-`actor` names which of the two actors this answer speaks for — this session's
-id if it is bound to a task, or `"manual"` for the human's own pointer.
-`currentActivity` has no `id` of its own; only the nested `task` does.
+`actor` says **who asked** — this invocation's session id (explicit
+`--session`, or `CLAUDE_CODE_SESSION_ID` from the environment), or `"manual"`
+in a plain terminal with neither. It does **not** change what
+`currentActivity` reports: that field is always built from the human's
+`aplan.active_task_id` pointer, whether or not this session is bound to
+anything of its own. For this session's own link, use
+`aplan session show --json` instead (see "Sessions" below).
+`currentActivity` also has no `id` of its own; only the nested `task` does.
 
 **One command family breaks the "always `--json`" rule from the other side:**
 `journal`, `dash` and `timesheet` compute the overlap warning — a flag for two
@@ -88,7 +93,7 @@ bind`, not just flipping back to tracking.
 | "log a note about X" (active worklog) | `aplan note --json "X"` |
 | "log a note on AP-1234" | `aplan note --json --task AP-1234 "X"` |
 | "start working on AP-1234" | `aplan start --json AP-1234` |
-| "what am I working on" | `aplan sessions --json` (shows both actors — `current` alone only ever speaks for the human) |
+| "what am I working on" | `aplan session show --json` — `claudeSession: null` means this session isn't bound to anything; `aplan sessions --json` instead if the user means everyone, not just you |
 | "stop the timer" | `aplan stop --json` |
 | "mark this done" | `aplan done --json` |
 | "set the status to in_progress" | `aplan status --json in_progress` |
