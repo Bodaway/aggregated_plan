@@ -55,4 +55,22 @@ pub enum ConnectorError {
 
     #[error("Parsing error: {0}")]
     ParseError(String),
+
+    /// The local environment is not set up for this connector: no browser cookie
+    /// store found, the OS keyring is unavailable, or a stored credential expired.
+    /// Distinct from `AuthFailed`, which means the remote end rejected us — and
+    /// which cannot carry a detail message, since its Display is fixed.
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configuration_connector_error_displays_its_message() {
+        let e = ConnectorError::Configuration("no cookie found".to_string());
+        assert_eq!(e.to_string(), "Configuration error: no cookie found");
+    }
 }
