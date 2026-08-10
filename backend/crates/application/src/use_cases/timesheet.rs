@@ -1228,6 +1228,7 @@ mod tests {
             project_name: "Project One".to_string(),
             customer_name: None,
             is_active: true,
+            project_status: None,
             last_synced_at: Utc::now(),
         }
     }

@@ -15,5 +15,9 @@ pub struct GryzzlyCatalogEntry {
     pub project_name: String,
     pub customer_name: Option<String>,
     pub is_active: bool,
+    /// Status of the owning Gryzzly project, verbatim from the API: `active` or
+    /// `done`. `None` means unknown — a row written before the column existed —
+    /// and is read as active, never as terminated.
+    pub project_status: Option<String>,
     pub last_synced_at: DateTime<Utc>,
 }

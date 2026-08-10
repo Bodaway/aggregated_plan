@@ -79,6 +79,7 @@ mod tests {
             project_name: "My Project".to_string(),
             customer_name: None,
             is_active,
+            project_status: None,
             last_synced_at: Utc::now(),
         }
     }

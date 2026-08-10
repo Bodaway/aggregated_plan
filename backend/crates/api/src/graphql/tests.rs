@@ -3434,6 +3434,7 @@ async fn run_reconstruction_with_seeded_worklog_produces_project_line_and_fill()
             project_name: "Project One".to_string(),
             customer_name: None,
             is_active: true,
+            project_status: None,
             last_synced_at: now,
         })
         .await

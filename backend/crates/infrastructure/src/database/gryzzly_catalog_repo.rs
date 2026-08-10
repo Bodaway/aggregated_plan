@@ -29,6 +29,9 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<GryzzlyCatalogEntry, Reposit
         project_name: row.try_get("project_name").map_err(|e| RepositoryError::Database(e.to_string()))?,
         customer_name: row.try_get("customer_name").ok(),
         is_active: is_active != 0,
+        // `.ok().flatten()` yields None both for a NULL value and for a missing
+        // column, so map_row keeps working against a database predating 016.
+        project_status: row.try_get("project_status").ok().flatten(),
         last_synced_at: chrono::DateTime::parse_from_rfc3339(&last_synced_at)
             .map_err(|e| RepositoryError::Database(e.to_string()))?
             .with_timezone(&chrono::Utc),
@@ -40,14 +43,15 @@ impl GryzzlyCatalogRepository for SqliteGryzzlyCatalogRepository {
     async fn upsert(&self, entry: &GryzzlyCatalogEntry) -> Result<(), RepositoryError> {
         sqlx::query(
             "INSERT INTO gryzzly_tasks
-                (id, user_id, gryzzly_task_id, name, gryzzly_project_id, project_name, customer_name, is_active, last_synced_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, gryzzly_task_id, name, gryzzly_project_id, project_name, customer_name, is_active, project_status, last_synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(user_id, gryzzly_task_id) DO UPDATE SET
                 name = excluded.name,
                 gryzzly_project_id = excluded.gryzzly_project_id,
                 project_name = excluded.project_name,
                 customer_name = excluded.customer_name,
                 is_active = excluded.is_active,
+                project_status = excluded.project_status,
                 last_synced_at = excluded.last_synced_at",
         )
         .bind(entry.id.to_string())
@@ -58,6 +62,9 @@ impl GryzzlyCatalogRepository for SqliteGryzzlyCatalogRepository {
         .bind(&entry.project_name)
         .bind(&entry.customer_name)
         .bind(if entry.is_active { 1i64 } else { 0i64 })
+        // Bind order must match the column list exactly: a positional slip here
+        // silently writes the timestamp into project_status.
+        .bind(&entry.project_status)
         .bind(entry.last_synced_at.to_rfc3339())
         .execute(&self.pool)
         .await
@@ -166,8 +173,55 @@ mod tests {
             project_name: "Website".to_string(),
             customer_name: Some("Acme".to_string()),
             is_active: active,
+            project_status: None,
             last_synced_at: Utc::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn upsert_persists_project_status() {
+        let (pool, user_id) = setup_with_user().await;
+        let repo = SqliteGryzzlyCatalogRepository::new(pool);
+
+        let mut e = entry(user_id, "g-done", true);
+        e.project_status = Some("done".to_string());
+        repo.upsert(&e).await.unwrap();
+
+        let got = repo.find_by_gryzzly_task_id(user_id, "g-done").await.unwrap().unwrap();
+        assert_eq!(got.project_status.as_deref(), Some("done"));
+    }
+
+    /// NULL is the documented "unknown, treat as active" state for rows written
+    /// before the column existed. It must survive a round-trip as NULL rather than
+    /// being coerced to "active".
+    #[tokio::test]
+    async fn a_null_project_status_stays_null() {
+        let (pool, user_id) = setup_with_user().await;
+        let repo = SqliteGryzzlyCatalogRepository::new(pool);
+
+        let mut e = entry(user_id, "g-unknown", true);
+        e.project_status = None;
+        repo.upsert(&e).await.unwrap();
+
+        let got = repo.find_by_gryzzly_task_id(user_id, "g-unknown").await.unwrap().unwrap();
+        assert_eq!(got.project_status, None);
+    }
+
+    /// A project closing between two syncs must update the stored status.
+    #[tokio::test]
+    async fn upsert_updates_project_status_on_conflict() {
+        let (pool, user_id) = setup_with_user().await;
+        let repo = SqliteGryzzlyCatalogRepository::new(pool);
+
+        let mut e = entry(user_id, "g-closing", true);
+        e.project_status = Some("active".to_string());
+        repo.upsert(&e).await.unwrap();
+
+        e.project_status = Some("done".to_string());
+        repo.upsert(&e).await.unwrap();
+
+        let got = repo.find_by_gryzzly_task_id(user_id, "g-closing").await.unwrap().unwrap();
+        assert_eq!(got.project_status.as_deref(), Some("done"));
     }
 
     #[tokio::test]

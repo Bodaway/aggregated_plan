@@ -551,6 +551,8 @@ pub async fn sync_gryzzly(
             project_name: proj.map(|p| p.name.clone()).unwrap_or_default(),
             customer_name: proj.and_then(|p| p.customer_name.clone()),
             is_active: t.is_active,
+            // Filled in properly once GryzzlyProject carries its status (next task).
+            project_status: None,
             last_synced_at: now,
         };
         catalog_repo.upsert(&entry).await?;
@@ -1570,6 +1572,7 @@ mod gryzzly_tests {
             project_name: "Website".to_string(),
             customer_name: None,
             is_active: active,
+            project_status: None,
             last_synced_at: Utc::now(),
         }
     }

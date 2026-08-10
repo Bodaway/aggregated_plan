@@ -236,6 +236,7 @@ mod tests {
             project_name: "Test Project".to_string(),
             customer_name: None,
             is_active: true,
+            project_status: None,
             last_synced_at: Utc::now(),
         }
     }
