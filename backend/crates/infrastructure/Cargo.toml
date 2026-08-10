@@ -19,3 +19,14 @@ tracing = { workspace = true }
 async-trait = "0.1"
 base64 = "0.22"
 url = "2.5.8"
+# Chromium cookie decryption (Gryzzly session token): AES-128-CBC with a
+# PBKDF2-HMAC-SHA1 key. Pure Rust, no C toolchain.
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = "0.12"
+sha1 = "0.10"
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock = "0.6"
+tempfile = "3"
