@@ -50,9 +50,10 @@ Body `{"filter": "", "range": "", "search": "", "limit": 500}`. **`limit` caps a
 rejected with the error above, which means `scripts/gryzzly/export-catalog.console.js` is broken
 today: it sends `limit: 1000`. Returns 37 projects for this account, `cursor: null`.
 
-`payload` is an array of project objects with 26 fields. The ones used here: `id`, `name`, `code`,
-`customer_name`, `status`, `deleted_at`. **There is no `archived` field** — `mapper.rs` currently
-maps one that does not exist. `status` is the activeness signal, observed values `active` (20) and
+`payload` is an array of project objects with 26 fields. The ones used here: `id`, `name`,
+`customer_name`, `status`, `deleted_at` — matching what `GryzzlyProject` and the `gryzzly_tasks`
+table actually hold; `code` is present on the wire but nothing consumes it, so it is not
+deserialized. **There is no `archived` field** — `mapper.rs` currently maps one that does not exist. `status` is the activeness signal, observed values `active` (20) and
 `done` (17).
 
 #### Pagination, and the `limit` trap
