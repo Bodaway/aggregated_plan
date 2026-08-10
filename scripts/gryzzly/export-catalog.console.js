@@ -18,7 +18,9 @@
     try {
       const H = { 'Content-Type': 'application/json', 'Authorization': tok };
       const post = (m, b) => fetch('https://api.gryzzly.io/' + m, { method: 'POST', headers: H, body: JSON.stringify(b || {}) }).then(r => r.json());
-      const projects = (await post('view/projects.list', { filter: '', range: '', search: '', limit: 1000 })).payload || [];
+      // limit caps at 500 server-side: 1000 is rejected with
+      // "decoding: invalid_argument: limit (out of range, max=500)".
+      const projects = (await post('view/projects.list', { filter: '', range: '', search: '', limit: 500 })).payload || [];
       const pmap = {}; projects.forEach(p => pmap[p.id] = p);
       const rows = [];
       const flat = (arr, pid, depth = 0) => {

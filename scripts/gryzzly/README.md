@@ -1,10 +1,25 @@
-# Gryzzly Keyless Catalog Refresh
+# Gryzzly Keyless Catalog Refresh — Fallback Path
+
+## When to use this
+
+**Normally you don't.** The backend sync now does this automatically: run
+`aplan sync --source gryzzly`. It reads the same session cookie from your local Chromium profile,
+decrypts it, and pulls the catalog over the internal API. See `SPEC_TECHNIQUE.md` §10.6.
+
+This tooling is the **fallback** for when that cookie read breaks:
+
+- a browser upgrade changes Chromium's on-disk cookie layout or encryption tag,
+- the OS keyring is unavailable or locked, so the AES key cannot be recovered,
+- the API runs somewhere with no browser profile at all.
+
+The other escape hatch, which needs no scripts, is to paste a token into configuration:
+`aplan config set gryzzly.token "User <token>"`. Use the bookmarklet trick below to obtain it.
 
 ## Why keyless?
 
-No Gryzzly API key is available. Instead of an automated backend sync, this tooling performs a **manual, repeatable snapshot**: the user's own browser session token (already present after login) is borrowed in-page to pull the catalog, which is then downloaded as a local JSON file and imported into the cockpit DB.
-
-This is a deliberate trade-off: a few manual steps every time instead of a persistent credential.
+No Gryzzly API key exists — the product issues none. The only credential is the `remember_token`
+session cookie from the Microsoft SSO login, valid for a fixed 7 days. This script borrows it
+in-page to pull the catalog, downloads it as a local JSON file, and imports it into the cockpit DB.
 
 ---
 
@@ -35,16 +50,29 @@ After import, reload the cockpit frontend. The backend re-reads the DB on each r
 ## Real API Contract (reverse-engineered)
 
 Base URL: `https://api.gryzzly.io` (no `/v1` prefix)  
-Authentication: `Authorization: Bearer <token>` header  
-All calls: `POST` with `Content-Type: application/json`
+Authentication: `Authorization: User <session-token>` header (**not** `Bearer`)  
+All calls: `POST` with `Content-Type: application/json` — reads included; the API is RPC-style  
+Envelope: `{ok, payload}`, plus `cursor` on list methods
 
 ### List projects
 
 ```
 POST /view/projects.list
-Body: {"filter":"","range":"","search":"","limit":1000}
-Response: {payload: [{id, name, status, customer_name, ...}, ...]}
+Body: {"filter":"","range":"","search":"","limit":500}
+Response: {ok: true, cursor: null|"<uuid>", payload: [{id, name, status, customer_name, ...}, ...]}
 ```
+
+`limit` **caps at 500** — 1000 is rejected with
+`{"ok":false,"errors":["decoding: invalid_argument: limit (out of range, max=500)"]}`. This script
+sent 1000 and was silently broken until it was fixed.
+
+`limit` is a batch size applied *before* filtering, so pages come back shorter than requested and a
+short or empty page does **not** mean the end. Paginate with the `cursor` parameter (echo back the
+value received) and stop only when `cursor` is null. This script does not paginate: with 37 projects
+one page suffices, but it will truncate if the team ever exceeds 500 pre-filter rows.
+
+A project is active when `status == "active"` (observed values: `active`, `done`) and `deleted_at`
+is null. There is no `archived` field.
 
 ### Get project tasks (including nested)
 

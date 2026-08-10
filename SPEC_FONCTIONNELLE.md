@@ -358,7 +358,8 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 **Critères d'acceptation :**
 - Le catalogue Gryzzly est importé en lecture seule : projets actifs et leurs tâches (l'outil ne modifie jamais Gryzzly).
 - Pour chaque tâche du catalogue, sont conservés : nom de la tâche, projet associé et client (`customer_name`).
-- La synchronisation est déclenchée par `forceSync` (comme les autres sources) si une clé d'API Gryzzly est configurée ; sinon la source est marquée « non configurée ».
+- La synchronisation est déclenchée par `forceSync` (comme les autres sources). Gryzzly ne délivrant aucune clé d'API, l'authentification réutilise la **session du navigateur** : le cookie posé par la connexion SSO Microsoft sur `app.gryzzly.io` est lu et déchiffré depuis le profil navigateur local. Il faut donc s'être connecté à Gryzzly dans le navigateur — la session vaut **7 jours**, soit une reconnexion par semaine.
+- Si aucune session n'est trouvée, la source est marquée « non configurée ». Si la session a **expiré**, le message d'erreur indique la date d'expiration et invite à se reconnecter. Un jeton peut aussi être collé à la main en configuration si la lecture automatique échoue.
 - Le catalogue alimente la sélection d'une tâche Gryzzly lors de la déclaration d'activité (US-030) — il ne crée pas de tâches aplan.
 - Une tâche Gryzzly disparue d'une synchronisation est désactivée mais jamais supprimée : une activité déjà associée à cette tâche reste résoluble.
 - **Robustesse** : si une synchronisation ne retourne aucune tâche (incident transitoire de l'API), le catalogue existant est conservé tel quel (aucune désactivation en masse).

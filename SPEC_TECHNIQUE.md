@@ -4384,12 +4384,62 @@ Déroulé de `sync_gryzzly` (use case `application::use_cases::sync::sync_gryzzl
 
 Les compteurs `tasks_created` / `tasks_removed` du `SyncResult` comptent des **lignes de catalogue**, pas des tâches aplan.
 
+#### Contrat de l'API interne Gryzzly
+
+Gryzzly ne délivre **aucune clé d'API**. L'API est de style RPC : chaque méthode est un `POST`
+sur `https://api.gryzzly.io/<méthode>` (pas de préfixe `/v1`), avec un corps JSON et une
+enveloppe `{ok, payload}` — y compris pour les lectures. Le `POST` est donc le transport, pas une
+écriture : l'intégration reste **strictement en lecture seule** et n'appelle jamais
+`declarations.create` / `.update` / `.delete`.
+
+| Méthode | Corps | Rôle |
+|---------|-------|------|
+| `view/projects.list` | `{filter:"", range:"", search:"", limit:500}` | liste des projets |
+| `expandedProjectMetrics.get` | `{project_id}` | projet complet, dont l'arbre `tasks` |
+| `self.getIdentity` | `{}` | sonde de connectivité uniquement |
+
+- **`limit` plafonne à 500.** Envoyer 1000 renvoie
+  `{"ok":false,"errors":["decoding: invalid_argument: limit (out of range, max=500)"]}`.
+- **`limit` est une taille de lot *avant* filtrage, pas une taille de page.** Les pages arrivent
+  donc plus courtes que demandé, et une page courte — voire vide — ne signifie pas la fin des
+  données. La pagination se fait par le paramètre `cursor` (on renvoie la valeur reçue) et **ne
+  s'arrête que lorsque `cursor` est nul ou vide**. Une garde de 200 pages transforme un curseur qui
+  ne se termine jamais en erreur plutôt qu'en boucle infinie.
+- **Activité d'un projet** : `status == "active"` et `deleted_at` nul. Valeurs observées de
+  `status` : `active`, `done`. Il n'existe aucun champ `archived`.
+- **Activité d'une tâche** : `completed_at` et `deleted_at` nuls, combiné à l'activité du projet.
+  Les tâches `is_container` (regroupements, non déclarables) sont **conservées** dans le catalogue.
+
+#### Authentification
+
+L'unique identifiant est le cookie de session `remember_token` posé sur `.gryzzly.io` par la
+connexion SSO Microsoft sur `app.gryzzly.io`, envoyé en en-tête `Authorization: User <token>`. Sa
+durée de vie est **fixe : 7 jours, non glissante** — utiliser l'application ne la prolonge pas, il
+faut donc se reconnecter une fois par semaine.
+
+Le jeton est fourni par un `GryzzlyTokenSource` (trait applicatif), avec deux implémentations dans
+l'infrastructure, dans l'ordre de préférence de `forceSync` :
+
+1. `StaticTokenSource` — la valeur de `gryzzly.token`, collée à la main.
+2. `BrowserCookieTokenSource` — lecture du cookie dans un profil navigateur local de la famille
+   Chromium (`Cookies` à la racine du profil ou sous `Network/`). Le fichier est ouvert en
+   `read_only` + `immutable` (donc lisible même navigateur ouvert), puis la valeur est déchiffrée :
+   clé PBKDF2-HMAC-SHA1 (sel `saltysalt`, 1 itération, 16 octets) et AES-128-CBC (IV = 16 espaces).
+   Le mot de passe dépend du tag de version — `v10` : littéral `peanuts` ; `v11` : secret
+   « Safe Storage » du trousseau, lu via `secret-tool`. Les Chromium récents préfixent le clair
+   d'une empreinte SHA-256 de 32 octets, qui est retirée.
+
+Si aucun cookie n'est trouvé et que `gryzzly.token` est vide, le client n'est pas construit et la
+source est marquée `Not configured`. Un cookie **expiré**, lui, produit une erreur datée invitant à
+se reconnecter (et non un simple `Not configured`).
+
 Clés de configuration :
 
 | Clé | Type | Défaut | Description |
 |-----|------|--------|-------------|
-| `gryzzly.api_key` | string (secret) | `""` | Clé d'API Gryzzly. Si vide/absente, le client n'est pas construit et la source est marquée `Not configured`. |
-| `gryzzly.base_url` | string | `https://api.gryzzly.io/v1` | URL de base de l'API Gryzzly v1. |
+| `gryzzly.base_url` | string | `https://api.gryzzly.io` | URL de base de l'API interne Gryzzly (pas de préfixe `/v1`). |
+| `gryzzly.token` | string (secret) | `""` | Jeton de session collé à la main (`User <token>`, préfixe optionnel). Prioritaire sur le cookie ; sert d'échappatoire si la lecture du cookie casse. |
+| `gryzzly.cookie_profile` | string | `""` | Chemin absolu vers un fichier `Cookies` de profil navigateur. Vide = détection automatique. |
 
 Le client `HttpGryzzlyClient` est construit dynamiquement par la mutation `forceSync` à partir de ces clés (à l'image des connecteurs Jira/Outlook/Excel). Le repository `SqliteGryzzlyCatalogRepository` est injecté dans le contexte GraphQL au démarrage.
 
@@ -4914,8 +4964,9 @@ All parameters from the functional spec (section 8.2) are stored in the `configu
 | `excel_sharepoint_path` | string | `""` | SharePoint path to Excel file |
 | `excel_sheet_name` | string | `""` | Sheet name in Excel |
 | `excel_mapping` | object | `{}` | Column name -> field mapping |
-| `gryzzly.api_key` | string (secret) | `""` | Clé d'API Gryzzly. Si vide/absente, la source `gryzzly` est marquée `Not configured`. |
-| `gryzzly.base_url` | string | `https://api.gryzzly.io/v1` | URL de base de l'API Gryzzly v1. |
+| `gryzzly.base_url` | string | `https://api.gryzzly.io` | URL de base de l'API interne Gryzzly (pas de préfixe `/v1`). |
+| `gryzzly.token` | string (secret) | `""` | Jeton de session Gryzzly collé à la main. Prioritaire sur le cookie navigateur ; échappatoire si la lecture du cookie casse. Si les deux manquent, la source `gryzzly` est marquée `Not configured`. |
+| `gryzzly.cookie_profile` | string | `""` | Chemin absolu vers un fichier `Cookies` de profil navigateur. Vide = détection automatique. |
 | `obsidian_vault_path` | string | `""` | Path to Obsidian vault (v2) |
 | `obsidian_task_tags` | string[] | `["#task"]` | Tags identifying tasks in Obsidian (v2) |
 
