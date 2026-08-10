@@ -1003,6 +1003,8 @@ git commit -m "Add the config-pasted and browser-cookie Gryzzly token sources"
 
 Replaces the invented `archived` field with the real activeness signals, and adds the tree flattening the nested `tasks` field requires.
 
+> **Correction found during execution:** this task does not compile on its own. Deleting `RawList<T>` breaks the old `client.rs`, which Task 6 rewrites — so Tasks 5 and 6 land as a single commit. Run Task 5's tests only after Task 6's `client.rs` is in place.
+
 **Files:**
 - Rewrite: `backend/crates/infrastructure/src/connectors/gryzzly/types.rs`
 - Rewrite: `backend/crates/infrastructure/src/connectors/gryzzly/mapper.rs`
@@ -1083,7 +1085,9 @@ pub(crate) struct RawProjectMetrics {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Envelope<T> {
     pub ok: bool,
-    #[serde(default)]
+    // No `#[serde(default)]` here: on a generic field serde's derive would add a
+    // spurious `T: Default` bound. A missing `Option` field already deserializes
+    // to `None` — `parses_a_failure_with_an_errors_array` covers that.
     pub payload: Option<T>,
     #[serde(default)]
     pub errors: Option<Vec<String>>,
