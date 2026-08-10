@@ -6,3 +6,4 @@ mod token_source;
 mod types;
 
 pub use client::HttpGryzzlyClient;
+pub use token_source::{BrowserCookieTokenSource, StaticTokenSource};
