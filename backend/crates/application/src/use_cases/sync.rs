@@ -632,10 +632,10 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
                 }
             }
         } else {
-            update_sync_error(sync_repo, user_id, Source::Jira, "Not configured").await?;
+            update_sync_not_configured(sync_repo, user_id, Source::Jira).await?;
         }
     } else {
-        update_sync_error(sync_repo, user_id, Source::Jira, "Not configured").await?;
+        update_sync_not_configured(sync_repo, user_id, Source::Jira).await?;
     }
 
     // Outlook sync.
@@ -673,7 +673,7 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
             }
         }
     } else {
-        update_sync_error(sync_repo, user_id, Source::Outlook, "Not configured").await?;
+        update_sync_not_configured(sync_repo, user_id, Source::Outlook).await?;
     }
 
     // Excel sync.
@@ -736,10 +736,10 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
                 }
             }
         } else {
-            update_sync_error(sync_repo, user_id, Source::Excel, "Not configured").await?;
+            update_sync_not_configured(sync_repo, user_id, Source::Excel).await?;
         }
     } else {
-        update_sync_error(sync_repo, user_id, Source::Excel, "Not configured").await?;
+        update_sync_not_configured(sync_repo, user_id, Source::Excel).await?;
     }
 
     // Gryzzly catalog sync.
@@ -761,7 +761,7 @@ pub async fn sync_all(ctx: &SyncContext<'_>, user_id: UserId) -> Result<Vec<Sync
             }
         }
     } else {
-        update_sync_error(sync_repo, user_id, Source::Gryzzly, "Not configured").await?;
+        update_sync_not_configured(sync_repo, user_id, Source::Gryzzly).await?;
     }
 
     Ok(results)
@@ -800,10 +800,10 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
                     sync_jira(client, task_repo, project_repo, sync_repo, user_id, &config)
                         .await?;
                 } else {
-                    update_sync_error(sync_repo, user_id, Source::Jira, "Not configured").await?;
+                    update_sync_not_configured(sync_repo, user_id, Source::Jira).await?;
                 }
             } else {
-                update_sync_error(sync_repo, user_id, Source::Jira, "Not configured").await?;
+                update_sync_not_configured(sync_repo, user_id, Source::Jira).await?;
             }
         }
         Source::Outlook => {
@@ -828,7 +828,7 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
                     .unwrap_or_default();
                 sync_outlook(client, meeting_repo, sync_repo, user_id, (today, end), &exclude_patterns).await?;
             } else {
-                update_sync_error(sync_repo, user_id, Source::Outlook, "Not configured").await?;
+                update_sync_not_configured(sync_repo, user_id, Source::Outlook).await?;
             }
         }
         Source::Obsidian => {
@@ -874,10 +874,10 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
                     )
                     .await?;
                 } else {
-                    update_sync_error(sync_repo, user_id, Source::Excel, "Not configured").await?;
+                    update_sync_not_configured(sync_repo, user_id, Source::Excel).await?;
                 }
             } else {
-                update_sync_error(sync_repo, user_id, Source::Excel, "Not configured").await?;
+                update_sync_not_configured(sync_repo, user_id, Source::Excel).await?;
             }
         }
         Source::Personal => {
@@ -888,7 +888,7 @@ pub async fn sync_source(ctx: &SyncContext<'_>, source: Source, user_id: UserId)
                 sync_gryzzly(client, ctx.gryzzly_catalog_repo, ctx.sync_repo, user_id, Utc::now())
                     .await?;
             } else {
-                update_sync_error(ctx.sync_repo, user_id, Source::Gryzzly, "Not configured").await?;
+                update_sync_not_configured(ctx.sync_repo, user_id, Source::Gryzzly).await?;
             }
         }
     }
@@ -981,6 +981,30 @@ fn map_excel_status(status: &str) -> TaskStatus {
 }
 
 /// Update the sync status for a source to Error.
+/// A connector with no credentials. Distinct from `update_sync_error`: nothing
+/// failed, so `status` must not say `Error` — the UI reads that as a red alarm, and
+/// for weeks it painted every unconfigured source as broken.
+///
+/// `last_sync_at` stays `None` deliberately: an unconfigured source has never
+/// synced, and stamping `now()` (as `update_sync_error` does) would make the UI
+/// claim a sync just happened.
+async fn update_sync_not_configured(
+    sync_repo: &dyn SyncStatusRepository,
+    user_id: UserId,
+    source: Source,
+) -> Result<(), AppError> {
+    sync_repo
+        .upsert(&SyncStatus {
+            source,
+            user_id,
+            last_sync_at: None,
+            status: SyncSourceStatus::NotConfigured,
+            error_message: None,
+        })
+        .await?;
+    Ok(())
+}
+
 async fn update_sync_error(
     sync_repo: &dyn SyncStatusRepository,
     user_id: UserId,

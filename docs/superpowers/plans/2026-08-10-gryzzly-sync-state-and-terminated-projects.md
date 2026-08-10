@@ -293,8 +293,22 @@ async fn update_sync_not_configured(
 
 Then replace every call of the form `update_sync_error(sync_repo, user_id, Source::X, "Not configured").await?;` with `update_sync_not_configured(sync_repo, user_id, Source::X).await?;`. Find them all:
 
-Run: `cd backend && rg -n '"Not configured"' crates/application/src/use_cases/sync.rs`
-Expected: four hits before the edit (Jira, Outlook, Excel, Gryzzly), zero after. Some live in `sync_source` and some in `sync_all` — check both.
+Run: `rg -n '"Not configured"' backend/crates/application/src/use_cases/sync.rs`
+Expected: **12 hits** before the edit, zero after. Not four — `sync_source` and `sync_all` each carry their own copies, and Jira and Excel check configuration twice apiece. One site uses `ctx.sync_repo` rather than a bare `sync_repo`, so a blind find-and-replace on the exact string misses it.
+
+A regex covers both receiver forms:
+
+```bash
+python3 - <<'PY'
+import re, pathlib
+p = pathlib.Path('backend/crates/application/src/use_cases/sync.rs')
+src = p.read_text()
+pat = re.compile(r'update_sync_error\((\w+(?:\.\w+)?), user_id, (Source::\w+), "Not configured"\)')
+new, n = pat.subn(r'update_sync_not_configured(\1, user_id, \2)', src)
+p.write_text(new)
+print(f"replaced {n} call sites")
+PY
+```
 
 Note `last_sync_at: None`: an unconfigured source has never synced, and reporting `Utc::now()` as a sync time (which `update_sync_error` does) would make the UI claim a sync just happened.
 

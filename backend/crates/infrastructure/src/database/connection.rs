@@ -123,6 +123,71 @@ mod migration_tests {
         }
     }
 
+    /// Sibling of `sync_status_accepts_every_source_variant`. That test guards the
+    /// `source` column only — `status` carries the same enumerated-CHECK trap, and
+    /// this codebase has now hit that trap three times (alerts.alert_type in 013,
+    /// sync_status.source in 015, sync_status.status in 016). Both tests must exist
+    /// or the next added variant ships broken.
+    #[tokio::test]
+    async fn sync_status_accepts_every_status_variant() {
+        use domain::types::SyncSourceStatus;
+
+        let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ('u1', 'u@example.com', 'U')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Exhaustive by construction: adding a variant without listing it here is a
+        // compile error, and listing it without widening the CHECK fails below.
+        let all = [
+            SyncSourceStatus::Idle,
+            SyncSourceStatus::Syncing,
+            SyncSourceStatus::Success,
+            SyncSourceStatus::Error,
+            SyncSourceStatus::NotConfigured,
+        ];
+        for (i, status) in all.into_iter().enumerate() {
+            let as_str = crate::database::conversions::sync_status_to_str(status);
+            let res = sqlx::query(
+                "INSERT INTO sync_status (id, user_id, source, status) VALUES (?, 'u1', ?, ?)",
+            )
+            .bind(format!("st-{i}"))
+            // A distinct source per row: (user_id, source) is UNIQUE.
+            .bind(["jira", "outlook", "excel", "obsidian", "personal"][i])
+            .bind(as_str)
+            .execute(&pool)
+            .await;
+            assert!(
+                res.is_ok(),
+                "sync_status.status rejects {as_str:?}: {:?}",
+                res.err()
+            );
+        }
+    }
+
+    /// The new column must exist and default to NULL, since NULL is the documented
+    /// "unknown, treat as active" state for rows predating it.
+    #[tokio::test]
+    async fn gryzzly_tasks_has_a_nullable_project_status() {
+        let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pragma_table_info('gryzzly_tasks') WHERE name = 'project_status'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1, "project_status column missing");
+
+        let notnull: (i64,) = sqlx::query_as(
+            "SELECT \"notnull\" FROM pragma_table_info('gryzzly_tasks') WHERE name = 'project_status'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(notnull.0, 0, "project_status must be nullable");
+    }
+
     /// Rebuilding a table drops its indexes with it. 013 recreates 001's index by
     /// hand, and forgetting that turns every `find_unresolved` into a table scan
     /// without a single test going red.

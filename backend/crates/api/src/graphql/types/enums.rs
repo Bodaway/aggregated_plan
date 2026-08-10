@@ -266,6 +266,8 @@ pub enum SyncSourceStatusGql {
     Syncing,
     Success,
     Error,
+    /// No usable credentials, so no sync was attempted. Not a failure.
+    NotConfigured,
 }
 
 impl From<types::SyncSourceStatus> for SyncSourceStatusGql {
@@ -275,6 +277,7 @@ impl From<types::SyncSourceStatus> for SyncSourceStatusGql {
             types::SyncSourceStatus::Syncing => SyncSourceStatusGql::Syncing,
             types::SyncSourceStatus::Success => SyncSourceStatusGql::Success,
             types::SyncSourceStatus::Error => SyncSourceStatusGql::Error,
+            types::SyncSourceStatus::NotConfigured => SyncSourceStatusGql::NotConfigured,
         }
     }
 }

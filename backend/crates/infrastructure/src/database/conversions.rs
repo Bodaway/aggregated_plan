@@ -68,6 +68,12 @@ mod tests {
     }
 
     #[test]
+    fn not_configured_status_round_trips() {
+        assert_eq!(sync_status_to_str(SyncSourceStatus::NotConfigured), "not_configured");
+        assert_eq!(sync_status_from_str("not_configured"), SyncSourceStatus::NotConfigured);
+    }
+
+    #[test]
     fn an_unreadable_session_mode_falls_back_to_off() {
         // A row we cannot interpret must not be able to log. Reading it as
         // `tracking` would make a corrupt row write to a task nobody chose.
@@ -233,6 +239,7 @@ pub fn sync_status_to_str(s: SyncSourceStatus) -> &'static str {
         SyncSourceStatus::Syncing => "syncing",
         SyncSourceStatus::Success => "success",
         SyncSourceStatus::Error => "error",
+        SyncSourceStatus::NotConfigured => "not_configured",
     }
 }
 
@@ -242,6 +249,7 @@ pub fn sync_status_from_str(s: &str) -> SyncSourceStatus {
         "syncing" => SyncSourceStatus::Syncing,
         "success" => SyncSourceStatus::Success,
         "error" => SyncSourceStatus::Error,
+        "not_configured" => SyncSourceStatus::NotConfigured,
         _ => SyncSourceStatus::Idle,
     }
 }

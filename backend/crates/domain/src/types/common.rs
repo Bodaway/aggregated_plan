@@ -82,6 +82,12 @@ pub enum SyncSourceStatus {
     Syncing,
     Success,
     Error,
+
+    /// The connector has no usable credentials, so no sync was attempted. Distinct
+    /// from `Error`: nothing failed, there is simply nothing configured. Previously
+    /// recorded as `Error` with the message "Not configured", which made the UI
+    /// paint an unconfigured source as a failure.
+    NotConfigured,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
