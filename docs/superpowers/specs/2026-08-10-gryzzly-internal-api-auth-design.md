@@ -55,6 +55,28 @@ today: it sends `limit: 1000`. Returns 37 projects for this account, `cursor: nu
 maps one that does not exist. `status` is the activeness signal, observed values `active` (20) and
 `done` (17).
 
+#### Pagination, and the `limit` trap
+
+Verified by walking the chain at `limit: 10`: the request parameter is **`cursor`**, carrying back
+the `cursor` value from the previous response. The walk ran 11 pages and recovered all 37 projects
+with zero duplicates and zero omissions, matching the single `limit: 500` call exactly. Of the
+candidate names tried (`after`, `next`, `offset`, `from`, `page_token`), all were **silently
+ignored** — the API returned the same first page and the same cursor — so unknown parameters fail
+open, not loudly. `range` is a real parameter with its own format and returns HTTP 500 if given a
+UUID.
+
+**`limit` is a pre-filter batch size, not a page size.** Those 11 pages returned 4, 5, 4, 4, 3, 3,
+4, 3, 2, 3, 2 projects — every page shorter than the requested 10. The API evidently fetches up to
+`limit` rows, then filters (visibility, permissions, soft-deletes) before responding. Two
+consequences:
+
+- A short page does **not** mean the end of the data. Terminating on `payload.len() < limit` — the
+  natural thing to write — would return **4 of 37** projects.
+- An empty page does not mean the end either: `limit: 2` returned one project with a non-null
+  cursor, and following it returned zero projects with another non-null cursor.
+
+**Only `cursor == null` terminates the walk.**
+
 ### `expandedProjectMetrics.get`
 
 Body `{"project_id": "<uuid>"}`. Envelope `{ok, payload}`, no `cursor`. `payload` is the full
@@ -77,8 +99,9 @@ Measured on this machine:
 
 - 32 characters after decryption.
 - **Fixed 7-day TTL, not rolling**: created 2026-08-03 14:41:30, expires 2026-08-10 14:41:30, and
-  `last_update_utc == creation_utc` — using the app does not extend it. So: log into Gryzzly once a
-  week, and syncs work for seven days.
+  `last_update_utc == creation_utc` — using the app does not extend it. Confirmed twice: a fresh
+  login the same day produced created 2026-08-10 14:51:50 / expires 2026-08-17 14:51:50, again with
+  `last_update_utc == creation_utc`. So: log into Gryzzly once a week, and syncs work for seven days.
 - `is_httponly = 0` (which is why the time-tracker's `document.cookie` bookmarklet works),
   `is_secure = 1`.
 - Present in exactly one browser profile here: `~/.config/chromium/Default/Cookies`. Note the file
@@ -190,13 +213,27 @@ async fn post_json<T: DeserializeOwned>(&self, method: &str, body: &serde_json::
 - Other non-2xx → `ConnectorError::Http` with the body, unchanged.
 - Request timeout stays 30s.
 
-`fetch_projects(active_only)`: one call to `view/projects.list` with
-`{"filter": "", "range": "", "search": "", "limit": 500}`. If the response `cursor` is non-null,
-emit `tracing::warn!` that the catalog may be truncated because pagination is unimplemented. The
-cursor request-parameter name is deliberately **not** guessed: with 37 projects the API returns
-`cursor: null`, so there was nothing to observe, and inventing a parameter would repeat the mistake
-this design exists to fix. 500 is more than 13× the current project count, so the warning is a
-tripwire, not an expected path.
+`fetch_projects(active_only)`: walks `view/projects.list` to exhaustion.
+
+```
+body = {"filter": "", "range": "", "search": "", "limit": 500}
+loop:
+    if cursor is set: body["cursor"] = cursor
+    response = post("view/projects.list", body)
+    accumulate response.payload
+    cursor = response.cursor
+    if cursor is null: break
+```
+
+The loop terminates **only** on `cursor == null` — never on a short or empty page, for the reasons
+in the contract section above. A page-count guard of 200 iterations (100k projects at `limit: 500`)
+turns a server-side cursor that never nulls into a `ConnectorError::Configuration` rather than an
+infinite sync; it should never fire. Ids are deduplicated as they accumulate, so a server-side
+cursor that repeats a page cannot double-count.
+
+For this account the first page returns all 37 projects with `cursor: null`, so the loop makes one
+call today. The walk exists for when the team outgrows 500 *pre-filter* rows, which is invisible
+from the response length.
 
 `fetch_tasks(project_ids)`: one `expandedProjectMetrics.get {"project_id": id}` per id, sequential,
 reusing the existing loop. `sync_gryzzly` calls `fetch_projects(true)` first and passes only active
@@ -274,6 +311,13 @@ Pure units, unit-tested:
   container rows survive.
 - Envelope parsing: `ok: true` with payload, `ok: false` with `errors`, against the captured
   fixtures for all three methods.
+- The pagination walk, against a scripted fake transport. These are the regression tests for the
+  `limit` trap and must exist:
+  - three pages, each **shorter than `limit`**, the last with `cursor: null` → all rows returned
+    (a walk that stopped on the first short page would return only the first page);
+  - a middle page that is **empty** but carries a non-null cursor → the walk continues;
+  - a page whose ids repeat an earlier page → no double-counting;
+  - a cursor that never nulls → the 200-iteration guard fires as `Configuration`, not a hang.
 
 Integration:
 
@@ -301,7 +345,6 @@ expiry date.
 - Any write to Gryzzly. `declarations.create` / `.update` / `.delete` are not implemented.
 - Reading declarations back (`timesheets.get`, `timesheets.getDay`,
   `forms.declarations.listProjects`, `forms.declarations.listTasks`).
-- Cursor pagination for `view/projects.list` — a warning is emitted instead, see §4.
 - Filtering container tasks out of the cockpit's task picker.
 - Automatic re-login when the 7-day cookie expires. The user logs into Gryzzly in the browser as
   they already do; the connector only reads what that login leaves behind.
