@@ -2830,18 +2830,22 @@ CREATE TABLE task_tags (
     PRIMARY KEY (task_id, tag_id)
 );
 
--- Sync status
+-- Sync status (les deux CHECK sont ceux d'aujourd'hui : 015 a élargi `source`, 016 `status`)
 CREATE TABLE sync_status (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     source TEXT NOT NULL
-        CHECK (source IN ('jira', 'outlook', 'excel', 'obsidian')),
+        CHECK (source IN ('jira', 'outlook', 'excel', 'obsidian', 'personal', 'gryzzly')),
     last_sync_at TEXT,
     status TEXT NOT NULL DEFAULT 'idle'
-        CHECK (status IN ('idle', 'syncing', 'success', 'error')),
+        CHECK (status IN ('idle', 'syncing', 'success', 'error', 'not_configured')),
     error_message TEXT,
     UNIQUE(user_id, source)
 );
+-- `not_configured` (016) : le connecteur n'a aucun identifiant utilisable, donc aucun sync n'a été
+-- tenté. Remplace l'ancien encodage `status = error` + `error_message = "Not configured"`, qui
+-- faisait afficher une source simplement non configurée comme une panne. `last_sync_at` reste NULL
+-- pour cet état : une source non configurée n'a jamais synchronisé.
 
 -- Configuration (key-value per user)
 CREATE TABLE configuration (
@@ -2937,6 +2941,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 | **013** | `013_add_proposed_supersedes_and_fix_alert_type_check.sql` | Deux corrections indépendantes : `memories.proposed_supersedes` (supersession *proposée*, forme structurée) et reconstruction de `alerts` pour que le `CHECK` sur `alert_type` admette `timesheet_ready`. Voir § 7.2.1 et § 7.2.2. |
 | **014** | `014_create_sessions.sql` | Sessions Claude Code : table `sessions`, plus `worklog_entries.session_id`, `activity_slots.session_id` et `activity_slots.source`. Voir § 7.3. |
 | **015** | `015_fix_sync_status_source_check.sql` | Reconstruction de `sync_status` pour que le `CHECK` sur `source` admette les 6 variantes de `domain::Source` — `gryzzly` et `personal` manquaient depuis 001, ce qui rendait la source `gryzzly` totalement inopérante. Voir § 10.6. |
+| **016** | `016_add_project_status_and_not_configured.sql` | `gryzzly_tasks.project_status` (statut du projet propriétaire, `active` \| `done`, NULL = inconnu lu comme actif) et reconstruction de `sync_status` pour que le `CHECK` sur `status` admette `not_configured`. Voir § 10.6. |
 
 ### 7.3 Migration `014_create_sessions.sql` — sessions Claude Code
 
@@ -4371,7 +4376,7 @@ These fields belong to the user's local enrichment and persist across syncs.
 
 ### 10.6 Source de synchronisation `gryzzly`
 
-La source `gryzzly` synchronise en lecture seule le **catalogue Gryzzly** (projets actifs et tâches). Contrairement aux autres sources, elle ne crée pas de tâches aplan : elle alimente une table cache (`gryzzly_tasks`) utilisée pour proposer une tâche Gryzzly lors de la déclaration d'activité.
+La source `gryzzly` synchronise en lecture seule le **catalogue Gryzzly** (projets actifs **et terminés**, avec leurs tâches). Contrairement aux autres sources, elle ne crée pas de tâches aplan : elle alimente une table cache (`gryzzly_tasks`) utilisée pour proposer une tâche Gryzzly lors de la déclaration d'activité.
 
 > **Migration 015 — prérequis absolu.** Le CHECK de `sync_status.source` écrit en 001 n'autorisait
 > que 4 valeurs (`jira`, `outlook`, `excel`, `obsidian`) alors que `domain::Source` en compte 6 :
@@ -4385,7 +4390,10 @@ La source `gryzzly` synchronise en lecture seule le **catalogue Gryzzly** (proje
 Déroulé de `sync_gryzzly` (use case `application::use_cases::sync::sync_gryzzly`) :
 
 1. `sync_status(gryzzly)` -> `syncing`.
-2. `GryzzlyClient::fetch_projects(active_only = true)` puis `GryzzlyClient::fetch_tasks(project_ids)`.
+2. `GryzzlyClient::fetch_projects(active_only = false)` puis `GryzzlyClient::fetch_tasks(project_ids)`.
+   - **`active_only = false`** : les projets **terminés** (`status = "done"`) entrent eux aussi dans le
+     catalogue, marqués comme tels, au lieu d'être élagués et donc invisibles. Seuls les projets
+     **soft-deleted** (`deleted_at` non nul) sont exclus, dans les deux modes.
    - En cas d'échec d'un appel : `sync_status` -> `error` (message du connecteur) et retour d'une `AppError::Connector`.
 3. **Garde « empty-fetch »** : si `fetch_tasks` retourne une liste vide, l'élagage (`soft_prune_missing`) est **ignoré** afin de ne jamais désactiver des lignes du catalogue sur un fetch transitoirement vide (un assignment existant doit toujours pouvoir être résolu). `sync_status` est marqué en `error` avec le message `empty catalog fetch — skipping prune` et le résultat indique `tasks_created = 0`, `tasks_removed = 0`.
 4. Sinon, chaque tâche est `upsert`ée dans `gryzzly_tasks` (clé `(user_id, gryzzly_task_id)`), avec dénormalisation du nom de projet et du client (`customer_name`) issus des projets.
@@ -4417,8 +4425,18 @@ enveloppe `{ok, payload}` — y compris pour les lectures. Le `POST` est donc le
   ne se termine jamais en erreur plutôt qu'en boucle infinie.
 - **Activité d'un projet** : `status == "active"` et `deleted_at` nul. Valeurs observées de
   `status` : `active`, `done`. Il n'existe aucun champ `archived`.
-- **Activité d'une tâche** : `completed_at` et `deleted_at` nuls, combiné à l'activité du projet.
-  Les tâches `is_container` (regroupements, non déclarables) sont **conservées** dans le catalogue.
+- **Activité d'une tâche** : `completed_at` et `deleted_at` nuls — **et rien d'autre**. Les tâches
+  `is_container` (regroupements, non déclarables) sont **conservées** dans le catalogue.
+
+> **Changement de sémantique de `gryzzly_tasks.is_active` (migration 016).** `map_task` combinait
+> auparavant l'activité du projet à celle de la tâche, ce qui rendait une tâche d'un projet **clos**
+> indistinguable d'une tâche **supprimée** dans Gryzzly : les deux arrivaient avec `is_active = 0`,
+> et l'interface affichait `stale` dans les deux cas. Désormais `is_active` ne décrit que la tâche
+> elle-même, et l'état du projet voyage séparément dans `project_status` (`active` | `done`, NULL =
+> inconnu, lu comme actif — une ligne écrite par `scripts/gryzzly/import_catalog.py` précède la
+> colonne et ne doit pas s'afficher comme terminée). Conséquence attendue au premier sync suivant :
+> les lignes désactivées uniquement parce que leur projet était clos redeviennent actives, donc le
+> nombre de tâches actives augmente d'un coup. C'est la correction, pas une régression.
 
 #### Authentification
 
