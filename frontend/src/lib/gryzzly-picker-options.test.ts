@@ -25,4 +25,25 @@ describe("buildPickerOptions", () => {
     const opts = buildPickerOptions(active, assigned);
     expect(opts.filter((o) => o.gryzzlyTaskId === "g1")).toHaveLength(1);
   });
+
+  it("carries projectStatus through to the built options", () => {
+    const opts = buildPickerOptions(
+      [{ gryzzlyTaskId: "t1", name: "Recette", projectName: "Saft", projectStatus: "done" }],
+      null,
+    );
+    expect(opts[0].projectStatus).toBe("done");
+  });
+
+  it("keeps projectStatus on a pinned assigned task absent from the active list", () => {
+    const opts = buildPickerOptions([], {
+      gryzzlyTaskId: "t9",
+      name: "Cadrage",
+      projectName: "Saft",
+      projectStatus: "done",
+      stale: true,
+    });
+    expect(opts).toHaveLength(1);
+    expect(opts[0].projectStatus).toBe("done");
+    expect(opts[0].stale).toBe(true);
+  });
 });

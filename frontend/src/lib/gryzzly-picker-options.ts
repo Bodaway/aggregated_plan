@@ -3,6 +3,9 @@ export interface GryzzlyOption {
   name: string;
   projectName: string;
   stale?: boolean;
+  /** Owning Gryzzly project's status: 'active' | 'done', or null/undefined when
+   *  unknown (a catalog row predating the column). Only 'done' shows a badge. */
+  projectStatus?: string | null;
 }
 
 export interface AssignedGryzzlyTask {
@@ -10,6 +13,7 @@ export interface AssignedGryzzlyTask {
   name: string | null;
   projectName: string | null;
   stale: boolean;
+  projectStatus?: string | null;
 }
 
 /** Active options sorted by project then name, plus the currently-assigned task
@@ -30,6 +34,9 @@ export function buildPickerOptions(
       name: assigned.name ?? "(unknown Gryzzly task)",
       projectName: assigned.projectName ?? "(archived)",
       stale: true,
+      // Rebuilt field by field, so this has to be carried explicitly — a closed
+      // project must still read as closed when its task is only pinned here.
+      projectStatus: assigned.projectStatus ?? null,
     },
   ];
 }

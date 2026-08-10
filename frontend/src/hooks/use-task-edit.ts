@@ -74,6 +74,7 @@ const TASK_QUERY = `
         gryzzlyTaskId
         name
         projectName
+        projectStatus
         stale
       }
     }

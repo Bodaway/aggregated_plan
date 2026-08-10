@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useMutation } from 'urql';
 import { useGryzzlyTasks } from '@/hooks/use-gryzzly-tasks';
 import { buildPickerOptions, AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
+import { TerminatedBadge } from './TerminatedBadge';
 
 const ASSIGN_GRYZZLY_TASK = `
   mutation AssignGryzzlyTask($taskId: ID!, $gryzzlyTaskId: ID) {
@@ -11,6 +12,7 @@ const ASSIGN_GRYZZLY_TASK = `
         gryzzlyTaskId
         name
         projectName
+        projectStatus
         stale
       }
     }
@@ -118,6 +120,7 @@ export function GryzzlyTaskPicker({ taskId, assigned }: GryzzlyTaskPickerProps) 
           {assigned?.projectName && !assigned.stale && (
             <span className="text-gray-400 text-xs">— {assigned.projectName}</span>
           )}
+          {assigned?.projectStatus === 'done' && <TerminatedBadge />}
         </span>
         <svg className="w-4 h-4 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" />
@@ -163,8 +166,11 @@ export function GryzzlyTaskPicker({ taskId, assigned }: GryzzlyTaskPickerProps) 
           ) : (
             Object.entries(grouped).map(([project, items]) => (
               <div key={project}>
-                <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50 border-b border-gray-100">
-                  {project}
+                {/* The badge lives on the group header, not on each row: the
+                    picker already groups by project, so one badge per group. */}
+                <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50 border-b border-gray-100 flex items-center gap-1.5">
+                  <span className="truncate">{project}</span>
+                  {items.some((o) => o.projectStatus === 'done') && <TerminatedBadge small />}
                 </div>
                 {items.map((opt) => (
                   <button

@@ -11,6 +11,7 @@ const GRYZZLY_TASKS_QUERY = `
       gryzzlyTaskId
       name
       projectName
+      projectStatus
     }
   }
 `;
