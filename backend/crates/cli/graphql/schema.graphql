@@ -130,6 +130,7 @@ type AssignedGryzzlyTaskGql {
 	name: String
 	projectName: String
 	stale: Boolean!
+	projectStatus: String
 }
 
 type AttributedBlockGql {
@@ -912,6 +913,7 @@ type GryzzlyTaskGql {
 	gryzzlyProjectId: String!
 	projectName: String!
 	customerName: String
+	projectStatus: String
 }
 
 """
@@ -1511,6 +1513,7 @@ enum SyncSourceStatusGql {
 	SYNCING
 	SUCCESS
 	ERROR
+	NOT_CONFIGURED
 }
 
 type SyncStatusGql {

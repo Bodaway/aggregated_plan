@@ -9,6 +9,10 @@ pub struct GryzzlyTaskGql {
     pub gryzzly_project_id: String,
     pub project_name: String,
     pub customer_name: Option<String>,
+    /// Status of the owning Gryzzly project (`active` | `done`), or null when
+    /// unknown — a catalog row written before the column existed. Null renders as
+    /// active: never as terminated.
+    pub project_status: Option<String>,
 }
 
 impl From<GryzzlyCatalogEntry> for GryzzlyTaskGql {
@@ -19,6 +23,7 @@ impl From<GryzzlyCatalogEntry> for GryzzlyTaskGql {
             gryzzly_project_id: e.gryzzly_project_id,
             project_name: e.project_name,
             customer_name: e.customer_name,
+            project_status: e.project_status,
         }
     }
 }
@@ -35,6 +40,10 @@ pub struct AssignedGryzzlyTaskGql {
     pub name: Option<String>,
     pub project_name: Option<String>,
     pub stale: bool,
+    /// Status of the owning Gryzzly project (`active` | `done`), or null when
+    /// unknown. Independent of `stale`: a row can be both disabled in the catalog
+    /// and owned by a closed project, and the two mean different things.
+    pub project_status: Option<String>,
 }
 
 /// Pure resolver helper: maps (assignment id, optional catalog entry) to the stale-aware GQL type.
@@ -46,18 +55,21 @@ pub fn resolve_assigned(gid: String, entry: Option<GryzzlyCatalogEntry>) -> Assi
             name: Some(e.name),
             project_name: Some(e.project_name),
             stale: false,
+            project_status: e.project_status,
         },
         Some(e) => AssignedGryzzlyTaskGql {
             gryzzly_task_id: gid,
             name: Some(e.name),
             project_name: Some(e.project_name),
             stale: true,
+            project_status: e.project_status,
         },
         None => AssignedGryzzlyTaskGql {
             gryzzly_task_id: gid,
             name: None,
             project_name: None,
             stale: true,
+            project_status: None,
         },
     }
 }
@@ -68,6 +80,42 @@ mod tests {
     use chrono::Utc;
     use domain::types::GryzzlyCatalogEntry;
     use uuid::Uuid;
+
+    fn entry_with_status(is_active: bool, project_status: Option<&str>) -> GryzzlyCatalogEntry {
+        let mut e = make_entry(is_active);
+        e.project_status = project_status.map(str::to_string);
+        e
+    }
+
+    #[test]
+    fn an_active_row_on_a_done_project_is_not_stale_but_is_terminated() {
+        let got = resolve_assigned("t1".into(), Some(entry_with_status(true, Some("done"))));
+        assert!(!got.stale, "a closed project must not read as a missing row");
+        assert_eq!(got.project_status.as_deref(), Some("done"));
+    }
+
+    /// The two markers are independent: a row can be both disabled in the catalog
+    /// and owned by a closed project, and each means something different.
+    #[test]
+    fn a_disabled_row_keeps_its_project_status() {
+        let got = resolve_assigned("t1".into(), Some(entry_with_status(false, Some("done"))));
+        assert!(got.stale);
+        assert_eq!(got.project_status.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn an_orphaned_assignment_has_no_project_status() {
+        let got = resolve_assigned("t1".into(), None);
+        assert!(got.stale);
+        assert_eq!(got.project_status, None);
+    }
+
+    #[test]
+    fn an_unknown_project_status_is_carried_as_none() {
+        let got = resolve_assigned("t1".into(), Some(entry_with_status(true, None)));
+        assert!(!got.stale);
+        assert_eq!(got.project_status, None);
+    }
 
     fn make_entry(is_active: bool) -> GryzzlyCatalogEntry {
         GryzzlyCatalogEntry {
