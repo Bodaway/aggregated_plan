@@ -9,6 +9,11 @@ pub struct GryzzlyProject {
     pub name: String,
     pub customer_name: Option<String>,
     pub is_active: bool,
+    /// Raw status string from the API: `active` or `done`. Carried alongside the
+    /// derived `is_active` on purpose — inferring "done" from `!is_active` works
+    /// only while soft-deleted projects are filtered out, and a rendered badge
+    /// should not depend on a two-step inference across two layers.
+    pub status: Option<String>,
 }
 
 /// A Gryzzly task — a category of billable work within a project (NOT an aplan task).

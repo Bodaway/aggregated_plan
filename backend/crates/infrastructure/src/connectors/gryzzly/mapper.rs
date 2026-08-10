@@ -12,6 +12,7 @@ pub(crate) const MAX_TASK_DEPTH: usize = 50;
 /// A project is active only when Gryzzly says `status: "active"` and it is not
 /// soft-deleted. Observed statuses: `active`, `done`.
 pub(crate) fn map_project(raw: RawGryzzlyProject) -> GryzzlyProject {
+    let is_active = raw.status.as_deref() == Some("active") && raw.deleted_at.is_none();
     GryzzlyProject {
         id: raw.id,
         name: raw.name.trim().to_string(),
@@ -19,17 +20,23 @@ pub(crate) fn map_project(raw: RawGryzzlyProject) -> GryzzlyProject {
             .customer_name
             .map(|c| c.trim().to_string())
             .filter(|c| !c.is_empty()),
-        is_active: raw.status.as_deref() == Some("active") && raw.deleted_at.is_none(),
+        is_active,
+        status: raw.status,
     }
 }
 
-/// A task is active when neither finished nor deleted, in an active project.
-pub(crate) fn map_task(raw: RawGryzzlyTask, project_active: bool) -> GryzzlyTask {
+/// A task is active when it is neither finished nor deleted **in its own right**.
+///
+/// This deliberately does NOT fold in the owning project's state. Folding it was
+/// what made a task on a closed project indistinguishable from one deleted in
+/// Gryzzly: both arrived as `is_active = false`. The project's state now travels
+/// separately as `project_status` on the catalog row.
+pub(crate) fn map_task(raw: RawGryzzlyTask) -> GryzzlyTask {
     GryzzlyTask {
         id: raw.id,
         name: raw.name.trim().to_string(),
         project_id: raw.project_id.unwrap_or_default(),
-        is_active: project_active && raw.completed_at.is_none() && raw.deleted_at.is_none(),
+        is_active: raw.completed_at.is_none() && raw.deleted_at.is_none(),
     }
 }
 
@@ -118,8 +125,8 @@ mod tests {
     }
 
     #[test]
-    fn an_open_task_in_an_active_project_is_active() {
-        let t = map_task(task("t1", None, None), true);
+    fn an_open_task_is_active() {
+        let t = map_task(task("t1", None, None));
         assert_eq!(t.id, "t1");
         assert_eq!(t.name, "t1");
         assert_eq!(t.project_id, "p1");
@@ -128,17 +135,38 @@ mod tests {
 
     #[test]
     fn a_completed_task_is_inactive() {
-        assert!(!map_task(task("t1", Some("2026-01-01T00:00:00Z"), None), true).is_active);
+        assert!(!map_task(task("t1", Some("2026-01-01T00:00:00Z"), None)).is_active);
     }
 
     #[test]
     fn a_deleted_task_is_inactive() {
-        assert!(!map_task(task("t1", None, Some("2026-01-01T00:00:00Z")), true).is_active);
+        assert!(!map_task(task("t1", None, Some("2026-01-01T00:00:00Z"))).is_active);
+    }
+
+    /// THE semantic change. `is_active` used to fold in the project's state, which is
+    /// exactly what made a task on a CLOSED project look like a DELETED task. A live
+    /// task stays active regardless of its project; the project's state now travels
+    /// separately, in `project_status`.
+    #[test]
+    fn a_live_task_stays_active_even_when_its_project_is_done() {
+        let t = map_task(task("t1", None, None));
+        assert!(t.is_active, "project state must no longer suppress a live task");
     }
 
     #[test]
-    fn an_open_task_in_an_inactive_project_is_inactive() {
-        assert!(!map_task(task("t1", None, None), false).is_active);
+    fn map_project_carries_the_raw_status_string() {
+        let p = map_project(project(Some("done"), None));
+        assert_eq!(p.status.as_deref(), Some("done"));
+        assert!(!p.is_active);
+
+        let p = map_project(project(Some("active"), None));
+        assert_eq!(p.status.as_deref(), Some("active"));
+        assert!(p.is_active);
+    }
+
+    #[test]
+    fn map_project_status_is_none_when_absent() {
+        assert_eq!(map_project(project(None, None)).status, None);
     }
 
     #[test]

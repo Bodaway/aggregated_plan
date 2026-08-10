@@ -153,6 +153,12 @@ impl GryzzlyClient for HttpGryzzlyClient {
             pages += 1;
 
             for raw in envelope.payload.unwrap_or_default() {
+                // A soft-deleted project is gone whatever the caller asked for:
+                // `active_only = false` means "include done projects", not
+                // "include everything".
+                if raw.deleted_at.is_some() {
+                    continue;
+                }
                 if seen.insert(raw.id.clone()) {
                     projects.push(map_project(raw));
                 }
@@ -183,8 +189,7 @@ impl GryzzlyClient for HttpGryzzlyClient {
                 .await?;
             let flat = flatten_tasks(metrics.tasks.unwrap_or_default(), project_id, 0);
             for raw in flat {
-                // Callers pass only active project ids, so project_active is true.
-                let task = map_task(raw, true);
+                let task = map_task(raw);
                 if seen.insert(task.id.clone()) {
                     out.push(task);
                 }
@@ -505,6 +510,38 @@ mod tests {
         let err = client(&server).fetch_projects(false).await.unwrap_err();
         assert!(matches!(err, ConnectorError::Configuration(_)), "got {err:?}");
         assert!(err.to_string().contains("200"), "guard limit missing: {err}");
+    }
+
+    /// Soft-deleted projects must never reach the catalog, whatever `active_only`
+    /// says — `active_only = false` means "include done projects", not "include
+    /// everything".
+    #[tokio::test]
+    async fn soft_deleted_projects_are_excluded_in_both_modes() {
+        for active_only in [true, false] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/view/projects.list"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "ok": true, "cursor": null,
+                    "payload": [
+                        {"id": "live", "name": "Live", "status": "active", "deleted_at": null},
+                        {"id": "done", "name": "Done", "status": "done", "deleted_at": null},
+                        {"id": "gone", "name": "Gone", "status": "active",
+                         "deleted_at": "2026-01-01T00:00:00Z"}
+                    ]
+                })))
+                .mount(&server)
+                .await;
+
+            let got = client(&server).fetch_projects(active_only).await.unwrap();
+            let ids: Vec<&str> = got.iter().map(|p| p.id.as_str()).collect();
+            assert!(!ids.contains(&"gone"), "deleted project leaked (active_only={active_only})");
+            if active_only {
+                assert_eq!(ids, vec!["live"]);
+            } else {
+                assert_eq!(ids, vec!["live", "done"]);
+            }
+        }
     }
 
     #[tokio::test]

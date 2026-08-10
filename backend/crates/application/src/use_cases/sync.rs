@@ -1590,6 +1590,7 @@ mod gryzzly_tests {
                 name: "Website".to_string(),
                 customer_name: None,
                 is_active: true,
+                status: Some("active".to_string()),
             }],
             tasks: vec![], // empty fetch
         };
@@ -1618,6 +1619,7 @@ mod gryzzly_tests {
                 name: "Website".to_string(),
                 customer_name: Some("Acme".to_string()),
                 is_active: true,
+                status: Some("active".to_string()),
             }],
             tasks: vec![GryzzlyTask {
                 id: "g1".to_string(),
