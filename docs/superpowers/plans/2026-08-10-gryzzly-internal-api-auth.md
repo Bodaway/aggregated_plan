@@ -807,18 +807,20 @@ This is the one step that proves the fragile half works. Add a temporary ignored
     #[ignore = "requires a local Chromium profile logged into Gryzzly"]
     async fn reads_the_real_local_cookie() {
         let token = token_value(None, Utc::now()).await.expect("token");
-        assert!(!token.is_empty());
+        // Printable-ASCII is the invariant that matters: it is exactly what fails
+        // when the 32-byte domain-binding prefix is left on, since a SHA-256 hash
+        // is binary. The token is not purely alphanumeric — it contains hyphens.
+        assert!(token.len() >= 16, "token implausibly short: {} chars", token.len());
         assert!(
-            token.chars().all(|c| c.is_ascii_alphanumeric()),
-            "token should be alphanumeric, got {} chars starting {:?}",
-            token.len(),
-            token.chars().take(2).collect::<String>()
+            token.chars().all(|c| c.is_ascii_graphic()),
+            "token should be printable ASCII, got {} chars",
+            token.len()
         );
     }
 ```
 
 Run: `cd backend && cargo test -p infrastructure reads_the_real_local_cookie -- --ignored --nocapture 2>&1 | tail -15`
-Expected: PASS. The token is 32 alphanumeric characters. **If this fails, stop and diagnose before continuing** — every later task depends on it. The known-good reference: `~/.config/chromium/Default/Cookies`, `v11` tag, `secret-tool lookup application chromium` returns the secret.
+Expected: PASS. The token is 32 printable-ASCII characters (hex digits and hyphens). **If this fails, stop and diagnose before continuing** — every later task depends on it. The known-good reference: `~/.config/chromium/Default/Cookies`, `v11` tag, `secret-tool lookup application chromium` returns the secret.
 
 - [ ] **Step 6: Commit**
 
