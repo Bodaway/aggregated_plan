@@ -17,7 +17,9 @@ use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::session_tracking;
 use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
 use infrastructure::connectors::excel::GraphExcelClient;
-use infrastructure::connectors::gryzzly::HttpGryzzlyClient;
+use infrastructure::connectors::gryzzly::{
+    BrowserCookieTokenSource, HttpGryzzlyClient, StaticTokenSource,
+};
 use infrastructure::connectors::jira::HttpJiraClient;
 use infrastructure::connectors::outlook::client::GraphOutlookClient;
 
@@ -607,18 +609,46 @@ impl MutationRoot {
         let excel_client: Option<Arc<dyn ExcelClient>> = graph_token
             .map(|t| Arc::new(GraphExcelClient::new(t)) as Arc<dyn ExcelClient>);
 
-        // Build Gryzzly client from stored config.
-        let gryzzly_api_key = config_repo.get(*user_id, "gryzzly.api_key").await.ok().flatten();
+        // Build the Gryzzly client from stored config. Gryzzly issues no API key:
+        // auth is the `remember_token` session cookie from the browser login, so
+        // the token source is either a hand-pasted value or the local cookie store.
         let gryzzly_base_url = config_repo
             .get(*user_id, "gryzzly.base_url")
             .await
             .ok()
             .flatten()
-            .unwrap_or_else(|| "https://api.gryzzly.io/v1".to_string());
-        let gryzzly_client: Option<Arc<dyn GryzzlyClient>> = match gryzzly_api_key {
-            Some(k) if !k.is_empty() => Some(Arc::new(HttpGryzzlyClient::new(gryzzly_base_url, k))),
-            _ => None,
+            .filter(|u| !u.trim().is_empty())
+            .unwrap_or_else(|| "https://api.gryzzly.io".to_string());
+        let manual_token = config_repo
+            .get(*user_id, "gryzzly.token")
+            .await
+            .ok()
+            .flatten()
+            .filter(|t| !t.trim().is_empty());
+        let cookie_profile = config_repo
+            .get(*user_id, "gryzzly.cookie_profile")
+            .await
+            .ok()
+            .flatten()
+            .filter(|p| !p.trim().is_empty())
+            .map(std::path::PathBuf::from);
+
+        let gryzzly_tokens: Option<Arc<dyn GryzzlyTokenSource>> = match manual_token {
+            Some(t) => Some(Arc::new(StaticTokenSource::new(&t))),
+            None => {
+                let source = BrowserCookieTokenSource::new(cookie_profile);
+                // No cookie at all means "not configured". An *expired* cookie is
+                // available, so its dated "log in again" message reaches the user
+                // instead of being flattened into a bare Not configured.
+                if source.available().await {
+                    Some(Arc::new(source))
+                } else {
+                    None
+                }
+            }
         };
+        let gryzzly_client: Option<Arc<dyn GryzzlyClient>> = gryzzly_tokens
+            .map(|t| Arc::new(HttpGryzzlyClient::new(gryzzly_base_url, t)) as Arc<dyn GryzzlyClient>);
 
         let ctx = sync::SyncContext {
             task_repo: task_repo.as_ref(),
