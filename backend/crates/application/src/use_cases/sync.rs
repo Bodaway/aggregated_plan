@@ -498,7 +498,9 @@ pub async fn sync_gryzzly(
         })
         .await?;
 
-    let projects = match client.fetch_projects(true).await {
+    // `false`: done projects belong in the catalog too, marked as terminated rather
+    // than silently pruned. `fetch_projects` still excludes soft-deleted projects.
+    let projects = match client.fetch_projects(false).await {
         Ok(p) => p,
         Err(e) => {
             update_sync_error(sync_repo, user_id, Source::Gryzzly, &e.to_string()).await?;
@@ -551,8 +553,7 @@ pub async fn sync_gryzzly(
             project_name: proj.map(|p| p.name.clone()).unwrap_or_default(),
             customer_name: proj.and_then(|p| p.customer_name.clone()),
             is_active: t.is_active,
-            // Filled in properly once GryzzlyProject carries its status (next task).
-            project_status: None,
+            project_status: proj.and_then(|p| p.status.clone()),
             last_synced_at: now,
         };
         catalog_repo.upsert(&entry).await?;
@@ -1603,6 +1604,91 @@ mod gryzzly_tests {
         let g1 = catalog.find_by_gryzzly_task_id(user_id, "g1").await.unwrap().unwrap();
         assert!(g1.is_active, "empty fetch must NOT prune existing catalog rows");
         assert_eq!(result.tasks_removed, 0);
+    }
+
+    /// Done projects must reach the catalog carrying `project_status = "done"`, so a
+    /// task on a closed project can be told apart from a deleted one. Before this,
+    /// `fetch_projects(true)` dropped them and `soft_prune_missing` deactivated
+    /// their tasks — which read identically to "deleted in Gryzzly".
+    #[tokio::test]
+    async fn sync_gryzzly_records_done_projects_with_their_status() {
+        /// Local fake: unlike `FakeGryzzly` it asserts on `active_only`, which is
+        /// the behaviour under test.
+        struct TwoProjects;
+
+        #[async_trait]
+        impl GryzzlyClient for TwoProjects {
+            async fn fetch_projects(
+                &self,
+                active_only: bool,
+            ) -> Result<Vec<GryzzlyProject>, ConnectorError> {
+                assert!(!active_only, "sync_gryzzly must ask for done projects too");
+                Ok(vec![
+                    GryzzlyProject {
+                        id: "p-live".into(),
+                        name: "Live".into(),
+                        customer_name: Some("Acme".into()),
+                        is_active: true,
+                        status: Some("active".into()),
+                    },
+                    GryzzlyProject {
+                        id: "p-done".into(),
+                        name: "Closed".into(),
+                        customer_name: Some("Saft".into()),
+                        is_active: false,
+                        status: Some("done".into()),
+                    },
+                ])
+            }
+
+            async fn fetch_tasks(
+                &self,
+                project_ids: &[String],
+            ) -> Result<Vec<GryzzlyTask>, ConnectorError> {
+                assert!(
+                    project_ids.contains(&"p-done".to_string()),
+                    "done project not queried"
+                );
+                Ok(vec![
+                    GryzzlyTask {
+                        id: "t-live".into(),
+                        name: "Pilotage".into(),
+                        project_id: "p-live".into(),
+                        is_active: true,
+                    },
+                    GryzzlyTask {
+                        id: "t-done".into(),
+                        name: "Recette".into(),
+                        project_id: "p-done".into(),
+                        is_active: true,
+                    },
+                ])
+            }
+        }
+
+        let user_id: UserId = Uuid::parse_str("00000000-0000-0000-0000-000000000012").unwrap();
+        let catalog = MemCatalogRepo::default();
+
+        sync_gryzzly(&TwoProjects, &catalog, &NoopSyncRepo, user_id, Utc::now())
+            .await
+            .unwrap();
+
+        let done = catalog
+            .find_by_gryzzly_task_id(user_id, "t-done")
+            .await
+            .unwrap()
+            .expect("task on a done project must be in the catalog");
+        assert_eq!(done.project_status.as_deref(), Some("done"));
+        assert_eq!(done.project_name, "Closed");
+        // The task itself is live; only its project closed.
+        assert!(done.is_active, "a live task on a closed project stays active");
+
+        let live = catalog
+            .find_by_gryzzly_task_id(user_id, "t-live")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.project_status.as_deref(), Some("active"));
     }
 
     #[tokio::test]
