@@ -2198,6 +2198,27 @@ git commit -m "Document the Gryzzly internal-API auth and fix the export script 
 
 Nothing before this proves the whole path works end to end. **The session cookie expires 2026-08-17 14:51:50 UTC** — if that has passed, log into `app.gryzzly.io` first.
 
+> **Two findings from executing this task.**
+>
+> **1. A second blocker, unrelated to auth.** The first live sync failed with
+> `(code: 275) CHECK constraint failed: source IN ('jira','outlook','excel','obsidian')`.
+> `sync_status.source`'s CHECK from migration 001 lists 4 sources; `domain::Source` has 6 —
+> `gryzzly` and `personal` were missing. Since `sync_gryzzly` writes `sync_status(gryzzly)` as its
+> *first* step, every Gryzzly sync had always died before reaching the connector. The absent API key
+> was only the second lock on the same door. Fixed by **migration 015** (table rebuild following
+> 013's documented procedure) plus `sync_status_accepts_every_source_variant` in
+> `database::connection`, which enumerates `Source` so the next added variant fails there instead of
+> in production.
+>
+> **2. Deploying this needs the binary and the DB to move together.** Applying 015 to the shared dev
+> DB made the *previously installed* `~/.local/bin/aplan-api` refuse to start —
+> `Migrate(VersionMissing(15))`: sqlx treats a database ahead of the binary as fatal. So the
+> "run the branch build without touching the installed binary" approach does not survive a
+> migration. When deploying, install the new binary **and** let it migrate; do not leave an older
+> binary pointed at a migrated DB. Rolling 015 back on the DB (restore 001's CHECK, drop the
+> `gryzzly` row from `sync_status`, delete the `_sqlx_migrations` row 15) is the escape hatch, and
+> keeps `gryzzly_tasks` intact.
+
 **Files:** none (verification only)
 
 - [ ] **Step 1: Record the pre-change catalog state**

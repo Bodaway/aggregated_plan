@@ -2936,6 +2936,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 | **012** | `012_create_memories.sql` | Mémoire sémantique : `memories`, `memory_stakeholders`, table FTS5 autonome `memories_fts`, et `ALTER TABLE worklog_entries ADD COLUMN consolidated_at TEXT` (filigrane de consolidation par entrée). Voir § 7.2. |
 | **013** | `013_add_proposed_supersedes_and_fix_alert_type_check.sql` | Deux corrections indépendantes : `memories.proposed_supersedes` (supersession *proposée*, forme structurée) et reconstruction de `alerts` pour que le `CHECK` sur `alert_type` admette `timesheet_ready`. Voir § 7.2.1 et § 7.2.2. |
 | **014** | `014_create_sessions.sql` | Sessions Claude Code : table `sessions`, plus `worklog_entries.session_id`, `activity_slots.session_id` et `activity_slots.source`. Voir § 7.3. |
+| **015** | `015_fix_sync_status_source_check.sql` | Reconstruction de `sync_status` pour que le `CHECK` sur `source` admette les 6 variantes de `domain::Source` — `gryzzly` et `personal` manquaient depuis 001, ce qui rendait la source `gryzzly` totalement inopérante. Voir § 10.6. |
 
 ### 7.3 Migration `014_create_sessions.sql` — sessions Claude Code
 
@@ -4371,6 +4372,15 @@ These fields belong to the user's local enrichment and persist across syncs.
 ### 10.6 Source de synchronisation `gryzzly`
 
 La source `gryzzly` synchronise en lecture seule le **catalogue Gryzzly** (projets actifs et tâches). Contrairement aux autres sources, elle ne crée pas de tâches aplan : elle alimente une table cache (`gryzzly_tasks`) utilisée pour proposer une tâche Gryzzly lors de la déclaration d'activité.
+
+> **Migration 015 — prérequis absolu.** Le CHECK de `sync_status.source` écrit en 001 n'autorisait
+> que 4 valeurs (`jira`, `outlook`, `excel`, `obsidian`) alors que `domain::Source` en compte 6 :
+> `gryzzly` et `personal` manquaient. Comme l'étape 1 ci-dessous écrit `sync_status(gryzzly)`, **tout**
+> `aplan sync --source gryzzly` échouait sur `(code: 275) CHECK constraint failed` avant d'atteindre le
+> connecteur — la source n'avait donc jamais tourné une seule fois, indépendamment de l'authentification.
+> Même classe de bug que le CHECK `alerts.alert_type` corrigé par 013. La migration 015 élargit la
+> contrainte, et `sync_status_accepts_every_source_variant` (dans `database::connection`) fait échouer
+> le prochain ajout de variante ici plutôt qu'en production.
 
 Déroulé de `sync_gryzzly` (use case `application::use_cases::sync::sync_gryzzly`) :
 

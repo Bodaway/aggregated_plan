@@ -77,6 +77,52 @@ mod migration_tests {
         );
     }
 
+    /// Every `domain::Source` must be storable in `sync_status.source`.
+    ///
+    /// 001 enumerated four sources; the enum has six. `sync_gryzzly` writes
+    /// `sync_status(gryzzly) -> syncing` as its first step, so the missing value made
+    /// `aplan sync --source gryzzly` fail with `(code: 275) CHECK constraint failed`
+    /// before the connector was even reached — the source had never run once. 015
+    /// widens the CHECK; this test is what makes the NEXT added variant go red here
+    /// instead of in production.
+    #[tokio::test]
+    async fn sync_status_accepts_every_source_variant() {
+        use domain::types::Source;
+
+        let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
+        sqlx::query("INSERT INTO users (id, email, name) VALUES ('u1', 'u@example.com', 'U')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Exhaustive by construction: adding a variant to `Source` without adding it
+        // here is a compile error, and adding it here without widening the CHECK
+        // fails the assertion below.
+        let all = [
+            Source::Jira,
+            Source::Excel,
+            Source::Obsidian,
+            Source::Personal,
+            Source::Outlook,
+            Source::Gryzzly,
+        ];
+        for source in all {
+            let as_str = crate::database::conversions::source_to_str(source);
+            let res = sqlx::query(
+                "INSERT INTO sync_status (id, user_id, source, status) VALUES (?, 'u1', ?, 'idle')",
+            )
+            .bind(format!("s-{as_str}"))
+            .bind(as_str)
+            .execute(&pool)
+            .await;
+            assert!(
+                res.is_ok(),
+                "sync_status.source rejects {as_str:?}: {:?}",
+                res.err()
+            );
+        }
+    }
+
     /// Rebuilding a table drops its indexes with it. 013 recreates 001's index by
     /// hand, and forgetting that turns every `find_unresolved` into a table scan
     /// without a single test going red.
