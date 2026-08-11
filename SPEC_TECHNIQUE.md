@@ -1093,10 +1093,21 @@ pub fn check_overload_alerts(
 // rules/dedup.rs
 
 pub struct SimilarityScore {
-    pub title_score: f64,       // 0.0 to 1.0 (normalized Levenshtein)
+    pub title_score: f64,       // 0.0 to 1.0 (weighted token Dice)
     pub assignee_match: bool,
     pub project_match: bool,
-    pub overall: f64,           // Weighted composite: 0.0 to 1.0
+    pub overall: f64,           // Title, closed toward 1.0 by matching attributes
+}
+
+/// Rareté de chaque mot parmi les titres comparés (R09c). Un préfixe de projet
+/// partagé par tout le backlog pèse moins qu'un mot propre à une tâche ; le
+/// lissage ramène la pondération à l'uniforme quand les titres sont trop peu
+/// nombreux. `TitleCorpus::uniform()` neutralise la pondération.
+pub struct TitleCorpus { /* title_count, occurrences */ }
+
+impl TitleCorpus {
+    pub fn from_titles<'a, I: IntoIterator<Item = &'a str>>(titles: I) -> Self;
+    pub fn uniform() -> Self;
 }
 
 /// R08: Check if a Jira ticket key appears in an arbitrary string (Excel row data).
@@ -1104,8 +1115,15 @@ pub fn find_jira_key_in_text(jira_key: &str, text: &str) -> bool {
     text.contains(jira_key)
 }
 
-/// R09: Calculate similarity between two tasks for potential deduplication.
-/// Weights: title similarity (60%), assignee match (20%), project match (20%).
+/// R09b: similarité de deux titres — coefficient de Dice sur les mots appariés
+/// un à un et pondérés par leur rareté. Insensible à l'ordre des mots, à la
+/// ponctuation et aux accents ; une faute de frappe est absorbée par une
+/// distance d'édition appliquée mot à mot (seuil `TOKEN_MATCH_THRESHOLD`).
+pub fn title_similarity(a: &str, b: &str, corpus: &TitleCorpus) -> f64;
+
+/// R09/R09a: Calculate similarity between two tasks for potential deduplication.
+/// Le titre décide seul ; un assigné ou un projet identique comble
+/// `ATTRIBUTE_BONUS` (10 %) de l'écart restant jusqu'à 1.0.
 pub fn calculate_similarity(
     title_a: &str,
     title_b: &str,
@@ -1113,8 +1131,9 @@ pub fn calculate_similarity(
     assignee_b: Option<&str>,
     project_a: Option<&str>,
     project_b: Option<&str>,
+    corpus: &TitleCorpus,
 ) -> SimilarityScore {
-    let title_score = normalized_levenshtein(title_a, title_b);
+    let title_score = title_similarity(title_a, title_b, corpus);
     let assignee_match = match (assignee_a, assignee_b) {
         (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
         _ => false,
@@ -1123,16 +1142,17 @@ pub fn calculate_similarity(
         (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
         _ => false,
     };
-    let overall = title_score * 0.6
-        + if assignee_match { 0.2 } else { 0.0 }
-        + if project_match { 0.2 } else { 0.0 };
+    let bonus = if assignee_match { ATTRIBUTE_BONUS } else { 0.0 }
+        + if project_match { ATTRIBUTE_BONUS } else { 0.0 };
+    let overall = title_score + (1.0 - title_score) * bonus;
 
     SimilarityScore { title_score, assignee_match, project_match, overall }
 }
 
 /// Normalized Levenshtein distance: 1.0 = identical, 0.0 = completely different.
 pub fn normalized_levenshtein(a: &str, b: &str) -> f64 {
-    // Implementation: standard Levenshtein, normalized by max(len(a), len(b))
+    // Standard Levenshtein, normalisée par le nombre de CARACTÈRES du plus long
+    // des deux (pas d'octets : un titre accentué aurait un score gonflé).
 }
 
 /// Dedup confidence threshold: suggestions above this score are shown to the user.

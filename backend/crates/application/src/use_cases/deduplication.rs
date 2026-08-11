@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
-use domain::rules::dedup::{calculate_similarity, find_jira_key_in_text, DEDUP_CONFIDENCE_THRESHOLD};
+use domain::rules::dedup::{
+    calculate_similarity, find_jira_key_in_text, TitleCorpus, DEDUP_CONFIDENCE_THRESHOLD,
+};
 use domain::types::{choose_dedup_survivor, make_survivor_visible, *};
 use uuid::Uuid;
 
@@ -52,9 +54,14 @@ pub async fn find_suggestions(
         })
         .collect();
 
+    // 4. Learn which words this backlog repeats, so shared scaffolding (client name,
+    //    project prefix, component path) weighs less than the words that actually
+    //    name a task.
+    let corpus = TitleCorpus::from_titles(tasks.iter().map(|t| t.title.as_str()));
+
     let mut suggestions = Vec::new();
 
-    // 4. For each pair (i, j) where i < j
+    // 5. For each pair (i, j) where i < j
     for i in 0..tasks.len() {
         for j in (i + 1)..tasks.len() {
             let task_a = &tasks[i];
@@ -121,6 +128,7 @@ pub async fn find_suggestions(
                 task_b.assignee.as_deref(),
                 project_a.as_deref(),
                 project_b.as_deref(),
+                &corpus,
             );
 
             if score.overall >= DEDUP_CONFIDENCE_THRESHOLD {
@@ -137,7 +145,7 @@ pub async fn find_suggestions(
         }
     }
 
-    // 5. Sort by confidence descending
+    // 6. Sort by confidence descending
     suggestions.sort_by(|a, b| {
         b.confidence_score
             .partial_cmp(&a.confidence_score)
