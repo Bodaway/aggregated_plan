@@ -856,28 +856,77 @@ Ni `aplan flush` ni `aplan reattribute` ne pouvaient les atteindre : le premier 
 
 ### 6.9 Feuille de temps (Timesheet) et déclaration d'activité pour Gryzzly
 
-#### US-080 : Consultation et réconciliation de la feuille de temps
+#### US-080 : Voir le travail concurrent et arbitrer la journée par quarts
 
-> En tant que Tech Lead, je veux consulter et réconcilier ma feuille de temps journalière (reconstruction à partir du journal d'activité) avant de la déclarer à Gryzzly afin de m'assurer que le temps est correctement affecté par projet.
+> En tant que Tech Lead, je veux voir **tout** le travail de la journée, y compris ce qui
+> s'est déroulé en parallèle, puis décider moi-même comment chaque quart de journée se
+> répartit, afin que la déclaration Gryzzly corresponde à ce que j'ai réellement fait.
+
+**Le problème résolu.** L'ancien moteur modélisait la journée sur une seule piste : chaque
+intervalle était crédité au signal qui l'ouvrait. Le 2026-08-10, trois sessions Claude
+tournaient en parallèle ; le bloc 13:00–16:02 — le plus gros de la journée — a été attribué
+en entier à la tâche qui avait journalisé la première après le déjeuner, et une tâche qui a
+tourné tout l'après-midi n'a déclaré que **0,29 h**. Aucune correction n'était possible,
+puisque la seule vue offerte était celle qui avait déjà perdu l'information.
 
 **Critères d'acceptation :**
-- L'utilisateur peut afficher la feuille de temps d'un jour donné via `aplan timesheet [--date YYYY-MM-DD]` (par défaut : aujourd'hui).
-- La feuille de temps affiche :
-  - Un **tableau heures×projet** listant chaque projet Gryzzly avec les heures affectées (heures épinglées depuis le journal d'activité et heures non attribuées)
-  - Une **chronologie ASCII** montrant les blocs d'activité de la journée (réunions, créneaux d'activité, créneaux non trackés)
-  - Un **récapitulatif** : heures totales, heures non attribuées, confiance globale (HIGH/MEDIUM/LOW)
-  - Les **blocs non résolus** : créneaux sans affectation projet clair, avec suggestion basée sur les apprentissages précédents
-- Les sous-commandes permettent d'éditer la feuille de temps **sans REPL interactif** (voir ci-dessous) :
-  - `aplan timesheet set <projet> <heures>` — épingle des heures pour un projet (surcharge le calcul auto)
+
+- **Voies de présence concurrentes.** L'écran et `aplan timesheet [--date YYYY-MM-DD]`
+  affichent **une voie par tâche**, avec les intervalles où elle peut être *montrée* active.
+  Les voies **se chevauchent** : deux sessions simultanées produisent deux voies sur les
+  mêmes minutes.
+- **Règle de l'ombre portée (45 minutes).** Une entrée de journal est un horodatage écrit
+  *après* le travail. Elle atteste donc la période qui la précède : au plus
+  **45 minutes** (la constante `MAX_CONTINUATION_GAP_MINUTES`, la même que la projection des
+  créneaux — voir R-WL-13), et jamais au-delà de l'entrée précédente **de la même voie**.
+  Ce second écrêtage est la correction du bug : découper contre les entrées des *autres*
+  voies est précisément ce qui créditait un long intervalle à la première tâche journalisée.
+- **Temps mesuré vs temps inféré.** Une réunion et un créneau d'activité **manuel** (minuteur
+  lancé à la main) comptent pour leur durée réelle. Un créneau issu de la projection du
+  journal (`source = worklog`) ne compte pas : il est déjà représenté par les entrées.
+- **Quatre quarts de journée.** Les deux plages configurées sont coupées en deux :
+  `08–10, 10–12, 13–15, 15–17` par défaut. Chaque quart répartit **sa propre durée** entre
+  les voies présentes, au prorata des minutes de présence, arrondie à l'incrément Gryzzly
+  (15 min par défaut). La présence est un **poids**, pas une revendication d'horloge :
+  98 + 76 + 71 minutes de présence dans un quart de 120 minutes est normal et attendu.
+- **Arbitrage manuel.** L'utilisateur peut fixer les heures d'une voie dans un quart ; la
+  part devient **épinglée** et le reste du quart se rééquilibre autour d'elle. Une
+  reconstruction ultérieure **conserve** les épingles.
+- **Le total de la journée est la somme des quarts** (8 h avec les plages par défaut), et
+  **non** `workday.daily_target_hours`. Un quart qui totalise sa propre durée par
+  construction ne peut pas simultanément totaliser une fraction mise à l'échelle d'un autre
+  objectif : l'objectif journalier devient un **repère signalé**, pas un facteur d'échelle.
+- **Confiance par quart** : proportion de l'horloge du quart couverte par **au moins une**
+  voie (union, jamais somme) — `HIGH` ≥ 75 %, `MEDIUM` ≥ 40 %, `LOW` sinon. La confiance du
+  jour est la plus faible des quatre.
+- **Journée absente.** Un quart couvert par une absence (`OUT_OF_OFFICE`) voit sa durée
+  déclarable réduite d'autant ; à zéro il ne déclare rien.
+- **Journée sans trace.** Une journée sans **aucune** présence à l'intérieur des plages ne
+  déclare rien (total 0). Sans cette garde, chaque week-end déclarerait quatre quarts non
+  attribués et huit heures que personne n'a travaillées.
+- **Travail hors plage horaire signalé.** Les traces dont l'ombre tombe hors des plages
+  configurées sont **rapportées** par voie, avec leur durée. L'ancien moteur en jetait
+  vingt d'un coup (le 2026-08-10, tout ce qui suivait 17:00) sans trace nulle part.
+- **Lignes projet dérivées.** Le tableau heures×projet est la **somme des parts** par projet
+  Gryzzly. Deux tâches du même projet fusionnent ici — le cas normal — et leurs voies restent
+  distinctes à l'écran pour que la fusion soit visible avant la déclaration. Il n'existe plus
+  d'épinglage au niveau de la ligne : ce serait une seconde source de vérité que l'arbitrage
+  ne pourrait pas expliquer.
+- **Sous-commandes CLI** (édition sans REPL) :
+  - `aplan timesheet set --quarter <1-4> <tâche> <heures>` — épingle une voie dans un quart.
+    `<tâche>` est résolu contre les voies du jour (titre approximatif ou clé de voie) ; une
+    correspondance ambiguë est un **refus** (code 3) avec les candidats listés, jamais une
+    supposition — ces heures atteignent la facture d'un client.
   - `aplan timesheet validate [--date YYYY-MM-DD]` — valide la feuille de temps
-  - `aplan timesheet off [--am|--pm] [--date YYYY-MM-DD]` — marque une demi-journée (ou la journée complète) comme indisponible
-- La feuille de temps est sauvegardée automatiquement lors des modifications.
+  - `aplan timesheet off [--am|--pm] [--date YYYY-MM-DD]` — marque une demi-journée (ou la
+    journée complète) comme indisponible
 
-**Décision d'architecture — CLI flag-driven (pas de REPL) :**
+**Décision d'architecture — l'édition fine vit dans l'écran React :**
 
-La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-commande explicite et synchrone (`set`, `off`, `validate`), avec résultat immédiat. Il n'existe **aucun mode REPL ou interactif** pour éditer la feuille de temps en ligne.
-
-*Justification :* L'édition interactive riche (glisser-déposer de blocs, suggestions en temps réel, interface timeline visuelle) relève de l'écran React dédiée au timesheet (Surface B, Plan 3). La CLI sert les cas d'usage non-interactifs : automatisation, scripting Claude, appels par workflows externes. Les deux interfaces opèrent sur le même modèle de données GraphQL.
+L'arbitrage par quart est visuel par nature : il faut voir les voies se chevaucher pour
+juger. L'écran React porte l'édition complète (voies, éditeur par quart, pas de 15 min) ;
+la CLI reste lisible et n'expose qu'un seul verbe d'édition. Les deux interfaces opèrent sur
+le même modèle GraphQL.
 
 **Priorité** : Should (v2)
 
@@ -998,7 +1047,7 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
   - Affiche également le statut du jour (DRAFT, VALIDATED, SUBMITTED, DAY_OFF) sous forme de badge.
 
 - **Intégration avec le CLI `aplan timesheet` (Surface A) :**
-  - La représentation visuelle est le pendant interactif du CLI. Les commandes `aplan timesheet set <projet> <heures>` et `aplan timesheet off` modifient la même base de données.
+  - La représentation visuelle est le pendant interactif du CLI. Les commandes `aplan timesheet set --quarter <1-4> <tâche> <heures>` et `aplan timesheet off` modifient la même base de données.
   - Une édition via le CLI est immédiatement reflétée si l'écran `/timesheet` était ouvert (optionnel : polling ou SSE abonnement).
 
 **Limitations actuelles (documentées pour v2+) :**
@@ -1689,7 +1738,7 @@ Les fonctionnalités de timesheet (Plan 2) ont les limitations suivantes, à am�
 | Limitation | Détail |
 |-----------|--------|
 | **Scope demi-journée non appliqué à `markDayOff`** | La mutation `markDayOff(date, scope)` et la sous-commande CLI `aplan timesheet off [--am\|--pm]` ignorent actuellement le scope : une demi-journée marquée (AM/PM) indisponible marque la **journée complète** comme off. Affinement futur : émettre le scope à la base et refléter ce découpage dans la reconstruction de feuille de temps. |
-| **Pas de commande pour vider le bucket non-attribué** | Il n'existe pas de verbe CLI dédié pour affecter en masse les heures non attribuées d'un jour à un projet. Solution actuelle : épingler des heures projet par projet via `aplan timesheet set <projet> <heures>` jusqu'à atteindre le total, ou créer des règles de mappage via `aplan map add` pour suggérer automatiquement. |
+| **Pas de commande pour vider le bucket non-attribué** | Il n'existe pas de verbe CLI dédié pour affecter en masse les heures non attribuées d'un jour à un projet. Solution actuelle : épingler des heures quart par quart via `aplan timesheet set --quarter <1-4> <tâche> <heures>` jusqu'à atteindre le total, ou créer des règles de mappage via `aplan map add` pour suggérer automatiquement. |
 | **`aplan map add` n'applique pas de priorité de sélecteurs** | La commande `aplan map add` accepte actuellement une seule règle (kind + pattern + gryzzlyProjectId) mais ne rejetse pas les collisions de sélecteurs distincts (p. ex., deux règles `repository` avec patterns différents). La logique de priorité (repository > subject > organizer > internal_project) sera appliquée et documentée dans une prochaine version afin de traiter élégamment les cas d'ambiguïté. |
 
 ---

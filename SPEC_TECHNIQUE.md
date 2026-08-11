@@ -2994,6 +2994,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 | **016** | `016_add_project_status_and_not_configured.sql` | `gryzzly_tasks.project_status` (statut du projet propriétaire, `active` \| `done`, NULL = inconnu lu comme actif) et reconstruction de `sync_status` pour que le `CHECK` sur `status` admette `not_configured`. Voir § 10.6. |
 | **017** | `017_add_timesheet_unresolved_json.sql` | `ALTER TABLE timesheet_drafts ADD COLUMN unresolved_json TEXT;` — persistance de la liste des signaux non résolus, à côté de `blocks_json`. Simple ajout de colonne (aucune reconstruction de table), nullable, sans `CHECK` : c'est du JSON d'affichage opaque. Shape `[{"sourceRef","label","at"}]`, `at` au format `YYYY-MM-DD HH:MM:SS` **en heure locale**, écrit par `to_draft` et relu par `parse_unresolved_json`. NULL (toute ligne antérieure) se lit « aucune explication disponible » jusqu'à la prochaine reconstruction. **Pourquoi** : la liste était calculée par `reconstruct_day`, renvoyée une fois par la mutation `runTimesheetReconstruction`, puis perdue — l'en-tête n'avait pas où la garder, donc la requête `timesheetDraft` (soit *chaque* chargement de page) répondait une liste vide et la timeline n'affichait plus que des barres anonymes sans moyen de savoir **quoi** était non attribué. |
 
+| **018** | `018_create_timesheet_quarter_shares.sql` | Arbitrage par quart de journée : table `timesheet_quarter_shares` (une ligne par `(brouillon, quart, voie)`) et `ALTER TABLE timesheet_drafts ADD COLUMN lanes_json TEXT`. **Pourquoi une table et pas du JSON** : une part est une **décision de facturation**. `blocks_json` / `unresolved_json` sont documentés comme des charges utiles d'affichage opaques que les lecteurs tolèrent absentes — le bon contrat pour une chronologie, le mauvais pour des heures qui atteignent la facture d'un client. `task_id` est en `ON DELETE SET NULL`, **jamais** `CASCADE` : supprimer une tâche ne doit pas effacer des heures déjà déclarées, et `lane_key` + `label` survivent à la suppression pour que la ligne reste lisible. `is_pinned` porte l'arbitrage de l'utilisateur : une reconstruction le **conserve** et rééquilibre le reste de son quart autour. `lanes_json` est la vue des traces concurrentes (affichage seul, lecture tolérante, shape `[{"laneKey","label","gryzzlyProjectId","intervals":[[début,fin]],"outsideMinutes"}]` en minutes locales depuis minuit). Voir § 7.4. |
 ### 7.3 Migration `014_create_sessions.sql` — sessions Claude Code
 
 #### 7.3.1 Deux natures d'acteur
@@ -3463,6 +3464,88 @@ au fond d'un job d'arrière-plan.
 - `sqlx` handles the dialect differences transparently via its `Any` pool or feature-flagged query macros.
 
 ---
+
+### 7.4 Migration `018` — voies de présence et arbitrage par quart
+
+#### 7.4.1 Ce qui a été supprimé, et pourquoi
+
+`reconstruct_day` modélisait la journée sur **une seule piste** : chaque intervalle libre
+était crédité au signal qui l'ouvrait (le « report », `reconstruction.rs:304-338` avant
+suppression). Sur une journée à plusieurs sessions concurrentes, cette règle est
+structurellement fausse et pas seulement imprécise : le 2026-08-10, le bloc 13:00–16:02 est
+allé en entier à la tâche qui avait journalisé la première après le déjeuner, tandis qu'une
+tâche active tout l'après-midi n'a récolté que six éclats de 1 à 6 minutes — **0,29 h pour
+une journée de travail**.
+
+Sont supprimés avec leurs tests : `reconstruct_day`, `finalize_day`, `is_low_signal`,
+`AttributedBlock`, `BlockKind`, `Signal`, `SignalKind`, `DayInputs`, `MeetingBlock`,
+`MeetingKind`, `EditedLine`, `renormalize_lines`, la mutation `saveTimesheetDraft` et le
+type `TimesheetLineInput`. Sont conservés et réutilisés : `ReconstructionConfig`,
+`apportion_to_target` (répartition au plus fort reste, avec seaux épinglés — exactement un
+quart dont certaines parts sont fixées à la main), `Bucket`, `UnresolvedSignal`,
+`ProjectAllocation`.
+
+#### 7.4.2 Le pipeline
+
+```
+traces  →  voies  →  quarts  →  parts  →  lignes
+```
+
+| Étape | Couche | Module |
+|---|---|---|
+| traces | application | `use_cases/timesheet.rs` — entrées de journal, commits git, réunions, créneaux `manual` |
+| voies | domaine (pur) | `rules/presence.rs` — `build_lanes`, `minutes_in`, `covered_minutes` |
+| quarts | domaine (pur) | `rules/quarters.rs` — `quarters`, `allocate_quarter`, `allocate_day` |
+| parts | domaine (pur) | `rules/quarters.rs` — `Share`, `Pin`, `DayPin` |
+| lignes | application | somme des parts par `gryzzly_project_id` |
+
+**`presence.rs` — l'ombre portée.** Un point de trace à `T` couvre
+`[max(T − MAX_CONTINUATION_GAP_MINUTES, point précédent de la MÊME voie), T]`. Deux
+écrêtages, deux rôles distincts : le point précédent de la voie empêche deux entrées
+consécutives de compter deux fois la même minute ; le plafond de 45 minutes empêche une
+entrée isolée de réclamer une matinée entière. La constante est **importée** de
+`rules/worklog_time.rs` — pas redéclarée, pas configurable : c'est une règle métier qui
+porte déjà sa justification mesurée, et un seuil qui différerait entre le journal et la
+feuille de temps ferait divergier les deux vues par construction.
+
+Les voies **se chevauchent** et `covered_minutes` est une **union**, jamais une somme : trois
+voies concurrentes ne rendent pas un quart trois fois mieux attesté (245 minutes de présence
+dans un quart de 120 minutes, sur données réelles du 2026-08-10).
+
+**`quarters.rs` — la répartition.** `allocate_quarter` pondère chaque voie par ses minutes de
+présence dans le quart, retire d'abord les minutes d'absence, puis appel
+`apportion_to_target(&seaux, heures_déclarables, incrément)`. Invariant : les parts d'un
+quart totalisent **exactement** sa durée déclarable, sur l'incrément d'arrondi. Une part
+épinglée devient un seau `pinned` et le reste se rééquilibre autour.
+
+#### 7.4.3 Trois changements de comportement délibérés
+
+1. **Le total de la journée est la somme des quarts**, pas `workday.daily_target_hours`. Un
+   quart qui totalise 2,00 h par construction ne peut pas simultanément totaliser 1,875 h.
+   L'objectif devient une **vérification** signalée à l'écran et en CLI.
+2. **L'épinglage au niveau de la ligne disparaît.** Les lignes sont dérivées des parts ; une
+   ligne épinglée serait une seconde source de vérité que les quarts ne pourraient pas
+   expliquer.
+3. **La chronologie mono-piste est remplacée par les voies.** `blocks_json` n'est plus écrit ;
+   une journée persistée avant ce changement n'affiche aucune vue des traces jusqu'à sa
+   prochaine reconstruction, ce que l'écran énonce explicitement au lieu d'afficher une
+   bande vide.
+
+#### 7.4.4 Contrat GraphQL
+
+`ReconstructedDayGql` gagne `lanes`, `quarters`, `outsideWorkday` et perd `blocks`.
+Mutations : `setQuarterShare(date, quarterIndex, laneKey, hours)`,
+`clearQuarterShare(date, quarterIndex, laneKey)`, `resetQuarter(date, quarterIndex)`.
+`saveTimesheetDraft` est supprimée. Les intervalles voyagent en **minutes locales depuis
+minuit** (`Int`) et non en horodatages : une voie est dessinée contre la grille du jour, et
+un client qui doit analyser des datetimes pour positionner une barre finira par se tromper de
+fuseau.
+
+Sur relecture d'un brouillon (`from_draft`), les quarts sont reconstitués depuis les lignes
+de parts et les plages configurées. Deux champs ne le sont pas : la confiance propre d'un
+quart et ses heures d'absence sont des propriétés des **traces**, pas de la décision — une
+journée relue rapporte la confiance du **jour** sur chaque quart et aucune absence.
+Reconstruire rafraîchit les deux.
 
 ## 8. GraphQL API
 

@@ -140,7 +140,17 @@ Key mutations: `createTask`, `updateTask`, `deleteTask`, `updatePriority`, `star
 
 SQLite with migrations at `migrations/sqlite/`. All IDs are UUID strings (`TEXT`). Dates stored as ISO 8601 `TEXT`. Enums as lowercase `TEXT`. Booleans as `INTEGER` (0/1).
 
-22 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, signal_project_mappings, memories, memory_stakeholders, memories_fts, sessions.
+23 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, timesheet_quarter_shares, signal_project_mappings, memories, memory_stakeholders, memories_fts, sessions.
+
+Timesheet quarter arbitration (migration `018`): the day is four two-hour quarters cut from
+the configured windows, and `timesheet_quarter_shares` holds one row per (draft, quarter,
+lane) — a **billing decision**, hence a table rather than JSON. Evidence becomes overlapping
+per-task *presence lanes* (`domain/src/rules/presence.rs`): each worklog entry casts a
+back-shadow of at most `MAX_CONTINUATION_GAP_MINUTES`, clipped at its own lane's previous
+entry and never at another lane's. Each quarter's hours are apportioned across the lanes
+present in it by presence weight (`domain/src/rules/quarters.rs`), and `is_pinned` marks a
+share the user set by hand, which a reconstruct preserves. The day totals its quarters, not
+`workday.daily_target_hours`.
 
 Sessions (migration `014`): `sessions` is one row per Claude Code session, keyed by the
 harness's `CLAUDE_CODE_SESSION_ID`, so several concurrent sessions can log against different
