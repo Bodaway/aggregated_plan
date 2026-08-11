@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { useMutation, useQuery } from 'urql';
+import { AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
 
 const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 const IMPACT_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
@@ -38,6 +39,9 @@ export interface DashboardTask {
   readonly effectiveRemainingHours: number | null;
   readonly effectiveEstimatedHours: number | null;
   readonly jiraTimeSpentSeconds: number | null;
+  /** Null when unassigned. Selected here so the card can retarget the Gryzzly
+   *  task inline, without opening the edit sheet. */
+  readonly gryzzlyTask: AssignedGryzzlyTask | null;
 }
 
 export interface DashboardMeeting {
@@ -135,6 +139,13 @@ const DASHBOARD_QUERY = `
         effectiveRemainingHours
         effectiveEstimatedHours
         jiraTimeSpentSeconds
+        gryzzlyTask {
+          gryzzlyTaskId
+          name
+          projectName
+          projectStatus
+          stale
+        }
       }
       meetings {
         id

@@ -379,6 +379,10 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 - Lors de l'assignation, le `gryzzly_project_id` est snapshoté dans la tâche depuis le catalogue — une déclaration d'heures future n'a pas besoin que le catalogue soit à jour.
 - Si la tâche Gryzzly est inconnue du catalogue, l'assignation est refusée (erreur de validation).
 - L'utilisateur peut effacer l'assignation en passant `gryzzlyTaskId: null` ; les deux champs (`gryzzly_task_id` et `gryzzly_project_id`) sont mis à `null`.
+- L'assignation est accessible depuis **deux surfaces**, qui partagent la même liste (recherche, regroupement par projet, badges `stale` et `terminé`) :
+  - le volet d'édition de tâche, via un sélecteur pleine largeur ;
+  - la **carte de tâche du dashboard**, via une puce déroulante placée à côté du menu de statut — l'assignation se change sans ouvrir le volet.
+- La puce du dashboard affiche le nom de la tâche Gryzzly assignée (ou `Gryzzly` quand la tâche est libre), en ambre si l'assignation est périmée (`stale`) et suivie du badge `terminé` si le projet propriétaire est clos.
 
 **Priorité** : Should
 

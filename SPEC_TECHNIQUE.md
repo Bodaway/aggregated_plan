@@ -4534,6 +4534,31 @@ Type `AssignedGryzzlyTaskGql` :
 
 La résolution utilise `GryzzlyCatalogRepository::find_by_gryzzly_task_id` qui retourne la ligne **quelle que soit sa valeur de `is_active`**, permettant l'affichage des états 2 et 3 sans jamais déclencher de panique.
 
+#### Surfaces frontend d'assignation
+
+Deux déclencheurs, une seule liste — le corps du menu est partagé pour que les badges `stale` /
+`terminé` ne puissent pas diverger entre les deux surfaces.
+
+| Fichier | Rôle |
+|---------|------|
+| `frontend/src/components/gryzzly/GryzzlyTaskOptionList.tsx` | Corps commun : champ de recherche, regroupement par projet, option « Clear assignment », badges. Monté **uniquement à l'ouverture**, pour que la requête catalogue ne parte pas une fois par puce fermée à l'écran (le dashboard en affiche des dizaines). |
+| `frontend/src/components/gryzzly/GryzzlyTaskPicker.tsx` | Déclencheur pleine largeur du volet d'édition ; liste ancrée en `absolute`. |
+| `frontend/src/components/gryzzly/GryzzlyTaskMenu.tsx` | Déclencheur en puce des cartes de tâche (dashboard), calibré sur `StatusMenu`. |
+| `frontend/src/hooks/use-assign-gryzzly-task.ts` | Mutation `assignGryzzlyTask` partagée (`assign` / `clear`). |
+
+`GryzzlyTaskMenu` **portalise** sa liste dans `document.body` en position `fixed` : les colonnes de
+jour du dashboard sont des conteneurs `overflow-hidden` défilants, qui rogneraient un menu positionné
+en `absolute`. Trois conséquences assumées, chacune couverte par un test :
+
+1. Un portail continue de propager les événements React jusqu'à la carte, dont le `onClick` ouvre le
+   volet d'édition — la puce et le conteneur du menu arrêtent donc `click` et `pointerDown`.
+   `pointerDown` sert aussi à empêcher le capteur dnd-kit de la carte de réclamer le geste.
+2. La détection du clic extérieur teste l'appartenance aux **deux** nœuds (puce et liste) : une fois
+   portalisée, la liste n'est plus un descendant DOM de la puce.
+3. Le défilement **réancre** la liste au lieu de la fermer. Fermer sur `scroll` rendait le menu
+   inutilisable : la mise au point automatique du champ de recherche fait défiler son propre
+   conteneur, donc le menu se refermait aussitôt ouvert. Seule une puce sortie du viewport ferme.
+
 ### 10.9 End-of-Day Auto-Reconstruction Scheduler
 
 #### Architecture

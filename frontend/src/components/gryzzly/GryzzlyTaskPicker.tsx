@@ -1,78 +1,39 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useMutation } from 'urql';
-import { useGryzzlyTasks } from '@/hooks/use-gryzzly-tasks';
-import { buildPickerOptions, AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
+import { useAssignGryzzlyTask } from '@/hooks/use-assign-gryzzly-task';
+import { AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
+import { GryzzlyTaskOptionList } from './GryzzlyTaskOptionList';
 import { TerminatedBadge } from './TerminatedBadge';
-
-const ASSIGN_GRYZZLY_TASK = `
-  mutation AssignGryzzlyTask($taskId: ID!, $gryzzlyTaskId: ID) {
-    assignGryzzlyTask(taskId: $taskId, gryzzlyTaskId: $gryzzlyTaskId) {
-      id
-      gryzzlyTask {
-        gryzzlyTaskId
-        name
-        projectName
-        projectStatus
-        stale
-      }
-    }
-  }
-`;
 
 interface GryzzlyTaskPickerProps {
   readonly taskId: string;
   readonly assigned: AssignedGryzzlyTask | null;
 }
 
+/** Full-width Gryzzly task picker for form layouts (the task edit sheet).
+ *  The dashboard card uses GryzzlyTaskMenu — same list, chip-sized trigger. */
 export function GryzzlyTaskPicker({ taskId, assigned }: GryzzlyTaskPickerProps) {
   const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const { options: activeOptions, fetching } = useGryzzlyTasks(search || undefined);
-  const options = buildPickerOptions(activeOptions, assigned);
-
-  const [, executeAssign] = useMutation(ASSIGN_GRYZZLY_TASK);
-
-  // Group options by project
-  const grouped = options.reduce<Record<string, typeof options>>((acc, opt) => {
-    const key = opt.projectName;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(opt);
-    return acc;
-  }, {});
+  const { assign, clear } = useAssignGryzzlyTask(taskId);
 
   const handleSelect = useCallback(
     async (gryzzlyTaskId: string) => {
       setOpen(false);
-      setSearch('');
-      await executeAssign({ taskId, gryzzlyTaskId });
+      await assign(gryzzlyTaskId);
     },
-    [taskId, executeAssign],
+    [assign],
   );
 
   const handleClear = useCallback(async () => {
     setOpen(false);
-    setSearch('');
-    await executeAssign({ taskId, gryzzlyTaskId: null });
-  }, [taskId, executeAssign]);
-
-  // Focus search input when opening
-  useEffect(() => {
-    if (open) {
-      setTimeout(() => inputRef.current?.focus(), 0);
-    }
-  }, [open]);
+    await clear();
+  }, [clear]);
 
   // Close on Escape
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setOpen(false);
-        setSearch('');
-      }
+      if (e.key === 'Escape') setOpen(false);
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -84,7 +45,6 @@ export function GryzzlyTaskPicker({ taskId, assigned }: GryzzlyTaskPickerProps) 
     const handler = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);
-        setSearch('');
       }
     };
     document.addEventListener('mousedown', handler);
@@ -128,75 +88,12 @@ export function GryzzlyTaskPicker({ taskId, assigned }: GryzzlyTaskPickerProps) 
       </button>
 
       {open && (
-        <div
-          role="listbox"
-          aria-label="Select Gryzzly task"
+        <GryzzlyTaskOptionList
+          assigned={assigned}
+          onSelect={(id) => void handleSelect(id)}
+          onClear={() => void handleClear()}
           className="absolute left-0 top-full mt-1 z-50 w-full min-w-[280px] max-h-64 overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg"
-        >
-          {/* Search input */}
-          <div className="sticky top-0 bg-white border-b border-gray-100 px-2 py-1.5">
-            <input
-              ref={inputRef}
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search tasks…"
-              className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
-            />
-          </div>
-
-          {/* Clear assignment */}
-          {assigned && (
-            <button
-              type="button"
-              role="option"
-              aria-selected={false}
-              onClick={() => void handleClear()}
-              className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors border-b border-gray-100"
-            >
-              Clear assignment
-            </button>
-          )}
-
-          {/* Options grouped by project */}
-          {fetching ? (
-            <div className="px-3 py-2 text-xs text-gray-400">Loading…</div>
-          ) : Object.keys(grouped).length === 0 ? (
-            <div className="px-3 py-2 text-xs text-gray-400">No tasks found</div>
-          ) : (
-            Object.entries(grouped).map(([project, items]) => (
-              <div key={project}>
-                {/* The badge lives on the group header, not on each row: the
-                    picker already groups by project, so one badge per group. */}
-                <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider bg-gray-50 border-b border-gray-100 flex items-center gap-1.5">
-                  <span className="truncate">{project}</span>
-                  {items.some((o) => o.projectStatus === 'done') && <TerminatedBadge small />}
-                </div>
-                {items.map((opt) => (
-                  <button
-                    key={opt.gryzzlyTaskId}
-                    type="button"
-                    role="option"
-                    aria-selected={opt.gryzzlyTaskId === assigned?.gryzzlyTaskId}
-                    onClick={() => void handleSelect(opt.gryzzlyTaskId)}
-                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 transition-colors flex items-center justify-between gap-2 ${
-                      opt.gryzzlyTaskId === assigned?.gryzzlyTaskId
-                        ? 'text-blue-600 bg-blue-50'
-                        : 'text-gray-700'
-                    }`}
-                  >
-                    <span className="truncate">{opt.name}</span>
-                    {opt.stale && (
-                      <span className="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-medium bg-amber-100 text-amber-700 flex-shrink-0">
-                        stale
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
+        />
       )}
     </div>
   );

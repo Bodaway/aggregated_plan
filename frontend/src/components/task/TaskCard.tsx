@@ -1,5 +1,7 @@
 import { SOURCE_COLORS, QUADRANT_LABELS } from '@/lib/constants';
 import { useSearch } from '@/lib/search/SearchProvider';
+import { GryzzlyTaskMenu } from '@/components/gryzzly/GryzzlyTaskMenu';
+import { AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
 import { StatusMenu } from './StatusMenu';
 
 interface TaskTag {
@@ -27,6 +29,13 @@ export interface TaskCardProps {
   readonly effectiveEstimatedHours?: number | null;
   readonly jiraTimeSpentSeconds?: number | null;
   readonly isRecurring?: boolean;
+  /** The assigned Gryzzly task, driving the inline picker chip.
+   *
+   *  Three-state on purpose: `undefined` means the caller's query does not select
+   *  `gryzzlyTask`, so no chip is drawn (an empty one would look like "nothing
+   *  assigned" when in truth nothing was asked for); `null` means selected and
+   *  unassigned, which does draw the chip in its empty state. */
+  readonly gryzzlyTask?: AssignedGryzzlyTask | null;
   readonly compact?: boolean;
   readonly onClick?: () => void;
 }
@@ -114,6 +123,7 @@ export function TaskCard({
   effectiveEstimatedHours,
   jiraTimeSpentSeconds,
   isRecurring = false,
+  gryzzlyTask,
   compact = false,
   onClick,
 }: TaskCardProps) {
@@ -150,9 +160,10 @@ export function TaskCard({
         </div>
         {/* Title */}
         <h4 className="text-sm font-medium text-gray-900 mb-1 leading-tight truncate">{title}</h4>
-        {/* Bottom row: status menu + assignee + recurring icon */}
+        {/* Bottom row: status menu + Gryzzly chip + assignee + recurring icon */}
         <div className="flex flex-wrap items-center gap-1.5">
           <StatusMenu taskId={id} status={status} />
+          {gryzzlyTask !== undefined && <GryzzlyTaskMenu taskId={id} assigned={gryzzlyTask} />}
           {assignee && (
             <span className="text-xs text-gray-400 truncate">{assignee}</span>
           )}
@@ -202,6 +213,7 @@ export function TaskCard({
 
           <div className="flex flex-wrap items-center gap-1.5 mb-2">
             <StatusMenu taskId={id} status={status} />
+            {gryzzlyTask !== undefined && <GryzzlyTaskMenu taskId={id} assigned={gryzzlyTask} />}
             {jiraStatus && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
                 <svg className="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">

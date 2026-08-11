@@ -144,6 +144,7 @@ function DraggableTaskCard({
         effectiveRemainingHours={task.effectiveRemainingHours}
         effectiveEstimatedHours={task.effectiveEstimatedHours}
         jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
+        gryzzlyTask={task.gryzzlyTask ?? null}
         compact
         onClick={disabled ? undefined : () => onTaskClick(task.id)}
       />
