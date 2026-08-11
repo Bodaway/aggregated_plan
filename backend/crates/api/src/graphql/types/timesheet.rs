@@ -7,7 +7,7 @@ use domain::rules::reconstruction::{
     OutsideWork, ProjectAllocation, ReconstructedDay, ReconstructionConfig, UnresolvedSignal,
 };
 use domain::types::{
-    Confidence, QuarterShareRow, SignalMapping, TimesheetDraft, TimesheetDraftLine, TimesheetStatus,
+    QuarterShareRow, SignalMapping, TimesheetDraft, TimesheetDraftLine, TimesheetStatus,
 };
 
 use super::enums::{ConfidenceGql, MappingKindGql, TimesheetStatusGql};
@@ -389,6 +389,7 @@ fn parse_unresolved_json(json: &str) -> Option<Vec<UnresolvedSignalGql>> {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use domain::types::Confidence;
     use uuid::Uuid;
 
     #[test]

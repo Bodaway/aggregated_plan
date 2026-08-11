@@ -8,8 +8,8 @@ use crate::client::Client;
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
     activity_journal, learn_mapping, mark_day_off, reconstruct_timesheet, set_quarter_share,
-    signal_mappings, timesheet_draft, validate_timesheet, ActivityJournal, LearnMapping,
-    MarkDayOff, ReconstructTimesheet, SetQuarterShare, SignalMappings, TimesheetDraft,
+    signal_mappings, validate_timesheet, ActivityJournal, LearnMapping,
+    MarkDayOff, ReconstructTimesheet, SetQuarterShare, SignalMappings,
     ValidateTimesheet,
 };
 
