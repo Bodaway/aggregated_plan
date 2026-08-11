@@ -1448,6 +1448,23 @@ pub trait TaskRepository: Send + Sync {
     async fn save(&self, task: &Task) -> Result<(), RepositoryError>;
     async fn save_batch(&self, tasks: &[Task]) -> Result<(), RepositoryError>;
     async fn delete(&self, id: TaskId) -> Result<(), RepositoryError>;
+    /// Élagage post-synchronisation. DEUX REFUS font partie du contrat :
+    ///   1. `keep_ids` VIDE supprime ZÉRO ligne et retourne `Ok(0)`. Un lot vide ne
+    ///      porte aucune information d'obsolescence (une requête qui réussit retourne
+    ///      zéro ligne pour une clé de projet mal saisie ou un droit retiré aussi bien
+    ///      que pour une source réellement vide). L'ancien code supprimait ici
+    ///      « toutes les tâches de la source », et `worklog_entries.task_id` est
+    ///      `ON DELETE CASCADE`.
+    ///   2. une tâche portant du travail consigné n'est JAMAIS supprimée : deux
+    ///      `NOT EXISTS` excluent celles qui ont une ligne dans `worklog_entries`
+    ///      (cascade) ou dans `activity_slots` (`ON DELETE SET NULL`, donc créneau
+    ///      orphelin). Elle cesse d'être rafraîchie et survit localement.
+    /// Même contrat que `GryzzlyCatalogRepository::soft_prune_missing`, qui refuse
+    /// déjà un `keep_ids` vide. Le refus n'est pas une `RepositoryError` : cette
+    /// énumération ne décrit que des échecs techniques (`Database`, `Serialization`).
+    async fn delete_stale_by_source(
+        &self, user_id: UserId, source: Source, keep_ids: &[String],
+    ) -> Result<u64, RepositoryError>;
     /// Returns distinct non-null delegated_to values for a user, sorted alphabetically.
     /// Used to populate the auto-suggestion list in the delegation field.
     /// Default implementation returns an empty vec (no-op for non-SQLite backends).
@@ -1467,6 +1484,9 @@ pub trait MeetingRepository: Send + Sync {
         &self, user_id: UserId, start: NaiveDate, end: NaiveDate,
     ) -> Result<Vec<Meeting>, RepositoryError>;
     async fn upsert_batch(&self, meetings: &[Meeting]) -> Result<(), RepositoryError>;
+    /// Comme `delete_stale_by_source` : une liste d'identifiants VIDE supprime ZÉRO
+    /// ligne et retourne `Ok(0)`. Elle supprimait auparavant toutes les réunions de
+    /// l'utilisateur, y compris les rattachements de projet saisis localement.
     async fn delete_stale(
         &self, user_id: UserId, current_outlook_ids: &[String],
     ) -> Result<u64, RepositoryError>;
@@ -1797,6 +1817,21 @@ pub async fn sync_jira(
 //   - delegated_to (délégation utilisateur)
 //   - urgency_manual (override de priorité)
 //   - remaining_hours_override / estimated_hours_override (overrides de temps)
+//
+// ÉLAGAGE (R07b/R07c/R07d) — trois garanties, chacune ayant son test :
+//   1. GARDE « FETCH VIDE » : si `fetch_tasks` réussit en retournant zéro tâche,
+//      `delete_stale_by_source` n'est PAS appelé et le motif est poussé dans
+//      `errors` (donc dans `sync_status.error_message`). Un fetch vide ne dit rien
+//      de l'obsolescence ; un échec dur du connecteur, lui, a déjà interrompu la
+//      fonction plus haut. Même forme que la garde de `sync_gryzzly`.
+//   2. L'échec de l'élagage est TOLÉRÉ mais JAMAIS avalé : il est poussé dans
+//      `errors` comme les autres échecs tolérés de la fonction, et n'interrompt pas
+//      la synchronisation (les tâches déjà écrites restent). L'ancien
+//      `.unwrap_or(0)` rapportait « 0 tâche supprimée » sur un élagage en échec.
+//   3. Le dépôt refuse en plus de supprimer une tâche portant du travail consigné.
+// `sync_outlook` porte la même garde « fetch vide » avant `delete_stale`.
+// `sync_excel` n'élague pas du tout : il n'appelle aucun `delete_stale_*` et
+// retourne toujours `tasks_removed = 0`.
 
 pub async fn sync_outlook(
     outlook_client: &dyn OutlookClient,

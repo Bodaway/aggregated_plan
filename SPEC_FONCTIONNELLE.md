@@ -1324,6 +1324,9 @@ garde de joignabilité rende une panne visible au lieu d'être la panne.
 | **R05** | La fréquence de synchronisation automatique en arrière-plan est configurable (par défaut : toutes les 15 minutes). |
 | **R06** | Les données agrégées sont stockées en cache local. En cas d'indisponibilité d'une source, le cache est utilisé. |
 | **R07** | Les données propres de l'utilisateur (tâches personnelles, priorisations, journal d'activité) sont persistées localement et ne dépendent pas de la disponibilité des sources. |
+| **R07b** | **Élagage des tâches obsolètes** : après une synchronisation, une tâche de la source dont l'identifiant n'est plus retourné est supprimée localement — **sauf si elle porte du travail consigné** (au moins une entrée de journal ou un créneau d'activité). Une tâche protégée cesse d'être rafraîchie mais reste présente ; seule une suppression explicite (`aplan rm`) l'enlève. Le travail consigné est une donnée de l'utilisateur, pas une donnée synchronisée : les entrées de journal sont en cascade sur la tâche et un créneau d'activité perd son attribution avec elle. |
+| **R07c** | **Aucun élagage sur un lot vide** : une synchronisation qui **réussit** mais ne retourne aucun élément n'autorise aucune suppression. Un lot vide ne dit rien de l'obsolescence — clé de projet mal saisie, droit retiré, filtre « mes tâches uniquement » sur un compte modifié, requête JQL qui ne correspond plus à rien, calendrier entièrement filtré par les motifs d'exclusion. Le lire comme « tout est obsolète » supprimait l'intégralité du périmètre de la source. L'élagage est donc ignoré et la raison est inscrite dans l'état de synchronisation, sans faire échouer la synchronisation : les tâches déjà mises à jour sont conservées. Vaut pour les tâches (Jira, Excel) comme pour les réunions Outlook. |
+| **R07d** | **Un élagage en échec est signalé, jamais avalé** : l'échec est ajouté aux erreurs de la synchronisation et remonte dans l'état de synchronisation. Il n'interrompt pas la synchronisation en cours (les tâches déjà créées ou mises à jour restent), mais il ne peut plus être rapporté comme « 0 tâche supprimée ». |
 
 ### 7.3 Dédoublonnage
 
@@ -1568,7 +1571,8 @@ Ce qu'il faut **savoir** : une décision, un engagement, un fait ou une préfér
 |-----|---------------------|
 | **Source indisponible** (Jira down, réseau coupé) | L'outil utilise le cache local. Un indicateur montre que les données sont périmées avec la date de dernière synchronisation réussie. |
 | **Excel modifié (structure changée)** | L'outil détecte les changements de structure et alerte l'utilisateur. Les données non mappables sont ignorées avec un avertissement. |
-| **Tâche supprimée dans Jira** | La tâche disparaît de la vue après synchronisation. Si elle a des données locales (priorisation, tags), l'utilisateur est notifié. |
+| **Tâche supprimée dans Jira** | La tâche disparaît de la vue après synchronisation (R07b). Si elle a des données locales (priorisation, tags), l'utilisateur est notifié. Si elle porte du **travail consigné**, elle n'est pas supprimée : elle cesse simplement d'être rafraîchie, et l'utilisateur seul décide de l'enlever. |
+| **Synchronisation qui réussit mais ne retourne rien** | Aucune suppression (R07c) : le lot vide est traité comme une absence d'information, pas comme une obsolescence généralisée. L'élagage est ignoré et la raison est visible dans l'état de synchronisation. |
 | **Réunion annulée dans Outlook** | La réunion disparaît de la vue. La capacité est restaurée automatiquement. |
 | **Ticket Jira déplacé vers un autre projet** | La tâche est mise à jour avec le nouveau projet. Les données locales (priorité, tags) sont conservées. |
 
