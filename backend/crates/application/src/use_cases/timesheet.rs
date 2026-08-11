@@ -255,7 +255,9 @@ async fn to_draft(
         day_confidence: day.day_confidence,
         blocks_json,
         unresolved_json,
+        lanes_json: None,
         lines,
+        shares: vec![],
         created_at: now,
         updated_at: now,
     })
@@ -309,7 +311,11 @@ pub async fn save_timesheet_draft(
         // timeline on every save until the user reconstructed again — carry them forward.
         blocks_json: existing.as_ref().and_then(|d| d.blocks_json.clone()),
         unresolved_json: existing.as_ref().and_then(|d| d.unresolved_json.clone()),
+        lanes_json: existing.as_ref().and_then(|d| d.lanes_json.clone()),
         lines,
+        // Same reasoning as the evidence columns above: editing lines says nothing about
+        // the day's arbitration, so carry the shares forward instead of erasing them.
+        shares: existing.as_ref().map(|d| d.shares.clone()).unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
@@ -344,7 +350,9 @@ pub async fn mark_day_off(
         day_confidence: Confidence::High,
         blocks_json: None,
         unresolved_json: None,
+        lanes_json: None,
         lines: vec![],
+        shares: vec![],
         created_at: now,
         updated_at: now,
     };
@@ -1485,6 +1493,8 @@ mod tests {
                 day_confidence: Confidence::Low,
                 blocks_json: Some(blocks_json.into()),
                 unresolved_json: Some(unresolved_json.into()),
+                lanes_json: None,
+                shares: vec![],
                 lines: vec![],
                 created_at: now,
                 updated_at: now,
@@ -1595,6 +1605,8 @@ mod tests {
                     day_confidence: Confidence::High,
                     blocks_json: None,
                     unresolved_json: None,
+                    lanes_json: None,
+                    shares: vec![],
                     lines: vec![],
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
@@ -1670,6 +1682,8 @@ mod tests {
                     day_confidence: Confidence::High,
                     blocks_json: None,
                     unresolved_json: None,
+                    lanes_json: None,
+                    shares: vec![],
                     lines: vec![],
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
@@ -1858,6 +1872,8 @@ mod tests {
             day_confidence: Confidence::High,
             blocks_json: None,
             unresolved_json: None,
+            lanes_json: None,
+            shares: vec![],
             lines: vec![TimesheetDraftLine {
                 id: Uuid::new_v4(),
                 gryzzly_project_id: Some("p1".to_string()),
@@ -1902,6 +1918,8 @@ mod tests {
             day_confidence: Confidence::High,
             blocks_json: None,
             unresolved_json: None,
+            lanes_json: None,
+            shares: vec![],
             lines: vec![],
             created_at: now,
             updated_at: now,

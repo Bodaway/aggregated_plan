@@ -45,6 +45,26 @@ pub struct TimesheetDraftLine {
     pub source_refs: Vec<String>,
 }
 
+/// One persisted quarter share: what a single lane declares inside one quarter-day.
+///
+/// The persisted twin of [`crate::rules::quarters::Share`], plus the identity needed to
+/// write it back. `presence_minutes` is stored, not recomputed on read, so a validated
+/// day can still explain the weight its hours came from after the evidence has moved on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuarterShareRow {
+    pub id: Uuid,
+    pub quarter_index: u8,
+    /// `None` for a meeting lane, for the unattributed residue, and for a share whose
+    /// task was deleted — the row survives that deletion on purpose.
+    pub task_id: Option<Uuid>,
+    pub lane_key: String,
+    pub label: String,
+    pub gryzzly_project_id: Option<String>,
+    pub presence_minutes: i64,
+    pub hours: f64,
+    pub is_pinned: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimesheetDraft {
     pub id: TimesheetDraftId,
@@ -56,7 +76,12 @@ pub struct TimesheetDraft {
     pub day_confidence: Confidence,
     pub blocks_json: Option<String>,
     pub unresolved_json: Option<String>,
+    /// The concurrent evidence view, display only and tolerant of absence.
+    pub lanes_json: Option<String>,
     pub lines: Vec<TimesheetDraftLine>,
+    /// The day's arbitration. Owned by the draft — `upsert` replaces the whole set, the
+    /// same contract as `lines`, so there is exactly one writer for the day's hours.
+    pub shares: Vec<QuarterShareRow>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

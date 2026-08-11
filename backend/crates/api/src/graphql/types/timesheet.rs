@@ -296,6 +296,8 @@ mod tests {
             day_confidence: Confidence::High,
             blocks_json: Some("[]".into()),
             unresolved_json: None,
+            lanes_json: None,
+            shares: vec![],
             lines: vec![
                 TimesheetDraftLine {
                     id: Uuid::new_v4(),
@@ -336,7 +338,9 @@ mod tests {
             day_confidence: Confidence::Low,
             blocks_json: None,
             unresolved_json,
+            lanes_json: None,
             lines: vec![],
+            shares: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

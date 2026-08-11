@@ -53,6 +53,27 @@ fn map_line(row: &SqliteRow) -> Result<TimesheetDraftLine, RepositoryError> {
     })
 }
 
+fn map_share(row: &SqliteRow) -> Result<QuarterShareRow, RepositoryError> {
+    let id_str: String = Row::get(row, "id");
+    let task_id: Option<String> = Row::get(row, "task_id");
+    let quarter_index: i64 = Row::get(row, "quarter_index");
+    let is_pinned: i64 = Row::get(row, "is_pinned");
+    Ok(QuarterShareRow {
+        id: Uuid::parse_str(&id_str).map_err(|e| RepositoryError::Database(e.to_string()))?,
+        quarter_index: quarter_index as u8,
+        task_id: task_id
+            .map(|t| Uuid::parse_str(&t))
+            .transpose()
+            .map_err(|e| RepositoryError::Database(e.to_string()))?,
+        lane_key: Row::get(row, "lane_key"),
+        label: Row::get(row, "label"),
+        gryzzly_project_id: Row::get(row, "gryzzly_project_id"),
+        presence_minutes: Row::get(row, "presence_minutes"),
+        hours: Row::get(row, "hours"),
+        is_pinned: is_pinned != 0,
+    })
+}
+
 #[async_trait]
 impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
     async fn upsert(&self, draft: &TimesheetDraft) -> Result<(), RepositoryError> {
@@ -61,12 +82,13 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
         // Header upsert (unique on user_id, date).
         sqlx::query(
             "INSERT INTO timesheet_drafts
-                (id, user_id, date, status, target_hours, total_hours, day_confidence, blocks_json, unresolved_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, date, status, target_hours, total_hours, day_confidence, blocks_json, unresolved_json, lanes_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(user_id, date) DO UPDATE SET
                 status = excluded.status, target_hours = excluded.target_hours,
                 total_hours = excluded.total_hours, day_confidence = excluded.day_confidence,
                 blocks_json = excluded.blocks_json, unresolved_json = excluded.unresolved_json,
+                lanes_json = excluded.lanes_json,
                 updated_at = excluded.updated_at",
         )
         .bind(draft.id.to_string())
@@ -78,6 +100,7 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
         .bind(draft.day_confidence.as_str())
         .bind(&draft.blocks_json)
         .bind(&draft.unresolved_json)
+        .bind(&draft.lanes_json)
         .bind(draft.created_at.to_rfc3339())
         .bind(draft.updated_at.to_rfc3339())
         .execute(&mut *tx)
@@ -122,6 +145,37 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
         }
 
+        // Replace shares. Same contract as lines: the caller owns the whole day's
+        // arbitration, pins included, so a partial write would drop declared hours.
+        sqlx::query("DELETE FROM timesheet_quarter_shares WHERE draft_id = ?")
+            .bind(&header_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        for s in &draft.shares {
+            sqlx::query(
+                "INSERT INTO timesheet_quarter_shares
+                    (id, draft_id, quarter_index, task_id, lane_key, label, gryzzly_project_id,
+                     presence_minutes, hours, is_pinned, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(s.id.to_string())
+            .bind(&header_id)
+            .bind(s.quarter_index as i64)
+            .bind(s.task_id.map(|t| t.to_string()))
+            .bind(&s.lane_key)
+            .bind(&s.label)
+            .bind(&s.gryzzly_project_id)
+            .bind(s.presence_minutes)
+            .bind(s.hours)
+            .bind(if s.is_pinned { 1 } else { 0 })
+            .bind(draft.updated_at.to_rfc3339())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        }
+
         tx.commit().await.map_err(|e| RepositoryError::Database(e.to_string()))?;
         Ok(())
     }
@@ -147,6 +201,16 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
         let lines: Result<Vec<_>, _> = line_rows.iter().map(map_line).collect();
 
+        let share_rows = sqlx::query(
+            "SELECT * FROM timesheet_quarter_shares WHERE draft_id = ?
+             ORDER BY quarter_index, hours DESC, label",
+        )
+        .bind(&header_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        let shares: Result<Vec<_>, _> = share_rows.iter().map(map_share).collect();
+
         let status_str: String = Row::get(h, "status");
         let conf_str: String = Row::get(h, "day_confidence");
         Ok(Some(TimesheetDraft {
@@ -160,7 +224,9 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
             day_confidence: conf_from(&conf_str),
             blocks_json: Row::get(h, "blocks_json"),
             unresolved_json: Row::get(h, "unresolved_json"),
+            lanes_json: Row::get(h, "lanes_json"),
             lines: lines?,
+            shares: shares?,
             created_at: parse_dt(&Row::get::<String, _>(h, "created_at"))?,
             updated_at: parse_dt(&Row::get::<String, _>(h, "updated_at"))?,
         }))
@@ -215,6 +281,7 @@ mod tests {
                 r#"[{"sourceRef":"wl:1","label":"note sans projet","at":"2026-06-08 09:00:00"}]"#
                     .into(),
             ),
+            lanes_json: None,
             lines: vec![TimesheetDraftLine {
                 id: Uuid::new_v4(),
                 gryzzly_project_id: Some("p1".into()),
@@ -224,6 +291,7 @@ mod tests {
                 confidence: Confidence::High,
                 source_refs: vec!["wl-1".into()],
             }],
+            shares: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -269,6 +337,64 @@ mod tests {
         repo.upsert(&d).await.unwrap();
         let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
         assert_eq!(got.unresolved_json.as_deref(), Some("[]"), "re-upsert must update the column");
+    }
+
+    fn share(quarter_index: u8, lane_key: &str, hours: f64, is_pinned: bool) -> QuarterShareRow {
+        QuarterShareRow {
+            id: Uuid::new_v4(),
+            quarter_index,
+            task_id: None,
+            lane_key: lane_key.into(),
+            label: lane_key.into(),
+            gryzzly_project_id: Some("p1".into()),
+            presence_minutes: 98,
+            hours,
+            is_pinned,
+        }
+    }
+
+    /// Shares are billing decisions: every field has to survive the round trip, the
+    /// pinned flag most of all — it is what a re-reconstruct reads to know which hours
+    /// the user set by hand and must not recompute.
+    #[tokio::test]
+    async fn upsert_then_find_roundtrips_quarter_shares() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteTimesheetDraftRepository::new(pool);
+        let mut d = draft(uid);
+        d.shares = vec![share(3, "task:a", 0.75, true), share(3, "task:b", 1.25, false)];
+        repo.upsert(&d).await.unwrap();
+        let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
+        assert_eq!(got.shares.len(), 2);
+        let a = got.shares.iter().find(|s| s.lane_key == "task:a").unwrap();
+        assert!(a.is_pinned, "the pin is the user's decision, it must persist");
+        assert_eq!(a.presence_minutes, 98);
+        assert!((a.hours - 0.75).abs() < 1e-9);
+        assert_eq!(a.quarter_index, 3);
+    }
+
+    #[tokio::test]
+    async fn upsert_replaces_shares_not_appends() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteTimesheetDraftRepository::new(pool);
+        let mut d = draft(uid);
+        d.shares = vec![share(0, "task:a", 2.0, false)];
+        repo.upsert(&d).await.unwrap();
+        d.shares = vec![share(0, "task:a", 1.0, false), share(0, "task:b", 1.0, false)];
+        repo.upsert(&d).await.unwrap();
+        let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
+        assert_eq!(got.shares.len(), 2, "a re-upsert replaces the quarter, never doubles it");
+        assert!((got.shares.iter().map(|s| s.hours).sum::<f64>() - 2.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn upsert_then_find_roundtrips_lanes_json() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteTimesheetDraftRepository::new(pool);
+        let mut d = draft(uid);
+        d.lanes_json = Some(r#"[{"laneKey":"task:a","intervals":[[540,600]]}]"#.into());
+        repo.upsert(&d).await.unwrap();
+        let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
+        assert_eq!(got.lanes_json, d.lanes_json);
     }
 
     #[tokio::test]
