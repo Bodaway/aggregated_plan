@@ -12,6 +12,7 @@ mod output;
 mod queries;
 mod reattribute_cmd;
 mod session_cmd;
+mod slots_cmd;
 mod timesheet_cmd;
 
 fn main() -> ExitCode {
@@ -62,6 +63,11 @@ fn main() -> ExitCode {
             &entry,
             confirm,
         ),
+        cli::Commands::Slots { cmd } => match cmd {
+            cli::SlotsCmd::Repair { from, to, confirm } => {
+                slots_cmd::repair(&args.api_url, args.json, &from, &to, confirm)
+            }
+        },
         cli::Commands::Log { text, task } => commands::log(
             &args.api_url,
             args.json,

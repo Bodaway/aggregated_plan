@@ -166,6 +166,8 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
   - `aplan log [--task <TASK>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
   - `aplan flush [--json] <TASK>` — rebuilds the task's closed activity slots for the local half-days its window touched. The window is only a **selector**: it decides which half-days to rebuild, and every worklog entry of the task in each of those half-days — not only the ones inside the window — then decides what the slots are, via `derive_time_blocks`. Re-running is a no-op; a backdated entry is still picked up. This verb carries no `--session` flag yet, so it resolves against the human's `aplan.active_since`; the `flushWorklogTime` mutation it calls internally also accepts an optional `sessionId` to select a Claude session's own window (`sessions.last_flush_at`) instead — wired up by a later plan's hook rewrite. Does **not** clear the active-task pointer (`aplan.active_task_id`). Used by the `SessionEnd` hook.
   - `aplan reattribute --from <TASK> --to <TASK> {--date AAAA-MM-JJ | --since D [--until D] | --entry <ID>…} [--confirm]` — déplace des entrées de journal **et redérive** les créneaux d'activité qui en découlent (US-RE, R23b). Appelle la mutation `reattributeWorklogEntries`. `--from`/`--to` passent par le résolveur de tâche habituel ; les références d'entrée (`--entry`) sont résolues **côté serveur** par préfixe d'identifiant (`WorklogRepository::find_by_id_prefix`, même contrat que `MemoryRepository::find_by_id_prefix`), une collision étant signalée (code 3) et jamais devinée. `--date` et `--entry` sont mutuellement exclusifs à l'analyse des arguments (clap `conflicts_with`), `--until` exige `--since`. **Aperçu par défaut** : sans `--confirm` la mutation résout tout, calcule le même compte rendu et n'écrit rien — un seul chemin de code, donc l'aperçu ne peut pas dériver de l'écriture. Codes de sortie : 2 tâche/entrée introuvable, 3 référence ambiguë, 4 refus (source = destination, entrée d'une autre tâche, sélection vide, plafond de page atteint), 1 réseau/GraphQL.
+- **Verbe de maintenance des créneaux :**
+  - `aplan slots repair --from AAAA-MM-JJ --to AAAA-MM-JJ [--confirm] [--json]` — rend leur tâche aux créneaux qui l'ont perdue (US-SR, R23c). Appelle la mutation `repairOrphanedSlots`. Les deux bornes sont **obligatoires** (`clap`, pas de défaut) et leur **format** est validé côté client — une date mal écrite est un refus (code 4) et non une erreur de coercition de scalaire (code 1) ; l'**ordre** des deux bornes, lui, est validé côté serveur, pour que la règle n'ait qu'un seul propriétaire. **Aperçu par défaut** : sans `--confirm`, la mutation calcule tout et n'écrit rien. Le rendu humain imprime une ligne par date (`N orphelins (Xh) → M créneaux écrits`), le tableau avant/après par tâche — titre inclus, car ces tâches ont été *découvertes* par la réparation et non nommées par l'appelant — et une ligne d'avertissement par date dont les orphelins n'ont plus aucune entrée à réécrire (le seul cas où ce verbe perd des heures). Une plage sans dégât imprime « nothing to repair » et sort en 0. Codes de sortie : 4 refus (plage inversée, date invalide, plafond de page), 1 réseau/GraphQL.
 - **Verbe de mémoire du démarrage :**
   - `aplan brief [--morning] [--project <P>] [--date AAAA-MM-JJ]` — imprime le brief de session
     (échéances, engagements ouverts, décisions actives, file de tri, vétusté de la consolidation),
@@ -2913,6 +2915,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
   - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
   - Mutation `flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!` — calls `materialize_worklog_time` for the given task. The window (`sessionId`'s own `sessions.last_flush_at` when provided, otherwise `aplan.active_since`) only selects which local half-days to rebuild; every entry of the task in those half-days then decides the slots. Returns `{ activeSince, slotsWritten }`. Does not modify the active-task pointer. Idempotent: re-running produces the same slots, never duplicates, and a backdated entry is still picked up.
   - Mutation `reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!` — moves entries between tasks and rebuilds the derived slots. Calls `use_cases::reattribution::reattribute_worklog_entries`. See "Réattribution" below.
+  - Mutation `repairOrphanedSlots(input: RepairOrphanedSlotsInput!): SlotRepairResultGql!` — drops the activity slots of a local-date range that lost their `task_id` and rewrites their half-days from the worklog. Calls `use_cases::slot_repair::repair_orphaned_slots`. See "Réparation des créneaux orphelins" below.
 - `WorklogRepository::find_by_id_prefix(user_id, prefix, limit)` — `id LIKE ? ESCAPE '\'` on the hyphenated lowercase id, ordered `logged_at DESC`, `limit.max(1)` bound (never `LIMIT 0`). The `escape_like` helper (shared with the memory repository via `database::conversions`) keeps `_` and `%` literal: `_` is a LIKE wildcard, and an unescaped token would resolve a mistyped reference to an arbitrary entry.
 - `WorklogRepository::reassign_task(user_id, ids, from_task, to_task, now)` — one transaction, chunked at 400 binds like `mark_consolidated`. `task_id = ?` is part of the `WHERE`: an id list assembled from an earlier read must not pull an entry off a task the caller never named, and the returned count says what actually moved. `consolidated_at` is left untouched — attribution and consolidation are different questions.
 
@@ -2930,6 +2933,18 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 - `update_task` per-instance allow-list: recurring instances may update `status`, `plannedStart`, `plannedEnd`, `deadline`, `notes`, `trackingState`, `remainingHoursOverride`, `estimatedHoursOverride`. Template-level fields (`title`, `description`, `urgency`, `impact`, `estimatedHours`, `projectId`, `tags`) must go through `updateRecurringTask`.
 - Backward compatibility: the `appendTaskNotes` mutation remains registered but is no longer invoked by the frontend (the activity-timer quick note writes a worklog entry instead).
 
+#### Réparation des créneaux orphelins (`use_cases::slot_repair`)
+
+- **Le dégât.** `INSERT OR REPLACE INTO tasks` supprime avant d'insérer, ce qui déclenche le `ON DELETE SET NULL` de `activity_slots.task_id` : la ligne de `tasks` revient identique, les créneaux qui la désignaient perdent leur attribution. Ils s'affichent « (aucune tâche) » dans `aplan journal` (R22) et la reconstruction de feuille de temps ne peut plus les rattacher à un projet.
+- **Pourquoi la machinerie existante n'y suffisait pas.** `plan_task_projection` reconstruit **une** tâche et sa liste de suppression teste `slot.task_id == Some(task_id)` : un `task_id` NULL ne correspond à rien, donc un `flush` laisserait l'orphelin en place **et** écrirait un créneau neuf — la demi-journée facturée deux fois. `aplan flush` ne nomme d'ailleurs que les demi-journées de sa fenêtre courante (jamais une date passée), et `reattribute` refuse source = destination.
+- **Domain** (`domain::rules::slot_repair`) : `is_repairable_orphan(slot)` = `task_id` absent **et** `reattribution::is_rebuildable(slot)` (fermé + `source = worklog`) — le prédicat existant est **réutilisé**, pas redérivé : une seconde définition de « ce qui peut être remplacé » est la façon dont le côté protégé de la frontière finit par être oublié. `orphaned_half_days(slots)` en déduit les `AffectedHalfDay` concernées, dédupliquées et triées (matin avant après-midi), depuis les orphelins et non depuis la plage demandée.
+- **Ce qui n'est jamais touché.** Un créneau `manual` sans tâche (95 lignes réelles, minuteurs lancés à la main avant la migration `014`) : il n'a jamais eu de tâche, aucune entrée ne le reproduit, le supprimer détruirait du temps que rien ne peut reconstruire. Un créneau ouvert (minuteur en cours) non plus. Une demi-journée de la plage sans orphelin non plus : elle n'est ni relue pour suppression ni réécrite.
+- **Le déroulé.** (1) `find_by_user_and_date_range` (créneaux fermés de la plage) → filtre `is_repairable_orphan`. (2) Une **seule** lecture du journal sur la fenêtre locale (`task_ids: None` — quelles tâches sont concernées est précisément ce que l'orphelin a perdu), repliée sur les demi-journées concernées, qui donne pour chaque tâche les demi-journées où elle a des entrées. (3) Un `plan_task_projection` par tâche, sur **ses** demi-journées seulement. (4) Si `confirm` : suppression des orphelins **d'abord** — aucun plan ne peut les réclamer — puis `apply_task_projection` par tâche. La suppression précède l'écriture pour la raison qu'`apply_task_projection` documente déjà : l'ordre inverse laisse une fenêtre où la demi-journée porte les deux.
+- **Parité aperçu/écriture.** `SlotRepairOutcome` est lu sur les `RebuildPlan` eux-mêmes (`delete` / `write`), c'est-à-dire sur les listes que l'écriture applique : l'aperçu n'est pas un second calcul et ne peut donc pas dériver. Il porte, par date, `orphansDropped` / `orphanHours` / `slotsDiscarded` / `slotsWritten`, et par tâche `hoursBefore` / `hoursAfter` (les orphelins ne comptent dans le `before` d'aucune tâche : ils ne comptaient pour personne).
+- **Un orphelin sans entrée survivante est supprimé sans remplacement**, et cette perte est reportée telle quelle (date avec `orphansDropped > 0` et `slotsWritten == 0`, que la CLI signale en clair). Le conserver laisserait une durée inattribuable dans une demi-journée que la réparation vient de déclarer canonique.
+- **Plage vide = succès.** Aucun orphelin dans la plage renvoie un compte rendu vide sans erreur : c'est ce qui rend le verbe rejouable pour vérifier son propre travail. Rejouer après application ne réécrit rien (les créneaux reconstruits ont un `task_id`, donc ne sont plus des orphelins). Refus (`AppError::Validation`, code 4) : plage inversée, et plafond de page partagé avec la réattribution (`refuse_a_truncated_page`).
+- **Fuseau et transactions.** Même `user_timezone` et même `local_window` que le flush et la réattribution — deux conversions concurrentes mettraient la même entrée sur deux jours locaux différents. Comme la réattribution, la séquence `delete`/`save` n'est pas transactionnelle : la réparation étant une fonction des entrées, une reprise converge.
+
 #### Migrations ultérieures
 
 | Migration | Fichier | Description |
@@ -2942,6 +2957,7 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
 | **014** | `014_create_sessions.sql` | Sessions Claude Code : table `sessions`, plus `worklog_entries.session_id`, `activity_slots.session_id` et `activity_slots.source`. Voir § 7.3. |
 | **015** | `015_fix_sync_status_source_check.sql` | Reconstruction de `sync_status` pour que le `CHECK` sur `source` admette les 6 variantes de `domain::Source` — `gryzzly` et `personal` manquaient depuis 001, ce qui rendait la source `gryzzly` totalement inopérante. Voir § 10.6. |
 | **016** | `016_add_project_status_and_not_configured.sql` | `gryzzly_tasks.project_status` (statut du projet propriétaire, `active` \| `done`, NULL = inconnu lu comme actif) et reconstruction de `sync_status` pour que le `CHECK` sur `status` admette `not_configured`. Voir § 10.6. |
+| **017** | `017_add_timesheet_unresolved_json.sql` | `ALTER TABLE timesheet_drafts ADD COLUMN unresolved_json TEXT;` — persistance de la liste des signaux non résolus, à côté de `blocks_json`. Simple ajout de colonne (aucune reconstruction de table), nullable, sans `CHECK` : c'est du JSON d'affichage opaque. Shape `[{"sourceRef","label","at"}]`, `at` au format `YYYY-MM-DD HH:MM:SS` **en heure locale**, écrit par `to_draft` et relu par `parse_unresolved_json`. NULL (toute ligne antérieure) se lit « aucune explication disponible » jusqu'à la prochaine reconstruction. **Pourquoi** : la liste était calculée par `reconstruct_day`, renvoyée une fois par la mutation `runTimesheetReconstruction`, puis perdue — l'en-tête n'avait pas où la garder, donc la requête `timesheetDraft` (soit *chaque* chargement de page) répondait une liste vide et la timeline n'affichait plus que des barres anonymes sans moyen de savoir **quoi** était non attribué. |
 
 ### 7.3 Migration `014_create_sessions.sql` — sessions Claude Code
 
@@ -3663,6 +3679,31 @@ type ReconstructedDayGql {
   blocks: [BlockGql!]!
 }
 
+# `unresolved` et `blocks` sont servis AUSSI par la requête `timesheetDraft`, et plus
+# seulement par la mutation `runTimesheetReconstruction` : `from_draft` les relit des
+# colonnes `unresolved_json` / `blocks_json` du brouillon (migration 017). Les deux
+# sont best-effort — JSON absent ou illisible donne une liste vide, jamais une erreur
+# de requête, un jour antérieur à la colonne restant simplement sans explication.
+
+# Le type réel des blocs est `AttributedBlockGql`
+# (`start_time`, `end_time`, `gryzzlyProjectId`, `kind`, `hours`, `sourceRefs`, `originLabel`).
+#
+# `originLabel: String` (nullable) est le **libellé secondaire d'affichage** d'un bloc : le nom
+# humain de ce dont il provient — titre de la **tâche** propriétaire pour un bloc `WORK`, **sujet
+# de la réunion** pour un bloc `MEETING`. Non ambigu par construction : `reconstruct_day` bâtit
+# chaque bloc à partir d'UN seul signal ou d'UNE seule réunion (d'où `source_refs` toujours à un
+# élément), donc le libellé nomme cette origine unique — aucune jointure, aucune agrégation.
+# Le champ naît sur `Signal.origin_label` (distinct de `Signal.label`, qui est le texte du signal
+# lui-même : note de journal ou message de commit), est rempli dans `reconstruct_timesheet` avec
+# le titre de la tâche DÉJÀ chargée pour résoudre le projet (aucune requête supplémentaire), et
+# vaut `null` quand l'origine n'a pas de nom connu (commit sans clé Jira résolue).
+#
+# Persistance : `to_draft` l'écrit dans `blocks_json` sous la clé `originLabel`. **Aucune
+# migration** — `blocks_json` est un blob JSON opaque. `parse_blocks_json` lit la clé de façon
+# **optionnelle** : une journée reconstruite avant l'ajout du champ n'a pas la clé et doit rendre
+# `null` pour CE bloc, sans jamais réduire la liste entière à vide (c'est exactement la panne
+# livrée par `unresolved_json`). Seuls `start`, `end` et `kind` restent obligatoires.
+
 type EditedLineGql {
   gryzzlyProjectId: String!
   projectName: String!
@@ -3945,6 +3986,13 @@ type Mutation {
   # then reports what it would do and writes nothing.
   reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!
 
+  # Réparation des créneaux orphelins — supprime les créneaux d'une plage de jours
+  # locaux qui ont perdu leur task_id (ON DELETE SET NULL déclenché par un
+  # INSERT OR REPLACE INTO tasks) et réécrit leurs demi-journées depuis le journal.
+  # Ne touche jamais un créneau `manual` : sans tâche, ce n'est pas un dégât.
+  # `confirm` par défaut à false : l'appel décrit alors ce qu'il ferait, sans écrire.
+  repairOrphanedSlots(input: RepairOrphanedSlotsInput!): SlotRepairResultGql!
+
   # Triage / Tracking state
   setTrackingState(taskId: ID!, state: TrackingState!): Task!
   setTrackingStateBatch(taskIds: [ID!]!, state: TrackingState!): [Task!]!
@@ -4062,6 +4110,41 @@ type ReattributionResultGql {
 type TaskTimeChangeGql {
   taskId: ID!
   hoursBefore: Float!
+  hoursAfter: Float!
+}
+
+# Réparation des créneaux orphelins (US-SR). Les deux bornes sont obligatoires :
+# aucune valeur par défaut n'est défendable pour une réécriture d'historique.
+input RepairOrphanedSlotsInput {
+  from: NaiveDate!             # premier jour local (inclus)
+  to: NaiveDate!               # dernier jour local (inclus)
+  confirm: Boolean             # absent ou false ⇒ aperçu, rien n'est écrit
+}
+
+type SlotRepairResultGql {
+  applied: Boolean!            # false ⇒ aucune écriture
+  from: NaiveDate!
+  to: NaiveDate!
+  dates: [DateRepairGql!]!     # une entrée par jour porteur d'un orphelin ; vide ⇒ plage saine
+  tasks: [RepairedTaskGql!]!   # les tâches découvertes, pas nommées par l'appelant
+  orphansDropped: Int!
+  orphanHours: Float!          # ce que les orphelins valaient ; à comparer aux hoursAfter
+  slotsDiscarded: Int!         # créneaux propres aux tâches reconstruites, remplacés
+  slotsWritten: Int!
+}
+
+type DateRepairGql {
+  date: NaiveDate!
+  orphansDropped: Int!
+  orphanHours: Float!
+  slotsDiscarded: Int!
+  slotsWritten: Int!           # 0 alors que orphansDropped > 0 ⇒ du temps perdu, signalé
+}
+
+type RepairedTaskGql {
+  taskId: ID!
+  task: TaskGql                # hydratée : le rapport doit nommer ce qu'il réécrit
+  hoursBefore: Float!          # projection propre à la tâche ; hors orphelins
   hoursAfter: Float!
 }
 
@@ -4947,6 +5030,7 @@ When Claude Code drives the cockpit via the `aplan` CLI, time is tracked through
 | **Flush window** | Not a watermark: it only selects which local half-days to rebuild, and every entry of the task in those half-days decides the slots, so re-running never duplicates and a backdated entry is still picked up. `flushWorklogTime` reads and advances one of two windows, never both: a Claude session's own `sessions.last_flush_at` when a `sessionId` is passed, otherwise the human's `aplan.active_since`. |
 | **No open slots** | There is never an open (`end_time IS NULL`) slot associated with the active-task pointer. The existing `start_activity` / `stop_activity` use cases are unaffected and continue to work for UI-driven tracking. |
 | **Correction** | A wrong attribution is fixed with `aplan reattribute --from <task> --to <task> {--date D \| --since D --until D \| --entry ID…} [--confirm]`: the entries move and the slots of the two tasks are **re-derived in the affected half-days**. Preview by default. Because slots are a projection, correcting the entries is the only way to correct the time — editing a slot would leave it disagreeing with the journal it came from. |
+| **Repair** | A slot that lost its `task_id` altogether — `ON DELETE SET NULL` fired by an `INSERT OR REPLACE INTO tasks`, showing as "(no task)" in `aplan journal` — is fixed with `aplan slots repair --from D --to D [--confirm]`: the orphan is dropped and its half-day rewritten from the worklog entries, which still carry the attribution. Preview by default. A `manual` slot with no task is never touched: it is a hand-run timer, not damage. |
 | **Agents** | A subagent must never run `aplan start` / `new` / `stop` / `done` / `flush` / `triage`: the active-task pointer belongs to the parent session, and an agent that moves it redirects the parent's time onto its own task. See `.claude/skills/aplan/SKILL.md`. |
 
 ---

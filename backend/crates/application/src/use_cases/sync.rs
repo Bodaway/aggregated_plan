@@ -179,11 +179,36 @@ pub async fn sync_jira(
 
     // Remove tasks from a previous (broader) sync that are no longer in the
     // current result set, keeping the local task list in sync with the filter.
+    //
+    // EMPTY-FETCH GUARD (same shape as `sync_gryzzly`): a fetch that succeeded and
+    // returned nothing says nothing about staleness — a mistyped project key, a
+    // revoked permission or a `my_tasks_only` filter against a changed account id
+    // all look like this. Pruning on it would delete the whole Jira backlog, and
+    // `worklog_entries.task_id` is ON DELETE CASCADE. The repository refuses an
+    // empty keep-list too; we do not even ask, and we say so.
     let fetched_ids: Vec<String> = jira_tasks.iter().map(|t| t.key.clone()).collect();
-    let removed = task_repo
-        .delete_stale_by_source(user_id, Source::Jira, &fetched_ids)
-        .await
-        .unwrap_or(0);
+    let removed = if fetched_ids.is_empty() {
+        errors.push(
+            "Skipped pruning stale Jira tasks: the fetch succeeded but returned an empty task list"
+                .to_string(),
+        );
+        0
+    } else {
+        // A prune failure is tolerated but never swallowed: `.unwrap_or(0)` used to
+        // report a reassuring "0 removed" for a failed delete. It goes into `errors`,
+        // like the other tolerated failures above, so it reaches `sync_status`.
+        // It must NOT abort the sync — the tasks already upserted stay.
+        match task_repo
+            .delete_stale_by_source(user_id, Source::Jira, &fetched_ids)
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                errors.push(format!("Failed to prune stale Jira tasks: {}", e));
+                0
+            }
+        }
+    };
 
     // Update sync status to success.
     sync_repo
@@ -270,8 +295,22 @@ pub async fn sync_outlook(
     meeting_repo.upsert_batch(&meetings).await?;
 
     // Collect current outlook_ids and remove stale entries.
+    //
+    // EMPTY-FETCH GUARD, as in `sync_jira`: an empty list of ids says nothing about
+    // staleness, so it must not be read as "every meeting is stale". The repository
+    // refuses it as well; here we skip the call and report why, since a silently
+    // skipped prune is what let this class of bug live.
     let current_ids: Vec<String> = meetings.iter().map(|m| m.outlook_id.clone()).collect();
-    let deleted = meeting_repo.delete_stale(user_id, &current_ids).await?;
+    let mut errors: Vec<String> = Vec::new();
+    let deleted = if current_ids.is_empty() {
+        errors.push(
+            "Skipped pruning stale meetings: the calendar fetch succeeded but returned no event"
+                .to_string(),
+        );
+        0
+    } else {
+        meeting_repo.delete_stale(user_id, &current_ids).await?
+    };
 
     // Update sync status to success.
     sync_repo
@@ -280,7 +319,11 @@ pub async fn sync_outlook(
             user_id,
             last_sync_at: Some(Utc::now()),
             status: SyncSourceStatus::Success,
-            error_message: None,
+            error_message: if errors.is_empty() {
+                None
+            } else {
+                Some(errors.join("; "))
+            },
         })
         .await?;
 
@@ -290,7 +333,7 @@ pub async fn sync_outlook(
         tasks_updated: 0,
         tasks_removed: deleted as usize,
         meetings_synced: meeting_count,
-        errors: Vec::new(),
+        errors,
     })
 }
 
@@ -1066,6 +1109,11 @@ mod tests {
     #[derive(Default)]
     struct MiniTaskRepo {
         tasks: Mutex<HashMap<TaskId, Task>>,
+        /// Records every keep-list the prune was called with, so a test can assert
+        /// the prune was skipped rather than merely harmless.
+        prune_calls: Mutex<Vec<Vec<String>>>,
+        /// When true, the prune reports a repository failure.
+        prune_fails: bool,
     }
 
     #[async_trait]
@@ -1138,8 +1186,12 @@ mod tests {
             &self,
             _user_id: UserId,
             _source: Source,
-            _keep_ids: &[String],
+            keep_ids: &[String],
         ) -> Result<u64, RepositoryError> {
+            self.prune_calls.lock().unwrap().push(keep_ids.to_vec());
+            if self.prune_fails {
+                return Err(RepositoryError::Database("disk I/O error".to_string()));
+            }
             Ok(0)
         }
     }
@@ -1332,6 +1384,142 @@ mod tests {
         // …but Gryzzly assignment fields survived.
         assert_eq!(after.gryzzly_task_id.as_deref(), Some("g-1"), "gryzzly_task_id must survive a Jira resync");
         assert_eq!(after.gryzzly_project_id.as_deref(), Some("p-1"), "gryzzly_project_id must survive a Jira resync");
+    }
+
+    /// Builds a Jira-sourced task already present locally.
+    fn existing_jira_task(user_id: UserId, key: &str) -> Task {
+        let now = Utc::now();
+        Task {
+            id: Uuid::new_v4(),
+            user_id,
+            title: "Old title".to_string(),
+            description: None,
+            notes: Some("local notes".to_string()),
+            source: Source::Jira,
+            source_id: Some(key.to_string()),
+            jira_status: Some("To Do".to_string()),
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            delegated_to: None,
+            deadline: None,
+            planned_start: None,
+            planned_end: None,
+            estimated_hours: None,
+            urgency: UrgencyLevel::Low,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: vec![],
+            tracking_state: TrackingState::Followed,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// A prune that fails must reach `sync_status` through `errors`. `.unwrap_or(0)`
+    /// turned a failed prune into the reassuring report "0 tasks removed", which is
+    /// exactly what a silent bulk delete looks like from the outside.
+    #[tokio::test]
+    async fn a_failing_prune_is_reported_instead_of_swallowed() {
+        let user_id: UserId = Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
+        let task_repo = MiniTaskRepo {
+            prune_fails: true,
+            ..Default::default()
+        };
+
+        let config = JiraConfig {
+            project_keys: vec!["AP".to_string()],
+            assignees: None,
+            my_tasks_only: false,
+        };
+        let result = sync_jira(
+            &StubJiraClient,
+            &task_repo,
+            &StubProjectRepo,
+            &StubSyncRepo,
+            user_id,
+            &config,
+        )
+        .await
+        .expect("a failed prune must not abort the sync");
+
+        // The tasks already upserted stay, and the failure is visible.
+        assert_eq!(result.tasks_created, 1);
+        assert_eq!(result.tasks_removed, 0);
+        assert!(
+            result.errors.iter().any(|e| e.contains("prune")),
+            "the prune failure must be reported: {:?}",
+            result.errors
+        );
+    }
+
+    /// A successful fetch returning nothing says nothing about staleness (mistyped
+    /// project key, revoked permission, `my_tasks_only` against a changed account).
+    /// The prune must not even be attempted, and the user must be told why.
+    #[tokio::test]
+    async fn an_empty_jira_fetch_skips_the_prune_and_says_so() {
+        struct EmptyJiraClient;
+
+        #[async_trait]
+        impl JiraClient for EmptyJiraClient {
+            async fn fetch_tasks(
+                &self,
+                _project_keys: &[String],
+                _assignees: Option<&[String]>,
+                _my_tasks_only: bool,
+            ) -> Result<Vec<JiraTask>, ConnectorError> {
+                Ok(vec![])
+            }
+        }
+
+        let user_id: UserId = Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap();
+        let task_repo = MiniTaskRepo::default();
+        let existing = existing_jira_task(user_id, "AP-1");
+        task_repo.save(&existing).await.unwrap();
+
+        let config = JiraConfig {
+            project_keys: vec!["TYPO".to_string()],
+            assignees: None,
+            my_tasks_only: false,
+        };
+        let result = sync_jira(
+            &EmptyJiraClient,
+            &task_repo,
+            &StubProjectRepo,
+            &StubSyncRepo,
+            user_id,
+            &config,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            task_repo.prune_calls.lock().unwrap().is_empty(),
+            "an empty fetch must not even ask the repository to prune"
+        );
+        assert!(
+            task_repo
+                .find_by_source(user_id, Source::Jira, "AP-1")
+                .await
+                .unwrap()
+                .is_some(),
+            "the local task must survive an empty fetch"
+        );
+        assert_eq!(result.tasks_removed, 0);
+        assert!(
+            result.errors.iter().any(|e| e.contains("empty")),
+            "the skipped prune must be reported: {:?}",
+            result.errors
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@
 
 use crate::client::{Client, ClientError};
 use crate::lookup::{resolve_task, TaskRef};
-use crate::output::{print_json, ExitCode};
+use crate::output::{hm, print_json, ExitCode};
 use crate::queries::{reattribute_worklog, ReattributeWorklog};
 
 /// Map a transport/GraphQL failure onto the exit-code contract.
@@ -42,15 +42,6 @@ fn exit_code_for(error: &ClientError) -> ExitCode {
         }
         _ => ExitCode::Generic,
     }
-}
-
-/// Decimal hours as a clock reading: `4.583` → `4h35`.
-///
-/// The figures this verb prints are checked against a timesheet, which is read in
-/// hours and minutes. `4.58` invites a subtraction nobody should have to do.
-fn hm(hours: f64) -> String {
-    let total = (hours * 60.0).round().max(0.0) as i64;
-    format!("{}h{:02}", total / 60, total % 60)
 }
 
 /// A task label short enough for a two-column report, preferring the Jira key.

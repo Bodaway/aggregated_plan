@@ -607,6 +607,31 @@ L'utilisateur unique a accès à toutes les fonctionnalités sans restriction. I
 
 ---
 
+### 6.4quinquies Réparation des créneaux orphelins
+
+#### US-SR : Rendre leur tâche aux créneaux qui l'ont perdue
+
+> En tant que Tech Lead, je veux réparer les créneaux d'activité affichés « (aucune tâche) » sur une plage de dates que je nomme, afin que les heures qu'ils portent redeviennent attribuables — sans toucher aux créneaux que j'ai créés à la main.
+
+Ce n'est pas hypothétique : une écriture qui utilisait `INSERT OR REPLACE INTO tasks` supprime avant d'insérer, ce qui a déclenché le `ON DELETE SET NULL` de `activity_slots.task_id`. La ligne de la tâche revenait identique — rien ne paraissait cassé — pendant que les créneaux qui la désignaient perdaient leur attribution. 16 créneaux ont survécu ainsi sur trois jours d'août 2026 (04/08 après-midi, 06/08 après-midi, 10/08 matin et après-midi) : du temps réel, chiffré, appartenant à personne, que la feuille de temps ne peut pas facturer.
+
+Ni `aplan flush` ni `aplan reattribute` ne pouvaient les atteindre : le premier ne nomme que les demi-journées de sa propre fenêtre, donc jamais une date passée ; le second refuse un déplacement dont la source et la destination sont la même tâche, et sa liste de suppression ne reconnaît que les créneaux dont le `task_id` vaut la tâche nommée — jamais un `task_id` NULL. Un simple `flush` aurait donc laissé l'orphelin en place **et** écrit un créneau neuf à côté : la demi-journée facturée deux fois.
+
+**Critères d'acceptation :**
+- **R-SR-01** : la sélection est une **plage de jours locaux explicite** (`--from`, `--to`, tous deux obligatoires). Aucune valeur par défaut : « tout » réécrirait des années d'historique sur une faute de frappe, et « aujourd'hui » n'atteindrait jamais le dégât, qui est toujours passé quand on le constate.
+- **R-SR-02** : sont concernés les seuls créneaux **à la fois** sans tâche **et** propriété de la projection du journal (fermés, `source = worklog`). Un créneau `manual` sans tâche n'est **pas** un dégât : c'est un minuteur lancé à la main avant la migration `014`, il n'a jamais eu de tâche, et aucune entrée de journal ne peut le reproduire. Il est laissé **exactement** en l'état, ligne comprise.
+- **R-SR-03** : le périmètre réel de la réparation est l'ensemble des **demi-journées qui contiennent un orphelin réparable**, et non la plage entière : une demi-journée intacte de la plage n'est ni relue pour suppression ni réécrite.
+- **R-SR-04** : dans chaque demi-journée concernée, les orphelins sont supprimés **puis** la demi-journée est réécrite depuis les entrées de journal de **chaque tâche** qui y a consigné du temps. La suppression précède l'écriture : l'ordre inverse laisse une fenêtre où la demi-journée porte l'ancien créneau et son remplaçant, et un lecteur qui y arrive voit des heures doublées.
+- **R-SR-05** : une tâche n'est interrogée que sur les demi-journées où elle a effectivement des entrées. Nommer une demi-journée sans entrée mettrait ses créneaux sur la liste de suppression sans rien pour les réécrire — c'est ainsi qu'une réparation efface des heures.
+- **R-SR-06** : **aperçu par défaut**. Sans `--confirm`, rien n'est écrit. L'aperçu indique, **par date**, combien d'orphelins seraient supprimés et ce qu'ils valaient, contre combien de créneaux seraient écrits ; et **par tâche**, les heures avant/après. Les chiffres de l'aperçu sont lus sur les mêmes plans que l'écriture applique : ils ne peuvent pas diverger.
+- **R-SR-07** : un orphelin dont le journal ne porte plus aucune entrée est **supprimé sans qu'un créneau soit inventé**, et cette perte est **signalée** ligne à ligne (date, nombre, heures). Le conserver laisserait une durée que rien n'attribue dans une demi-journée que la réparation vient de déclarer canonique ; l'inventer serait pire encore. C'est le seul cas où ce verbe perd des heures, et l'opérateur le voit avant de confirmer.
+- **R-SR-08** : une plage sans dégât est un **succès** (rien à réparer), jamais un refus : c'est ce qui permet de relancer le verbe pour **vérifier** son propre travail, et de le planifier. Rejouer la réparation ne change rien (idempotence). Sont refusés avec le code de sortie 4 : une plage qui finit avant de commencer, une date mal formée, une plage dont le journal dépasse le plafond de page (1 000 entrées).
+- **R-SR-09** : après application, les brouillons de feuille de temps des jours touchés précèdent la correction : le compte rendu invite à relancer `aplan timesheet --date <jour>`.
+
+**Priorité** : Must (MVP v1)
+
+---
+
 ### 6.5 Tâches personnelles
 
 #### US-040 : Créer une tâche personnelle
@@ -911,8 +936,19 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
   - Les réunions Outlook (importées) sont affichées en grisé hachuré (pattern visuel indicant « verrouillé »), non éditables.
   - Les blocs de travail (créneaux d'activité du journal) sont affichés en rectangles colorés, la couleur déterminée par le projet Gryzzly associé (palette stable, même code couleur qu'ailleurs dans l'outil).
   - Les créneaux non affectés à un projet sont grisés (« hors bureau »).
+  - **Libellé d'un bloc** — un bloc doit dire ce qu'il représente, jamais un identifiant technique ni un marqueur d'ignorance :
+    - bloc de travail **attribué** : le **nom** du projet Gryzzly (libellé « projet — client » du catalogue, source `gryzzlyTasks`). L'identifiant brut n'est utilisé qu'en repli, si le nom est absent du catalogue chargé.
+    - bloc de travail **non attribué** : « **Non attribué** ». Anciennement « ?? », qui ne distinguait pas « pas de projet » de « nom inconnu ».
+    - réunion : « réu » ; absence (hors bureau) : « absence ».
+  - **Deuxième ligne d'un bloc — le nom de la tâche** : sous le nom du projet, le bloc affiche le **nom de ce dont il provient** (champ `originLabel`) — le **titre de la tâche** propriétaire pour un bloc de travail, le **sujet de la réunion** pour une réunion. Le nom du projet dit *pour qui* le temps est facturé, le nom de la tâche dit *ce qui* a été fait.
+    - Rendu **plus petit** que le nom du projet (`text-[9px]` contre `text-[10px]`) et légèrement atténué (`text-white/70`), sur une seule ligne tronquée. La géométrie du bloc est inchangée (les deux lignes tiennent dans la hauteur existante).
+    - **Origine inconnue** (commit sans clé Jira résolue, ou journée reconstruite avant l'ajout du champ) : le bloc n'affiche que la ligne projet. Jamais d'identifiant en remplacement.
+    - **Blocs étroits** : la ligne projet disparaît sous ~10 % de la demi-journée, la ligne tâche sous ~18 % — une ligne plus petite exige plus de place, et un demi-caractère tronqué renseigne moins que rien.
+  - **Infobulle d'un bloc** : `<libellé projet> · <nom de la tâche> · <heures>h` (le nom de la tâche est omis s'il est inconnu), complétée — quand le bloc est non attribué et que les signaux non résolus le permettent — des **notes de journal** correspondantes (`… — note 1 · note 2`). L'infobulle nomme toujours les deux, même quand le bloc est trop étroit pour afficher quoi que ce soit. La jointure se fait sur `sourceRef` (`wl:<uuid>`), partagé par les blocs et les signaux non résolus.
+  - **Sous la timeline**, si le jour compte des signaux non résolus : le nombre de signaux **et la liste** de ces signaux (heure locale `HH:MM` + libellé de la note), en amber. Le compte seul n'indiquait pas quel travail était non attribué.
   - La timeline est **en lecture seule** : aucune édition par glisser-déposer, aucun clic pour modifier un bloc. Les modifications se font exclusivement via le sidebar.
   - Les espaces libres dans la timeline sont visuellement apparents (arrière-plan blanc/clair).
+  - **Persistance de la timeline et des signaux non résolus** : les deux sont enregistrés sur le brouillon du jour (colonnes `blocks_json` et `unresolved_json`), donc un rechargement de page les retrouve à l'identique. Un jour reconstruit avant la migration 017 n'a pas de liste de signaux à afficher jusqu'à sa prochaine reconstruction. De même, un jour reconstruit avant l'ajout du nom de la tâche affiche ses blocs **sans** deuxième ligne — la timeline reste complète, seule la ligne tâche manque jusqu'à la prochaine reconstruction.
 
 - **Zone 2 — Sidebar « Heures par projet » (Hours by Project) :**
   - Liste chaque projet Gryzzly avec ses heures affectées ce jour, plus une ligne « Non attribué » en bas (surlignée en amber).
@@ -930,6 +966,7 @@ La CLI de timesheet est **flag-driven** : chaque édition se fait via une sous-c
      - Enregistre les valeurs d'heures saisies dans le sidebar pour ce jour.
      - Les lignes modifiées (heures **ou** projet réaffecté) reçoivent le marqueur « épinglé » (`isPinned = true`) : elles conservent les valeurs manuelles lors d'une reconstruction future.
      - Les changements ne sont persistés que lors d'un clic sur « Save » — **il n'y a pas de sauvegarde automatique**.
+     - **L'enregistrement ne détruit pas la timeline** : éditer les heures par projet ne dit rien de *quand* le travail a eu lieu, la chronologie enregistrée et la liste des signaux non résolus sont donc reportées telles quelles sur le brouillon. Auparavant, « Enregistrer » les remettait à vide et la timeline restait blanche jusqu'à une nouvelle reconstruction.
      - **Erreurs d'enregistrement affichées :** si le backend refuse l'enregistrement (ex. total des heures épinglées > cible journalière — message « pinned hours (X) exceed the daily target (Y) »), le message est affiché en rouge dans le sidebar et **aucune donnée n'est écrasée** (les saisies locales sont conservées). Auparavant, ces erreurs étaient avalées silencieusement.
 
   2. **Valider & Verrouiller** (« Validate & lock »)
@@ -1325,6 +1362,7 @@ garde de joignabilité rende une panne visible au lieu d'être la panne.
 | **R22** | Les créneaux sans tâche déclarée sont marqués comme "non renseigné" dans le journal. |
 | **R23** | L'utilisateur peut modifier le journal a posteriori (corriger, ajouter, supprimer des créneaux). |
 | **R23b** | **Réattribution** : déplacer du temps d'une tâche à une autre se fait par les entrées de journal, jamais par les créneaux (US-RE). Les créneaux étant une projection des horodatages des entrées, ils sont supprimés puis redérivés dans les seules demi-journées concernées, pour les deux tâches uniquement. L'opération est en aperçu par défaut et n'écrit qu'avec confirmation explicite : elle réécrit un historique qui alimente la facturation. |
+| **R23c** | **Réparation des orphelins** : un créneau qui a perdu son `task_id` (le `ON DELETE SET NULL` déclenché par un `INSERT OR REPLACE INTO tasks`) n'est jamais repointé — il est supprimé, et sa demi-journée réécrite depuis les entrées de journal, seules porteuses de l'attribution survivante (US-SR). La plage de jours est explicite et obligatoire, le périmètre réel est la demi-journée qui contient un orphelin, et un créneau `manual` sans tâche est protégé : ce n'est pas un dégât mais un minuteur lancé à la main. Aperçu par défaut, écriture sur confirmation explicite. |
 | **R28** | **Ordre des tâches dans le sélecteur du minuteur d'activité** : les tâches dont `plannedStart` OU `deadline` correspond à aujourd'hui (selon le fuseau horaire configuré) sont remontées en tête de liste. Aucune tâche n'est filtrée ou masquée. À l'intérieur du groupe « du jour », le tri secondaire est par urgence décroissante puis impact décroissant. Les tâches hors du jour sont triées après ce groupe, selon le tri habituel par priorité. |
 
 ### 7.7 Configuration du fichier Excel

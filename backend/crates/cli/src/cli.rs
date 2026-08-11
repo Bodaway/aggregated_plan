@@ -155,6 +155,11 @@ pub enum Commands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Maintenance on the activity slots themselves.
+    Slots {
+        #[command(subcommand)]
+        cmd: SlotsCmd,
+    },
     /// Append a timestamped entry to the worklog of the active task (or --task TARGET).
     Log {
         /// Entry text. Variadic — multiple words are joined with spaces.
@@ -359,6 +364,31 @@ pub enum Commands {
     Consolidate {
         #[command(subcommand)]
         cmd: ConsolidateCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SlotsCmd {
+    /// Give back their task to the slots of a date range that lost it — the
+    /// "(no task)" hours `aplan journal` shows. A write that used
+    /// `INSERT OR REPLACE INTO tasks` fired `ON DELETE SET NULL` on
+    /// `activity_slots.task_id`, so slots the worklog projection owns came out
+    /// unattributed. They are dropped and their half-days rewritten from the
+    /// worklog entries, which still carry the attribution.
+    ///
+    /// Previews by default and writes only with --confirm, because it rewrites
+    /// billing-relevant history. A slot that is not the projection's — a hand-run
+    /// timer with no task — is never touched, whatever the range says.
+    Repair {
+        /// First local day of the range (inclusive), YYYY-MM-DD.
+        #[arg(long)]
+        from: String,
+        /// Last local day of the range (inclusive), YYYY-MM-DD.
+        #[arg(long)]
+        to: String,
+        /// Apply the repair. Without it nothing is written.
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -850,6 +880,47 @@ mod tests {
             vec!["aplan", "reattribute", "--from", "AP-1", "--date", "2026-08-03"],
         ] {
             let err = parse(&args).expect_err("both tasks are required");
+            assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        }
+    }
+
+    /// The real invocation the repair exists for. It must parse WITHOUT `--confirm`
+    /// and carry `confirm: false`, or the safe default is not a default at all.
+    #[test]
+    fn repairing_slots_parses_and_defaults_to_a_preview() {
+        match parse(&[
+            "aplan",
+            "slots",
+            "repair",
+            "--from",
+            "2026-08-04",
+            "--to",
+            "2026-08-10",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Slots {
+                cmd: SlotsCmd::Repair { from, to, confirm },
+            } => {
+                assert_eq!(from, "2026-08-04");
+                assert_eq!(to, "2026-08-10");
+                assert!(!confirm, "the default must write nothing");
+            }
+            other => panic!("expected Slots/Repair, got {other:?}"),
+        }
+    }
+
+    /// Both ends of the range are required: a repair that defaulted one end would
+    /// either reach nothing (today) or rewrite years of billing history.
+    #[test]
+    fn repairing_slots_requires_both_ends_of_the_range() {
+        for args in [
+            vec!["aplan", "slots", "repair", "--to", "2026-08-10"],
+            vec!["aplan", "slots", "repair", "--from", "2026-08-04"],
+            vec!["aplan", "slots", "repair"],
+        ] {
+            let err = parse(&args).expect_err("both ends are required");
             assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         }
     }

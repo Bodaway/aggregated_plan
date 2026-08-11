@@ -1,0 +1,31 @@
+mutation RepairOrphanedSlots(
+  $from: NaiveDate!
+  $to: NaiveDate!
+  $confirm: Boolean
+) {
+  repairOrphanedSlots(input: { from: $from, to: $to, confirm: $confirm }) {
+    applied
+    from
+    to
+    dates {
+      date
+      orphansDropped
+      orphanHours
+      slotsDiscarded
+      slotsWritten
+    }
+    tasks {
+      taskId
+      task {
+        id
+        title
+      }
+      hoursBefore
+      hoursAfter
+    }
+    orphansDropped
+    orphanHours
+    slotsDiscarded
+    slotsWritten
+  }
+}

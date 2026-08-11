@@ -61,12 +61,13 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
         // Header upsert (unique on user_id, date).
         sqlx::query(
             "INSERT INTO timesheet_drafts
-                (id, user_id, date, status, target_hours, total_hours, day_confidence, blocks_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, date, status, target_hours, total_hours, day_confidence, blocks_json, unresolved_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(user_id, date) DO UPDATE SET
                 status = excluded.status, target_hours = excluded.target_hours,
                 total_hours = excluded.total_hours, day_confidence = excluded.day_confidence,
-                blocks_json = excluded.blocks_json, updated_at = excluded.updated_at",
+                blocks_json = excluded.blocks_json, unresolved_json = excluded.unresolved_json,
+                updated_at = excluded.updated_at",
         )
         .bind(draft.id.to_string())
         .bind(draft.user_id.to_string())
@@ -76,6 +77,7 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
         .bind(draft.total_hours)
         .bind(draft.day_confidence.as_str())
         .bind(&draft.blocks_json)
+        .bind(&draft.unresolved_json)
         .bind(draft.created_at.to_rfc3339())
         .bind(draft.updated_at.to_rfc3339())
         .execute(&mut *tx)
@@ -157,6 +159,7 @@ impl TimesheetDraftRepository for SqliteTimesheetDraftRepository {
             total_hours: Row::get(h, "total_hours"),
             day_confidence: conf_from(&conf_str),
             blocks_json: Row::get(h, "blocks_json"),
+            unresolved_json: Row::get(h, "unresolved_json"),
             lines: lines?,
             created_at: parse_dt(&Row::get::<String, _>(h, "created_at"))?,
             updated_at: parse_dt(&Row::get::<String, _>(h, "updated_at"))?,
@@ -208,6 +211,10 @@ mod tests {
             total_hours: 7.5,
             day_confidence: Confidence::High,
             blocks_json: Some("[]".into()),
+            unresolved_json: Some(
+                r#"[{"sourceRef":"wl:1","label":"note sans projet","at":"2026-06-08 09:00:00"}]"#
+                    .into(),
+            ),
             lines: vec![TimesheetDraftLine {
                 id: Uuid::new_v4(),
                 gryzzly_project_id: Some("p1".into()),
@@ -245,6 +252,23 @@ mod tests {
         let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
         assert_eq!(got.lines.len(), 1, "re-upsert must replace lines");
         assert!((got.lines[0].hours - 3.0).abs() < 1e-9);
+    }
+
+    /// The unresolved-signal list is the only record of WHAT went unattributed; it must
+    /// survive the round trip (and a re-upsert), or every page load loses the explanation.
+    #[tokio::test]
+    async fn upsert_then_find_roundtrips_unresolved_json() {
+        let (pool, uid) = pool_with_user().await;
+        let repo = SqliteTimesheetDraftRepository::new(pool);
+        let mut d = draft(uid);
+        repo.upsert(&d).await.unwrap();
+        let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
+        assert_eq!(got.unresolved_json, d.unresolved_json);
+
+        d.unresolved_json = Some(r#"[]"#.into());
+        repo.upsert(&d).await.unwrap();
+        let got = repo.find_by_user_and_date(uid, d.date).await.unwrap().unwrap();
+        assert_eq!(got.unresolved_json.as_deref(), Some("[]"), "re-upsert must update the column");
     }
 
     #[tokio::test]

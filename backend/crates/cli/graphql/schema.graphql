@@ -140,6 +140,7 @@ type AttributedBlockGql {
 	kind: BlockKindGql!
 	hours: Float!
 	sourceRefs: [String!]!
+	originLabel: String
 }
 
 """
@@ -348,6 +349,24 @@ type CombinedMutation {
 	the same projection — one code path, so the two cannot drift.
 	"""
 	reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!
+	"""
+	Give back their task to the activity slots of a local-date range that lost it.
+
+	The damage this repairs: a write that used `INSERT OR REPLACE INTO tasks` fired
+	`activity_slots.task_id`'s `ON DELETE SET NULL`, so slots the worklog projection
+	owns came out unattributed — the "(no task)" hours of `aplan journal`. Neither
+	`flushWorklogTime` (its window only ever names the present) nor
+	`reattributeWorklogEntries` (it refuses a move onto the same task, and its
+	delete list cannot match a NULL `task_id`) could reach them.
+
+	Drops those slots and rewrites their half-days from the worklog entries, which
+	still carry the attribution. Never touches a slot the projection does not own:
+	an unattributed `manual` slot is a hand-run timer, not damage.
+
+	Writes nothing unless `input.confirm` is true. The preview's figures are read
+	off the very plans the write persists, so they cannot drift.
+	"""
+	repairOrphanedSlots(input: RepairOrphanedSlotsInput!): SlotRepairResultGql!
 	"""
 	Carry forward all active tasks whose planned_start is before the current
 	Monday to that Monday at 08:00 UTC. Returns the number of tasks updated.
@@ -845,6 +864,30 @@ type DailyDashboardGql {
 	ISO weekday numbers for working days (1=Mon … 7=Sun).
 	"""
 	workingDays: [Int!]!
+}
+
+"""
+One local day's share of the repair.
+"""
+type DateRepairGql {
+	date: NaiveDate!
+	"""
+	Unattributed projection slots dropped from this date.
+	"""
+	orphansDropped: Int!
+	"""
+	What those orphans were worth — the hours that had fallen off every report.
+	"""
+	orphanHours: Float!
+	"""
+	Slots of the rebuilt tasks dropped from this date: their own projection, which
+	the rewrite replaces. Routine, not damage.
+	"""
+	slotsDiscarded: Int!
+	"""
+	Slots written back from the worklog on this date.
+	"""
+	slotsWritten: Int!
 }
 
 """
@@ -1414,6 +1457,55 @@ input RememberInputGql {
 }
 
 """
+One task the repair rebuilt, with its hours before and after.
+
+Not `TaskTimeChangeGql`: that type answers about tasks the caller named itself, so
+an id is enough. Here the tasks were *discovered* — the orphan lost the only
+pointer that said which they were — so the report has to name them, or the operator
+is asked to confirm a rewrite of hours against a bare UUID.
+"""
+type RepairedTaskGql {
+	taskId: ID!
+	"""
+	Hydrated task, so a report can name what it is about to rewrite. Null only if
+	the task was deleted between the repair and this resolve.
+	"""
+	task: TaskGql
+	"""
+	Hours this task's own projection accounted for in the touched half-days.
+	Excludes the orphans, which accounted for nobody's.
+	"""
+	hoursBefore: Float!
+	"""
+	Hours it accounts for once the half-days are rewritten from the worklog.
+	"""
+	hoursAfter: Float!
+}
+
+"""
+What `repairOrphanedSlots` is asked to sweep.
+
+The range is required, both ends of it. There is no default: "everything" would
+rewrite years of billing history on a typo, and "today" would never reach the
+damage, which is always in the past by the time anyone sees it in `aplan journal`.
+`confirm` defaults to `false`, so the default call previews and writes nothing.
+"""
+input RepairOrphanedSlotsInput {
+	"""
+	First local day of the range (inclusive).
+	"""
+	from: NaiveDate!
+	"""
+	Last local day of the range (inclusive).
+	"""
+	to: NaiveDate!
+	"""
+	Write. Absent or `false` previews.
+	"""
+	confirm: Boolean
+}
+
+"""
 A recall hit: the memory plus the score it obtained. Results come back
 best-first, so `score` is for debugging the ranking, not for re-sorting.
 """
@@ -1474,6 +1566,32 @@ type SkippedMemoryFileGql {
 	`already_imported` | `no_frontmatter` | `no_title`.
 	"""
 	reason: String!
+}
+
+"""
+Result of `repairOrphanedSlots`.
+
+Everything a reader needs to CHECK the repair rather than trust it: per date what
+would be dropped and what would be written, and per task the hours before and
+after. `applied: false` means nothing was written. An empty `dates` means the range
+held no damage — a success, not a refusal, so the same call doubles as the
+verification that a previous repair worked.
+"""
+type SlotRepairResultGql {
+	applied: Boolean!
+	from: NaiveDate!
+	to: NaiveDate!
+	dates: [DateRepairGql!]!
+	tasks: [RepairedTaskGql!]!
+	orphansDropped: Int!
+	"""
+	Total hours the dropped orphans were holding. Compare against the tasks'
+	`hoursAfter`: that is where the time went — unless a date shows orphans
+	dropped and no slot written, which is time the worklog can no longer explain.
+	"""
+	orphanHours: Float!
+	slotsDiscarded: Int!
+	slotsWritten: Int!
 }
 
 """

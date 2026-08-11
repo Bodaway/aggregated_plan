@@ -20,6 +20,17 @@ impl From<ExitCode> for ProcessExitCode {
     }
 }
 
+/// Decimal hours as a clock reading: `4.583` → `4h35`.
+///
+/// The figures the correction verbs print are checked against a timesheet, which is
+/// read in hours and minutes: `4.58` invites a subtraction nobody should have to do.
+/// One implementation on purpose — two roundings of the same figure is how two
+/// reports of the same repair start disagreeing at the minute.
+pub fn hm(hours: f64) -> String {
+    let total = (hours * 60.0).round().max(0.0) as i64;
+    format!("{}h{:02}", total / 60, total % 60)
+}
+
 /// Print a `serde_json::Value` (or any Serialize) to stdout as compact JSON.
 /// Used by every command's `--json` mode. Returns a write error if stdout closes.
 pub fn print_json<T: serde::Serialize>(value: &T) -> std::io::Result<()> {

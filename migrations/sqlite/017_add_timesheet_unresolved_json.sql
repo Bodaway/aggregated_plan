@@ -1,0 +1,21 @@
+-- 017_add_timesheet_unresolved_json.sql
+--
+-- `timesheet_drafts.unresolved_json` — the reconstruction's unresolved-signal list,
+-- persisted next to `blocks_json`.
+--
+-- The list was computed by `reconstruct_day`, returned once by the
+-- `runTimesheetReconstruction` mutation, then dropped on the floor: the header row had
+-- nowhere to keep it, so `timesheetDraft` (i.e. every page load) answered with an empty
+-- list. The timeline then rendered anonymous bars with no way to see WHAT was
+-- unattributed — the explanation survived exactly until the first reload.
+--
+-- Serialized shape, written by `application::use_cases::timesheet::to_draft` and read
+-- back by `ReconstructedDayGql::from_draft`, mirroring `blocks_json` field for field:
+--
+--   [{"sourceRef": "wl:<uuid>", "label": "…", "at": "YYYY-MM-DD HH:MM:SS"}]
+--
+-- Nullable, NULL for every pre-existing row, and NULL reads as "unknown, show nothing"
+-- — a day reconstructed before this column simply has no explanation to offer until it
+-- is reconstructed again. Deliberately NO CHECK: it is opaque display JSON, and 013,
+-- 015 and 016 are this repo's record of what pinning a vocabulary in a CHECK costs.
+ALTER TABLE timesheet_drafts ADD COLUMN unresolved_json TEXT;

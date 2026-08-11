@@ -99,6 +99,7 @@ bind`, not just flipping back to tracking.
 | "set the status to in_progress" | `aplan status --json in_progress` |
 | "triage AP-1234 as followed" | `aplan triage --json followed AP-1234` |
 | "that time went on the wrong task" | `aplan reattribute --json --from <wrong> --to <right> --date <day>` (preview first) |
+| "the journal shows hours with no task" | `aplan slots repair --json --from <day> --to <day>` (preview first) |
 
 If you are a **subagent**, `start`, `stop`, `done` and `triage` in this table are
 forbidden — see "If you are a subagent" below, which also covers `aplan new`,
@@ -175,6 +176,34 @@ destination, an entry belonging to another task, an empty selection, a window at
 After a `--confirm`, tell the user to re-run `aplan timesheet --date <day>`: the
 draft was reconstructed before the correction.
 
+## Repairing hours that lost their task (`aplan slots repair`)
+
+A different failure from a wrong attribution: the slot has **no** task at all, and
+`aplan journal` prints it as "(no task)". A write that used `INSERT OR REPLACE INTO
+tasks` fired `ON DELETE SET NULL` on `activity_slots.task_id`, so slots the worklog
+projection owns came out unattributed. `aplan flush` cannot reach them (its window
+only ever names the present) and `aplan reattribute` refuses (source = destination).
+
+```bash
+# Preview — reports per date what it would drop and write, and writes NOTHING:
+aplan slots repair --json --from 2026-08-04 --to 2026-08-10
+# Apply exactly what the preview showed:
+aplan slots repair --json --from 2026-08-04 --to 2026-08-10 --confirm
+```
+
+Both bounds are required and there is no default. **Always show the user the preview
+and get their agreement before adding `--confirm`**: this rewrites billing-relevant
+history. Read back `orphansDropped` / `orphanHours` against `slotsWritten`, and the
+per-task `hoursBefore`/`hoursAfter`. A date with `orphansDropped > 0` and
+`slotsWritten == 0` is the one case that **loses** hours — its orphans have no worklog
+entry left to rebuild from — so say so explicitly and let the user decide.
+
+An unattributed `manual` slot is never touched: it is a hand-run timer, not damage. A
+clean range is exit `0` with an empty `dates`, so the same call verifies a repair.
+Exit `4` is a refusal that wrote nothing (a range that ends before it starts, a
+malformed date, a range at the 1 000-entry page cap: narrow it). After a `--confirm`,
+tell the user to re-run `aplan timesheet --date <day>` for each touched day.
+
 ## Memory consolidation (scheduled sessions only)
 
 If you are a **scheduled** session running the 17:30 memory consolidation, your
@@ -249,8 +278,10 @@ complaint. Session-link writes are the case this section was written for, and
 are still the clearest: `aplan start`, `aplan stop`, `aplan done`,
 `aplan flush`, and any *writing* `aplan session` subcommand — `bind`, `off`,
 `end`. The same reasoning reaches three more: `aplan reattribute` moves
-already-logged time from one task to another — the same class of harm as
-rebinding a session, aimed at history instead of the live link; `aplan config
+already-logged time from one task to another — and `aplan slots repair --confirm`
+rewrites the same history from the worklog, dropping slots as it goes — the same
+class of harm as rebinding a session, aimed at history instead of the live link;
+`aplan config
 set` rewrites persisted configuration, including the very keys this skill
 documents; and the memory-write verbs — `aplan remember`, `aplan memory
 supersede`, `aplan memory import`, `aplan inbox accept|merge|supersede|reject`,

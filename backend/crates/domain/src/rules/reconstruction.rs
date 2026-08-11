@@ -13,7 +13,12 @@ pub struct Signal {
     pub at: NaiveDateTime,
     pub gryzzly_project_id: Option<String>,
     pub kind: SignalKind,
+    /// What the signal itself says: the worklog note, or the commit message.
     pub label: String,
+    /// The human name of what the signal came FROM — the owning task's title. Distinct
+    /// from `label`, which is the signal's own text. `None` when no task could be
+    /// resolved (an unmatched commit): never a stand-in id, since an id explains nothing.
+    pub origin_label: Option<String>,
     pub source_ref: String,
 }
 
@@ -76,6 +81,18 @@ pub struct AttributedBlock {
     pub kind: BlockKind,
     pub hours: f64,
     pub source_refs: Vec<String>,
+    /// The human name of what this block came from, as a secondary display label under
+    /// the project name: the owning **task's title** for a `Work` block, the **meeting
+    /// subject** for a `Meeting` block.
+    ///
+    /// Unambiguous by construction: `reconstruct_day` builds every block from exactly ONE
+    /// signal or ONE meeting (hence `source_refs` always holds a single element), so the
+    /// label names that single origin — no join, no aggregation, no "and 2 others".
+    ///
+    /// `None` when the origin has no known name (an unmatched commit signal, or a day
+    /// persisted before this field existed). A consumer must render one line only in that
+    /// case, never an id.
+    pub origin_label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +276,7 @@ pub fn reconstruct_day(inputs: &DayInputs, cfg: &ReconstructionConfig) -> Recons
                 kind: BlockKind::Meeting,
                 hours: (e - s) as f64 / 60.0,
                 source_refs: vec![m.source_ref.clone()],
+                origin_label: Some(m.title.clone()),
             });
         }
 
@@ -316,6 +334,7 @@ pub fn reconstruct_day(inputs: &DayInputs, cfg: &ReconstructionConfig) -> Recons
                     kind: BlockKind::Work,
                     hours: (end_min - start_min) as f64 / 60.0,
                     source_refs: vec![s.source_ref.clone()],
+                    origin_label: s.origin_label.clone(),
                 });
             }
         }
@@ -476,11 +495,16 @@ mod tests {
         day().and_hms_opt(h, m, 0).unwrap()
     }
     fn sig(h: u32, m: u32, project: Option<&str>) -> Signal {
+        sig_from(h, m, project, None)
+    }
+    /// A signal that knows the human name of what it came from (its owning task).
+    fn sig_from(h: u32, m: u32, project: Option<&str>, origin: Option<&str>) -> Signal {
         Signal {
             at: at(h, m),
             gryzzly_project_id: project.map(|s| s.to_string()),
             kind: SignalKind::Log,
             label: format!("log {h}:{m}"),
+            origin_label: origin.map(|s| s.to_string()),
             source_ref: format!("wl-{h}{m}"),
         }
     }
@@ -536,6 +560,56 @@ mod tests {
         );
         assert!(out.unattributed_hours > 0.0);
         assert!(out.unresolved.iter().any(|u| u.source_ref == "wl-100"));
+    }
+
+    /// A bar labelled with its project alone says WHICH client was billed, never WHAT was
+    /// done. The signal's origin (the owning task's title) must reach the block, since the
+    /// block is the only thing the timeline renders.
+    #[test]
+    fn work_block_carries_the_origin_label_of_its_signal() {
+        let out = reconstruct_day(
+            &DayInputs {
+                date: day(),
+                meetings: vec![],
+                signals: vec![
+                    sig_from(9, 0, Some("p1"), Some("Refonte du portail")),
+                    sig_from(14, 0, Some("p2"), None),
+                ],
+            },
+            &ReconstructionConfig::default(),
+        );
+        let morning = out
+            .blocks
+            .iter()
+            .find(|b| b.gryzzly_project_id.as_deref() == Some("p1"))
+            .expect("the morning work block");
+        assert_eq!(morning.origin_label.as_deref(), Some("Refonte du portail"));
+        let afternoon = out
+            .blocks
+            .iter()
+            .find(|b| b.gryzzly_project_id.as_deref() == Some("p2"))
+            .expect("the afternoon work block");
+        assert_eq!(
+            afternoon.origin_label, None,
+            "a signal with no known origin must not borrow another block's"
+        );
+    }
+
+    /// For a meeting the origin is the meeting itself, so the subject is the label.
+    #[test]
+    fn meeting_block_carries_the_meeting_subject_as_origin_label() {
+        let mut m = meeting(9, 11, Some("p_meet"), MeetingKind::Work);
+        m.title = "Comité de pilotage".into();
+        let out = reconstruct_day(
+            &DayInputs { date: day(), meetings: vec![m], signals: vec![sig(14, 0, Some("p1"))] },
+            &ReconstructionConfig::default(),
+        );
+        let mtg = out
+            .blocks
+            .iter()
+            .find(|b| b.kind == BlockKind::Meeting)
+            .expect("the meeting block");
+        assert_eq!(mtg.origin_label.as_deref(), Some("Comité de pilotage"));
     }
 
     #[test]

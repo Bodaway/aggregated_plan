@@ -5,6 +5,13 @@ import { TimesheetTimeline } from '@/components/timesheet/TimesheetTimeline';
 import { formatDate, formatDisplayDateFr, getNextDay, getPrevDay } from '@/lib/date-utils';
 import { useGryzzlyProjects, useTimesheet, type ReconstructResult } from '@/hooks/use-timesheet';
 
+/** `HH:MM` from a bare local NaiveDateTime (the wire format the backend emits). */
+function formatLocalHm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '--:--';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export function TimesheetPage() {
   const [date, setDate] = useState<Date>(new Date());
   const { day, loading, error, reconstruct, saveLines, validate, markOff, refetch } = useTimesheet(date);
@@ -65,10 +72,19 @@ export function TimesheetPage() {
       {day && (
         <div className="flex gap-6 items-start">
           <div className="flex-1 bg-white rounded-lg border border-gray-200 p-4">
-            <TimesheetTimeline blocks={day.blocks} />
+            <TimesheetTimeline blocks={day.blocks} projects={projects} unresolved={day.unresolved} />
             {day.unresolved.length > 0 && (
               <div className="mt-3 text-xs text-amber-700">
-                {day.unresolved.length} signal(aux) non résolu(s) — attribuez les heures à un projet dans le panneau latéral.
+                <p>
+                  {day.unresolved.length} signal(aux) non résolu(s) — attribuez les heures à un projet dans le panneau latéral.
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {day.unresolved.map((u) => (
+                    <li key={u.sourceRef} className="truncate">
+                      <span className="font-mono text-amber-800">{formatLocalHm(u.at)}</span> {u.label}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>

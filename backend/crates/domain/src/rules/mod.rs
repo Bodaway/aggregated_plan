@@ -7,6 +7,7 @@ pub mod recurrence;
 pub mod meeting;
 pub mod worklog_time;
 pub mod reattribution;
+pub mod slot_repair;
 pub mod overlap;
 pub mod project_mapping;
 pub mod reconstruction;

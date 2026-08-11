@@ -404,9 +404,53 @@ impl TaskRepository for SqliteTaskRepository {
     }
 
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
+        // A true upsert, NOT `INSERT OR REPLACE`. SQLite resolves a REPLACE conflict by
+        // DELETING the conflicting row before inserting the new one, and that delete fires
+        // every foreign-key action pointing at `tasks(id)`: `worklog_entries` and
+        // `task_links` are `ON DELETE CASCADE`, `activity_slots`, `memories` and
+        // `sessions` are `ON DELETE SET NULL`. Every save of an existing task therefore
+        // destroyed its whole worklog history. `ON CONFLICT(id) DO UPDATE` updates the row
+        // in place, so no action fires.
+        //
+        // Consequence, deliberate: the unique partial index on
+        // (recurrence_id, occurrence_date) is no longer silently resolved by deleting the
+        // task that holds the slot. A second, distinct task aimed at an occupied slot now
+        // raises a UNIQUE violation instead of destroying the sitting task — the
+        // materialization use case already checks `find_by_recurrence_slot` first.
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, gryzzly_task_id, gryzzly_project_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, gryzzly_task_id, gryzzly_project_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                title = excluded.title,
+                description = excluded.description,
+                notes = excluded.notes,
+                source = excluded.source,
+                source_id = excluded.source_id,
+                jira_status = excluded.jira_status,
+                status = excluded.status,
+                project_id = excluded.project_id,
+                assignee = excluded.assignee,
+                delegated_to = excluded.delegated_to,
+                deadline = excluded.deadline,
+                planned_start = excluded.planned_start,
+                planned_end = excluded.planned_end,
+                estimated_hours = excluded.estimated_hours,
+                urgency = excluded.urgency,
+                urgency_manual = excluded.urgency_manual,
+                impact = excluded.impact,
+                tracking_state = excluded.tracking_state,
+                jira_remaining_seconds = excluded.jira_remaining_seconds,
+                jira_original_estimate_seconds = excluded.jira_original_estimate_seconds,
+                jira_time_spent_seconds = excluded.jira_time_spent_seconds,
+                remaining_hours_override = excluded.remaining_hours_override,
+                estimated_hours_override = excluded.estimated_hours_override,
+                recurrence_id = excluded.recurrence_id,
+                occurrence_date = excluded.occurrence_date,
+                gryzzly_task_id = excluded.gryzzly_task_id,
+                gryzzly_project_id = excluded.gryzzly_project_id,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at",
         )
         .bind(task.id.to_string())
         .bind(task.user_id.to_string())
@@ -473,21 +517,33 @@ impl TaskRepository for SqliteTaskRepository {
         keep_ids: &[String],
     ) -> Result<u64, RepositoryError> {
         let source_str = source_to_str(source);
+
+        // REFUSAL, not a feature: an empty keep-list is deliberately a no-op.
+        //
+        // It carries NO information about staleness. A *successful* fetch returns
+        // zero rows for a mistyped project key, a revoked permission, a
+        // `my_tasks_only` filter against a changed account id, or a JQL that
+        // suddenly matches nothing — a hard connector error never gets here, it
+        // aborts in `sync_jira` first. This branch used to read "DELETE FROM tasks
+        // WHERE user_id = ? AND source = ?", i.e. the user's entire backlog for
+        // that source, and `worklog_entries.task_id` is ON DELETE CASCADE. Same
+        // contract as `GryzzlyCatalogRepository::soft_prune_missing`.
         if keep_ids.is_empty() {
-            let result = sqlx::query(
-                "DELETE FROM tasks WHERE user_id = ? AND source = ?",
-            )
-            .bind(user_id.to_string())
-            .bind(source_str)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| RepositoryError::Database(e.to_string()))?;
-            return Ok(result.rows_affected());
+            return Ok(0);
         }
 
         let placeholders = keep_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // The two NOT EXISTS clauses are the second half of the contract: logged
+        // work is user data, not synced data. A legitimately narrowed filter stops
+        // refreshing such a task but must never destroy its history — the worklog
+        // rows would cascade away and the activity slots would be orphaned by
+        // `ON DELETE SET NULL`. The task survives locally; `aplan rm` still removes
+        // it by hand.
         let sql = format!(
-            "DELETE FROM tasks WHERE user_id = ? AND source = ? AND source_id NOT IN ({})",
+            "DELETE FROM tasks \
+             WHERE user_id = ? AND source = ? AND source_id NOT IN ({}) \
+               AND NOT EXISTS (SELECT 1 FROM worklog_entries w WHERE w.task_id = tasks.id) \
+               AND NOT EXISTS (SELECT 1 FROM activity_slots s WHERE s.task_id = tasks.id)",
             placeholders
         );
         let mut q = sqlx::query(&sql)
@@ -1189,13 +1245,19 @@ mod tests {
 
     // Test 9: Unique partial index on (recurrence_id, occurrence_date).
     //
-    // SQLite's INSERT OR REPLACE resolves the unique-index conflict by deleting the old row
-    // and inserting the new one (not an error). So saving a second task with the same slot
-    // silently overwrites the first. The use-case layer prevents this from happening in
-    // practice by calling `find_by_recurrence_slot` before every materialization save.
-    // This test documents the actual DB behavior.
+    // `save` is an `INSERT ... ON CONFLICT(id) DO UPDATE`, so the only conflict it resolves
+    // is the primary key. A second, DISTINCT task aimed at an occupied slot is refused with
+    // a UNIQUE violation and the sitting task — with its worklog history — survives.
+    //
+    // This assertion used to be the exact opposite: under `INSERT OR REPLACE` SQLite
+    // resolved the unique-index conflict by DELETING the sitting task, cascade-deleting its
+    // worklog entries and merge links along with it, and the test recorded that silent
+    // overwrite as the documented behavior. The use-case layer still calls
+    // `find_by_recurrence_slot` before every materialization save, so this error is
+    // unreachable from `materialize_due_occurrences`; the DB now refuses loudly instead of
+    // destroying data if anything else ever aims two tasks at one slot.
     #[tokio::test]
-    async fn recurrence_slot_unique_index_insert_or_replace_overwrites() {
+    async fn recurrence_slot_unique_index_refuses_a_second_task() {
         use domain::types::recurrence::RecurrenceTemplateId;
 
         let pool = setup().await;
@@ -1222,25 +1284,31 @@ mod tests {
         task1.occurrence_date = Some(occurrence);
         repo.save(&task1).await.unwrap();
 
-        // INSERT OR REPLACE: when a second distinct task (different PK) has the same
-        // (recurrence_id, occurrence_date), SQLite deletes the conflicting row (task1)
-        // and inserts task2. End result: slot still holds exactly one row.
+        // A second distinct task (different PK) on the same
+        // (recurrence_id, occurrence_date) is rejected, not silently substituted.
         let mut task2 = make_task("Second");
         task2.recurrence_id = Some(template_id);
         task2.occurrence_date = Some(occurrence);
-        repo.save(&task2).await.unwrap(); // succeeds — old row is replaced
+        let err = repo
+            .save(&task2)
+            .await
+            .expect_err("a second task on an occupied slot must be refused");
+        assert!(
+            matches!(err, RepositoryError::Database(ref msg) if msg.contains("UNIQUE constraint failed")),
+            "expected a UNIQUE violation, got: {err:?}"
+        );
 
-        // Exactly one row remains for the slot, and it is task2
+        // The sitting task is untouched: exactly one row for the slot, and it is task1.
         let list = repo.find_by_recurrence(template_id).await.unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].title, "Second");
+        assert_eq!(list[0].title, "First");
 
         let found = repo
             .find_by_recurrence_slot(template_id, occurrence)
             .await
             .unwrap()
             .expect("slot must exist");
-        assert_eq!(found.title, "Second");
+        assert_eq!(found.title, "First");
     }
 
     #[tokio::test]
@@ -1464,5 +1532,334 @@ mod tests {
         // Only the Todo task must be returned
         assert_eq!(results.len(), 1, "Expected 1 result, got: {:?}", results.iter().map(|t| &t.title).collect::<Vec<_>>());
         assert_eq!(results[0].title, "Todo past");
+    }
+
+    // ─── Cascade-preservation regression tests ───
+    //
+    // `save` used to be an `INSERT OR REPLACE`. SQLite resolves a REPLACE conflict by
+    // DELETING the conflicting row and inserting a new one, and that delete fires every
+    // `ON DELETE CASCADE` / `ON DELETE SET NULL` action pointing at `tasks(id)`. Every
+    // save of an existing task therefore destroyed its worklog history, its merge links,
+    // and the task link of its activity slots. `save` must UPDATE the row in place.
+    //
+    // These tests only mean anything with foreign keys enforced: `create_sqlite_pool`
+    // sets `.foreign_keys(true)` on the connect options, exactly like production.
+
+    async fn insert_worklog_entry(pool: &SqlitePool, task_id: &TaskId) -> Uuid {
+        let id = Uuid::new_v4();
+        let now = "2026-08-11T09:00:00+00:00";
+        sqlx::query(
+            "INSERT INTO worklog_entries \
+             (id, user_id, task_id, body, logged_at, created_at, updated_at) \
+             VALUES (?, ?, ?, 'shipped the upsert', ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(user_id().to_string())
+        .bind(task_id.to_string())
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn count_worklog_entries(pool: &SqlitePool, task_id: &TaskId) -> i64 {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM worklog_entries WHERE task_id = ?")
+            .bind(task_id.to_string())
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        row.0
+    }
+
+    /// `worklog_entries.task_id REFERENCES tasks(id) ON DELETE CASCADE` (migration 006).
+    #[tokio::test]
+    async fn save_preserves_worklog_entries() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let mut task = make_task("Has a journal");
+        repo.save(&task).await.unwrap();
+        insert_worklog_entry(&pool, &task.id).await;
+        assert_eq!(count_worklog_entries(&pool, &task.id).await, 1);
+
+        task.title = "Has a journal (renamed)".to_string();
+        task.updated_at = Utc::now();
+        repo.save(&task).await.unwrap();
+
+        assert_eq!(
+            count_worklog_entries(&pool, &task.id).await,
+            1,
+            "saving a task must not cascade-delete its worklog entries"
+        );
+        let reloaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.title, "Has a journal (renamed)");
+    }
+
+    /// Same guarantee through the batch path, which the sync engine uses.
+    #[tokio::test]
+    async fn save_batch_preserves_worklog_entries() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let mut task = make_task("Batched journal");
+        repo.save(&task).await.unwrap();
+        insert_worklog_entry(&pool, &task.id).await;
+
+        task.status = TaskStatus::InProgress;
+        repo.save_batch(std::slice::from_ref(&task)).await.unwrap();
+
+        assert_eq!(
+            count_worklog_entries(&pool, &task.id).await,
+            1,
+            "save_batch must not cascade-delete worklog entries"
+        );
+        let reloaded = repo.find_by_id(task.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.status, TaskStatus::InProgress);
+    }
+
+    /// `activity_slots.task_id REFERENCES tasks(id) ON DELETE SET NULL` (migration 001):
+    /// the slot itself survives a cascade, but it loses the task it was spent on.
+    #[tokio::test]
+    async fn save_preserves_activity_slot_task_link() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let mut task = make_task("Tracked all morning");
+        repo.save(&task).await.unwrap();
+
+        let slot_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO activity_slots \
+             (id, user_id, task_id, start_time, end_time, half_day, date, created_at, source) \
+             VALUES (?, ?, ?, ?, ?, 'morning', '2026-08-11', ?, 'worklog')",
+        )
+        .bind(slot_id.to_string())
+        .bind(user_id().to_string())
+        .bind(task.id.to_string())
+        .bind("2026-08-11T08:00:00+00:00")
+        .bind("2026-08-11T12:00:00+00:00")
+        .bind("2026-08-11T12:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        task.tracking_state = TrackingState::Followed;
+        repo.save(&task).await.unwrap();
+
+        let stored: (Option<String>,) =
+            sqlx::query_as("SELECT task_id FROM activity_slots WHERE id = ?")
+                .bind(slot_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored.0,
+            Some(task.id.to_string()),
+            "saving a task must not null out its activity slots' task_id"
+        );
+    }
+
+    /// `task_links.task_id_primary/_secondary ... ON DELETE CASCADE` (migration 001):
+    /// a cascade on save would resurrect every merged duplicate.
+    #[tokio::test]
+    async fn save_preserves_merge_links() {
+        use crate::database::task_link_repo::SqliteTaskLinkRepository;
+        use application::repositories::TaskLinkRepository;
+
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+        let link_repo = SqliteTaskLinkRepository::new(pool.clone());
+
+        let mut survivor = make_task("Survivor");
+        let loser = make_task("Loser");
+        repo.save(&survivor).await.unwrap();
+        repo.save(&loser).await.unwrap();
+
+        link_repo
+            .save(&TaskLink {
+                id: Uuid::new_v4(),
+                task_id_primary: survivor.id,
+                task_id_secondary: loser.id,
+                link_type: TaskLinkType::AutoMerged,
+                confidence_score: Some(1.0),
+                created_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        survivor.title = "Survivor (renamed)".to_string();
+        repo.save(&survivor).await.unwrap();
+
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM task_links WHERE task_id_primary = ?")
+            .bind(survivor.id.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0, 1, "saving a task must not cascade-delete its merge links");
+    }
+
+    // -----------------------------------------------------------------------
+    // delete_stale_by_source — the sync prune
+    //
+    // `worklog_entries.task_id` is ON DELETE CASCADE and `activity_slots.task_id`
+    // is ON DELETE SET NULL, so every row this prune deletes takes logged work
+    // with it. These tests pin the two invariants that keep that from happening.
+    // -----------------------------------------------------------------------
+
+    /// Persist a task attached to an external source, and return it.
+    async fn save_sourced_task(
+        repo: &SqliteTaskRepository,
+        title: &str,
+        source: Source,
+        source_id: &str,
+    ) -> Task {
+        let mut task = make_task(title);
+        task.source = source;
+        task.source_id = Some(source_id.to_string());
+        repo.save(&task).await.unwrap();
+        task
+    }
+
+    /// Insert one activity slot on `task_id` and return its id.
+    async fn insert_activity_slot(pool: &SqlitePool, task_id: TaskId) -> String {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO activity_slots \
+             (id, user_id, task_id, start_time, end_time, half_day, date, created_at, source) \
+             VALUES (?, ?, ?, ?, ?, 'morning', '2026-08-11', ?, 'worklog')",
+        )
+        .bind(&id)
+        .bind(user_id().to_string())
+        .bind(task_id.to_string())
+        .bind("2026-08-11T08:00:00+00:00")
+        .bind("2026-08-11T12:00:00+00:00")
+        .bind("2026-08-11T12:00:00+00:00")
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    /// An empty keep-list carries NO information about staleness: a successful
+    /// fetch returns zero rows for a mistyped project key, a revoked permission or
+    /// a JQL that suddenly matches nothing. Reading it as "everything is stale"
+    /// deletes the user's whole Jira backlog.
+    #[tokio::test]
+    async fn delete_stale_by_source_refuses_an_empty_keep_list() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let a = save_sourced_task(&repo, "Jira A", Source::Jira, "AP-1").await;
+        let b = save_sourced_task(&repo, "Jira B", Source::Jira, "AP-2").await;
+
+        let removed = repo
+            .delete_stale_by_source(user_id(), Source::Jira, &[])
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 0, "an empty keep-list must delete nothing");
+        assert!(repo.find_by_id(a.id).await.unwrap().is_some());
+        assert!(repo.find_by_id(b.id).await.unwrap().is_some());
+    }
+
+    /// Logged work is user data, not synced data: a task carrying worklog entries
+    /// stops being refreshed but survives locally (`aplan rm` still removes it).
+    #[tokio::test]
+    async fn delete_stale_by_source_spares_a_task_carrying_a_worklog_entry() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let logged = save_sourced_task(&repo, "Logged", Source::Jira, "AP-1").await;
+        insert_worklog_entry(&pool, &logged.id).await;
+
+        let removed = repo
+            .delete_stale_by_source(user_id(), Source::Jira, &["AP-99".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 0, "a task with logged work must not be pruned");
+        assert!(repo.find_by_id(logged.id).await.unwrap().is_some());
+        assert_eq!(
+            count_worklog_entries(&pool, &logged.id).await,
+            1,
+            "the worklog entry must survive the prune"
+        );
+    }
+
+    /// Same protection for activity slots: `ON DELETE SET NULL` would not delete
+    /// the slot, it would orphan it — real, billable time attributed to nobody.
+    #[tokio::test]
+    async fn delete_stale_by_source_spares_a_task_carrying_an_activity_slot() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+
+        let tracked = save_sourced_task(&repo, "Tracked", Source::Jira, "AP-1").await;
+        let slot_id = insert_activity_slot(&pool, tracked.id).await;
+
+        let removed = repo
+            .delete_stale_by_source(user_id(), Source::Jira, &["AP-99".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 0, "a task with an activity slot must not be pruned");
+        assert!(repo.find_by_id(tracked.id).await.unwrap().is_some());
+
+        let still_attributed: (Option<String>,) =
+            sqlx::query_as("SELECT task_id FROM activity_slots WHERE id = ?")
+                .bind(&slot_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            still_attributed.0,
+            Some(tracked.id.to_string()),
+            "the slot must keep its task attribution"
+        );
+    }
+
+    /// The feature itself must keep working: a task the source no longer returns,
+    /// on which nothing was ever logged, is still pruned.
+    #[tokio::test]
+    async fn delete_stale_by_source_deletes_a_task_without_logged_work() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let kept = save_sourced_task(&repo, "Kept", Source::Jira, "AP-1").await;
+        let stale = save_sourced_task(&repo, "Stale", Source::Jira, "AP-2").await;
+
+        let removed = repo
+            .delete_stale_by_source(user_id(), Source::Jira, &["AP-1".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(repo.find_by_id(stale.id).await.unwrap().is_none());
+        assert!(repo.find_by_id(kept.id).await.unwrap().is_some());
+    }
+
+    /// A Jira prune must never reach an Excel or personal task: their staleness is
+    /// decided by another source, or by nobody at all.
+    #[tokio::test]
+    async fn delete_stale_by_source_never_touches_another_source() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let excel = save_sourced_task(&repo, "Excel row", Source::Excel, "sheet:row3").await;
+        let personal = make_task("Personal");
+        repo.save(&personal).await.unwrap();
+        let jira_stale = save_sourced_task(&repo, "Jira stale", Source::Jira, "AP-2").await;
+
+        let removed = repo
+            .delete_stale_by_source(user_id(), Source::Jira, &["AP-1".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1, "only the stale Jira task is pruned");
+        assert!(repo.find_by_id(jira_stale.id).await.unwrap().is_none());
+        assert!(repo.find_by_id(excel.id).await.unwrap().is_some());
+        assert!(repo.find_by_id(personal.id).await.unwrap().is_some());
     }
 }

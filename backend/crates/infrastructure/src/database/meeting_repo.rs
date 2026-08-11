@@ -148,6 +148,12 @@ impl MeetingRepository for SqliteMeetingRepository {
             let participants_json = serde_json::to_string(&meeting.participants)
                 .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
 
+            // `INSERT OR REPLACE` is safe HERE and only here: nothing has a foreign key to
+            // `meetings(id)`, so the delete-then-insert that resolves the
+            // UNIQUE(user_id, outlook_id) conflict — which is the conflict this statement
+            // relies on, since the sync engine mints a fresh `id` for every pass — fires no
+            // cascade. Do not copy this shape onto a table that has children: see the
+            // upsert in `task_repo::save` for why.
             sqlx::query(
                 "INSERT OR REPLACE INTO meetings (id, user_id, title, start_time, end_time, location, participants, project_id, outlook_id, show_as, created_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -176,14 +182,14 @@ impl MeetingRepository for SqliteMeetingRepository {
         user_id: UserId,
         current_outlook_ids: &[String],
     ) -> Result<u64, RepositoryError> {
+        // REFUSAL, not a feature — the exact sibling of
+        // `TaskRepository::delete_stale_by_source`: an empty id list carries no
+        // information about staleness. A calendar fetch that succeeded and returned
+        // nothing (expired delegated permission, wrong mailbox, every event filtered
+        // out by `outlook.exclude_patterns`) used to wipe every meeting of the user,
+        // including the local project assignments carried on those rows.
         if current_outlook_ids.is_empty() {
-            // Delete all meetings for the user
-            let result = sqlx::query("DELETE FROM meetings WHERE user_id = ?")
-                .bind(user_id.to_string())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| RepositoryError::Database(e.to_string()))?;
-            return Ok(result.rows_affected());
+            return Ok(0);
         }
 
         let placeholders: Vec<&str> = current_outlook_ids.iter().map(|_| "?").collect();

@@ -191,12 +191,36 @@ impl RecurrenceRepository for SqliteRecurrenceRepository {
         let rule_json = serde_json::to_string(&template.rule)
             .map_err(|e| RepositoryError::Database(format!("Failed to serialize rule: {}", e)))?;
 
+        // A true upsert, NOT `INSERT OR REPLACE`: a REPLACE conflict is resolved by
+        // DELETING the conflicting row first, which cascade-deletes
+        // `task_recurrence_tags`. `save_template_tags` below rewrites that junction
+        // wholesale, so the loss was masked today — but the next child table of
+        // `task_recurrences` would not be so lucky. `ON CONFLICT(id) DO UPDATE` fires
+        // no delete action at all.
         sqlx::query(
-            "INSERT OR REPLACE INTO task_recurrences \
+            "INSERT INTO task_recurrences \
              (id, user_id, title, description, notes, project_id, urgency, urgency_manual, \
               impact, estimated_hours, rule_json, starts_on, ends_on, max_occurrences, \
               last_generated_through, active, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+                user_id = excluded.user_id, \
+                title = excluded.title, \
+                description = excluded.description, \
+                notes = excluded.notes, \
+                project_id = excluded.project_id, \
+                urgency = excluded.urgency, \
+                urgency_manual = excluded.urgency_manual, \
+                impact = excluded.impact, \
+                estimated_hours = excluded.estimated_hours, \
+                rule_json = excluded.rule_json, \
+                starts_on = excluded.starts_on, \
+                ends_on = excluded.ends_on, \
+                max_occurrences = excluded.max_occurrences, \
+                last_generated_through = excluded.last_generated_through, \
+                active = excluded.active, \
+                created_at = excluded.created_at, \
+                updated_at = excluded.updated_at",
         )
         .bind(template.id.to_string())
         .bind(template.user_id.to_string())

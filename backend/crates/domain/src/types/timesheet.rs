@@ -55,6 +55,7 @@ pub struct TimesheetDraft {
     pub total_hours: f64,
     pub day_confidence: Confidence,
     pub blocks_json: Option<String>,
+    pub unresolved_json: Option<String>,
     pub lines: Vec<TimesheetDraftLine>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

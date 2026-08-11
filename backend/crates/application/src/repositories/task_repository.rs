@@ -85,8 +85,18 @@ pub trait TaskRepository: Send + Sync {
     /// Delete a task by its identifier.
     async fn delete(&self, id: TaskId) -> Result<(), RepositoryError>;
 
-    /// Delete all tasks from a given source whose source_id is NOT in `keep_ids`.
-    /// Used after a sync to remove tasks that are no longer returned by the source.
+    /// Delete the tasks of `source` whose `source_id` is NOT in `keep_ids`.
+    /// Used after a sync to drop tasks the source no longer returns.
+    ///
+    /// Two refusals are part of the contract, not implementation details:
+    /// - an **empty** `keep_ids` deletes NOTHING and returns `Ok(0)`. It carries no
+    ///   information about staleness (a successful fetch returns zero rows for a
+    ///   mistyped project key or a revoked permission just as readily as for a
+    ///   genuinely empty source), so reading it as "everything is stale" is a
+    ///   silent bulk delete. Callers must still avoid calling it in that case.
+    /// - a task carrying **logged work** (worklog entries or activity slots) is
+    ///   never deleted. It stops being refreshed but survives locally; only an
+    ///   explicit `delete` removes it. Logged work is user data, not synced data.
     async fn delete_stale_by_source(
         &self,
         user_id: UserId,

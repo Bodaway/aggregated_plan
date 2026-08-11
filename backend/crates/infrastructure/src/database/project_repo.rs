@@ -104,9 +104,22 @@ impl ProjectRepository for SqliteProjectRepository {
     }
 
     async fn save(&self, project: &Project) -> Result<(), RepositoryError> {
+        // A true upsert, NOT `INSERT OR REPLACE`: SQLite resolves a REPLACE conflict by
+        // DELETING the conflicting row first, which fires the `ON DELETE SET NULL` of
+        // `tasks.project_id`, `meetings.project_id`, `task_recurrences.project_id` and
+        // `memories.project_id`. Merely renaming a project used to unassign everything
+        // that belonged to it. `ON CONFLICT(id) DO UPDATE` updates the row in place.
         sqlx::query(
-            "INSERT OR REPLACE INTO projects (id, user_id, name, source, source_id, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO projects (id, user_id, name, source, source_id, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                name = excluded.name,
+                source = excluded.source,
+                source_id = excluded.source_id,
+                status = excluded.status,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at",
         )
         .bind(project.id.to_string())
         .bind(project.user_id.to_string())
@@ -260,5 +273,55 @@ mod tests {
 
         repo.delete(project.id).await.unwrap();
         assert!(repo.find_by_id(project.id).await.unwrap().is_none());
+    }
+
+    /// `tasks.project_id REFERENCES projects(id) ON DELETE SET NULL` (migrations 001/007).
+    ///
+    /// SQLite resolves a REPLACE conflict by DELETING the conflicting row first, which
+    /// fires that action: an `INSERT OR REPLACE INTO projects` silently unassigned every
+    /// task of the project it was merely updating. `save` must UPDATE in place.
+    /// Foreign keys are enforced here exactly as in production — `create_sqlite_pool`
+    /// sets `.foreign_keys(true)` on the connect options.
+    #[tokio::test]
+    async fn save_preserves_task_project_assignment() {
+        let pool = setup().await;
+        let repo = SqliteProjectRepository::new(pool.clone());
+
+        let mut project = make_project("Original");
+        repo.save(&project).await.unwrap();
+
+        let task_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id, user_id, title, source, status, urgency, impact, project_id, created_at, updated_at) \
+             VALUES (?, ?, 'A task on the project', 'personal', 'todo', 2, 2, ?, ?, ?)",
+        )
+        .bind(task_id.to_string())
+        .bind("00000000-0000-0000-0000-000000000001")
+        .bind(project.id.to_string())
+        .bind("2026-08-11T09:00:00+00:00")
+        .bind("2026-08-11T09:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        project.name = "Renamed".to_string();
+        project.status = ProjectStatus::Paused;
+        repo.save(&project).await.unwrap();
+
+        let stored: (Option<String>,) = sqlx::query_as("SELECT project_id FROM tasks WHERE id = ?")
+            .bind(task_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.0,
+            Some(project.id.to_string()),
+            "saving a project must not null out its tasks' project_id"
+        );
+
+        let found = repo.find_by_id(project.id).await.unwrap().unwrap();
+        assert_eq!(found.name, "Renamed");
+        assert_eq!(found.status, ProjectStatus::Paused);
     }
 }

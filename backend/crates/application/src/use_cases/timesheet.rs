@@ -103,6 +103,9 @@ pub async fn reconstruct_timesheet(
             gryzzly_project_id: project,
             kind: SignalKind::Log,
             label: truncate(&e.body, 60),
+            // The owning task is already loaded to resolve the project — its title is what
+            // tells the reader WHAT the time was, so carry it, don't re-query it.
+            origin_label: task.as_ref().map(|t| t.title.clone()),
             source_ref: format!("wl:{}", e.id),
         });
     }
@@ -114,9 +117,13 @@ pub async fn reconstruct_timesheet(
         for c in &commits {
             // Prefer a Jira key match to a task; else fall back to repo/branch rules.
             let mut project = None;
+            // A repo/branch rule resolves a project but knows no task, so a commit that
+            // matched no Jira key stays nameless rather than borrowing the rule's label.
+            let mut origin_label = None;
             if let Some(key) = jira_key_in(&c.message).or_else(|| jira_key_in(&c.branch)) {
                 if let Some(t) = task_repo.find_by_source(user_id, Source::Jira, &key).await? {
                     project = t.gryzzly_project_id.clone().filter(|p| live_project_ids.contains(p));
+                    origin_label = Some(t.title.clone());
                 }
             }
             if project.is_none() {
@@ -128,6 +135,7 @@ pub async fn reconstruct_timesheet(
                 gryzzly_project_id: project,
                 kind: SignalKind::Commit,
                 label: truncate(&c.message, 60),
+                origin_label,
                 source_ref: format!("git:{}:{}", c.repo_path, c.committed_at.to_rfc3339()),
             });
         }
@@ -214,6 +222,24 @@ async fn to_draft(
                     "kind": format!("{:?}", b.kind),
                     "hours": b.hours,
                     "sourceRefs": b.source_refs,
+                    // The task title / meeting subject behind the bar. Opaque display JSON,
+                    // so no migration: readers tolerate its absence on older rows.
+                    "originLabel": b.origin_label,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .ok();
+    // The unresolved signals are the only record of WHAT went unattributed. Persist them
+    // beside the timeline so a reload can still explain the anonymous bars.
+    let unresolved_json = serde_json::to_string(
+        &day.unresolved
+            .iter()
+            .map(|u| {
+                serde_json::json!({
+                    "sourceRef": u.source_ref,
+                    "label": u.label,
+                    "at": u.at.to_string(),
                 })
             })
             .collect::<Vec<_>>(),
@@ -228,6 +254,7 @@ async fn to_draft(
         total_hours: day.total_hours,
         day_confidence: day.day_confidence,
         blocks_json,
+        unresolved_json,
         lines,
         created_at: now,
         updated_at: now,
@@ -276,8 +303,12 @@ pub async fn save_timesheet_draft(
         status: TimesheetStatus::Draft,
         target_hours: cfg.daily_target_hours,
         total_hours: total,
-        day_confidence: existing.map(|d| d.day_confidence).unwrap_or(Confidence::Medium),
-        blocks_json: None,
+        day_confidence: existing.as_ref().map(|d| d.day_confidence).unwrap_or(Confidence::Medium),
+        // Editing the hours per project says nothing about WHEN the work happened, nor
+        // about which signals stayed unattributed. Nulling these two here blanked the
+        // timeline on every save until the user reconstructed again — carry them forward.
+        blocks_json: existing.as_ref().and_then(|d| d.blocks_json.clone()),
+        unresolved_json: existing.as_ref().and_then(|d| d.unresolved_json.clone()),
         lines,
         created_at: now,
         updated_at: now,
@@ -312,6 +343,7 @@ pub async fn mark_day_off(
         total_hours: 0.0,
         day_confidence: Confidence::High,
         blocks_json: None,
+        unresolved_json: None,
         lines: vec![],
         created_at: now,
         updated_at: now,
@@ -1300,6 +1332,115 @@ mod tests {
         assert_eq!(saved[0].user_id, user_id);
     }
 
+    /// The unresolved-signal list explains the anonymous bars on the timeline. It used to
+    /// live only in the mutation's response, so a reload lost it — it must reach the draft.
+    #[tokio::test]
+    async fn reconstruct_persists_the_unresolved_signals_on_the_draft() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let logged_at = chrono::DateTime::parse_from_rfc3339("2026-06-08T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let task_id: TaskId = Uuid::new_v4();
+
+        // A task with NO Gryzzly project and no mapping rule → the signal stays unresolved.
+        let mut task = make_task_with_project(user_id, task_id, "p1");
+        task.gryzzly_project_id = None;
+        task.gryzzly_task_id = None;
+
+        let worklog_repo = MemWorklog {
+            entries: vec![WorklogEntry {
+                id: Uuid::new_v4(),
+                user_id,
+                task_id,
+                body: "refonte du pipeline".to_string(),
+                logged_at,
+                created_at: logged_at,
+                updated_at: logged_at,
+                session_id: None,
+            }],
+        };
+        let draft_repo = MemDraft::default();
+
+        let day = reconstruct_timesheet(
+            &worklog_repo,
+            &MemMeeting,
+            &MemTask { task },
+            &MemCatalog { entries: vec![] },
+            &MemMapping,
+            &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemGit,
+            &draft_repo,
+            user_id,
+            date,
+        )
+        .await
+        .expect("reconstruct_timesheet should succeed");
+
+        assert!(!day.unresolved.is_empty(), "an unmapped signal is unresolved");
+        let saved = draft_repo.find_by_user_and_date(user_id, date).await.unwrap().unwrap();
+        let json = saved.unresolved_json.expect("unresolved_json must be persisted");
+        assert!(json.contains("refonte du pipeline"), "the label explains WHAT was unattributed: {json}");
+        assert!(json.contains("\"sourceRef\":\"wl:"), "the sourceRef joins back to the timeline: {json}");
+        assert!(json.contains("2026-06-08 09:00:00"), "the local timestamp is kept: {json}");
+    }
+
+    /// The timeline shows a project name per bar; the owning task's title is what tells the
+    /// user WHAT that time was. It is already loaded to resolve the project, so it must be
+    /// carried onto the block and persisted with it — `blocks_json` is the only copy a page
+    /// reload gets to read.
+    #[tokio::test]
+    async fn reconstruct_carries_the_task_title_onto_each_block_and_persists_it() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let logged_at = chrono::DateTime::parse_from_rfc3339("2026-06-08T09:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let task_id: TaskId = Uuid::new_v4();
+        let mut task = make_task_with_project(user_id, task_id, "p1");
+        task.title = "Refonte du portail client".to_string();
+
+        let worklog_repo = MemWorklog {
+            entries: vec![WorklogEntry {
+                id: Uuid::new_v4(),
+                user_id,
+                task_id,
+                body: "avancement sur le parseur".to_string(),
+                logged_at,
+                created_at: logged_at,
+                updated_at: logged_at,
+                session_id: None,
+            }],
+        };
+        let draft_repo = MemDraft::default();
+
+        let day = reconstruct_timesheet(
+            &worklog_repo,
+            &MemMeeting,
+            &MemTask { task },
+            &MemCatalog { entries: vec![make_catalog_entry(user_id, "p1")] },
+            &MemMapping,
+            &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemGit,
+            &draft_repo,
+            user_id,
+            date,
+        )
+        .await
+        .expect("reconstruct_timesheet should succeed");
+
+        assert!(
+            day.blocks.iter().any(|b| b.origin_label.as_deref() == Some("Refonte du portail client")),
+            "the block must name the task it came from, not just its project"
+        );
+        let saved = draft_repo.find_by_user_and_date(user_id, date).await.unwrap().unwrap();
+        let json = saved.blocks_json.expect("blocks_json must be persisted");
+        assert!(
+            json.contains("\"originLabel\":\"Refonte du portail client\""),
+            "the task title must survive a reload: {json}"
+        );
+    }
+
     #[tokio::test]
     async fn save_draft_rejects_over_pinned() {
         let user_id = make_user_id();
@@ -1318,6 +1459,57 @@ mod tests {
             Err(AppError::Validation(_)) => {}
             other => panic!("expected Validation error, got {other:?}"),
         }
+    }
+
+    /// Pressing "Enregistrer" used to null `blocks_json`, so the timeline went blank until
+    /// the user reconstructed again. Editing hours per project says nothing about WHEN the
+    /// work happened: both display payloads must survive a save.
+    #[tokio::test]
+    async fn save_draft_preserves_the_persisted_timeline_and_unresolved_signals() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let draft_repo = MemDraft::default();
+        let config_repo = MemConfig::default();
+
+        let blocks_json = r#"[{"start":"2026-06-08 08:00:00","end":"2026-06-08 12:00:00","gryzzlyProjectId":null,"kind":"Work","hours":4.0,"sourceRefs":["wl:1"]}]"#;
+        let unresolved_json = r#"[{"sourceRef":"wl:1","label":"note sans projet","at":"2026-06-08 09:00:00"}]"#;
+        let now = Utc::now();
+        draft_repo
+            .upsert(&TimesheetDraft {
+                id: Uuid::new_v4(),
+                user_id,
+                date,
+                status: TimesheetStatus::Draft,
+                target_hours: 7.5,
+                total_hours: 7.5,
+                day_confidence: Confidence::Low,
+                blocks_json: Some(blocks_json.into()),
+                unresolved_json: Some(unresolved_json.into()),
+                lines: vec![],
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        save_timesheet_draft(
+            &draft_repo,
+            &config_repo,
+            user_id,
+            date,
+            vec![EditedLine { gryzzly_project_id: Some("p1".into()), hours: 7.5, is_pinned: false }],
+        )
+        .await
+        .expect("save should succeed");
+
+        let saved = draft_repo.find_by_user_and_date(user_id, date).await.unwrap().unwrap();
+        assert_eq!(saved.blocks_json.as_deref(), Some(blocks_json), "the timeline must survive a save");
+        assert_eq!(
+            saved.unresolved_json.as_deref(),
+            Some(unresolved_json),
+            "the unattributed-work explanation must survive a save"
+        );
+        assert_eq!(saved.lines.len(), 1, "the edited lines are still the ones persisted");
     }
 
     #[tokio::test]
@@ -1402,6 +1594,7 @@ mod tests {
                     total_hours: 7.5,
                     day_confidence: Confidence::High,
                     blocks_json: None,
+                    unresolved_json: None,
                     lines: vec![],
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
@@ -1476,6 +1669,7 @@ mod tests {
                     total_hours: 0.0,
                     day_confidence: Confidence::High,
                     blocks_json: None,
+                    unresolved_json: None,
                     lines: vec![],
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
@@ -1663,6 +1857,7 @@ mod tests {
             total_hours: 7.5,
             day_confidence: Confidence::High,
             blocks_json: None,
+            unresolved_json: None,
             lines: vec![TimesheetDraftLine {
                 id: Uuid::new_v4(),
                 gryzzly_project_id: Some("p1".to_string()),
@@ -1706,6 +1901,7 @@ mod tests {
             total_hours: 7.5,
             day_confidence: Confidence::High,
             blocks_json: None,
+            unresolved_json: None,
             lines: vec![],
             created_at: now,
             updated_at: now,

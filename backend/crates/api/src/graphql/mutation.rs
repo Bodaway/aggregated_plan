@@ -15,6 +15,7 @@ use application::use_cases::memory as memory_uc;
 use application::use_cases::reattribution as reattribution_uc;
 use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::session_tracking;
+use application::use_cases::slot_repair as slot_repair_uc;
 use application::use_cases::timesheet::{self as timesheet_uc, load_reconstruction_config};
 use infrastructure::connectors::excel::GraphExcelClient;
 use infrastructure::connectors::gryzzly::{
@@ -450,6 +451,49 @@ impl MutationRoot {
                 entry_refs: input.entry_refs.unwrap_or_default(),
                 since: input.since,
                 until: input.until,
+                confirm: input.confirm.unwrap_or(false),
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(outcome.into())
+    }
+
+    /// Give back their task to the activity slots of a local-date range that lost it.
+    ///
+    /// The damage this repairs: a write that used `INSERT OR REPLACE INTO tasks` fired
+    /// `activity_slots.task_id`'s `ON DELETE SET NULL`, so slots the worklog projection
+    /// owns came out unattributed — the "(no task)" hours of `aplan journal`. Neither
+    /// `flushWorklogTime` (its window only ever names the present) nor
+    /// `reattributeWorklogEntries` (it refuses a move onto the same task, and its
+    /// delete list cannot match a NULL `task_id`) could reach them.
+    ///
+    /// Drops those slots and rewrites their half-days from the worklog entries, which
+    /// still carry the attribution. Never touches a slot the projection does not own:
+    /// an unattributed `manual` slot is a hand-run timer, not damage.
+    ///
+    /// Writes nothing unless `input.confirm` is true. The preview's figures are read
+    /// off the very plans the write persists, so they cannot drift.
+    async fn repair_orphaned_slots(
+        &self,
+        ctx: &Context<'_>,
+        input: RepairOrphanedSlotsInput,
+    ) -> Result<SlotRepairResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+
+        let outcome = slot_repair_uc::repair_orphaned_slots(
+            worklog_repo.as_ref(),
+            activity_repo.as_ref(),
+            config_repo.as_ref(),
+            user_id,
+            slot_repair_uc::SlotRepairRequest {
+                from: input.from,
+                to: input.to,
                 confirm: input.confirm.unwrap_or(false),
             },
             chrono::Utc::now(),

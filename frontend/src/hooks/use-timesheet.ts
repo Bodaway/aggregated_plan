@@ -23,6 +23,9 @@ export interface AttributedBlock {
   kind: BlockKind;
   hours: number;
   sourceRefs: string[];
+  /** Name of what the block came from: the owning task's title for a WORK block, the
+   *  meeting subject for a MEETING one. Null when the origin has no known name. */
+  originLabel: string | null;
 }
 export interface UnresolvedSignal {
   sourceRef: string;
@@ -76,7 +79,7 @@ const DAY_FIELDS = `
   date status targetHours roundingIncrement totalHours dayConfidence unattributedHours
   lines { gryzzlyProjectId projectName hours isPinned confidence sourceRefs }
   unresolved { sourceRef label at }
-  blocks { startTime endTime gryzzlyProjectId kind hours sourceRefs }
+  blocks { startTime endTime gryzzlyProjectId kind hours sourceRefs originLabel }
 `;
 
 const TIMESHEET_DRAFT_QUERY = `query TimesheetDraft($date: NaiveDate!) { timesheetDraft(date: $date) { ${DAY_FIELDS} } }`;

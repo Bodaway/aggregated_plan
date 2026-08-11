@@ -33,6 +33,11 @@ pub trait MeetingRepository: Send + Sync {
 
     /// Delete meetings whose outlook_id is not in the provided list.
     /// Returns the number of deleted records.
+    ///
+    /// An **empty** `current_outlook_ids` deletes NOTHING and returns `Ok(0)`, for
+    /// the same reason as `TaskRepository::delete_stale_by_source`: an empty list
+    /// says nothing about staleness, so treating it as "all stale" is a silent bulk
+    /// delete. Callers must still avoid calling it in that case.
     async fn delete_stale(
         &self,
         user_id: UserId,
