@@ -12,6 +12,7 @@ pub mod overlap;
 pub mod project_mapping;
 pub mod reconstruction;
 pub mod presence;
+pub mod quarters;
 pub mod recall;
 pub mod memory_import;
 pub mod memory_lifecycle;
