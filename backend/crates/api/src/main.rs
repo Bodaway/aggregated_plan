@@ -110,6 +110,7 @@ async fn main() {
         git: git_connector.clone(),
         draft_repo: timesheet_draft_repo.clone(),
         alert_repo: alert_repo.clone(),
+        activity_repo: activity_repo.clone(),
     };
 
     let deps = SchemaDeps {

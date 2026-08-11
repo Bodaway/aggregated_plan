@@ -3457,9 +3457,11 @@ async fn run_reconstruction_with_seeded_worklog_produces_project_line_and_fill()
 
     assert_eq!(day["status"], "DRAFT");
     assert_eq!(day["dayConfidence"], "LOW");
+    // The day totals its four quarters (8h with the default windows), not
+    // `daily_target_hours` — see the quarter-arbitration design.
     assert!(
-        (day["totalHours"].as_f64().unwrap() - 7.5).abs() < 1e-9,
-        "expected total_hours=7.5, got {:?}",
+        (day["totalHours"].as_f64().unwrap() - 8.0).abs() < 1e-9,
+        "expected total_hours=8.0, got {:?}",
         day["totalHours"]
     );
     assert!(

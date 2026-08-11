@@ -1,12 +1,16 @@
-use async_graphql::{InputObject, SimpleObject, ID};
+use async_graphql::{SimpleObject, ID};
 use chrono::{NaiveDate, NaiveDateTime};
 
+use domain::rules::presence::Lane;
+use domain::rules::quarters::{quarters, QuarterAllocation};
 use domain::rules::reconstruction::{
-    AttributedBlock, EditedLine, ProjectAllocation, ReconstructedDay, UnresolvedSignal,
+    OutsideWork, ProjectAllocation, ReconstructedDay, ReconstructionConfig, UnresolvedSignal,
 };
-use domain::types::{Confidence, SignalMapping, TimesheetDraft, TimesheetDraftLine, TimesheetStatus};
+use domain::types::{
+    Confidence, QuarterShareRow, SignalMapping, TimesheetDraft, TimesheetDraftLine, TimesheetStatus,
+};
 
-use super::enums::{BlockKindGql, ConfidenceGql, MappingKindGql, TimesheetStatusGql};
+use super::enums::{ConfidenceGql, MappingKindGql, TimesheetStatusGql};
 
 #[derive(SimpleObject)]
 pub struct TimesheetLineGql {
@@ -16,34 +20,6 @@ pub struct TimesheetLineGql {
     pub is_pinned: bool,
     pub confidence: ConfidenceGql,
     pub source_refs: Vec<String>,
-}
-
-#[derive(SimpleObject)]
-pub struct AttributedBlockGql {
-    pub start_time: NaiveDateTime,
-    pub end_time: NaiveDateTime,
-    pub gryzzly_project_id: Option<String>,
-    pub kind: BlockKindGql,
-    pub hours: f64,
-    pub source_refs: Vec<String>,
-    /// Secondary display label: the name of what the block came from — the owning task's
-    /// title for a WORK block, the meeting subject for a MEETING block. Null when the
-    /// origin has no known name, or on a day persisted before the field existed.
-    pub origin_label: Option<String>,
-}
-
-impl From<AttributedBlock> for AttributedBlockGql {
-    fn from(b: AttributedBlock) -> Self {
-        Self {
-            start_time: b.start,
-            end_time: b.end,
-            gryzzly_project_id: b.gryzzly_project_id,
-            kind: b.kind.into(),
-            hours: b.hours,
-            source_refs: b.source_refs,
-            origin_label: b.origin_label,
-        }
-    }
 }
 
 #[derive(SimpleObject)]
@@ -84,6 +60,108 @@ impl From<SignalMapping> for SignalMappingGql {
     }
 }
 
+/// One stretch of a lane, in local minutes from midnight. Minutes rather than
+/// timestamps because a lane is drawn against the day's own grid, and a client that has
+/// to parse datetimes to position a bar will get the timezone wrong eventually.
+#[derive(SimpleObject)]
+pub struct LaneIntervalGql {
+    pub start_min: i32,
+    pub end_min: i32,
+}
+
+/// One task's presence across the day. Lanes overlap — that is the concurrent view.
+#[derive(SimpleObject)]
+pub struct LaneGql {
+    pub lane_key: String,
+    pub label: String,
+    pub gryzzly_project_id: Option<String>,
+    pub intervals: Vec<LaneIntervalGql>,
+    pub outside_minutes: i32,
+}
+
+impl From<Lane> for LaneGql {
+    fn from(l: Lane) -> Self {
+        Self {
+            lane_key: l.key.as_key(),
+            label: l.label,
+            gryzzly_project_id: l.gryzzly_project_id,
+            intervals: l
+                .intervals
+                .into_iter()
+                .map(|(s, e)| LaneIntervalGql { start_min: s as i32, end_min: e as i32 })
+                .collect(),
+            outside_minutes: l.outside_minutes as i32,
+        }
+    }
+}
+
+/// What one lane declares inside one quarter, with the weight it was derived from.
+#[derive(SimpleObject)]
+pub struct QuarterShareGql {
+    pub lane_key: String,
+    pub task_id: Option<ID>,
+    pub label: String,
+    pub gryzzly_project_id: Option<String>,
+    pub presence_minutes: i32,
+    pub hours: f64,
+    pub is_pinned: bool,
+}
+
+/// A quarter-day and its arbitration. `shares` always sums to `declarable_hours`.
+#[derive(SimpleObject)]
+pub struct QuarterGql {
+    pub index: i32,
+    pub start_min: i32,
+    pub end_min: i32,
+    pub hours: f64,
+    pub ooo_hours: f64,
+    pub declarable_hours: f64,
+    pub confidence: ConfidenceGql,
+    pub shares: Vec<QuarterShareGql>,
+}
+
+impl From<QuarterAllocation> for QuarterGql {
+    fn from(q: QuarterAllocation) -> Self {
+        Self {
+            index: q.quarter.index as i32,
+            start_min: q.quarter.start_min as i32,
+            end_min: q.quarter.end_min as i32,
+            hours: q.quarter.hours,
+            ooo_hours: q.ooo_hours,
+            declarable_hours: q.declarable_hours,
+            confidence: q.confidence.into(),
+            shares: q
+                .shares
+                .into_iter()
+                .map(|s| QuarterShareGql {
+                    lane_key: s.lane.as_key(),
+                    task_id: s.lane.task_id().map(|id| ID(id.to_string())),
+                    label: s.label,
+                    gryzzly_project_id: s.gryzzly_project_id,
+                    presence_minutes: s.presence_minutes as i32,
+                    hours: s.hours,
+                    is_pinned: s.is_pinned,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Evidence that fell outside the working windows — surfaced so the user can decide,
+/// rather than dropped where nobody can see it.
+#[derive(SimpleObject)]
+pub struct OutsideWorkGql {
+    pub lane_key: String,
+    pub label: String,
+    pub minutes: i32,
+}
+
+impl From<OutsideWork> for OutsideWorkGql {
+    fn from(o: OutsideWork) -> Self {
+        Self { lane_key: o.lane.as_key(), label: o.label, minutes: o.minutes as i32 }
+    }
+}
+
 #[derive(SimpleObject)]
 pub struct ReconstructedDayGql {
     pub date: NaiveDate,
@@ -95,15 +173,16 @@ pub struct ReconstructedDayGql {
     pub lines: Vec<TimesheetLineGql>,
     pub unattributed_hours: f64,
     pub unresolved: Vec<UnresolvedSignalGql>,
-    pub blocks: Vec<AttributedBlockGql>,
+    pub lanes: Vec<LaneGql>,
+    pub quarters: Vec<QuarterGql>,
+    pub outside_workday: Vec<OutsideWorkGql>,
 }
 
 impl ReconstructedDayGql {
-    /// Build from the live reconstruction (has structured unresolved + blocks).
+    /// Build from the live reconstruction, which carries the lanes and the quarters.
     pub fn from_reconstructed(
         day: ReconstructedDay,
-        target_hours: f64,
-        rounding_hours: f64,
+        cfg: &ReconstructionConfig,
         status: TimesheetStatus,
     ) -> Self {
         let mut lines: Vec<TimesheetLineGql> = day
@@ -131,27 +210,34 @@ impl ReconstructedDayGql {
         Self {
             date: day.date,
             status: status.into(),
-            target_hours,
-            rounding_increment: rounding_hours,
+            target_hours: cfg.daily_target_hours,
+            rounding_increment: cfg.rounding_hours,
             total_hours: day.total_hours,
             day_confidence: day.day_confidence.into(),
             lines,
             unattributed_hours: day.unattributed_hours,
             unresolved: day.unresolved.into_iter().map(Into::into).collect(),
-            blocks: day.blocks.into_iter().map(Into::into).collect(),
+            lanes: day.lanes.into_iter().map(Into::into).collect(),
+            quarters: day.quarters.into_iter().map(Into::into).collect(),
+            outside_workday: day.outside_workday.into_iter().map(Into::into).collect(),
         }
     }
 
-    /// Build from a persisted draft (blocks from `blocks_json`, unresolved from
-    /// `unresolved_json`) — both written by `to_draft`, so a reload keeps the timeline AND
-    /// the explanation of what stayed unattributed.
-    pub fn from_draft(draft: TimesheetDraft, rounding_hours: f64) -> Self {
+    /// Build from a persisted draft: lines and quarter shares from their tables, the
+    /// evidence view from `lanes_json`.
+    ///
+    /// The quarters are rebuilt from the share rows and the configured windows. Two
+    /// fields cannot be: a quarter's own confidence and its out-of-office hours are
+    /// properties of the evidence, not of the decision, so a reloaded day reports the
+    /// DAY's confidence on each quarter and no off-time. Reconstructing refreshes both.
+    pub fn from_draft(draft: TimesheetDraft, cfg: &ReconstructionConfig) -> Self {
         let unattributed_hours: f64 = draft
             .lines
             .iter()
             .filter(|l| l.gryzzly_project_id.is_none())
             .map(|l| l.hours)
             .sum();
+        let day_confidence: ConfidenceGql = draft.day_confidence.into();
         let lines = draft
             .lines
             .into_iter()
@@ -164,14 +250,42 @@ impl ReconstructedDayGql {
                 source_refs: l.source_refs,
             })
             .collect();
-        // blocks_json is a best-effort display aid; ignore parse failures (empty timeline).
-        let blocks = draft
-            .blocks_json
-            .as_deref()
-            .and_then(parse_blocks_json)
-            .unwrap_or_default();
-        // Same contract for unresolved_json: best-effort, a day persisted before the
-        // column existed simply has nothing to explain.
+
+        let quarters = quarters(cfg)
+            .into_iter()
+            .map(|q| {
+                let shares: Vec<QuarterShareGql> = draft
+                    .shares
+                    .iter()
+                    .filter(|s| s.quarter_index == q.index)
+                    .map(|s: &QuarterShareRow| QuarterShareGql {
+                        lane_key: s.lane_key.clone(),
+                        task_id: s.task_id.map(|id| ID(id.to_string())),
+                        label: s.label.clone(),
+                        gryzzly_project_id: s.gryzzly_project_id.clone(),
+                        presence_minutes: s.presence_minutes as i32,
+                        hours: s.hours,
+                        is_pinned: s.is_pinned,
+                    })
+                    .collect();
+                let declared: f64 = shares.iter().map(|s| s.hours).sum();
+                QuarterGql {
+                    index: q.index as i32,
+                    start_min: q.start_min as i32,
+                    end_min: q.end_min as i32,
+                    hours: q.hours,
+                    ooo_hours: 0.0,
+                    declarable_hours: declared,
+                    confidence: day_confidence,
+                    shares,
+                }
+            })
+            .collect();
+
+        // lanes_json is a best-effort display aid: a day persisted before the column
+        // existed shows no evidence view rather than failing the whole query.
+        let lanes = draft.lanes_json.as_deref().and_then(parse_lanes_json).unwrap_or_default();
+        // Same contract for unresolved_json.
         let unresolved = draft
             .unresolved_json
             .as_deref()
@@ -181,18 +295,65 @@ impl ReconstructedDayGql {
             date: draft.date,
             status: draft.status.into(),
             target_hours: draft.target_hours,
-            rounding_increment: rounding_hours,
+            rounding_increment: cfg.rounding_hours,
             total_hours: draft.total_hours,
-            day_confidence: draft.day_confidence.into(),
+            day_confidence,
             lines,
             unattributed_hours,
             unresolved,
-            blocks,
+            lanes,
+            quarters,
+            // Derived from the evidence, not persisted: a reload has nothing to report
+            // until the day is reconstructed again.
+            outside_workday: vec![],
         }
     }
 }
 
-/// Timestamps in `blocks_json` / `unresolved_json` are `NaiveDateTime::to_string()`, which
+/// Parse the persisted lanes_json into the evidence view.
+/// Shape: `[{laneKey,label,gryzzlyProjectId,intervals:[[start,end]],outsideMinutes}]`.
+///
+/// Every field except `laneKey` and `intervals` is optional on read: a lane missing its
+/// label is still a lane worth drawing, and the failure this tolerance exists to prevent
+/// — one absent key blanking the entire view — has already shipped once here.
+fn parse_lanes_json(json: &str) -> Option<Vec<LaneGql>> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let arr = v.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for l in arr {
+        let lane_key = l.get("laneKey")?.as_str()?.to_string();
+        let intervals = l
+            .get("intervals")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|pair| {
+                        let p = pair.as_array()?;
+                        Some(LaneIntervalGql {
+                            start_min: p.first()?.as_i64()? as i32,
+                            end_min: p.get(1)?.as_i64()? as i32,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(LaneGql {
+            label: l
+                .get("label")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&lane_key)
+                .to_string(),
+            lane_key,
+            gryzzly_project_id: l.get("gryzzlyProjectId").and_then(|x| x.as_str()).map(String::from),
+            intervals,
+            outside_minutes: l.get("outsideMinutes").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+        });
+    }
+    Some(out)
+}
+
+
+/// Timestamps in `unresolved_json` are `NaiveDateTime::to_string()`, which
 /// prints a fractional part ONLY when the value has one. `%.f` consumes an optional
 /// `.fraction`, so both shapes parse.
 ///
@@ -205,43 +366,6 @@ const PERSISTED_DT_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.f";
 
 fn parse_persisted_dt(s: &str) -> Option<NaiveDateTime> {
     NaiveDateTime::parse_from_str(s, PERSISTED_DT_FORMAT).ok()
-}
-
-/// Parse the persisted blocks_json (written by Plan-1 `to_draft`) into display blocks.
-/// Shape: [{start,end,gryzzlyProjectId,kind,hours,sourceRefs,originLabel}].
-/// Returns None on any error.
-///
-/// `originLabel` is OPTIONAL on purpose: every day reconstructed before it existed has no
-/// such key, and a required-key read there would return None for the whole array and blank
-/// the timeline (the exact failure `unresolved_json` shipped with). Only `start`, `end` and
-/// `kind` — without which a bar cannot be placed at all — stay mandatory.
-fn parse_blocks_json(json: &str) -> Option<Vec<AttributedBlockGql>> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let arr = v.as_array()?;
-    let mut out = Vec::with_capacity(arr.len());
-    for b in arr {
-        let start = parse_persisted_dt(b.get("start")?.as_str()?)?;
-        let end = parse_persisted_dt(b.get("end")?.as_str()?)?;
-        let kind = match b.get("kind")?.as_str()? {
-            "Meeting" => BlockKindGql::Meeting,
-            "OutOfOffice" => BlockKindGql::OutOfOffice,
-            _ => BlockKindGql::Work,
-        };
-        out.push(AttributedBlockGql {
-            start_time: start,
-            end_time: end,
-            gryzzly_project_id: b.get("gryzzlyProjectId").and_then(|x| x.as_str()).map(String::from),
-            kind,
-            hours: b.get("hours").and_then(|x| x.as_f64()).unwrap_or(0.0),
-            source_refs: b
-                .get("sourceRefs")
-                .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
-                .unwrap_or_default(),
-            origin_label: b.get("originLabel").and_then(|x| x.as_str()).map(String::from),
-        });
-    }
-    Some(out)
 }
 
 /// Parse the persisted unresolved_json (written by `to_draft`) into display signals.
@@ -259,23 +383,6 @@ fn parse_unresolved_json(json: &str) -> Option<Vec<UnresolvedSignalGql>> {
         });
     }
     Some(out)
-}
-
-#[derive(InputObject)]
-pub struct TimesheetLineInput {
-    pub gryzzly_project_id: Option<ID>,
-    pub hours: f64,
-    pub is_pinned: bool,
-}
-
-impl From<TimesheetLineInput> for EditedLine {
-    fn from(i: TimesheetLineInput) -> Self {
-        EditedLine {
-            gryzzly_project_id: i.gryzzly_project_id.map(|id| id.to_string()),
-            hours: i.hours,
-            is_pinned: i.is_pinned,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -321,7 +428,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let gql = ReconstructedDayGql::from_draft(draft, 0.25);
+        let gql = ReconstructedDayGql::from_draft(draft, &ReconstructionConfig::default());
         assert_eq!(gql.lines.len(), 2);
         assert!((gql.unattributed_hours - 2.5).abs() < 1e-9);
         assert!(matches!(gql.status, TimesheetStatusGql::Draft));
@@ -355,7 +462,7 @@ mod tests {
         let json = r#"[{"sourceRef":"wl:abc","label":"revue de code","at":"2026-08-06 13:18:56.925353017"}]"#;
         let gql = ReconstructedDayGql::from_draft(
             draft_with_unresolved_json(Some(json.into())),
-            0.25,
+            &ReconstructionConfig::default(),
         );
         assert_eq!(gql.unresolved.len(), 1, "a reload must keep the explanation");
         assert_eq!(gql.unresolved[0].source_ref, "wl:abc");
@@ -374,56 +481,14 @@ mod tests {
         let json = r#"[{"sourceRef":"wl:abc","label":"revue de code","at":"2026-06-08 09:30:00"}]"#;
         let gql = ReconstructedDayGql::from_draft(
             draft_with_unresolved_json(Some(json.into())),
-            0.25,
+            &ReconstructionConfig::default(),
         );
         assert_eq!(gql.unresolved.len(), 1);
         assert_eq!(gql.unresolved[0].at.to_string(), "2026-06-08 09:30:00");
     }
 
-    /// The same tolerance on the timeline: nothing enforces whole-second block times, and
-    /// the failure mode there is a silently blank timeline.
-    #[test]
-    fn from_draft_parses_block_times_with_and_without_a_fraction() {
-        let json = r#"[
-            {"start":"2026-08-06 08:00:00","end":"2026-08-06 12:00:00","gryzzlyProjectId":"p1","kind":"Work","hours":4.0,"sourceRefs":["wl:1"]},
-            {"start":"2026-08-06 13:18:56.925353017","end":"2026-08-06 17:00:00.5","gryzzlyProjectId":null,"kind":"Work","hours":3.5,"sourceRefs":["wl:2"]}
-        ]"#;
-        let mut draft = draft_with_unresolved_json(None);
-        draft.blocks_json = Some(json.into());
-        let gql = ReconstructedDayGql::from_draft(draft, 0.25);
-        assert_eq!(gql.blocks.len(), 2, "one bad timestamp must not blank the timeline");
-        assert_eq!(gql.blocks[1].start_time.to_string(), "2026-08-06 13:18:56.925353017");
-    }
 
-    /// The task title travels in `blocks_json` under `originLabel`; a reload must get it
-    /// back, otherwise the timeline falls back to project-only bars.
-    #[test]
-    fn from_draft_restores_the_block_origin_label() {
-        let json = r#"[
-            {"start":"2026-08-06 08:00:00","end":"2026-08-06 12:00:00","gryzzlyProjectId":"p1","kind":"Work","hours":4.0,"sourceRefs":["wl:1"],"originLabel":"Refonte du portail client"},
-            {"start":"2026-08-06 13:00:00","end":"2026-08-06 14:00:00","gryzzlyProjectId":"p1","kind":"Work","hours":1.0,"sourceRefs":["wl:2"],"originLabel":null}
-        ]"#;
-        let mut draft = draft_with_unresolved_json(None);
-        draft.blocks_json = Some(json.into());
-        let gql = ReconstructedDayGql::from_draft(draft, 0.25);
-        assert_eq!(gql.blocks.len(), 2);
-        assert_eq!(gql.blocks[0].origin_label.as_deref(), Some("Refonte du portail client"));
-        assert_eq!(gql.blocks[1].origin_label, None, "an explicit null stays absent");
-    }
 
-    /// Every day reconstructed before `originLabel` existed has no such key. A missing
-    /// optional key must yield `None` for that ONE block — never collapse the whole
-    /// timeline to an empty list, which is exactly how `unresolved_json` broke.
-    #[test]
-    fn from_draft_parses_blocks_persisted_before_the_origin_label_existed() {
-        let json = r#"[{"start":"2026-08-06 08:00:00","end":"2026-08-06 12:00:00","gryzzlyProjectId":"p1","kind":"Work","hours":4.0,"sourceRefs":["wl:1"]}]"#;
-        let mut draft = draft_with_unresolved_json(None);
-        draft.blocks_json = Some(json.into());
-        let gql = ReconstructedDayGql::from_draft(draft, 0.25);
-        assert_eq!(gql.blocks.len(), 1, "an old-shape payload must still render its timeline");
-        assert_eq!(gql.blocks[0].origin_label, None);
-        assert!((gql.blocks[0].hours - 4.0).abs() < 1e-9);
-    }
 
     #[test]
     fn from_draft_tolerates_missing_or_broken_unresolved_json() {
@@ -437,20 +502,9 @@ mod tests {
             Some(r#"[{"sourceRef":"wl:1","label":"x","at":"08/06/2026 13:18"}]"#.to_string()),
             Some(r#"[{"sourceRef":"wl:1","label":"x","at":"2026-08-06 13:18:56 UTC"}]"#.to_string()),
         ] {
-            let gql = ReconstructedDayGql::from_draft(draft_with_unresolved_json(json), 0.25);
+            let gql = ReconstructedDayGql::from_draft(draft_with_unresolved_json(json), &ReconstructionConfig::default());
             assert!(gql.unresolved.is_empty());
         }
     }
 
-    #[test]
-    fn line_input_maps_to_edited_line() {
-        let input = TimesheetLineInput {
-            gryzzly_project_id: Some(ID("p1".into())),
-            hours: 3.0,
-            is_pinned: true,
-        };
-        let edited: EditedLine = input.into();
-        assert_eq!(edited.gryzzly_project_id.as_deref(), Some("p1"));
-        assert!(edited.is_pinned);
-    }
 }

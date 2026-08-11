@@ -27,8 +27,9 @@ pub enum EvidenceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LaneKey {
     Task(Uuid),
-    /// A meeting that resolved to no task, keyed by its signal `source_ref`.
-    Meeting(String),
+    /// Evidence that belongs to no task: a meeting, or a commit that matched no Jira
+    /// key. Keyed by an opaque source ref so two of them never collide.
+    Source(String),
     Unattributed,
 }
 
@@ -38,7 +39,7 @@ impl LaneKey {
     pub fn as_key(&self) -> String {
         match self {
             LaneKey::Task(id) => format!("task:{id}"),
-            LaneKey::Meeting(r) => format!("meeting:{r}"),
+            LaneKey::Source(r) => format!("src:{r}"),
             LaneKey::Unattributed => "unattributed".to_string(),
         }
     }
@@ -50,7 +51,7 @@ impl LaneKey {
         if let Some(rest) = s.strip_prefix("task:") {
             return Uuid::parse_str(rest).ok().map(LaneKey::Task);
         }
-        s.strip_prefix("meeting:").map(|rest| LaneKey::Meeting(rest.to_string()))
+        s.strip_prefix("src:").map(|rest| LaneKey::Source(rest.to_string()))
     }
 
     pub fn task_id(&self) -> Option<Uuid> {
@@ -312,7 +313,7 @@ mod tests {
         let spans = vec![EvidenceSpan {
             start: at(9, 0),
             end: at(10, 0),
-            lane: LaneKey::Meeting("mtg:1".into()),
+            lane: LaneKey::Source("mtg:1".into()),
             label: "Weekly".into(),
             gryzzly_project_id: None,
             kind: EvidenceKind::Meeting,
@@ -349,7 +350,7 @@ mod tests {
 
     #[test]
     fn lane_key_round_trips_through_its_string_form() {
-        for k in [task(7), LaneKey::Meeting("mtg:abc".into()), LaneKey::Unattributed] {
+        for k in [task(7), LaneKey::Source("mtg:abc".into()), LaneKey::Unattributed] {
             assert_eq!(LaneKey::parse(&k.as_key()), Some(k));
         }
     }

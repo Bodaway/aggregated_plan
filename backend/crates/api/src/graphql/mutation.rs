@@ -1247,6 +1247,7 @@ impl MutationRoot {
         let catalog_repo = ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?;
         let mapping_repo = ctx.data::<Arc<dyn SignalMappingRepository>>()?;
         let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
         let git = ctx.data::<Arc<dyn GitConnector>>()?;
         let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
 
@@ -1260,6 +1261,7 @@ impl MutationRoot {
             catalog_repo.as_ref(),
             mapping_repo.as_ref(),
             config_repo.as_ref(),
+            activity_repo.as_ref(),
             git.as_ref(),
             draft_repo.as_ref(),
             user_id,
@@ -1277,40 +1279,113 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         match existing {
             Some(d) if matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted | TimesheetStatus::DayOff) => {
-                Ok(ReconstructedDayGql::from_draft(d, cfg.rounding_hours))
+                Ok(ReconstructedDayGql::from_draft(d, &cfg))
             }
-            _ => Ok(ReconstructedDayGql::from_reconstructed(
-                day,
-                cfg.daily_target_hours,
-                cfg.rounding_hours,
-                TimesheetStatus::Draft,
-            )),
+            _ => Ok(ReconstructedDayGql::from_reconstructed(day, &cfg, TimesheetStatus::Draft)),
         }
     }
 
-    /// Persist user edits (pinned lines frozen; rejects pinned > target); returns the saved draft.
-    async fn save_timesheet_draft(
+    /// Pin one lane's hours inside one quarter; the rest of that quarter rebalances.
+    async fn set_quarter_share(
         &self,
         ctx: &Context<'_>,
         date: NaiveDate,
-        lines: Vec<TimesheetLineInput>,
+        quarter_index: i32,
+        lane_key: String,
+        hours: f64,
     ) -> Result<ReconstructedDayGql> {
-        let user_id = *ctx.data::<UserId>()?;
-        let draft_repo = ctx.data::<Arc<dyn TimesheetDraftRepository>>()?;
-        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
-        let edited = lines.into_iter().map(Into::into).collect();
-        timesheet_uc::save_timesheet_draft(draft_repo.as_ref(), config_repo.as_ref(), user_id, date, edited)
+        let (user_id, cfg, day) = {
+            let user_id = *ctx.data::<UserId>()?;
+            let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+            let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
+                .await
+                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            let day = timesheet_uc::set_quarter_share(
+                ctx.data::<Arc<dyn WorklogRepository>>()?.as_ref(),
+                ctx.data::<Arc<dyn MeetingRepository>>()?.as_ref(),
+                ctx.data::<Arc<dyn TaskRepository>>()?.as_ref(),
+                ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?.as_ref(),
+                ctx.data::<Arc<dyn SignalMappingRepository>>()?.as_ref(),
+                config_repo.as_ref(),
+                ctx.data::<Arc<dyn ActivitySlotRepository>>()?.as_ref(),
+                ctx.data::<Arc<dyn GitConnector>>()?.as_ref(),
+                ctx.data::<Arc<dyn TimesheetDraftRepository>>()?.as_ref(),
+                user_id,
+                date,
+                quarter_index.max(0) as u8,
+                &lane_key,
+                hours,
+            )
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+            (user_id, cfg, day)
+        };
+        let _ = user_id;
+        Ok(ReconstructedDayGql::from_reconstructed(day, &cfg, TimesheetStatus::Draft))
+    }
+
+    /// Release one pinned share back to what the evidence says.
+    async fn clear_quarter_share(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+        quarter_index: i32,
+        lane_key: String,
+    ) -> Result<ReconstructedDayGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
         let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        let draft = draft_repo
-            .find_by_user_and_date(user_id, date)
+        let day = timesheet_uc::clear_quarter_share(
+            ctx.data::<Arc<dyn WorklogRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn MeetingRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn TaskRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn SignalMappingRepository>>()?.as_ref(),
+            config_repo.as_ref(),
+            ctx.data::<Arc<dyn ActivitySlotRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn GitConnector>>()?.as_ref(),
+            ctx.data::<Arc<dyn TimesheetDraftRepository>>()?.as_ref(),
+            user_id,
+            date,
+            quarter_index.max(0) as u8,
+            &lane_key,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(ReconstructedDayGql::from_reconstructed(day, &cfg, TimesheetStatus::Draft))
+    }
+
+    /// Drop every pin in one quarter.
+    async fn reset_quarter(
+        &self,
+        ctx: &Context<'_>,
+        date: NaiveDate,
+        quarter_index: i32,
+    ) -> Result<ReconstructedDayGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let cfg = load_reconstruction_config(config_repo.as_ref(), user_id)
             .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?
-            .ok_or_else(|| async_graphql::Error::new("draft missing after save"))?;
-        Ok(ReconstructedDayGql::from_draft(draft, cfg.rounding_hours))
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let day = timesheet_uc::reset_quarter(
+            ctx.data::<Arc<dyn WorklogRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn MeetingRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn TaskRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn GryzzlyCatalogRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn SignalMappingRepository>>()?.as_ref(),
+            config_repo.as_ref(),
+            ctx.data::<Arc<dyn ActivitySlotRepository>>()?.as_ref(),
+            ctx.data::<Arc<dyn GitConnector>>()?.as_ref(),
+            ctx.data::<Arc<dyn TimesheetDraftRepository>>()?.as_ref(),
+            user_id,
+            date,
+            quarter_index.max(0) as u8,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(ReconstructedDayGql::from_reconstructed(day, &cfg, TimesheetStatus::Draft))
     }
 
     /// Mark a day's draft validated (ready to copy into Gryzzly).
@@ -1329,7 +1404,7 @@ impl MutationRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?
             .ok_or_else(|| async_graphql::Error::new("no draft to validate"))?;
-        Ok(ReconstructedDayGql::from_draft(draft, cfg.rounding_hours))
+        Ok(ReconstructedDayGql::from_draft(draft, &cfg))
     }
 
     /// Mark a whole/half day off (suppresses reconstruction fill).
@@ -1353,7 +1428,7 @@ impl MutationRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?
             .ok_or_else(|| async_graphql::Error::new("no draft after mark_day_off"))?;
-        Ok(ReconstructedDayGql::from_draft(draft, cfg.rounding_hours))
+        Ok(ReconstructedDayGql::from_draft(draft, &cfg))
     }
 
     /// Learn a signal→Gryzzly-project mapping rule (validated against the live catalog).

@@ -1,6 +1,5 @@
 use async_graphql::Enum;
 use application::use_cases::timesheet::DayOffScope;
-use domain::rules::reconstruction::BlockKind;
 use domain::types;
 
 /// GraphQL enum for task source.
@@ -362,21 +361,6 @@ impl From<types::TimesheetStatus> for TimesheetStatusGql {
     }
 }
 
-#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
-pub enum BlockKindGql {
-    Meeting,
-    Work,
-    OutOfOffice,
-}
-impl From<BlockKind> for BlockKindGql {
-    fn from(b: BlockKind) -> Self {
-        match b {
-            BlockKind::Meeting => BlockKindGql::Meeting,
-            BlockKind::Work => BlockKindGql::Work,
-            BlockKind::OutOfOffice => BlockKindGql::OutOfOffice,
-        }
-    }
-}
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum MappingKindGql {

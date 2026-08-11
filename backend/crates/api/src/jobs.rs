@@ -28,6 +28,9 @@ pub struct EodDeps {
     pub git: Arc<dyn GitConnector>,
     pub draft_repo: Arc<dyn TimesheetDraftRepository>,
     pub alert_repo: Arc<dyn AlertRepository>,
+    /// Hand-run activity slots are measured time the worklog projection cannot derive,
+    /// so the reconstruction weighs them beside the entries.
+    pub activity_repo: Arc<dyn ActivitySlotRepository>,
 }
 
 /// Long-lived background task: run one end-of-day pass for `user_id`, then wait as long
@@ -52,6 +55,7 @@ pub async fn run_eod_scheduler(deps: EodDeps, user_id: UserId) {
             deps.git.as_ref(),
             deps.draft_repo.as_ref(),
             deps.alert_repo.as_ref(),
+            deps.activity_repo.as_ref(),
             user_id,
             Utc::now(),
         )

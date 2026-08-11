@@ -647,7 +647,7 @@ impl QueryRoot {
             .find_by_user_and_date(user_id, date)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(draft.map(|d| ReconstructedDayGql::from_draft(d, cfg.rounding_hours)))
+        Ok(draft.map(|d| ReconstructedDayGql::from_draft(d, &cfg)))
     }
 
     /// List the current user's enabled signal→project mapping rules.

@@ -1,17 +1,21 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
-use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
 use domain::rules::project_mapping::{resolve_signal_project, ProjectResolution, RawSignal};
+use domain::rules::presence::{
+    build_lanes, EvidenceKind, EvidencePoint, EvidenceSpan, Lane, LaneKey,
+};
+use domain::rules::quarters::{allocate_day, quarters, DayPin};
 use domain::rules::reconstruction::{
-    reconstruct_day, renormalize_lines, DayInputs, EditedLine, MeetingBlock, MeetingKind,
-    ReconstructedDay, ReconstructionConfig, Signal, SignalKind,
+    windows_of, OutsideWork, ProjectAllocation, ReconstructedDay, ReconstructionConfig,
+    UnresolvedSignal,
 };
 use domain::types::*;
 use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::repositories::{
-    AlertRepository, ConfigRepository, GryzzlyCatalogRepository, MeetingRepository,
+    ActivitySlotRepository, AlertRepository, ConfigRepository, GryzzlyCatalogRepository, MeetingRepository,
     SignalMappingRepository, TaskRepository, TimesheetDraftRepository, WorklogFilter,
     WorklogRepository, WORKLOG_FILTER_MAX_LIMIT,
 };
@@ -24,6 +28,11 @@ use crate::time::{local_window, resolve_tz, to_local};
 /// `distinct_active_project_ids` repo method so growth can never silently drop a project
 /// and cause a false StaleMapping downgrade.
 const CATALOG_SCAN_LIMIT: i64 = 100_000;
+
+/// Local minutes from midnight — the unit the presence lanes and quarters work in.
+fn mins(dt: NaiveDateTime) -> i64 {
+    dt.time().hour() as i64 * 60 + dt.time().minute() as i64
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum DayOffScope {
@@ -59,6 +68,13 @@ pub async fn load_reconstruction_config(
     })
 }
 
+/// Rebuild the day from its evidence and persist it as a draft.
+///
+/// Gathering is unchanged from the carry-forward engine — worklog entries, git commits,
+/// meetings, all resolved to a Gryzzly project the same way. What changed is everything
+/// after: instead of slicing the day into one project at a time, evidence becomes
+/// OVERLAPPING per-task lanes, and each quarter-day is shared out among the lanes present
+/// in it. Concurrency survives to the screen, and the user arbitrates it.
 #[allow(clippy::too_many_arguments)]
 pub async fn reconstruct_timesheet(
     worklog_repo: &dyn WorklogRepository,
@@ -67,6 +83,7 @@ pub async fn reconstruct_timesheet(
     catalog_repo: &dyn GryzzlyCatalogRepository,
     mapping_repo: &dyn SignalMappingRepository,
     config_repo: &dyn ConfigRepository,
+    activity_repo: &dyn ActivitySlotRepository,
     git: &dyn GitConnector,
     draft_repo: &dyn TimesheetDraftRepository,
     user_id: UserId,
@@ -84,122 +101,288 @@ pub async fn reconstruct_timesheet(
         .map(|e| e.gryzzly_project_id)
         .collect();
 
-    // ---- Worklog signals ----
+    let mut points: Vec<EvidencePoint> = Vec::new();
+    let mut spans: Vec<EvidenceSpan> = Vec::new();
+    let mut unresolved: Vec<UnresolvedSignal> = Vec::new();
+    let mut ooo: Vec<(i64, i64)> = Vec::new();
+
+    // ---- Worklog entries ----
     let wl = worklog_repo
         .list(
             user_id,
             &WorklogFilter { task_ids: None, from: Some(from_utc), to: Some(to_utc), limit: WORKLOG_FILTER_MAX_LIMIT, offset: 0 },
         )
         .await?;
-    let mut signals: Vec<Signal> = Vec::new();
     for e in &wl {
         let task = task_repo.find_by_id(e.task_id).await?;
         let raw = RawSignal::Worklog {
             task_gryzzly_project_id: task.as_ref().and_then(|t| t.gryzzly_project_id.clone()),
         };
         let project = mapped_or_none(&raw, &rules, &live_project_ids);
-        signals.push(Signal {
-            at: to_local(e.logged_at, tz),
+        let at = to_local(e.logged_at, tz);
+        if project.is_none() {
+            unresolved.push(UnresolvedSignal {
+                source_ref: format!("wl:{}", e.id),
+                label: truncate(&e.body, 60),
+                at,
+            });
+        }
+        points.push(EvidencePoint {
+            at,
+            lane: LaneKey::Task(e.task_id),
+            // The owning task is already loaded to resolve the project — its title is
+            // what tells the reader WHAT the time was, so carry it, don't re-query it.
+            label: task.as_ref().map(|t| t.title.clone()).unwrap_or_else(|| "tâche inconnue".into()),
             gryzzly_project_id: project,
-            kind: SignalKind::Log,
-            label: truncate(&e.body, 60),
-            // The owning task is already loaded to resolve the project — its title is what
-            // tells the reader WHAT the time was, so carry it, don't re-query it.
-            origin_label: task.as_ref().map(|t| t.title.clone()),
-            source_ref: format!("wl:{}", e.id),
+            kind: EvidenceKind::Log,
         });
     }
 
-    // ---- Git commit signals ----
+    // ---- Git commits ----
     let repos = split_repos(config_repo.get(user_id, "git.repos").await?);
     if !repos.is_empty() {
         let commits = git.commits_between(&repos, from_utc, to_utc).await?;
         for c in &commits {
             // Prefer a Jira key match to a task; else fall back to repo/branch rules.
             let mut project = None;
-            // A repo/branch rule resolves a project but knows no task, so a commit that
-            // matched no Jira key stays nameless rather than borrowing the rule's label.
-            let mut origin_label = None;
+            let mut lane = None;
+            let mut label = None;
             if let Some(key) = jira_key_in(&c.message).or_else(|| jira_key_in(&c.branch)) {
                 if let Some(t) = task_repo.find_by_source(user_id, Source::Jira, &key).await? {
                     project = t.gryzzly_project_id.clone().filter(|p| live_project_ids.contains(p));
-                    origin_label = Some(t.title.clone());
+                    lane = Some(LaneKey::Task(t.id));
+                    label = Some(t.title.clone());
                 }
             }
             if project.is_none() {
                 let raw = RawSignal::Commit { repo_path: c.repo_path.clone(), branch: c.branch.clone() };
                 project = mapped_or_none(&raw, &rules, &live_project_ids);
             }
-            signals.push(Signal {
-                at: to_local(c.committed_at, tz),
+            let at = to_local(c.committed_at, tz);
+            let source_ref = format!("git:{}:{}", c.repo_path, c.committed_at.to_rfc3339());
+            if project.is_none() {
+                unresolved.push(UnresolvedSignal {
+                    source_ref: source_ref.clone(),
+                    label: truncate(&c.message, 60),
+                    at,
+                });
+            }
+            points.push(EvidencePoint {
+                at,
+                // A commit that matched no Jira key has no task to be arbitrated under,
+                // but it is still evidence of work — it gets a lane of its own, per repo,
+                // rather than being dropped the way the old engine dropped it.
+                lane: lane.unwrap_or_else(|| LaneKey::Source(format!("repo:{}", c.repo_path))),
+                label: label.unwrap_or_else(|| c.repo_path.clone()),
                 gryzzly_project_id: project,
-                kind: SignalKind::Commit,
-                label: truncate(&c.message, 60),
-                origin_label,
-                source_ref: format!("git:{}:{}", c.repo_path, c.committed_at.to_rfc3339()),
+                kind: EvidenceKind::Commit,
             });
         }
     }
 
-    // ---- Meeting anchors ----
+    // ---- Meetings: measured spans, and out-of-office ranges ----
     let meetings_raw = meeting_repo.find_by_user_and_date(user_id, date).await?;
-    let mut meetings: Vec<MeetingBlock> = Vec::new();
     for m in &meetings_raw {
-        let kind = if is_out_of_office(m) { MeetingKind::OutOfOffice } else { MeetingKind::Work };
-        let project = if matches!(kind, MeetingKind::Work) {
-            let raw = RawSignal::Meeting {
-                subject: m.title.clone(),
-                organizer: meeting_organizer(m),
-                internal_project_id: m.project_id.map(|p| p.to_string()),
-            };
-            mapped_or_none(&raw, &rules, &live_project_ids)
-        } else {
-            None
+        let (start, end) = (to_local(m.start_time, tz), to_local(m.end_time, tz));
+        if is_out_of_office(m) {
+            ooo.push((mins(start), mins(end)));
+            continue;
+        }
+        let raw = RawSignal::Meeting {
+            subject: m.title.clone(),
+            organizer: meeting_organizer(m),
+            internal_project_id: m.project_id.map(|p| p.to_string()),
         };
-        meetings.push(MeetingBlock {
-            start: to_local(m.start_time, tz),
-            end: to_local(m.end_time, tz),
-            gryzzly_project_id: project,
-            kind,
-            title: m.title.clone(),
-            source_ref: format!("mtg:{}", m.id),
+        spans.push(EvidenceSpan {
+            start,
+            end,
+            lane: LaneKey::Source(format!("mtg:{}", m.id)),
+            label: m.title.clone(),
+            gryzzly_project_id: mapped_or_none(&raw, &rules, &live_project_ids),
+            kind: EvidenceKind::Meeting,
         });
     }
 
-    let day = reconstruct_day(&DayInputs { date, meetings, signals }, &cfg);
-
-    // Persist as a draft, but NEVER clobber a validated/submitted day.
-    if let Some(existing) = draft_repo.find_by_user_and_date(user_id, date).await? {
-        if matches!(existing.status, TimesheetStatus::Validated | TimesheetStatus::Submitted | TimesheetStatus::DayOff) {
-            return Ok(day);
-        }
+    // ---- Hand-run activity slots ----
+    //
+    // Only `manual` ones. A `worklog`-sourced slot is a projection of the very entries
+    // already gathered above, so counting it too would weight that lane twice.
+    let slots = activity_repo.find_by_user_and_date(user_id, date).await?;
+    for s in slots.iter().filter(|s| !s.source.is_projection()) {
+        let (Some(task_id), Some(end)) = (s.task_id, s.end_time) else { continue };
+        let task = task_repo.find_by_id(task_id).await?;
+        let raw = RawSignal::Worklog {
+            task_gryzzly_project_id: task.as_ref().and_then(|t| t.gryzzly_project_id.clone()),
+        };
+        spans.push(EvidenceSpan {
+            start: to_local(s.start_time, tz),
+            end: to_local(end, tz),
+            lane: LaneKey::Task(task_id),
+            label: task.as_ref().map(|t| t.title.clone()).unwrap_or_else(|| "tâche inconnue".into()),
+            gryzzly_project_id: mapped_or_none(&raw, &rules, &live_project_ids),
+            kind: EvidenceKind::ManualSlot,
+        });
     }
-    let draft = to_draft(user_id, &day, cfg.daily_target_hours, TimesheetStatus::Draft).await?;
-    draft_repo.upsert(&draft).await?;
+
+    let lanes = build_lanes(&points, &spans, &windows_of(&cfg));
+
+    // A validated or submitted day is finished: read its pins, but never write over it.
+    let existing = draft_repo.find_by_user_and_date(user_id, date).await?;
+    let frozen = existing.as_ref().is_some_and(|d| {
+        matches!(d.status, TimesheetStatus::Validated | TimesheetStatus::Submitted | TimesheetStatus::DayOff)
+    });
+    let pins = pins_of(existing.as_ref());
+
+    let day = build_day(date, &lanes, &pins, &ooo, unresolved, &cfg);
+    if frozen {
+        return Ok(day);
+    }
+    persist_day(draft_repo, user_id, &day, &cfg, TimesheetStatus::Draft).await?;
     Ok(day)
 }
 
-/// Build a persistable draft from a reconstructed day. Lines carry project_name: None —
-/// name resolution is deferred to the GraphQL/CLI layer (Plan 2) via list_active.
-async fn to_draft(
+/// The pins recorded on a persisted draft: the shares the user set by hand.
+fn pins_of(draft: Option<&TimesheetDraft>) -> Vec<DayPin> {
+    draft
+        .map(|d| {
+            d.shares
+                .iter()
+                .filter(|s| s.is_pinned)
+                .filter_map(|s| {
+                    LaneKey::parse(&s.lane_key).map(|lane| DayPin {
+                        quarter_index: s.quarter_index,
+                        lane,
+                        hours: s.hours,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Allocate the quarters and roll the shares up into per-project lines.
+fn build_day(
+    date: NaiveDate,
+    lanes: &[Lane],
+    pins: &[DayPin],
+    ooo: &[(i64, i64)],
+    unresolved: Vec<UnresolvedSignal>,
+    cfg: &ReconstructionConfig,
+) -> ReconstructedDay {
+    // A day with no evidence INSIDE the windows is not a day to declare. Without this
+    // guard every untouched day — a weekend, a holiday with no calendar entry — would
+    // report four unattributed quarters and eight hours nobody worked. Evidence that
+    // fell outside the windows still travels in `outside_workday`, so an evening-only
+    // day says "here is what I saw, outside your hours" instead of inventing a day.
+    if !lanes.iter().any(|l| !l.intervals.is_empty()) && ooo.is_empty() {
+        return ReconstructedDay {
+            date,
+            allocations: vec![],
+            unattributed_hours: 0.0,
+            unresolved,
+            total_hours: 0.0,
+            day_confidence: Confidence::Low,
+            lanes: lanes.to_vec(),
+            quarters: vec![],
+            outside_workday: outside_work_of(lanes),
+        };
+    }
+
+    let alloc = allocate_day(lanes, pins, ooo, cfg);
+
+    // Roll shares up by project. Two tasks on the same Gryzzly project merge here — the
+    // normal case, not an error: the lanes stay separate on screen so the merge is
+    // visible before it reaches the declaration.
+    let mut by_project: BTreeMap<Option<String>, (f64, Vec<String>, Confidence)> = BTreeMap::new();
+    for q in &alloc.quarters {
+        for s in &q.shares {
+            let e = by_project
+                .entry(s.gryzzly_project_id.clone())
+                .or_insert((0.0, Vec::new(), Confidence::High));
+            e.0 += s.hours;
+            let key = s.lane.as_key();
+            if !e.1.contains(&key) {
+                e.1.push(key);
+            }
+            if confidence_rank(q.confidence) < confidence_rank(e.2) {
+                e.2 = q.confidence;
+            }
+        }
+    }
+
+    let mut allocations = Vec::new();
+    let mut unattributed_hours = 0.0;
+    for (project, (hours, refs, confidence)) in by_project {
+        match project {
+            Some(gryzzly_project_id) => allocations.push(ProjectAllocation {
+                gryzzly_project_id,
+                hours,
+                confidence,
+                source_refs: refs,
+            }),
+            None => unattributed_hours += hours,
+        }
+    }
+
+    ReconstructedDay {
+        date,
+        allocations,
+        unattributed_hours,
+        unresolved,
+        total_hours: alloc.total_hours,
+        day_confidence: alloc.day_confidence,
+        lanes: lanes.to_vec(),
+        quarters: alloc.quarters,
+        outside_workday: outside_work_of(lanes),
+    }
+}
+
+fn outside_work_of(lanes: &[Lane]) -> Vec<OutsideWork> {
+    lanes
+        .iter()
+        .filter(|l| l.outside_minutes > 0)
+        .map(|l| OutsideWork {
+            lane: l.key.clone(),
+            label: l.label.clone(),
+            minutes: l.outside_minutes,
+        })
+        .collect()
+}
+
+fn confidence_rank(c: Confidence) -> u8 {
+    match c {
+        Confidence::Low => 0,
+        Confidence::Medium => 1,
+        Confidence::High => 2,
+    }
+}
+
+/// Persist a reconstructed day: lines, quarter shares, and the evidence view.
+async fn persist_day(
+    draft_repo: &dyn TimesheetDraftRepository,
     user_id: UserId,
     day: &ReconstructedDay,
-    target_hours: f64,
+    cfg: &ReconstructionConfig,
     status: TimesheetStatus,
-) -> Result<TimesheetDraft, AppError> {
+) -> Result<(), AppError> {
     let now = Utc::now();
-    let mut lines: Vec<TimesheetDraftLine> = Vec::new();
-    for a in &day.allocations {
-        lines.push(TimesheetDraftLine {
+    let existing = draft_repo.find_by_user_and_date(user_id, day.date).await?;
+
+    let mut lines: Vec<TimesheetDraftLine> = day
+        .allocations
+        .iter()
+        .map(|a| TimesheetDraftLine {
             id: Uuid::new_v4(),
             gryzzly_project_id: Some(a.gryzzly_project_id.clone()),
             project_name: None,
             hours: a.hours,
+            // Lines are DERIVED from the quarters now. A pinned line would be a second
+            // source of truth the arbitration could not explain, so there is none.
             is_pinned: false,
             confidence: a.confidence,
             source_refs: a.source_refs.clone(),
-        });
-    }
+        })
+        .collect();
     if day.unattributed_hours > 0.0 {
         lines.push(TimesheetDraftLine {
             id: Uuid::new_v4(),
@@ -211,114 +394,223 @@ async fn to_draft(
             source_refs: vec![],
         });
     }
-    let blocks_json = serde_json::to_string(
-        &day.blocks
-            .iter()
-            .map(|b| {
-                serde_json::json!({
-                    "start": b.start.to_string(),
-                    "end": b.end.to_string(),
-                    "gryzzlyProjectId": b.gryzzly_project_id,
-                    "kind": format!("{:?}", b.kind),
-                    "hours": b.hours,
-                    "sourceRefs": b.source_refs,
-                    // The task title / meeting subject behind the bar. Opaque display JSON,
-                    // so no migration: readers tolerate its absence on older rows.
-                    "originLabel": b.origin_label,
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
-    .ok();
-    // The unresolved signals are the only record of WHAT went unattributed. Persist them
-    // beside the timeline so a reload can still explain the anonymous bars.
-    let unresolved_json = serde_json::to_string(
-        &day.unresolved
-            .iter()
-            .map(|u| {
-                serde_json::json!({
-                    "sourceRef": u.source_ref,
-                    "label": u.label,
-                    "at": u.at.to_string(),
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
-    .ok();
-    Ok(TimesheetDraft {
-        id: Uuid::new_v4(),
-        user_id,
-        date: day.date,
-        status,
-        target_hours,
-        total_hours: day.total_hours,
-        day_confidence: day.day_confidence,
-        blocks_json,
-        unresolved_json,
-        lanes_json: None,
-        lines,
-        shares: vec![],
-        created_at: now,
-        updated_at: now,
-    })
-}
 
-/// Persist user edits: re-normalize (pinned frozen), store, keep status=draft.
-#[allow(clippy::too_many_arguments)]
-pub async fn save_timesheet_draft(
-    draft_repo: &dyn TimesheetDraftRepository,
-    config_repo: &dyn ConfigRepository,
-    user_id: UserId,
-    date: NaiveDate,
-    edited: Vec<EditedLine>,
-) -> Result<(), AppError> {
-    let cfg = load_reconstruction_config(config_repo, user_id).await?;
-    // Pinned lines are frozen; if the user pins more than the target, the total can't
-    // honor the invariant — reject rather than silently persist an over-target day.
-    let pinned_total: f64 = edited.iter().filter(|l| l.is_pinned).map(|l| l.hours).sum();
-    if pinned_total > cfg.daily_target_hours + 1e-9 {
-        return Err(AppError::Validation(format!(
-            "pinned hours ({pinned_total}) exceed the daily target ({})",
-            cfg.daily_target_hours
-        )));
-    }
-    let normalized = renormalize_lines(&edited, cfg.daily_target_hours, cfg.rounding_hours);
-    let now = Utc::now();
-    let lines = normalized
-        .into_iter()
-        .map(|l| TimesheetDraftLine {
-            id: Uuid::new_v4(),
-            gryzzly_project_id: l.gryzzly_project_id,
-            project_name: None,
-            hours: l.hours,
-            is_pinned: l.is_pinned,
-            confidence: Confidence::High,
-            source_refs: vec![],
+    let shares: Vec<QuarterShareRow> = day
+        .quarters
+        .iter()
+        .flat_map(|q| {
+            q.shares.iter().map(|s| QuarterShareRow {
+                id: Uuid::new_v4(),
+                quarter_index: q.quarter.index,
+                task_id: s.lane.task_id(),
+                lane_key: s.lane.as_key(),
+                label: s.label.clone(),
+                gryzzly_project_id: s.gryzzly_project_id.clone(),
+                presence_minutes: s.presence_minutes,
+                hours: s.hours,
+                is_pinned: s.is_pinned,
+            })
         })
-        .collect::<Vec<_>>();
-    let total: f64 = lines.iter().map(|l| l.hours).sum();
-    let existing = draft_repo.find_by_user_and_date(user_id, date).await?;
+        .collect();
+
     let draft = TimesheetDraft {
         id: existing.as_ref().map(|d| d.id).unwrap_or_else(Uuid::new_v4),
         user_id,
-        date,
-        status: TimesheetStatus::Draft,
+        date: day.date,
+        status,
         target_hours: cfg.daily_target_hours,
-        total_hours: total,
-        day_confidence: existing.as_ref().map(|d| d.day_confidence).unwrap_or(Confidence::Medium),
-        // Editing the hours per project says nothing about WHEN the work happened, nor
-        // about which signals stayed unattributed. Nulling these two here blanked the
-        // timeline on every save until the user reconstructed again — carry them forward.
-        blocks_json: existing.as_ref().and_then(|d| d.blocks_json.clone()),
-        unresolved_json: existing.as_ref().and_then(|d| d.unresolved_json.clone()),
-        lanes_json: existing.as_ref().and_then(|d| d.lanes_json.clone()),
+        total_hours: day.total_hours,
+        day_confidence: day.day_confidence,
+        // The single-track timeline is gone; `lanes_json` replaces it.
+        blocks_json: None,
+        unresolved_json: serde_json::to_string(
+            &day.unresolved
+                .iter()
+                .map(|u| {
+                    serde_json::json!({
+                        "sourceRef": u.source_ref,
+                        "label": u.label,
+                        "at": u.at.to_string(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .ok(),
+        lanes_json: serde_json::to_string(
+            &day.lanes
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "laneKey": l.key.as_key(),
+                        "label": l.label,
+                        "gryzzlyProjectId": l.gryzzly_project_id,
+                        "intervals": l.intervals.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
+                        "outsideMinutes": l.outside_minutes,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .ok(),
         lines,
-        // Same reasoning as the evidence columns above: editing lines says nothing about
-        // the day's arbitration, so carry the shares forward instead of erasing them.
-        shares: existing.as_ref().map(|d| d.shares.clone()).unwrap_or_default(),
-        created_at: now,
+        shares,
+        created_at: existing.as_ref().map(|d| d.created_at).unwrap_or(now),
         updated_at: now,
     };
+    draft_repo.upsert(&draft).await?;
+    Ok(())
+}
+
+/// Pin one lane's hours inside one quarter, then rebalance the rest of that quarter.
+///
+/// The pin is the user's decision and outranks the evidence that suggested it: a later
+/// reconstruct preserves it and re-apportions everything else around it.
+#[allow(clippy::too_many_arguments)]
+pub async fn set_quarter_share(
+    worklog_repo: &dyn WorklogRepository,
+    meeting_repo: &dyn MeetingRepository,
+    task_repo: &dyn TaskRepository,
+    catalog_repo: &dyn GryzzlyCatalogRepository,
+    mapping_repo: &dyn SignalMappingRepository,
+    config_repo: &dyn ConfigRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    git: &dyn GitConnector,
+    draft_repo: &dyn TimesheetDraftRepository,
+    user_id: UserId,
+    date: NaiveDate,
+    quarter_index: u8,
+    lane_key: &str,
+    hours: f64,
+) -> Result<ReconstructedDay, AppError> {
+    let cfg = load_reconstruction_config(config_repo, user_id).await?;
+    let quarter = quarters(&cfg)
+        .into_iter()
+        .find(|q| q.index == quarter_index)
+        .ok_or_else(|| AppError::Validation(format!("no quarter {quarter_index} in the day")))?;
+    if !(0.0..=quarter.hours + 1e-9).contains(&hours) {
+        return Err(AppError::Validation(format!(
+            "{hours}h does not fit quarter {quarter_index}, which declares {}h",
+            quarter.hours
+        )));
+    }
+    if LaneKey::parse(lane_key).is_none() {
+        return Err(AppError::Validation(format!("unreadable lane '{lane_key}'")));
+    }
+    edit_pins(draft_repo, user_id, date, |shares| {
+        match shares
+            .iter_mut()
+            .find(|s| s.quarter_index == quarter_index && s.lane_key == lane_key)
+        {
+            Some(s) => {
+                s.hours = hours;
+                s.is_pinned = true;
+            }
+            // Pinning a lane the quarter had no share for is legitimate: the user knows
+            // something the evidence does not.
+            None => shares.push(QuarterShareRow {
+                id: Uuid::new_v4(),
+                quarter_index,
+                task_id: LaneKey::parse(lane_key).and_then(|l| l.task_id()),
+                lane_key: lane_key.to_string(),
+                label: lane_key.to_string(),
+                gryzzly_project_id: None,
+                presence_minutes: 0,
+                hours,
+                is_pinned: true,
+            }),
+        }
+    })
+    .await?;
+    reconstruct_timesheet(
+        worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo,
+        activity_repo, git, draft_repo, user_id, date,
+    )
+    .await
+}
+
+/// Release one pinned share back to the evidence.
+#[allow(clippy::too_many_arguments)]
+pub async fn clear_quarter_share(
+    worklog_repo: &dyn WorklogRepository,
+    meeting_repo: &dyn MeetingRepository,
+    task_repo: &dyn TaskRepository,
+    catalog_repo: &dyn GryzzlyCatalogRepository,
+    mapping_repo: &dyn SignalMappingRepository,
+    config_repo: &dyn ConfigRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    git: &dyn GitConnector,
+    draft_repo: &dyn TimesheetDraftRepository,
+    user_id: UserId,
+    date: NaiveDate,
+    quarter_index: u8,
+    lane_key: &str,
+) -> Result<ReconstructedDay, AppError> {
+    edit_pins(draft_repo, user_id, date, |shares| {
+        if let Some(s) = shares
+            .iter_mut()
+            .find(|s| s.quarter_index == quarter_index && s.lane_key == lane_key)
+        {
+            s.is_pinned = false;
+        }
+    })
+    .await?;
+    reconstruct_timesheet(
+        worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo,
+        activity_repo, git, draft_repo, user_id, date,
+    )
+    .await
+}
+
+/// Drop every pin in one quarter, returning it to what the evidence says.
+#[allow(clippy::too_many_arguments)]
+pub async fn reset_quarter(
+    worklog_repo: &dyn WorklogRepository,
+    meeting_repo: &dyn MeetingRepository,
+    task_repo: &dyn TaskRepository,
+    catalog_repo: &dyn GryzzlyCatalogRepository,
+    mapping_repo: &dyn SignalMappingRepository,
+    config_repo: &dyn ConfigRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    git: &dyn GitConnector,
+    draft_repo: &dyn TimesheetDraftRepository,
+    user_id: UserId,
+    date: NaiveDate,
+    quarter_index: u8,
+) -> Result<ReconstructedDay, AppError> {
+    edit_pins(draft_repo, user_id, date, |shares| {
+        for s in shares.iter_mut().filter(|s| s.quarter_index == quarter_index) {
+            s.is_pinned = false;
+        }
+    })
+    .await?;
+    reconstruct_timesheet(
+        worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo,
+        activity_repo, git, draft_repo, user_id, date,
+    )
+    .await
+}
+
+/// Apply an edit to the persisted pins, refusing on a day that is already finished.
+async fn edit_pins(
+    draft_repo: &dyn TimesheetDraftRepository,
+    user_id: UserId,
+    date: NaiveDate,
+    edit: impl FnOnce(&mut Vec<QuarterShareRow>),
+) -> Result<(), AppError> {
+    let mut draft = draft_repo
+        .find_by_user_and_date(user_id, date)
+        .await?
+        .ok_or_else(|| AppError::Validation(format!("no timesheet draft for {date}")))?;
+    if matches!(
+        draft.status,
+        TimesheetStatus::Validated | TimesheetStatus::Submitted | TimesheetStatus::DayOff
+    ) {
+        return Err(AppError::Validation(format!(
+            "the day {date} is {} — reopen it before editing its quarters",
+            draft.status.as_str()
+        )));
+    }
+    edit(&mut draft.shares);
+    draft.updated_at = Utc::now();
     draft_repo.upsert(&draft).await?;
     Ok(())
 }
@@ -562,6 +854,7 @@ pub async fn run_eod_pass(
     git: &dyn GitConnector,
     draft_repo: &dyn TimesheetDraftRepository,
     alert_repo: &dyn AlertRepository,
+    activity_repo: &dyn ActivitySlotRepository,
     user_id: UserId,
     now_utc: DateTime<Utc>,
 ) -> Result<EodPassOutcome, AppError> {
@@ -590,7 +883,7 @@ pub async fn run_eod_pass(
     for date in &targets {
         if let Err(e) = reconstruct_timesheet(
             worklog_repo, meeting_repo, task_repo, catalog_repo, mapping_repo, config_repo,
-            git, draft_repo, user_id, *date,
+            activity_repo, git, draft_repo, user_id, *date,
         )
         .await
         {
@@ -925,17 +1218,19 @@ mod tests {
     // ── Mock TaskRepository ───────────────────────────────────────────────────
 
     struct MemTask {
-        task: Task,
+        tasks: Vec<Task>,
+    }
+
+    impl MemTask {
+        fn one(task: Task) -> Self {
+            Self { tasks: vec![task] }
+        }
     }
 
     #[async_trait]
     impl TaskRepository for MemTask {
         async fn find_by_id(&self, id: TaskId) -> Result<Option<Task>, RepositoryError> {
-            if self.task.id == id {
-                Ok(Some(self.task.clone()))
-            } else {
-                Ok(None)
-            }
+            Ok(self.tasks.iter().find(|t| t.id == id).cloned())
         }
         async fn save(&self, _t: &Task) -> Result<(), RepositoryError> {
             unimplemented!()
@@ -1052,7 +1347,47 @@ mod tests {
 
     // ── Mock GitConnector ─────────────────────────────────────────────────────
 
+    /// No hand-run slots. The reconstruction weighs `manual` slots as measured spans;
+    /// tests that need one override `slots`.
     #[derive(Default)]
+    struct MemActivity {
+        slots: Vec<ActivitySlot>,
+    }
+
+    #[async_trait]
+    impl ActivitySlotRepository for MemActivity {
+        async fn find_by_id(&self, _id: ActivitySlotId) -> Result<Option<ActivitySlot>, RepositoryError> {
+            Ok(None)
+        }
+        async fn find_by_user_and_date(
+            &self,
+            _user_id: UserId,
+            _date: NaiveDate,
+        ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+            Ok(self.slots.clone())
+        }
+        async fn find_active(&self, _user_id: UserId) -> Result<Option<ActivitySlot>, RepositoryError> {
+            Ok(None)
+        }
+        async fn save(&self, _slot: &ActivitySlot) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        async fn update(&self, _slot: &ActivitySlot) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        async fn find_by_user_and_date_range(
+            &self,
+            _user_id: UserId,
+            _start_date: NaiveDate,
+            _end_date: NaiveDate,
+        ) -> Result<Vec<ActivitySlot>, RepositoryError> {
+            Ok(vec![])
+        }
+        async fn delete(&self, _id: ActivitySlotId) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
     struct MemGit;
 
     #[async_trait]
@@ -1212,7 +1547,7 @@ mod tests {
         (
             MemWorklog { entries: vec![] },
             MemMeeting,
-            MemTask { task: make_task_with_project(make_user_id(), Uuid::new_v4(), "unused") },
+            MemTask::one(make_task_with_project(make_user_id(), Uuid::new_v4(), "unused")),
             MemCatalog { entries: vec![] },
             MemMapping,
             MemConfig::default(),
@@ -1275,8 +1610,201 @@ mod tests {
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
+    /// Build a worklog entry at a given LOCAL Paris time on the test date.
+    fn entry_at(user_id: UserId, task_id: TaskId, h: u32, m: u32, body: &str) -> WorklogEntry {
+        let logged_at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 6, 8, h - 2, m, 0).unwrap();
+        WorklogEntry {
+            id: Uuid::new_v4(),
+            user_id,
+            task_id,
+            body: body.to_string(),
+            logged_at,
+            created_at: logged_at,
+            updated_at: logged_at,
+            session_id: None,
+        }
+    }
+
+    fn two_task_setup(user_id: UserId) -> (TaskId, TaskId, MemTask, MemCatalog) {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let mut task_a = make_task_with_project(user_id, a, "p1");
+        task_a.title = "Task A".into();
+        let mut task_b = make_task_with_project(user_id, b, "p2");
+        task_b.title = "Task B".into();
+        task_b.gryzzly_task_id = Some("gt2".into());
+        let mut entry_b = make_catalog_entry(user_id, "p2");
+        entry_b.gryzzly_task_id = "gt2".into();
+        (
+            a,
+            b,
+            MemTask { tasks: vec![task_a, task_b] },
+            MemCatalog { entries: vec![make_catalog_entry(user_id, "p1"), entry_b] },
+        )
+    }
+
+    /// THE regression. Two sessions ran the same afternoon; the second logged only near
+    /// the end, which is exactly the shape carry-forward turned into "the first task gets
+    /// the whole stretch". Both must declare real hours now.
     #[tokio::test]
-    async fn reconstruct_high_signal_day_persists_draft_summing_to_target() {
+    async fn concurrent_tasks_each_declare_hours() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let (a, b, task_repo, catalog_repo) = two_task_setup(user_id);
+        let worklog_repo = MemWorklog {
+            entries: vec![
+                entry_at(user_id, a, 14, 5, "A avance"),
+                entry_at(user_id, a, 15, 0, "A continue"),
+                entry_at(user_id, a, 16, 30, "A termine"),
+                entry_at(user_id, b, 16, 20, "B: tout d'un coup"),
+                entry_at(user_id, b, 16, 45, "B: encore"),
+            ],
+        };
+        let draft_repo = MemDraft::default();
+
+        let day = reconstruct_timesheet(
+            &worklog_repo,
+            &MemMeeting,
+            &task_repo,
+            &catalog_repo,
+            &MemMapping,
+            &MemConfig::with(&[("aplan.timezone", "Europe/Paris")]),
+            &MemActivity::default(),
+            &MemGit,
+            &draft_repo,
+            user_id,
+            date,
+        )
+        .await
+        .expect("reconstruct_timesheet should succeed");
+
+        let hours_of = |label: &str| -> f64 {
+            day.quarters
+                .iter()
+                .flat_map(|q| &q.shares)
+                .filter(|s| s.label == label)
+                .map(|s| s.hours)
+                .sum()
+        };
+        assert!(hours_of("Task A") > 0.0, "A ran all afternoon");
+        assert!(
+            hours_of("Task B") >= 0.25,
+            "B logged late but ran too — carry-forward gave it nothing, got {}",
+            hours_of("Task B")
+        );
+        assert!(
+            day.lanes.len() >= 2,
+            "both tasks must appear as concurrent lanes, got {:?}",
+            day.lanes.iter().map(|l| &l.label).collect::<Vec<_>>()
+        );
+    }
+
+    /// A pin is the user's decision. A later reconstruct must preserve it and rebalance
+    /// the rest of its quarter around it — otherwise every refresh silently undoes the
+    /// arbitration.
+    #[tokio::test]
+    async fn a_pinned_share_survives_a_reconstruct() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let (a, b, task_repo, catalog_repo) = two_task_setup(user_id);
+        let worklog_repo = MemWorklog {
+            entries: vec![
+                entry_at(user_id, a, 15, 30, "A"),
+                entry_at(user_id, b, 16, 30, "B"),
+            ],
+        };
+        let draft_repo = MemDraft::default();
+        let config_repo = MemConfig::with(&[("aplan.timezone", "Europe/Paris")]);
+        let args = |lane: String, hours: f64| (lane, hours);
+
+        let day = reconstruct_timesheet(
+            &worklog_repo, &MemMeeting, &task_repo, &catalog_repo, &MemMapping, &config_repo,
+            &MemActivity::default(), &MemGit, &draft_repo, user_id, date,
+        )
+        .await
+        .unwrap();
+        let q3 = day.quarters.iter().find(|q| q.quarter.index == 3).expect("Q3 exists");
+        let lane = q3.shares.first().expect("Q3 has shares").lane.as_key();
+        let (lane, pinned_hours) = args(lane, 1.5);
+
+        let after = set_quarter_share(
+            &worklog_repo, &MemMeeting, &task_repo, &catalog_repo, &MemMapping, &config_repo,
+            &MemActivity::default(), &MemGit, &draft_repo, user_id, date, 3, &lane, pinned_hours,
+        )
+        .await
+        .expect("pinning should succeed");
+        let q3 = after.quarters.iter().find(|q| q.quarter.index == 3).unwrap();
+        let pinned = q3.shares.iter().find(|s| s.lane.as_key() == lane).expect("the pinned lane");
+        assert!((pinned.hours - 1.5).abs() < 1e-9, "the pin must hold, got {}", pinned.hours);
+        assert!(pinned.is_pinned);
+        assert!(
+            (q3.shares.iter().map(|s| s.hours).sum::<f64>() - q3.declarable_hours).abs() < 1e-9,
+            "the rest of the quarter rebalances around the pin"
+        );
+
+        // And again, from scratch: the pin is read back off the persisted draft.
+        let again = reconstruct_timesheet(
+            &worklog_repo, &MemMeeting, &task_repo, &catalog_repo, &MemMapping, &config_repo,
+            &MemActivity::default(), &MemGit, &draft_repo, user_id, date,
+        )
+        .await
+        .unwrap();
+        let q3 = again.quarters.iter().find(|q| q.quarter.index == 3).unwrap();
+        let pinned = q3.shares.iter().find(|s| s.lane.as_key() == lane).expect("the pin survives");
+        assert!((pinned.hours - 1.5).abs() < 1e-9, "a refresh must not undo the arbitration");
+    }
+
+    /// A `manual` slot is measured time the worklog projection cannot derive, so it
+    /// weighs. A `worklog` slot is a projection of the very entries already counted —
+    /// weighing it too would double the lane.
+    #[tokio::test]
+    async fn manual_slots_weigh_and_projected_slots_do_not() {
+        let user_id = make_user_id();
+        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
+        let (a, b, task_repo, catalog_repo) = two_task_setup(user_id);
+        let slot = |task_id: TaskId, source: SlotSource| ActivitySlot {
+            id: Uuid::new_v4(),
+            user_id,
+            task_id: Some(task_id),
+            start_time: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 6, 8, 11, 0, 0).unwrap(),
+            end_time: Some(chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 6, 8, 13, 0, 0).unwrap()),
+            half_day: HalfDay::Afternoon,
+            date,
+            created_at: Utc::now(),
+            session_id: None,
+            source,
+        };
+        let day = reconstruct_timesheet(
+            &MemWorklog { entries: vec![entry_at(user_id, b, 16, 30, "B")] },
+            &MemMeeting,
+            &task_repo,
+            &catalog_repo,
+            &MemMapping,
+            &MemConfig::with(&[("aplan.timezone", "Europe/Paris")]),
+            &MemActivity { slots: vec![slot(a, SlotSource::Manual), slot(b, SlotSource::Worklog)] },
+            &MemGit,
+            &draft_repo_for_slots(),
+            user_id,
+            date,
+        )
+        .await
+        .unwrap();
+
+        let lane_a = day.lanes.iter().find(|l| l.label == "Task A").expect("the manual slot is a lane");
+        assert!(!lane_a.intervals.is_empty(), "a hand-run timer is measured time and must weigh");
+        let lane_b = day.lanes.iter().find(|l| l.label == "Task B").expect("B has an entry");
+        assert!(
+            lane_b.intervals.iter().map(|(s, e)| e - s).sum::<i64>() <= domain::rules::worklog_time::MAX_CONTINUATION_GAP_MINUTES,
+            "B's projected slot must not add to its own entry's shadow"
+        );
+    }
+
+    fn draft_repo_for_slots() -> MemDraft {
+        MemDraft::default()
+    }
+
+    #[tokio::test]
+    async fn reconstruct_persists_a_draft_summing_to_the_four_quarters() {
         let user_id = make_user_id();
         // Use a fixed date: 2026-06-08 (Monday), workday in Europe/Paris
         let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
@@ -1301,7 +1829,7 @@ mod tests {
 
         let worklog_repo = MemWorklog { entries: vec![worklog_entry] };
         let meeting_repo = MemMeeting;
-        let task_repo = MemTask { task: make_task_with_project(user_id, task_id, "p1") };
+        let task_repo = MemTask::one(make_task_with_project(user_id, task_id, "p1"));
         let catalog_repo = MemCatalog {
             entries: vec![make_catalog_entry(user_id, "p1")],
         };
@@ -1318,6 +1846,7 @@ mod tests {
             &catalog_repo,
             &mapping_repo,
             &config_repo,
+            &MemActivity::default(),
             &git,
             &draft_repo,
             user_id,
@@ -1326,12 +1855,23 @@ mod tests {
         .await
         .expect("reconstruct_timesheet should succeed");
 
-        // The reconstruction engine fills the full workday target.
+        // The day totals the four quarters — 8h with the default 08-12 / 13-17 windows —
+        // NOT `daily_target_hours`. A quarter sums to its own length by construction, so
+        // it cannot also sum to a scaled fraction of a different target.
         assert!(
-            (day.total_hours - 7.5).abs() < 1e-9,
-            "expected total_hours=7.5, got {}",
+            (day.total_hours - 8.0).abs() < 1e-9,
+            "expected total_hours=8.0 (four 2h quarters), got {}",
             day.total_hours
         );
+        for q in &day.quarters {
+            let sum: f64 = q.shares.iter().map(|s| s.hours).sum();
+            assert!(
+                (sum - q.declarable_hours).abs() < 1e-9,
+                "quarter {} declares {} but its shares sum to {sum}",
+                q.quarter.index,
+                q.declarable_hours
+            );
+        }
 
         // The draft must have been persisted exactly once.
         let saved = draft_repo.saved.lock().unwrap();
@@ -1373,10 +1913,11 @@ mod tests {
         let day = reconstruct_timesheet(
             &worklog_repo,
             &MemMeeting,
-            &MemTask { task },
+            &MemTask::one(task),
             &MemCatalog { entries: vec![] },
             &MemMapping,
             &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemActivity::default(),
             &MemGit,
             &draft_repo,
             user_id,
@@ -1425,10 +1966,11 @@ mod tests {
         let day = reconstruct_timesheet(
             &worklog_repo,
             &MemMeeting,
-            &MemTask { task },
+            &MemTask::one(task),
             &MemCatalog { entries: vec![make_catalog_entry(user_id, "p1")] },
             &MemMapping,
             &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemActivity::default(),
             &MemGit,
             &draft_repo,
             user_id,
@@ -1438,88 +1980,19 @@ mod tests {
         .expect("reconstruct_timesheet should succeed");
 
         assert!(
-            day.blocks.iter().any(|b| b.origin_label.as_deref() == Some("Refonte du portail client")),
-            "the block must name the task it came from, not just its project"
+            day.lanes.iter().any(|l| l.label == "Refonte du portail client"),
+            "the lane must name the task it came from, not just its project"
+        );
+        assert!(
+            day.quarters.iter().flat_map(|q| &q.shares).any(|s| s.label == "Refonte du portail client"),
+            "and so must the share it produces — a project id explains nothing to a reader"
         );
         let saved = draft_repo.find_by_user_and_date(user_id, date).await.unwrap().unwrap();
-        let json = saved.blocks_json.expect("blocks_json must be persisted");
+        let json = saved.lanes_json.expect("lanes_json must be persisted");
         assert!(
-            json.contains("\"originLabel\":\"Refonte du portail client\""),
+            json.contains("Refonte du portail client"),
             "the task title must survive a reload: {json}"
         );
-    }
-
-    #[tokio::test]
-    async fn save_draft_rejects_over_pinned() {
-        let user_id = make_user_id();
-        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
-        let draft_repo = MemDraft::default();
-        let config_repo = MemConfig::default(); // daily_target_hours defaults to 7.5
-
-        // Pin 8 hours — exceeds 7.5 target
-        let edited = vec![
-            EditedLine { gryzzly_project_id: Some("p1".into()), hours: 8.0, is_pinned: true },
-        ];
-
-        let result = save_timesheet_draft(&draft_repo, &config_repo, user_id, date, edited).await;
-        assert!(result.is_err(), "should reject over-pinned hours");
-        match result {
-            Err(AppError::Validation(_)) => {}
-            other => panic!("expected Validation error, got {other:?}"),
-        }
-    }
-
-    /// Pressing "Enregistrer" used to null `blocks_json`, so the timeline went blank until
-    /// the user reconstructed again. Editing hours per project says nothing about WHEN the
-    /// work happened: both display payloads must survive a save.
-    #[tokio::test]
-    async fn save_draft_preserves_the_persisted_timeline_and_unresolved_signals() {
-        let user_id = make_user_id();
-        let date = NaiveDate::from_ymd_opt(2026, 6, 8).unwrap();
-        let draft_repo = MemDraft::default();
-        let config_repo = MemConfig::default();
-
-        let blocks_json = r#"[{"start":"2026-06-08 08:00:00","end":"2026-06-08 12:00:00","gryzzlyProjectId":null,"kind":"Work","hours":4.0,"sourceRefs":["wl:1"]}]"#;
-        let unresolved_json = r#"[{"sourceRef":"wl:1","label":"note sans projet","at":"2026-06-08 09:00:00"}]"#;
-        let now = Utc::now();
-        draft_repo
-            .upsert(&TimesheetDraft {
-                id: Uuid::new_v4(),
-                user_id,
-                date,
-                status: TimesheetStatus::Draft,
-                target_hours: 7.5,
-                total_hours: 7.5,
-                day_confidence: Confidence::Low,
-                blocks_json: Some(blocks_json.into()),
-                unresolved_json: Some(unresolved_json.into()),
-                lanes_json: None,
-                shares: vec![],
-                lines: vec![],
-                created_at: now,
-                updated_at: now,
-            })
-            .await
-            .unwrap();
-
-        save_timesheet_draft(
-            &draft_repo,
-            &config_repo,
-            user_id,
-            date,
-            vec![EditedLine { gryzzly_project_id: Some("p1".into()), hours: 7.5, is_pinned: false }],
-        )
-        .await
-        .expect("save should succeed");
-
-        let saved = draft_repo.find_by_user_and_date(user_id, date).await.unwrap().unwrap();
-        assert_eq!(saved.blocks_json.as_deref(), Some(blocks_json), "the timeline must survive a save");
-        assert_eq!(
-            saved.unresolved_json.as_deref(),
-            Some(unresolved_json),
-            "the unattributed-work explanation must survive a save"
-        );
-        assert_eq!(saved.lines.len(), 1, "the edited lines are still the ones persisted");
     }
 
     #[tokio::test]
@@ -1640,10 +2113,11 @@ mod tests {
         let result = reconstruct_timesheet(
             &MemWorklog { entries: vec![worklog_entry] },
             &MemMeeting,
-            &MemTask { task: make_task_with_project(user_id, task_id, "p1") },
+            &MemTask::one(make_task_with_project(user_id, task_id, "p1")),
             &MemCatalog { entries: vec![make_catalog_entry(user_id, "p1")] },
             &MemMapping,
             &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemActivity::default(),
             &MemGit,
             &ValidatedDraft,
             user_id,
@@ -1719,10 +2193,11 @@ mod tests {
         let result = reconstruct_timesheet(
             &MemWorklog { entries: vec![worklog_entry] },
             &MemMeeting,
-            &MemTask { task: make_task_with_project(user_id, task_id, "p1") },
+            &MemTask::one(make_task_with_project(user_id, task_id, "p1")),
             &MemCatalog { entries: vec![make_catalog_entry(user_id, "p1")] },
             &MemMapping,
             &MemConfig::with(&[("aplan.timezone", "UTC")]),
+            &MemActivity::default(),
             &MemGit,
             &DayOffDraft,
             user_id,
@@ -1743,7 +2218,7 @@ mod tests {
         let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
         let alert = MemAlert::default();
         let outcome = run_eod_pass(
-            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert, &MemActivity::default(),
             make_user_id(), utc(2026, 6, 8, 9),
         )
         .await
@@ -1759,7 +2234,7 @@ mod tests {
         let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
         let alert = MemAlert::default();
         let outcome = run_eod_pass(
-            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert, &MemActivity::default(),
             make_user_id(), utc(2026, 6, 8, 20),
         )
         .await
@@ -1782,7 +2257,7 @@ mod tests {
         let (worklog, meeting, task, catalog, mapping, config, git, draft) = eod_mocks();
         let alert = BrokenAlert;
         let outcome = run_eod_pass(
-            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert, &MemActivity::default(),
             make_user_id(), utc(2026, 6, 8, 20),
         )
         .await
@@ -1815,7 +2290,7 @@ mod tests {
         let alert = MemAlert::default();
 
         let outcome = run_eod_pass(
-            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert, &MemActivity::default(),
             make_user_id(), utc(2026, 6, 8, 20),
         )
         .await
@@ -1842,7 +2317,7 @@ mod tests {
         let config = ReadOnlyConfig;
         let alert = MemAlert::default();
         let outcome = run_eod_pass(
-            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert,
+            &worklog, &meeting, &task, &catalog, &mapping, &config, &git, &draft, &alert, &MemActivity::default(),
             make_user_id(), utc(2026, 6, 8, 20),
         )
         .await
