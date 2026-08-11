@@ -56,7 +56,9 @@ fn reconstruct_day_json() -> serde_json::Value {
                     }
                 ],
                 "unresolved": [],
-                "blocks": []
+                "quarters": [],
+                        "lanes": [],
+                        "outsideWorkday": []
             }
         }
     })
@@ -92,7 +94,7 @@ async fn timesheet_default_render_shows_projects_unattributed_and_total() {
         // unattributed-hours hint line
         .stdout(predicate::str::contains("1.50h unattributed"))
         .stdout(predicate::str::contains(
-            "aplan timesheet set <project> <hours>",
+            "aplan timesheet set --quarter <1-4> <task> <hours>",
         ))
         // total line (4.0 + 2.5 = 6.5)
         .stdout(predicate::str::contains("total 6.50h"))
@@ -106,90 +108,75 @@ async fn timesheet_default_render_shows_projects_unattributed_and_total() {
 }
 
 // ---------------------------------------------------------------------------
-// Pin-preservation regression: `timesheet set` must load current lines from
-// the persisted `timesheetDraft` query (which preserves `isPinned`) and must
-// NOT call `runTimesheetReconstruction` when a draft already exists — that
-// mutation upserts a fresh draft and would wipe any previously saved pins.
+// `timesheet set` resolves the lane from the day's own reconstruction, then pins
+// it inside one quarter. It reconstructs on purpose: pins live on the quarter
+// shares and survive a rebuild, so there is nothing left to protect them from.
 // ---------------------------------------------------------------------------
 #[tokio::test]
-async fn timesheet_set_preserves_prior_pin_and_does_not_reconstruct() {
+async fn timesheet_set_resolves_the_lane_by_title_and_pins_the_quarter() {
     let server = MockServer::start().await;
 
-    // 1) TimesheetDraft query: a draft already exists with project A pinned at 3.0h.
-    //    Matched on the exact `operationName` (not a substring) so it can't be
-    //    confused with the `SaveTimesheetDraft` mutation below (whose name
-    //    contains "TimesheetDraft" as a substring).
     Mock::given(method("POST"))
         .and(path("/graphql"))
-        .and(body_partial_json(json!({ "operationName": "TimesheetDraft" })))
+        .and(wiremock::matchers::body_string_contains("ReconstructTimesheet"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": {
-                "timesheetDraft": {
+                "runTimesheetReconstruction": {
                     "date": "2026-07-06",
                     "status": "DRAFT",
                     "targetHours": 8.0,
                     "roundingIncrement": 0.25,
-                    "totalHours": 3.0,
+                    "totalHours": 8.0,
                     "dayConfidence": "HIGH",
-                    "unattributedHours": 5.0,
-                    "lines": [
-                        {
-                            "gryzzlyProjectId": "A",
-                            "projectName": "Project A",
-                            "hours": 3.0,
-                            "isPinned": true,
-                            "confidence": "HIGH"
-                        }
-                    ],
+                    "unattributedHours": 0.0,
+                    "lines": [],
                     "unresolved": [],
-                    "blocks": []
+                    "quarters": [{
+                        "index": 3,
+                        "startMin": 900,
+                        "endMin": 1020,
+                        "hours": 2.0,
+                        "oooHours": 0.0,
+                        "declarableHours": 2.0,
+                        "confidence": "HIGH",
+                        "shares": [{
+                            "laneKey": "task:11111111-1111-1111-1111-111111111111",
+                            "taskId": "11111111-1111-1111-1111-111111111111",
+                            "label": "Anonymisation eActions",
+                            "gryzzlyProjectId": "A",
+                            "presenceMinutes": 80,
+                            "hours": 2.0,
+                            "isPinned": false
+                        }]
+                    }],
+                    "lanes": [],
+                    "outsideWorkday": []
                 }
             }
         })))
         .mount(&server)
         .await;
 
-    // 2) runTimesheetReconstruction MUST NOT be called while a draft exists.
-    //    If `set` regresses to reconstruct-first, this responds with a
-    //    GraphQL error so the command fails loudly instead of silently
-    //    succeeding with a wiped-pin behavior.
     Mock::given(method("POST"))
         .and(path("/graphql"))
-        .and(wiremock::matchers::body_string_contains("ReconstructTimesheet"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "errors": [{
-                "message": "regression: `timesheet set` must not reconstruct when a draft already exists (would wipe prior pins)"
-            }]
-        })))
-        .mount(&server)
-        .await;
-
-    // 3) SaveTimesheetDraft: accept whatever is sent; the pin-preservation
-    //    assertion happens below by inspecting the recorded request body.
-    Mock::given(method("POST"))
-        .and(path("/graphql"))
-        .and(wiremock::matchers::body_string_contains("SaveTimesheetDraft"))
+        .and(wiremock::matchers::body_string_contains("SetQuarterShare"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": {
-                "saveTimesheetDraft": {
+                "setQuarterShare": {
                     "date": "2026-07-06",
                     "status": "DRAFT",
                     "totalHours": 8.0,
                     "targetHours": 8.0,
-                    "lines": [
-                        {
-                            "gryzzlyProjectId": "A",
-                            "projectName": "Project A",
-                            "hours": 3.0,
+                    "quarters": [{
+                        "index": 3,
+                        "declarableHours": 2.0,
+                        "shares": [{
+                            "laneKey": "task:11111111-1111-1111-1111-111111111111",
+                            "label": "Anonymisation eActions",
+                            "hours": 1.5,
                             "isPinned": true
-                        },
-                        {
-                            "gryzzlyProjectId": "B",
-                            "projectName": null,
-                            "hours": 5.0,
-                            "isPinned": true
-                        }
-                    ]
+                        }]
+                    }]
                 }
             }
         })))
@@ -198,69 +185,84 @@ async fn timesheet_set_preserves_prior_pin_and_does_not_reconstruct() {
 
     let url = format!("{}/graphql", server.uri());
     aplan()
-        .args(["--api-url", &url, "timesheet", "set", "B", "5"])
+        .args(["--api-url", &url, "timesheet", "set", "--quarter", "4", "anonymisation", "1.5"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("pinned"))
-        .stdout(predicate::str::contains("5.00h"));
+        .stdout(predicate::str::contains("Q4"))
+        .stdout(predicate::str::contains("1.50h"));
 
-    // Inspect exactly what was sent to the API.
-    let requests = server
-        .received_requests()
-        .await
-        .expect("request recording is enabled by default");
-
-    let op_name = |body: &serde_json::Value| -> Option<String> {
-        body.get("operationName")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-    };
-
-    let reconstruct_called = requests.iter().any(|r| {
-        r.body_json::<serde_json::Value>()
-            .ok()
-            .and_then(|b| op_name(&b))
-            .as_deref()
-            == Some("ReconstructTimesheet")
-    });
-    assert!(
-        !reconstruct_called,
-        "`timesheet set` called runTimesheetReconstruction even though a draft already \
-         existed — this wipes prior pins and is the exact regression this test guards against"
-    );
-
-    let save_request = requests
+    let requests = server.received_requests().await.expect("requests are recorded");
+    let pin = requests
         .iter()
-        .find(|r| {
-            r.body_json::<serde_json::Value>()
-                .ok()
-                .and_then(|b| op_name(&b))
-                .as_deref()
-                == Some("SaveTimesheetDraft")
-        })
-        .expect("SaveTimesheetDraft was never called");
-    let save_body: serde_json::Value = save_request
-        .body_json()
-        .expect("SaveTimesheetDraft request body is valid JSON");
-    let lines = save_body["variables"]["lines"]
-        .as_array()
-        .expect("variables.lines is an array");
+        .filter_map(|r| r.body_json::<serde_json::Value>().ok())
+        .find(|b| b.get("operationName").and_then(|v| v.as_str()) == Some("SetQuarterShare"))
+        .expect("the pin must be sent");
+    let vars = &pin["variables"];
+    assert_eq!(
+        vars["laneKey"], "task:11111111-1111-1111-1111-111111111111",
+        "a title must resolve to the lane key, never be sent as-is"
+    );
+    assert_eq!(vars["quarterIndex"], 3, "`--quarter 4` is the fourth quarter, index 3");
+    assert_eq!(vars["hours"], 1.5);
+}
 
-    assert_eq!(
-        lines.len(),
-        2,
-        "expected the prior pinned line (A) plus the newly-set line (B), got: {lines:?}"
-    );
-    assert_eq!(lines[0]["gryzzlyProjectId"], json!("A"));
-    assert_eq!(lines[0]["hours"], json!(3.0));
-    assert_eq!(
-        lines[0]["isPinned"],
-        json!(true),
-        "the prior pin on project A must survive `set` on a different project"
-    );
-    assert_eq!(lines[1]["gryzzlyProjectId"], json!("B"));
-    assert_eq!(lines[1]["hours"], json!(5.0));
-    assert_eq!(lines[1]["isPinned"], json!(true));
+/// A title matching two lanes is exit 3 with the candidates listed — these hours reach
+/// a client invoice, so a guess is worse than a refusal.
+#[tokio::test]
+async fn timesheet_set_refuses_an_ambiguous_title() {
+    let server = MockServer::start().await;
+    let share = |id: &str, label: &str| json!({
+        "laneKey": format!("task:{id}"),
+        "taskId": id,
+        "label": label,
+        "gryzzlyProjectId": "A",
+        "presenceMinutes": 40,
+        "hours": 1.0,
+        "isPinned": false
+    });
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("ReconstructTimesheet"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "runTimesheetReconstruction": {
+                    "date": "2026-07-06",
+                    "status": "DRAFT",
+                    "targetHours": 8.0,
+                    "roundingIncrement": 0.25,
+                    "totalHours": 8.0,
+                    "dayConfidence": "HIGH",
+                    "unattributedHours": 0.0,
+                    "lines": [],
+                    "unresolved": [],
+                    "quarters": [{
+                        "index": 3,
+                        "startMin": 900,
+                        "endMin": 1020,
+                        "hours": 2.0,
+                        "oooHours": 0.0,
+                        "declarableHours": 2.0,
+                        "confidence": "HIGH",
+                        "shares": [
+                            share("11111111-1111-1111-1111-111111111111", "SAFT cadrage"),
+                            share("22222222-2222-2222-2222-222222222222", "SAFT GitHub Action")
+                        ]
+                    }],
+                    "lanes": [],
+                    "outsideWorkday": []
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan()
+        .args(["--api-url", &url, "timesheet", "set", "--quarter", "4", "saft", "1.5"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("ambiguous"))
+        .stderr(predicate::str::contains("SAFT cadrage"));
 }
 
 #[tokio::test]

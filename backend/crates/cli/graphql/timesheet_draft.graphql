@@ -19,12 +19,38 @@ query TimesheetDraft($date: NaiveDate!) {
       label
       at
     }
-    blocks {
-      startTime
-      endTime
-      gryzzlyProjectId
-      kind
+    quarters {
+      index
+      startMin
+      endMin
       hours
+      oooHours
+      declarableHours
+      confidence
+      shares {
+        laneKey
+        taskId
+        label
+        gryzzlyProjectId
+        presenceMinutes
+        hours
+        isPinned
+      }
+    }
+    lanes {
+      laneKey
+      label
+      gryzzlyProjectId
+      outsideMinutes
+      intervals {
+        startMin
+        endMin
+      }
+    }
+    outsideWorkday {
+      laneKey
+      label
+      minutes
     }
   }
 }

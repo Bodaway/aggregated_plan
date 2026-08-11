@@ -247,10 +247,10 @@ pub struct TimesheetDraft;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/save_timesheet_draft.graphql",
+    query_path = "graphql/set_quarter_share.graphql",
     response_derives = "Debug, Clone"
 )]
-pub struct SaveTimesheetDraft;
+pub struct SetQuarterShare;
 
 #[derive(GraphQLQuery)]
 #[graphql(

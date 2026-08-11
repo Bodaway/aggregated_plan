@@ -547,8 +547,14 @@ pub enum MapCmd {
 pub enum TimesheetAction {
     /// Validate the day's draft (ready to copy into Gryzzly).
     Validate,
-    /// Pin a project to an exact number of hours.
-    Set { project: String, hours: f64 },
+    /// Pin one task's hours inside one quarter-day; the rest of that quarter rebalances.
+    /// TASK matches a lane by title (or by its lane key). QUARTER is 1-4.
+    Set {
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=4))]
+        quarter: u8,
+        task: String,
+        hours: f64,
+    },
     /// Mark the day (or half-day) off.
     Off {
         #[arg(long, conflicts_with = "pm")]

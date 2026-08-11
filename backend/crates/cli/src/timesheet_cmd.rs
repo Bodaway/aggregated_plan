@@ -7,9 +7,9 @@ use chrono::{DateTime, Utc};
 use crate::client::Client;
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    activity_journal, learn_mapping, mark_day_off, reconstruct_timesheet, save_timesheet_draft,
+    activity_journal, learn_mapping, mark_day_off, reconstruct_timesheet, set_quarter_share,
     signal_mappings, timesheet_draft, validate_timesheet, ActivityJournal, LearnMapping,
-    MarkDayOff, ReconstructTimesheet, SaveTimesheetDraft, SignalMappings, TimesheetDraft,
+    MarkDayOff, ReconstructTimesheet, SetQuarterShare, SignalMappings, TimesheetDraft,
     ValidateTimesheet,
 };
 
@@ -136,6 +136,14 @@ fn union_minutes(mut intervals: Vec<(DateTime<Utc>, DateTime<Utc>)>) -> i64 {
     total
 }
 
+/// Trim a lane label to `max` display characters, on a char boundary.
+fn truncate_label(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max.saturating_sub(1)).collect::<String>() + "\u{2026}"
+}
+
 fn render_day(d: &reconstruct_timesheet::ReconstructTimesheetRunTimesheetReconstruction) {
     println!(
         "== timesheet {} ==  [{:?}]  {:.2}h / {:.1}h target",
@@ -162,27 +170,53 @@ fn render_day(d: &reconstruct_timesheet::ReconstructTimesheetRunTimesheetReconst
     println!("  \u{2500}\u{2500} total {:.2}h  ({badge})", d.total_hours);
     if d.unattributed_hours > 1e-9 {
         println!(
-            "  !! {:.2}h unattributed \u{2014} assign with `aplan timesheet set <project> <hours>`",
+            "  !! {:.2}h unattributed \u{2014} assign with `aplan timesheet set --quarter <1-4> <task> <hours>`",
             d.unattributed_hours
         );
     }
     println!("  day confidence: {:?}", d.day_confidence);
-    if !d.blocks.is_empty() {
-        println!("\ntimeline:");
-        let mut blocks: Vec<_> = d.blocks.iter().collect();
-        blocks.sort_by(|a, b| a.start_time.cmp(&b.start_time));
-        for b in blocks {
-            let glyph = match b.kind {
-                reconstruct_timesheet::BlockKindGql::MEETING => "\u{2593} meet",
-                reconstruct_timesheet::BlockKindGql::OUT_OF_OFFICE => "\u{2591} off ",
-                _ => "\u{00b7} work",
-            };
-            let proj = b.gryzzly_project_id.clone().unwrap_or_else(|| "-".into());
+    for q in &d.quarters {
+        let (sh, sm) = (q.start_min / 60, q.start_min % 60);
+        let (eh, em) = (q.end_min / 60, q.end_min % 60);
+        println!(
+            "\nQ{}  {:02}:{:02}-{:02}:{:02}{}                        confidence: {:?}",
+            q.index + 1,
+            sh,
+            sm,
+            eh,
+            em,
+            if q.ooo_hours > 1e-9 { format!("  ({:.2}h off)", q.ooo_hours) } else { String::new() },
+            q.confidence
+        );
+        if q.shares.is_empty() {
+            println!("    (rien de déclaré)");
+            continue;
+        }
+        let span = (q.end_min - q.start_min).max(1);
+        for s in &q.shares {
+            // The bar is the WEIGHT, not the hours: it is what lets a reader see when a
+            // share rests on thin evidence.
+            let width = ((s.presence_minutes * 8) / span).clamp(0, 8) as usize;
+            let pin = if s.is_pinned { "*" } else { " " };
             println!(
-                "  {}\u{2013}{}  {}  {:.2}h  {}",
-                b.start_time, b.end_time, glyph, b.hours, proj
+                "  {}{:<26} {:<8} {:>3} min   {:.2}h",
+                pin,
+                truncate_label(&s.label, 26),
+                "\u{2588}".repeat(width),
+                s.presence_minutes,
+                s.hours
             );
         }
+    }
+    if !d.outside_workday.is_empty() {
+        let total: i64 = d.outside_workday.iter().map(|o| o.minutes).sum();
+        let who: Vec<&str> = d.outside_workday.iter().map(|o| o.label.as_str()).take(3).collect();
+        println!(
+            "\n\u{26a0} {}h {:02} de traces hors plage horaire ({})",
+            total / 60,
+            total % 60,
+            who.join(", ")
+        );
     }
     if !d.unresolved.is_empty() {
         println!("\nunresolved signals ({}):", d.unresolved.len());
@@ -215,78 +249,76 @@ pub fn timesheet_validate(api_url: &str, json: bool, date: Option<&str>) -> Exit
     }
 }
 
-/// `aplan timesheet set <project> <hours>` — pin one project to an exact number of hours.
-/// Loads the current lines from the PERSISTED draft (preserving prior pins), sets/pins the
-/// target project, carries the other lines forward, and saves.
+/// `aplan timesheet set --quarter <1-4> <task> <hours>` — pin one lane inside one quarter.
 ///
-/// IMPORTANT (bug avoided): do NOT load lines by calling `runTimesheetReconstruction` — for a
-/// non-validated day that upserts a FRESH draft and wipes any previously saved pins, so two
-/// consecutive `set` commands would lose the first pin. Read `timesheetDraft(date)` instead
-/// (it preserves `isPinned`); only reconstruct when no draft exists yet.
+/// The lane is resolved against the day's own quarters: an exact lane key, else a
+/// case-insensitive substring of a lane label. Ambiguity is exit 3 with the candidates
+/// listed, never a guess — these hours reach a client invoice.
 pub fn timesheet_set(
     api_url: &str,
     json: bool,
     date: Option<&str>,
-    project: &str,
+    quarter: u8,
+    task: &str,
     hours: f64,
 ) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let date = date.map(String::from).unwrap_or_else(today);
-    // Prefer the persisted draft (keeps prior pins); reconstruct once only if it's null.
-    let mut lines: Vec<save_timesheet_draft::TimesheetLineInput> =
-        match client.run::<TimesheetDraft>(timesheet_draft::Variables { date: date.clone() }) {
-            Ok(r) => match r.data.timesheet_draft {
-                Some(d) => d
-                    .lines
-                    .iter()
-                    .map(|l| save_timesheet_draft::TimesheetLineInput {
-                        gryzzly_project_id: l.gryzzly_project_id.clone(),
-                        hours: l.hours,
-                        is_pinned: l.is_pinned,
-                    })
-                    .collect(),
-                None => match client.run::<ReconstructTimesheet>(reconstruct_timesheet::Variables {
-                    date: date.clone(),
-                }) {
-                    Ok(rr) => rr
-                        .data
-                        .run_timesheet_reconstruction
-                        .lines
-                        .iter()
-                        .map(|l| save_timesheet_draft::TimesheetLineInput {
-                            gryzzly_project_id: l.gryzzly_project_id.clone(),
-                            hours: l.hours,
-                            is_pinned: l.is_pinned,
-                        })
-                        .collect(),
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        return ExitCode::Generic;
-                    }
-                },
-            },
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::Generic;
-            }
-        };
-    match lines
-        .iter_mut()
-        .find(|l| l.gryzzly_project_id.as_deref() == Some(project))
-    {
-        Some(l) => {
-            l.hours = hours;
-            l.is_pinned = true;
-        }
-        None => lines.push(save_timesheet_draft::TimesheetLineInput {
-            gryzzly_project_id: Some(project.to_string()),
-            hours,
-            is_pinned: true,
-        }),
-    }
-    match client.run::<SaveTimesheetDraft>(save_timesheet_draft::Variables {
+    let quarter_index = (quarter as i64) - 1;
+
+    // Reconstruct first: the lanes are what the user is choosing between, and they are
+    // derived from the evidence, not stored on the draft's lines.
+    let day = match client.run::<ReconstructTimesheet>(reconstruct_timesheet::Variables {
         date: date.clone(),
-        lines,
+    }) {
+        Ok(r) => r.data.run_timesheet_reconstruction,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::Generic;
+        }
+    };
+
+    let needle = task.to_lowercase();
+    let mut candidates: Vec<(String, String)> = day
+        .quarters
+        .iter()
+        .filter(|q| q.index == quarter_index)
+        .flat_map(|q| q.shares.iter())
+        .map(|s| (s.lane_key.clone(), s.label.clone()))
+        .collect();
+    // A lane present elsewhere in the day is still a legitimate target for this quarter:
+    // the user may know they worked on it even where no evidence landed.
+    for l in &day.lanes {
+        if !candidates.iter().any(|(k, _)| *k == l.lane_key) {
+            candidates.push((l.lane_key.clone(), l.label.clone()));
+        }
+    }
+    let exact: Vec<&(String, String)> = candidates.iter().filter(|(k, _)| *k == task).collect();
+    let matches: Vec<&(String, String)> = if exact.is_empty() {
+        candidates.iter().filter(|(_, label)| label.to_lowercase().contains(&needle)).collect()
+    } else {
+        exact
+    };
+    let lane_key = match matches.as_slice() {
+        [] => {
+            eprintln!("error: no lane matches `{task}` on {date}");
+            return ExitCode::NotFound;
+        }
+        [one] => one.0.clone(),
+        many => {
+            eprintln!("error: `{task}` is ambiguous on {date}:");
+            for (k, label) in many.iter().take(5) {
+                eprintln!("  {label}  [{k}]");
+            }
+            return ExitCode::Ambiguous;
+        }
+    };
+
+    match client.run::<SetQuarterShare>(set_quarter_share::Variables {
+        date: date.clone(),
+        quarter_index,
+        lane_key: lane_key.clone(),
+        hours,
     }) {
         Ok(r) => {
             if json {
@@ -296,7 +328,15 @@ pub fn timesheet_set(
                 }
                 return ExitCode::Success;
             }
-            println!("\u{270e} pinned {project} = {hours:.2}h; other lines rebalanced to target");
+            let d = r.data.set_quarter_share;
+            println!("\u{270e} Q{quarter} \u{2014} {lane_key} pinned to {hours:.2}h");
+            if let Some(q) = d.quarters.iter().find(|q| q.index == quarter_index) {
+                for s in &q.shares {
+                    let pin = if s.is_pinned { "*" } else { " " };
+                    println!("  {}{:<6.2}h  {}", pin, s.hours, s.label);
+                }
+                println!("  \u{2500}\u{2500} {:.2}h declared", q.declarable_hours);
+            }
             ExitCode::Success
         }
         Err(e) => {

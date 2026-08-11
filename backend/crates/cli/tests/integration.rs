@@ -722,7 +722,9 @@ fn minimal_reconstruct_timesheet(date: &str) -> serde_json::Value {
                 "unattributedHours": 0.0,
                 "lines": [],
                 "unresolved": [],
-                "blocks": []
+                "quarters": [],
+                        "lanes": [],
+                        "outsideWorkday": []
             }
         }
     })

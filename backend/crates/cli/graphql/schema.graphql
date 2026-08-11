@@ -130,17 +130,12 @@ type AssignedGryzzlyTaskGql {
 	name: String
 	projectName: String
 	stale: Boolean!
+	"""
+	Status of the owning Gryzzly project (`active` | `done`), or null when
+	unknown. Independent of `stale`: a row can be both disabled in the catalog
+	and owned by a closed project, and the two mean different things.
+	"""
 	projectStatus: String
-}
-
-type AttributedBlockGql {
-	startTime: NaiveDateTime!
-	endTime: NaiveDateTime!
-	gryzzlyProjectId: String
-	kind: BlockKindGql!
-	hours: Float!
-	sourceRefs: [String!]!
-	originLabel: String
 }
 
 """
@@ -149,12 +144,6 @@ A bind, and the task the session was on before it — which the caller flushes.
 type BindSessionResultGql {
 	session: ClaudeSessionGql!
 	previousTaskId: ID
-}
-
-enum BlockKindGql {
-	MEETING
-	WORK
-	OUT_OF_OFFICE
 }
 
 """
@@ -351,18 +340,18 @@ type CombinedMutation {
 	reattributeWorklogEntries(input: ReattributeWorklogInput!): ReattributionResultGql!
 	"""
 	Give back their task to the activity slots of a local-date range that lost it.
-
+	
 	The damage this repairs: a write that used `INSERT OR REPLACE INTO tasks` fired
 	`activity_slots.task_id`'s `ON DELETE SET NULL`, so slots the worklog projection
 	owns came out unattributed — the "(no task)" hours of `aplan journal`. Neither
 	`flushWorklogTime` (its window only ever names the present) nor
 	`reattributeWorklogEntries` (it refuses a move onto the same task, and its
 	delete list cannot match a NULL `task_id`) could reach them.
-
+	
 	Drops those slots and rewrites their half-days from the worklog entries, which
 	still carry the attribution. Never touches a slot the projection does not own:
 	an unattributed `manual` slot is a hand-run timer, not damage.
-
+	
 	Writes nothing unless `input.confirm` is true. The preview's figures are read
 	off the very plans the write persists, so they cannot drift.
 	"""
@@ -485,9 +474,17 @@ type CombinedMutation {
 	"""
 	runTimesheetReconstruction(date: NaiveDate!): ReconstructedDayGql!
 	"""
-	Persist user edits (pinned lines frozen; rejects pinned > target); returns the saved draft.
+	Pin one lane's hours inside one quarter; the rest of that quarter rebalances.
 	"""
-	saveTimesheetDraft(date: NaiveDate!, lines: [TimesheetLineInput!]!): ReconstructedDayGql!
+	setQuarterShare(date: NaiveDate!, quarterIndex: Int!, laneKey: String!, hours: Float!): ReconstructedDayGql!
+	"""
+	Release one pinned share back to what the evidence says.
+	"""
+	clearQuarterShare(date: NaiveDate!, quarterIndex: Int!, laneKey: String!): ReconstructedDayGql!
+	"""
+	Drop every pin in one quarter.
+	"""
+	resetQuarter(date: NaiveDate!, quarterIndex: Int!): ReconstructedDayGql!
 	"""
 	Mark a day's draft validated (ready to copy into Gryzzly).
 	"""
@@ -956,6 +953,11 @@ type GryzzlyTaskGql {
 	gryzzlyProjectId: String!
 	projectName: String!
 	customerName: String
+	"""
+	Status of the owning Gryzzly project (`active` | `done`), or null when
+	unknown — a catalog row written before the column existed. Null renders as
+	active: never as terminated.
+	"""
 	projectStatus: String
 }
 
@@ -996,6 +998,27 @@ enum ImpactLevelGql {
 A scalar that can represent any JSON value.
 """
 scalar JSON
+
+"""
+One task's presence across the day. Lanes overlap — that is the concurrent view.
+"""
+type LaneGql {
+	laneKey: String!
+	label: String!
+	gryzzlyProjectId: String
+	intervals: [LaneIntervalGql!]!
+	outsideMinutes: Int!
+}
+
+"""
+One stretch of a lane, in local minutes from midnight. Minutes rather than
+timestamps because a lane is drawn against the day's own grid, and a client that has
+to parse datetimes to position a bar will get the timezone wrong eventually.
+"""
+type LaneIntervalGql {
+	startMin: Int!
+	endMin: Int!
+}
 
 enum MappingKindGql {
 	REPO_PATH
@@ -1171,6 +1194,16 @@ ISO 8601 combined date and time without timezone.
 scalar NaiveDateTime
 
 """
+Evidence that fell outside the working windows — surfaced so the user can decide,
+rather than dropped where nobody can see it.
+"""
+type OutsideWorkGql {
+	laneKey: String!
+	label: String!
+	minutes: Int!
+}
+
+"""
 Relay-style pagination info.
 """
 type PageInfo {
@@ -1256,6 +1289,33 @@ enum QuadrantGql {
 }
 
 """
+A quarter-day and its arbitration. `shares` always sums to `declarable_hours`.
+"""
+type QuarterGql {
+	index: Int!
+	startMin: Int!
+	endMin: Int!
+	hours: Float!
+	oooHours: Float!
+	declarableHours: Float!
+	confidence: ConfidenceGql!
+	shares: [QuarterShareGql!]!
+}
+
+"""
+What one lane declares inside one quarter, with the weight it was derived from.
+"""
+type QuarterShareGql {
+	laneKey: String!
+	taskId: ID
+	label: String!
+	gryzzlyProjectId: String
+	presenceMinutes: Int!
+	hours: Float!
+	isPinned: Boolean!
+}
+
+"""
 What `reattributeWorklogEntries` is asked to move.
 
 Two selections, one at a time: the explicit entries, or the source task's
@@ -1329,7 +1389,9 @@ type ReconstructedDayGql {
 	lines: [TimesheetLineGql!]!
 	unattributedHours: Float!
 	unresolved: [UnresolvedSignalGql!]!
-	blocks: [AttributedBlockGql!]!
+	lanes: [LaneGql!]!
+	quarters: [QuarterGql!]!
+	outsideWorkday: [OutsideWorkGql!]!
 }
 
 """
@@ -1457,32 +1519,6 @@ input RememberInputGql {
 }
 
 """
-One task the repair rebuilt, with its hours before and after.
-
-Not `TaskTimeChangeGql`: that type answers about tasks the caller named itself, so
-an id is enough. Here the tasks were *discovered* — the orphan lost the only
-pointer that said which they were — so the report has to name them, or the operator
-is asked to confirm a rewrite of hours against a bare UUID.
-"""
-type RepairedTaskGql {
-	taskId: ID!
-	"""
-	Hydrated task, so a report can name what it is about to rewrite. Null only if
-	the task was deleted between the repair and this resolve.
-	"""
-	task: TaskGql
-	"""
-	Hours this task's own projection accounted for in the touched half-days.
-	Excludes the orphans, which accounted for nobody's.
-	"""
-	hoursBefore: Float!
-	"""
-	Hours it accounts for once the half-days are rewritten from the worklog.
-	"""
-	hoursAfter: Float!
-}
-
-"""
 What `repairOrphanedSlots` is asked to sweep.
 
 The range is required, both ends of it. There is no default: "everything" would
@@ -1503,6 +1539,24 @@ input RepairOrphanedSlotsInput {
 	Write. Absent or `false` previews.
 	"""
 	confirm: Boolean
+}
+
+type RepairedTaskGql {
+	taskId: ID!
+	"""
+	Hydrated task, so a report can name what it is about to rewrite. Null only if
+	the task was deleted between the repair and this resolve.
+	"""
+	task: TaskGql
+	"""
+	Hours this task's own projection accounted for in the touched half-days.
+	Excludes the orphans, which accounted for nobody's.
+	"""
+	hoursBefore: Float!
+	"""
+	Hours it accounts for once the half-days are rewritten from the worklog.
+	"""
+	hoursAfter: Float!
 }
 
 """
@@ -1631,6 +1685,9 @@ enum SyncSourceStatusGql {
 	SYNCING
 	SUCCESS
 	ERROR
+	"""
+	No usable credentials, so no sync was attempted. Not a failure.
+	"""
 	NOT_CONFIGURED
 }
 
@@ -1802,12 +1859,6 @@ type TimesheetLineGql {
 	isPinned: Boolean!
 	confidence: ConfidenceGql!
 	sourceRefs: [String!]!
-}
-
-input TimesheetLineInput {
-	gryzzlyProjectId: ID
-	hours: Float!
-	isPinned: Boolean!
 }
 
 enum TimesheetStatusGql {

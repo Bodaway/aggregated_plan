@@ -1,0 +1,18 @@
+mutation SetQuarterShare($date: NaiveDate!, $quarterIndex: Int!, $laneKey: String!, $hours: Float!) {
+  setQuarterShare(date: $date, quarterIndex: $quarterIndex, laneKey: $laneKey, hours: $hours) {
+    date
+    status
+    totalHours
+    targetHours
+    quarters {
+      index
+      declarableHours
+      shares {
+        laneKey
+        label
+        hours
+        isPinned
+      }
+    }
+  }
+}

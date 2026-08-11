@@ -139,11 +139,12 @@ fn main() -> ExitCode {
             Some(cli::TimesheetAction::Validate) => {
                 timesheet_cmd::timesheet_validate(&args.api_url, args.json, date.as_deref())
             }
-            Some(cli::TimesheetAction::Set { project, hours }) => timesheet_cmd::timesheet_set(
+            Some(cli::TimesheetAction::Set { quarter, task, hours }) => timesheet_cmd::timesheet_set(
                 &args.api_url,
                 args.json,
                 date.as_deref(),
-                &project,
+                quarter,
+                &task,
                 hours,
             ),
             Some(cli::TimesheetAction::Off { am, pm }) => {
