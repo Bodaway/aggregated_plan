@@ -83,6 +83,24 @@ impl Task {
     }
 }
 
+/// R09d: are these two tasks the same recurring task happening twice?
+///
+/// A recurrence materializes one task per occurrence date, all carrying the title
+/// of their template, so a weekly chore fills the backlog with identically-titled
+/// rows on purpose. Those rows are the same work scheduled again, never duplicates
+/// of one another, and merging them would destroy the schedule.
+///
+/// Only siblings of the *same* recurrence are spared. A task typed by hand next to
+/// a materialized occurrence is a genuine duplicate, and so are two separate
+/// recurrences generating the same work — that is a duplicated template, worth
+/// surfacing.
+pub fn are_recurrence_siblings(a: &Task, b: &Task) -> bool {
+    match (a.recurrence_id, b.recurrence_id) {
+        (Some(a_recurrence), Some(b_recurrence)) => a_recurrence == b_recurrence,
+        _ => false,
+    }
+}
+
 /// Choose the survivor and the loser from a deduplication pair.
 ///
 /// Rules (in priority order):
@@ -175,6 +193,46 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    // ─── are_recurrence_siblings (R09d) ───
+
+    #[test]
+    fn two_occurrences_of_one_recurrence_are_siblings() {
+        let recurrence = RecurrenceTemplateId::default();
+        let mut a = make_test_task();
+        let mut b = make_test_task();
+        a.recurrence_id = Some(recurrence);
+        a.occurrence_date = Some("2026-08-10".parse().unwrap());
+        b.recurrence_id = Some(recurrence);
+        b.occurrence_date = Some("2026-08-17".parse().unwrap());
+
+        assert!(are_recurrence_siblings(&a, &b));
+    }
+
+    #[test]
+    fn occurrences_of_different_recurrences_are_not_siblings() {
+        let mut a = make_test_task();
+        let mut b = make_test_task();
+        a.recurrence_id = Some(RecurrenceTemplateId::default());
+        b.recurrence_id = Some(RecurrenceTemplateId::default());
+
+        assert!(!are_recurrence_siblings(&a, &b));
+    }
+
+    #[test]
+    fn a_one_off_task_is_never_a_sibling_of_an_occurrence() {
+        let mut occurrence = make_test_task();
+        occurrence.recurrence_id = Some(RecurrenceTemplateId::default());
+        let one_off = make_test_task();
+
+        assert!(!are_recurrence_siblings(&occurrence, &one_off));
+        assert!(!are_recurrence_siblings(&one_off, &occurrence));
+    }
+
+    #[test]
+    fn two_one_off_tasks_are_not_siblings() {
+        assert!(!are_recurrence_siblings(&make_test_task(), &make_test_task()));
     }
 
     #[test]

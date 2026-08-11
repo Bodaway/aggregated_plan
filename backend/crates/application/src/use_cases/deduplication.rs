@@ -75,6 +75,11 @@ pub async fn find_suggestions(
                 continue;
             }
 
+            // R09d: two occurrences of one recurrence share their title by design.
+            if are_recurrence_siblings(task_a, task_b) {
+                continue;
+            }
+
             // R08: Jira key match
             let mut jira_match = false;
             if let Some(ref source_id) = task_a.source_id {
@@ -459,7 +464,84 @@ mod tests {
         task
     }
 
+    /// One materialized occurrence of a recurring task.
+    fn make_occurrence(
+        title: &str,
+        recurrence_id: RecurrenceTemplateId,
+        occurrence_date: &str,
+    ) -> Task {
+        let mut task = make_task(title);
+        task.recurrence_id = Some(recurrence_id);
+        task.occurrence_date = Some(occurrence_date.parse().unwrap());
+        task
+    }
+
     // ---- Tests ----
+
+    #[tokio::test]
+    async fn find_suggestions_ignores_occurrences_of_one_recurrence() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // A weekly task materializes one identically-titled occurrence per date.
+        // They are the same task happening again, never duplicates of each other.
+        let recurrence_id = RecurrenceTemplateId::default();
+        for date in ["2026-08-03", "2026-08-10", "2026-08-17"] {
+            task_repo.insert(make_occurrence(
+                "SAFT: rouler le script des heures JIRA.",
+                recurrence_id,
+                date,
+            ));
+        }
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert!(
+            suggestions.is_empty(),
+            "expected no suggestions, got {}",
+            suggestions.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_still_flags_a_one_off_copy_of_a_recurring_task() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Typing the task by hand while the recurrence already materializes it is a
+        // real duplicate: only one of the two carries a recurrence.
+        task_repo.insert(make_occurrence(
+            "SAFT: rouler le script des heures JIRA.",
+            RecurrenceTemplateId::default(),
+            "2026-08-17",
+        ));
+        task_repo.insert(make_task("SAFT: rouler le script des heures JIRA."));
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert_eq!(suggestions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn find_suggestions_flags_two_recurrences_generating_the_same_task() {
+        let task_repo = InMemoryTaskRepository::new();
+        let link_repo = InMemoryTaskLinkRepository::new();
+
+        // Two separate recurrence templates producing the same work is a duplicated
+        // template, which is worth surfacing.
+        task_repo.insert(make_occurrence("Weekly team sync", RecurrenceTemplateId::default(), "2026-08-17"));
+        task_repo.insert(make_occurrence("Weekly team sync", RecurrenceTemplateId::default(), "2026-08-17"));
+
+        let suggestions = find_suggestions(&task_repo, &link_repo, test_user_id())
+            .await
+            .unwrap();
+
+        assert_eq!(suggestions.len(), 1);
+    }
 
     #[tokio::test]
     async fn find_suggestions_empty_when_no_tasks() {
