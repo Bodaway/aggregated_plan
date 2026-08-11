@@ -14,7 +14,9 @@ describe('useTimesheet', () => {
     const { result } = renderHook(() => useTimesheet(new Date('2026-06-08T00:00:00Z')));
     expect(result.current.day).toBeNull();
     expect(typeof result.current.reconstruct).toBe('function');
-    expect(typeof result.current.saveLines).toBe('function');
+    expect(typeof result.current.setShare).toBe('function');
+    expect(typeof result.current.clearShare).toBe('function');
+    expect(typeof result.current.resetQuarter).toBe('function');
     expect(typeof result.current.validate).toBe('function');
     expect(typeof result.current.markOff).toBe('function');
   });

@@ -1,12 +1,4 @@
-import { useEffect, useState } from 'react';
-
-import type {
-  DayOffScope,
-  MutationError,
-  ProjectOption,
-  ReconstructedDay,
-  TimesheetLineInput,
-} from '@/hooks/use-timesheet';
+import type { DayOffScope, ProjectOption, ReconstructedDay } from '@/hooks/use-timesheet';
 import { projectColor } from './project-colors';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -19,139 +11,87 @@ const STATUS_LABELS: Record<string, string> = {
 interface Props {
   day: ReconstructedDay;
   projects?: ProjectOption[];
-  onSaveLines: (lines: TimesheetLineInput[]) => Promise<MutationError | null> | void;
   onValidate: () => void;
   onMarkOff: (scope: DayOffScope) => void;
   onRefresh: () => void;
   busy: boolean;
 }
 
-interface EditRow {
-  gryzzlyProjectId: string | null;
-  label: string;
-  hours: number;
-  isPinned: boolean;
-  confidence: string;
-}
-
-export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValidate, onMarkOff, onRefresh, busy }: Props) {
-  const [rows, setRows] = useState<EditRow[]>([]);
-  // Track which rows the user edited → those get pinned on save.
-  const [edited, setEdited] = useState<Set<number>>(new Set());
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setRows(
-      day.lines.map((l) => ({
-        gryzzlyProjectId: l.gryzzlyProjectId,
-        label: l.projectName ?? l.gryzzlyProjectId ?? 'Non attribué',
-        hours: l.hours,
-        isPinned: l.isPinned,
-        confidence: l.confidence,
-      })),
-    );
-    setEdited(new Set());
-    setSaveError(null);
-  }, [day]);
-
-  const total = rows.reduce((s, r) => s + (Number.isFinite(r.hours) ? r.hours : 0), 0);
+/**
+ * The declaration, READ-ONLY.
+ *
+ * Hours per project are derived: they are the sum of the quarter shares. Editing them
+ * here would be a second source of truth the arbitration could not explain, so the only
+ * way to change a number is to change the quarter that produced it.
+ */
+export function ProjectSummarySidebar({
+  day,
+  projects = [],
+  onValidate,
+  onMarkOff,
+  onRefresh,
+  busy,
+}: Props) {
+  const total = day.lines.reduce((s, l) => s + l.hours, 0);
   const delta = total - day.targetHours;
-  const balanced = Math.abs(delta) < 1e-6;
+  const onTarget = Math.abs(delta) < 1e-6;
 
-  // Label to show for a row: follows the selected project, falls back to the
-  // line's original name, then to "Unattributed" for null.
-  const labelFor = (r: EditRow): string => {
-    if (r.gryzzlyProjectId === null) return 'Non attribué';
-    return projects.find((p) => p.id === r.gryzzlyProjectId)?.label ?? r.label;
+  const labelFor = (id: string | null, fallback: string | null): string => {
+    if (id === null) return 'Non attribué';
+    return projects.find((p) => p.id === id)?.label ?? fallback ?? id;
   };
 
-  const setHours = (i: number, value: number) => {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, hours: value } : r)));
-    setEdited((prev) => new Set(prev).add(i));
-  };
+  /** Which quarters contributed to a project, so a total can be traced back. */
+  const quartersFor = (projectId: string | null): number[] =>
+    day.quarters
+      .filter((q) => q.shares.some((s) => s.gryzzlyProjectId === projectId && s.hours > 0))
+      .map((q) => q.index + 1);
 
-  const setProject = (i: number, id: string | null) => {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, gryzzlyProjectId: id } : r)));
-    setEdited((prev) => new Set(prev).add(i));
-  };
-
-  // Collapse rows sharing the same non-null project into a single line
-  // (sum hours, OR the pinned flags) so we never send duplicate project lines.
-  const buildLines = (): TimesheetLineInput[] => {
-    const byProject = new Map<string, TimesheetLineInput>();
-    let unattributed: TimesheetLineInput | null = null;
-    rows.forEach((r, i) => {
-      const hours = Number.isFinite(r.hours) ? r.hours : 0;
-      const isPinned = r.isPinned || edited.has(i);
-      if (r.gryzzlyProjectId === null) {
-        if (unattributed) {
-          unattributed.hours += hours;
-          unattributed.isPinned = unattributed.isPinned || isPinned;
-        } else {
-          unattributed = { gryzzlyProjectId: null, hours, isPinned };
-        }
-        return;
-      }
-      const existing = byProject.get(r.gryzzlyProjectId);
-      if (existing) {
-        existing.hours += hours;
-        existing.isPinned = existing.isPinned || isPinned;
-      } else {
-        byProject.set(r.gryzzlyProjectId, { gryzzlyProjectId: r.gryzzlyProjectId, hours, isPinned });
-      }
-    });
-    return unattributed ? [...byProject.values(), unattributed] : [...byProject.values()];
-  };
-
-  const save = async () => {
-    const err = await onSaveLines(buildLines());
-    setSaveError(err?.message ?? null);
-  };
-
-  // DAY_OFF stays actionable on purpose: there is no reopen/reset mutation, so
-  // locking it would strand the day (Save resets status to Draft — the only recovery path).
+  // DAY_OFF stays actionable on purpose: there is no reopen mutation, so locking it
+  // would strand the day — reconstructing is the only recovery path.
   const locked = day.status === 'VALIDATED' || day.status === 'SUBMITTED';
 
   return (
-    <div className="w-80 shrink-0 bg-white rounded-lg border border-gray-200 p-4 space-y-3">
+    <div className="w-80 shrink-0 space-y-3 rounded-lg border border-gray-200 bg-white p-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Heures × projet</h2>
-        <span className={`text-[10px] px-2 py-0.5 rounded-full ${locked ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-700">
+          Heures × projet
+        </h2>
+        <span
+          className={`rounded-full px-2 py-0.5 text-[10px] ${locked ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}
+        >
           {STATUS_LABELS[day.status] ?? day.status}
         </span>
       </div>
 
       <div className="space-y-2">
-        {rows.map((r, i) => (
-          <div key={i} className="space-y-1">
+        {day.lines.length === 0 && (
+          <p className="text-xs text-gray-400">Rien de déclaré sur cette journée.</p>
+        )}
+        {day.lines.map((l) => (
+          <div key={l.gryzzlyProjectId ?? 'unattributed'} className="space-y-0.5">
             <div className="flex items-center gap-2">
-              <span className={`inline-block w-3 h-3 rounded-sm ${projectColor(r.gryzzlyProjectId)}`} />
-              <span className={`flex-1 text-sm truncate ${r.gryzzlyProjectId ? 'text-gray-800' : 'text-amber-700 font-medium'}`}>
-                {labelFor(r)}
-              </span>
-              {r.confidence === 'LOW' && <span title="confiance basse" className="text-amber-500 text-xs">▲</span>}
-              <input
-                type="number"
-                step={day.roundingIncrement}
-                min={0}
-                value={r.hours}
-                disabled={locked || busy}
-                onChange={(e) => setHours(i, Math.max(0, parseFloat(e.target.value) || 0))}
-                className="w-16 text-right text-sm border border-gray-300 rounded px-1 py-0.5 disabled:bg-gray-100"
+              <span
+                className={`inline-block h-3 w-3 rounded-sm ${projectColor(l.gryzzlyProjectId)}`}
               />
+              <span
+                className={`flex-1 truncate text-sm ${l.gryzzlyProjectId ? 'text-gray-800' : 'font-medium text-amber-700'}`}
+              >
+                {labelFor(l.gryzzlyProjectId, l.projectName)}
+              </span>
+              {l.confidence === 'LOW' && (
+                <span title="confiance basse" className="text-xs text-amber-500">
+                  ▲
+                </span>
+              )}
+              <span className="text-sm tabular-nums text-gray-800">{l.hours.toFixed(2)}</span>
               <span className="text-xs text-gray-400">h</span>
             </div>
-            <select
-              value={r.gryzzlyProjectId ?? ''}
-              disabled={locked || busy}
-              onChange={(e) => setProject(i, e.target.value === '' ? null : e.target.value)}
-              className="w-full text-xs border border-gray-300 rounded px-1 py-0.5 bg-white disabled:bg-gray-100"
-            >
-              <option value="">— Non attribué —</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
-            </select>
+            {quartersFor(l.gryzzlyProjectId).length > 0 && (
+              <p className="pl-5 text-[10px] text-gray-400">
+                depuis Q{quartersFor(l.gryzzlyProjectId).join(', Q')}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -160,19 +100,40 @@ export function ProjectSummarySidebar({ day, projects = [], onSaveLines, onValid
         <span className="font-medium text-gray-700">
           {total.toFixed(2)} / {day.targetHours.toFixed(1)}h
         </span>
-        <span className={balanced ? 'text-green-600' : 'text-amber-600'}>
-          {balanced ? '✓ équilibré' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}h`}
+        <span className={onTarget ? 'text-green-600' : 'text-amber-600'}>
+          {onTarget ? '✓ conforme' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)}h`}
         </span>
       </div>
-
-      {saveError && <div className="text-xs text-red-600">{saveError}</div>}
+      {!onTarget && (
+        <p className="text-[10px] text-gray-500">
+          Le total est la somme des quarts. L’objectif journalier est un repère, pas un
+          facteur d’échelle.
+        </p>
+      )}
 
       {!locked && (
         <div className="grid grid-cols-2 gap-2 pt-1">
-          <button onClick={save} disabled={busy} className="bg-gray-100 text-gray-800 text-sm rounded px-2 py-1 hover:bg-gray-200 disabled:opacity-50">Enregistrer</button>
-          <button onClick={onValidate} disabled={busy} className="bg-blue-600 text-white text-sm rounded px-2 py-1 hover:bg-blue-700 disabled:opacity-50">Valider et verrouiller</button>
-          <button onClick={onRefresh} disabled={busy} className="bg-white border border-gray-300 text-gray-700 text-sm rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50">Reconstruire depuis les signaux</button>
-          <button onClick={() => onMarkOff('FULL')} disabled={busy} className="bg-white border border-gray-300 text-gray-700 text-sm rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50">Jour off</button>
+          <button
+            onClick={onValidate}
+            disabled={busy}
+            className="rounded bg-blue-600 px-2 py-1 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            Valider et verrouiller
+          </button>
+          <button
+            onClick={onRefresh}
+            disabled={busy}
+            className="rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Reconstruire depuis les signaux
+          </button>
+          <button
+            onClick={() => onMarkOff('FULL')}
+            disabled={busy}
+            className="col-span-2 rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Jour off
+          </button>
         </div>
       )}
     </div>

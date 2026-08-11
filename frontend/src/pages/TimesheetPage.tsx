@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { ProjectSummarySidebar } from '@/components/timesheet/ProjectSummarySidebar';
-import { TimesheetTimeline } from '@/components/timesheet/TimesheetTimeline';
+import { QuarterEditor } from '@/components/timesheet/QuarterEditor';
+import { TimesheetLanes } from '@/components/timesheet/TimesheetLanes';
 import { formatDate, formatDisplayDateFr, getNextDay, getPrevDay } from '@/lib/date-utils';
 import { useGryzzlyProjects, useTimesheet, type ReconstructResult } from '@/hooks/use-timesheet';
 
@@ -12,9 +13,15 @@ function formatLocalHm(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/** `1 h 34` from a minute count. */
+function formatDuration(minutes: number): string {
+  return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')}`;
+}
+
 export function TimesheetPage() {
   const [date, setDate] = useState<Date>(new Date());
-  const { day, loading, error, reconstruct, saveLines, validate, markOff, refetch } = useTimesheet(date);
+  const { day, loading, error, reconstruct, setShare, clearShare, resetQuarter, validate, markOff, refetch } =
+    useTimesheet(date);
   const { projects } = useGryzzlyProjects();
 
   const [refreshMsg, setRefreshMsg] = useState<ReconstructResult | null>(null);
@@ -71,8 +78,38 @@ export function TimesheetPage() {
 
       {day && (
         <div className="flex gap-6 items-start">
-          <div className="flex-1 bg-white rounded-lg border border-gray-200 p-4">
-            <TimesheetTimeline blocks={day.blocks} projects={projects} unresolved={day.unresolved} />
+          <div className="flex-1 space-y-4">
+            <div className="rounded-lg border border-gray-200 bg-white p-4">
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-700">
+                Travail concurrent
+              </h2>
+              <TimesheetLanes lanes={day.lanes} quarters={day.quarters} projects={projects} />
+              {day.outsideWorkday.length > 0 && (
+                <p className="mt-3 text-xs text-amber-700">
+                  ⚠{' '}
+                  {formatDuration(day.outsideWorkday.reduce((s, o) => s + o.minutes, 0))} de traces
+                  hors plage horaire —{' '}
+                  {day.outsideWorkday.map((o) => o.label).join(', ')}. Élargissez la journée dans
+                  les réglages pour les déclarer.
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {day.quarters.map((q) => (
+                <QuarterEditor
+                  key={q.index}
+                  quarter={q}
+                  projects={projects}
+                  roundingIncrement={day.roundingIncrement}
+                  readOnly={day.status === 'VALIDATED' || day.status === 'SUBMITTED'}
+                  onSetShare={setShare}
+                  onClearShare={clearShare}
+                  onReset={resetQuarter}
+                />
+              ))}
+            </div>
+
             {day.unresolved.length > 0 && (
               <div className="mt-3 text-xs text-amber-700">
                 <p>
@@ -91,7 +128,6 @@ export function TimesheetPage() {
           <ProjectSummarySidebar
             day={day}
             projects={projects}
-            onSaveLines={saveLines}
             onValidate={validate}
             onMarkOff={markOff}
             onRefresh={onRefresh}

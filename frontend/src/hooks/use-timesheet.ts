@@ -5,7 +5,6 @@ import { formatDate } from '@/lib/date-utils';
 
 export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW';
 export type TimesheetStatus = 'DRAFT' | 'VALIDATED' | 'SUBMITTED' | 'DAY_OFF';
-export type BlockKind = 'MEETING' | 'WORK' | 'OUT_OF_OFFICE';
 export type DayOffScope = 'FULL' | 'MORNING' | 'AFTERNOON';
 
 export interface TimesheetLine {
@@ -16,16 +15,44 @@ export interface TimesheetLine {
   confidence: Confidence;
   sourceRefs: string[];
 }
-export interface AttributedBlock {
-  startTime: string;
-  endTime: string;
+/** One stretch of a lane, in local minutes from midnight. */
+export interface LaneInterval {
+  startMin: number;
+  endMin: number;
+}
+/** One task's presence across the day. Lanes OVERLAP — that is the concurrent view. */
+export interface Lane {
+  laneKey: string;
+  label: string;
   gryzzlyProjectId: string | null;
-  kind: BlockKind;
+  intervals: LaneInterval[];
+  outsideMinutes: number;
+}
+/** What one lane declares inside one quarter, with the weight it came from. */
+export interface QuarterShare {
+  laneKey: string;
+  taskId: string | null;
+  label: string;
+  gryzzlyProjectId: string | null;
+  presenceMinutes: number;
   hours: number;
-  sourceRefs: string[];
-  /** Name of what the block came from: the owning task's title for a WORK block, the
-   *  meeting subject for a MEETING one. Null when the origin has no known name. */
-  originLabel: string | null;
+  isPinned: boolean;
+}
+/** A quarter-day. `shares` always sums to `declarableHours`. */
+export interface Quarter {
+  index: number;
+  startMin: number;
+  endMin: number;
+  hours: number;
+  oooHours: number;
+  declarableHours: number;
+  confidence: Confidence;
+  shares: QuarterShare[];
+}
+export interface OutsideWork {
+  laneKey: string;
+  label: string;
+  minutes: number;
 }
 export interface UnresolvedSignal {
   sourceRef: string;
@@ -42,12 +69,9 @@ export interface ReconstructedDay {
   lines: TimesheetLine[];
   unattributedHours: number;
   unresolved: UnresolvedSignal[];
-  blocks: AttributedBlock[];
-}
-export interface TimesheetLineInput {
-  gryzzlyProjectId: string | null;
-  hours: number;
-  isPinned: boolean;
+  lanes: Lane[];
+  quarters: Quarter[];
+  outsideWorkday: OutsideWork[];
 }
 
 // Minimal error shape surfaced to components, so callers never import urql types.
@@ -79,12 +103,19 @@ const DAY_FIELDS = `
   date status targetHours roundingIncrement totalHours dayConfidence unattributedHours
   lines { gryzzlyProjectId projectName hours isPinned confidence sourceRefs }
   unresolved { sourceRef label at }
-  blocks { startTime endTime gryzzlyProjectId kind hours sourceRefs originLabel }
+  lanes { laneKey label gryzzlyProjectId outsideMinutes intervals { startMin endMin } }
+  quarters {
+    index startMin endMin hours oooHours declarableHours confidence
+    shares { laneKey taskId label gryzzlyProjectId presenceMinutes hours isPinned }
+  }
+  outsideWorkday { laneKey label minutes }
 `;
 
 const TIMESHEET_DRAFT_QUERY = `query TimesheetDraft($date: NaiveDate!) { timesheetDraft(date: $date) { ${DAY_FIELDS} } }`;
 const RECONSTRUCT_MUTATION = `mutation RunReconstruction($date: NaiveDate!) { runTimesheetReconstruction(date: $date) { ${DAY_FIELDS} } }`;
-const SAVE_DRAFT_MUTATION = `mutation SaveDraft($date: NaiveDate!, $lines: [TimesheetLineInput!]!) { saveTimesheetDraft(date: $date, lines: $lines) { ${DAY_FIELDS} } }`;
+const SET_SHARE_MUTATION = `mutation SetShare($date: NaiveDate!, $quarterIndex: Int!, $laneKey: String!, $hours: Float!) { setQuarterShare(date: $date, quarterIndex: $quarterIndex, laneKey: $laneKey, hours: $hours) { ${DAY_FIELDS} } }`;
+const CLEAR_SHARE_MUTATION = `mutation ClearShare($date: NaiveDate!, $quarterIndex: Int!, $laneKey: String!) { clearQuarterShare(date: $date, quarterIndex: $quarterIndex, laneKey: $laneKey) { ${DAY_FIELDS} } }`;
+const RESET_QUARTER_MUTATION = `mutation ResetQuarter($date: NaiveDate!, $quarterIndex: Int!) { resetQuarter(date: $date, quarterIndex: $quarterIndex) { ${DAY_FIELDS} } }`;
 const VALIDATE_MUTATION = `mutation Validate($date: NaiveDate!) { validateTimesheet(date: $date) { ${DAY_FIELDS} } }`;
 const MARK_DAY_OFF_MUTATION = `mutation MarkDayOff($date: NaiveDate!, $scope: DayOffScopeGql!) { markDayOff(date: $date, scope: $scope) { ${DAY_FIELDS} } }`;
 const GRYZZLY_PROJECTS_QUERY = `query GryzzlyProjects { gryzzlyTasks(limit: 500) { gryzzlyProjectId projectName customerName } }`;
@@ -120,7 +151,9 @@ export function useTimesheet(date: Date) {
     variables: { date: dateStr },
   });
   const [, execReconstruct] = useMutation<ReconstructData>(RECONSTRUCT_MUTATION);
-  const [, execSave] = useMutation(SAVE_DRAFT_MUTATION);
+  const [, execSetShare] = useMutation(SET_SHARE_MUTATION);
+  const [, execClearShare] = useMutation(CLEAR_SHARE_MUTATION);
+  const [, execResetQuarter] = useMutation(RESET_QUARTER_MUTATION);
   const [, execValidate] = useMutation(VALIDATE_MUTATION);
   const [, execMarkOff] = useMutation(MARK_DAY_OFF_MUTATION);
 
@@ -147,16 +180,42 @@ export function useTimesheet(date: Date) {
     return { message, isError: false };
   }, [execReconstruct, dateStr, refetch]);
 
-  const saveLines = useCallback(
-    async (lines: TimesheetLineInput[]): Promise<MutationError | null> => {
-      const res = await execSave({ date: dateStr, lines });
+  // Pinning one share re-apportions the rest of its quarter server-side, so every
+  // editing call refetches rather than patching the day locally.
+  const setShare = useCallback(
+    async (quarterIndex: number, laneKey: string, hours: number): Promise<MutationError | null> => {
+      const res = await execSetShare({ date: dateStr, quarterIndex, laneKey, hours });
       if (res.error) {
         return { message: res.error.graphQLErrors[0]?.message ?? res.error.message };
       }
       refetch();
       return null;
     },
-    [execSave, dateStr, refetch],
+    [execSetShare, dateStr, refetch],
+  );
+
+  const clearShare = useCallback(
+    async (quarterIndex: number, laneKey: string): Promise<MutationError | null> => {
+      const res = await execClearShare({ date: dateStr, quarterIndex, laneKey });
+      if (res.error) {
+        return { message: res.error.graphQLErrors[0]?.message ?? res.error.message };
+      }
+      refetch();
+      return null;
+    },
+    [execClearShare, dateStr, refetch],
+  );
+
+  const resetQuarter = useCallback(
+    async (quarterIndex: number): Promise<MutationError | null> => {
+      const res = await execResetQuarter({ date: dateStr, quarterIndex });
+      if (res.error) {
+        return { message: res.error.graphQLErrors[0]?.message ?? res.error.message };
+      }
+      refetch();
+      return null;
+    },
+    [execResetQuarter, dateStr, refetch],
   );
 
   const validate = useCallback(async () => {
@@ -192,7 +251,9 @@ export function useTimesheet(date: Date) {
     loading: result.fetching,
     error: result.error ?? null,
     reconstruct,
-    saveLines,
+    setShare,
+    clearShare,
+    resetQuarter,
     validate,
     markOff,
     refetch,
