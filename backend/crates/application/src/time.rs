@@ -36,6 +36,33 @@ pub fn local_day_start(tz: Tz, date: NaiveDate) -> DateTime<Utc> {
         .unwrap_or_else(|| Utc.from_utc_datetime(&midnight))
 }
 
+/// The UTC instant a local wall-clock reading names.
+///
+/// The inverse of [`to_local`], and the only one: a caller that names a past moment
+/// in local terms — `aplan log --at 2026-08-06T14:30` — must land on the very
+/// instant [`to_local`] would map back to that reading, or the entry documents a
+/// different half-day than the one the operator typed.
+///
+/// The two readings a local wall-clock can have no single answer for are resolved
+/// the same way `local_day_start` resolves them:
+/// - **Ambiguous** (a DST fall-back repeats the hour): the *earliest* of the two
+///   instants. Both are the local time asked for; picking the earlier one is
+///   arbitrary but fixed, and a fixed choice is what makes the conversion a
+///   function.
+/// - **Nonexistent** (a spring-forward skips the hour): walked forward an hour, to
+///   the first instant that does exist. The alternative — reinterpreting the naive
+///   time as UTC — is off by the zone's whole offset and can move the entry to
+///   another day.
+pub fn local_to_utc(tz: Tz, local: NaiveDateTime) -> DateTime<Utc> {
+    if let Some(dt) = tz.from_local_datetime(&local).earliest() {
+        return dt.with_timezone(&Utc);
+    }
+    tz.from_local_datetime(&(local + Duration::hours(1)))
+        .earliest()
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| Utc.from_utc_datetime(&local))
+}
+
 /// UTC half-open window `[start of `since`, start of the day after `until`)`,
 /// matching the repository's `logged_at >= from AND logged_at < to`.
 ///
@@ -88,6 +115,54 @@ mod tests {
             "must walk forward to 01:00 local (already DST), not reinterpret 00:00 as UTC"
         );
         assert_eq!(end.to_rfc3339(), "2026-03-09T04:00:00+00:00");
+    }
+
+    /// The property `aplan log --at` depends on: what the operator typed comes back
+    /// unchanged. Both sides of a DST boundary, since a conversion that only holds in
+    /// one offset would silently move a backdated August entry by an hour.
+    #[test]
+    fn local_to_utc_round_trips_through_to_local() {
+        let tz: Tz = "Europe/Paris".parse().unwrap();
+        for reading in ["2026-08-06T14:30:00", "2026-01-15T09:05:00"] {
+            let local = NaiveDateTime::parse_from_str(reading, "%Y-%m-%dT%H:%M:%S").unwrap();
+            assert_eq!(to_local(local_to_utc(tz, local), tz), local, "{reading}");
+        }
+    }
+
+    #[test]
+    fn local_to_utc_applies_the_summer_offset() {
+        let tz: Tz = "Europe/Paris".parse().unwrap();
+        let local = NaiveDateTime::parse_from_str("2026-08-06T14:30:00", "%Y-%m-%dT%H:%M:%S")
+            .unwrap();
+        // CEST is UTC+2 in August.
+        assert_eq!(local_to_utc(tz, local).to_rfc3339(), "2026-08-06T12:30:00+00:00");
+    }
+
+    /// A local reading inside a spring-forward gap names no instant at all. It is
+    /// walked forward rather than reinterpreted as UTC — the latter lands an offset's
+    /// worth earlier, which is how a backdated entry used to change days.
+    #[test]
+    fn local_to_utc_walks_forward_past_a_dst_gap() {
+        let tz: Tz = "Europe/Paris".parse().unwrap();
+        // 2026-03-29 02:30 local does not exist: clocks jump 02:00 → 03:00.
+        let local = NaiveDateTime::parse_from_str("2026-03-29T02:30:00", "%Y-%m-%dT%H:%M:%S")
+            .unwrap();
+        assert_eq!(
+            to_local(local_to_utc(tz, local), tz).to_string(),
+            "2026-03-29 03:30:00",
+            "must land after the gap, not an offset earlier"
+        );
+    }
+
+    /// A fall-back's repeated hour has two candidate instants. Either is the local
+    /// time asked for; the earliest is chosen so the conversion stays a function.
+    #[test]
+    fn local_to_utc_picks_the_earliest_of_an_ambiguous_hour() {
+        let tz: Tz = "Europe/Paris".parse().unwrap();
+        // 2026-10-25 02:30 local happens twice: 00:30 UTC (CEST) then 01:30 UTC (CET).
+        let local = NaiveDateTime::parse_from_str("2026-10-25T02:30:00", "%Y-%m-%dT%H:%M:%S")
+            .unwrap();
+        assert_eq!(local_to_utc(tz, local).to_rfc3339(), "2026-10-25T00:30:00+00:00");
     }
 
     #[test]

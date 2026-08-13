@@ -16,6 +16,8 @@ This puts an `aplan` binary on your `$PATH` (typically `~/.cargo/bin/aplan`).
 
 ```bash
 aplan start AP-1234           # start a worklog on a Jira-keyed task
+aplan log "finding here"      # timestamped worklog entry (drives the time)
+aplan log --at 2026-08-06T14:30 "…"  # …for a past day, see below
 aplan note "thoughts here"    # append to the currently-tracked task
 aplan status in_progress      # change status of the current task
 aplan done                    # mark done + stop the timer
@@ -68,6 +70,56 @@ code read or a build wait without the work stopping.
 Practical consequence: a day whose entries are spread thin is worth less than the span
 from its first entry to its last. That is the point — but it means `aplan journal` and
 the activity report show the stretches, not the span.
+
+## Writing up a past day
+
+`aplan log` stamps the entry `now`, which is right while the work is happening and wrong
+when a day is written up afterwards: a batch of entries about Thursday, all posted on
+Monday, leaves Thursday billing nothing and puts a near-zero slot on Monday. `--at`
+places the entry in time instead.
+
+```bash
+aplan log --at 2026-08-06T14:30 "cause racine identifiée"   # that day, that hour
+aplan log --at "2026-08-06 14:30" "…"                       # same, quoted form
+aplan log --at 14:30 "…"                                    # today at 14:30
+aplan log --at 2026-08-06 "…"                               # that day at noon
+```
+
+`--at` is read in **your** timezone (`aplan.timezone`) and sent unconverted; the server
+does the conversion, so the entry lands on the local day you typed.
+
+**A bare date means noon**, and the reason is the 45-minute rule above run backwards: an
+entry is evidence for the three quarters of an hour *before* it, clipped to the working
+windows. Noon carries 11:15–12:00, fully inside the morning. Midnight would fall in no
+window at all, and even the workday's own 08:00 start casts its shadow over 07:15–08:00,
+entirely before the window opens — both would bill zero.
+
+`--at` also **rebuilds that day's activity slots**, and it has to: `aplan flush` works
+out which half-days to rebuild from the entries inside its own window, which starts when
+the session did, so a backdated entry is invisible to it and its day would keep showing
+no hours. The rebuild is reported on its own line:
+
+```text
+✎ Audit config Claude Code: worklog entry added (2026-08-06 14:30)
+↻ 2026-08-06 afternoon: 1 slot(s) rebuilt
+```
+
+If that rebuild fails the command still **succeeds**, because the entry is written and
+re-running `log` would duplicate it. The warning names the repair, which is idempotent:
+
+```bash
+aplan slots rebuild --task <task> --date 2026-08-06
+```
+
+Use `slots rebuild` by hand for a day whose entries were backdated some other way (the
+web UI's timestamp editor, `updateWorklogEntry`). It takes no `--confirm`: it only ever
+rewrites one task's own half-days from entries that are still there, so running it twice
+leaves the same day. Then re-run `aplan timesheet --date <day>` — the draft was
+reconstructed before the rebuild.
+
+One thing `--at` does not invent: **hours still come from the spread of the entries.**
+Seven entries backdated to the same minute are worth one minute, exactly as they would
+be live. Writing up a past day honestly means giving each entry the time it happened at.
 
 ## Correcting an attribution
 

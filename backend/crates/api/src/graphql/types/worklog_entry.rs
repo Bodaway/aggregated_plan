@@ -6,9 +6,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use application::repositories::TaskRepository;
 use application::use_cases::consolidation::MarkConsolidatedOutcome;
 use application::use_cases::reattribution::{ReattributionOutcome, TaskTimeChange};
-use application::use_cases::worklog::FlushOutcome;
+use application::use_cases::worklog::{DayRebuildOutcome, FlushOutcome};
 use domain::types::WorklogEntry;
 
+use super::enums::HalfDayGql;
 use super::task::TaskGql;
 
 /// GraphQL wrapper for the domain WorklogEntry entity.
@@ -76,6 +77,32 @@ impl FlushResultGql {
     /// Number of activity slots written by this flush.
     async fn slots_written(&self) -> i32 {
         self.0.slots_written as i32
+    }
+}
+
+/// Result of `rebuildWorklogProjection`: what naming one local day did to one
+/// task's slots.
+///
+/// `halfDays` empty means the task logged nothing that day, so nothing was touched —
+/// a correct outcome, not a failure. `slotsDiscarded` counts the projection's own
+/// stale slots this rebuild replaced, so a re-run reports `discarded == written`
+/// rather than growing the day's hours.
+#[derive(SimpleObject)]
+pub struct DayRebuildResultGql {
+    pub date: NaiveDate,
+    pub half_days: Vec<HalfDayGql>,
+    pub slots_discarded: i32,
+    pub slots_written: i32,
+}
+
+impl From<DayRebuildOutcome> for DayRebuildResultGql {
+    fn from(outcome: DayRebuildOutcome) -> Self {
+        Self {
+            date: outcome.date,
+            half_days: outcome.half_days.into_iter().map(HalfDayGql::from).collect(),
+            slots_discarded: outcome.slots_discarded as i32,
+            slots_written: outcome.slots_written as i32,
+        }
     }
 }
 

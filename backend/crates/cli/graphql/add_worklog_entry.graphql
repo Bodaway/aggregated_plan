@@ -1,5 +1,5 @@
-mutation AddWorklogEntry($taskId: ID!, $body: String!, $sessionId: String) {
-  addWorklogEntry(taskId: $taskId, body: $body, sessionId: $sessionId) {
+mutation AddWorklogEntry($taskId: ID!, $body: String!, $loggedAtLocal: NaiveDateTime, $sessionId: String) {
+  addWorklogEntry(taskId: $taskId, body: $body, loggedAtLocal: $loggedAtLocal, sessionId: $sessionId) {
     id
     taskId
     loggedAt

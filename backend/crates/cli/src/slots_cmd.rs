@@ -1,4 +1,11 @@
-//! `aplan slots repair` — give back their task to the slots that lost it.
+//! `aplan slots` — maintenance on the activity slots themselves.
+//!
+//! Two verbs, two different damages. `rebuild` names one task and one local day and
+//! rewrites that day's slots from the worklog entries — the repair a backdated entry
+//! needs, since `aplan flush` only ever looks inside its own window (see [`rebuild`]).
+//! `repair`, below, is the older and blunter one.
+//!
+//! # `aplan slots repair` — give back their task to the slots that lost it
 //!
 //! The damage: a write that used `INSERT OR REPLACE INTO tasks` deletes before it
 //! inserts, which fired `activity_slots.task_id`'s `ON DELETE SET NULL`. The task row
@@ -23,7 +30,10 @@
 
 use crate::client::{Client, ClientError};
 use crate::output::{hm, print_json, ExitCode};
-use crate::queries::{repair_orphaned_slots, RepairOrphanedSlots};
+use crate::queries::{
+    rebuild_worklog_projection, repair_orphaned_slots, RebuildWorklogProjection,
+    RepairOrphanedSlots,
+};
 
 /// Map a transport/GraphQL failure onto the exit-code contract.
 ///
@@ -204,6 +214,87 @@ pub fn repair(api_url: &str, json: bool, from: &str, to: &str, confirm: bool) ->
     } else {
         println!("  to apply: add --confirm");
     }
+
+    ExitCode::Success
+}
+
+/// `aplan slots rebuild --task <TARGET> --date <DATE>`
+///
+/// The repair path for a day whose entries carry a backdated `logged_at`: `aplan flush`
+/// works out which half-days to rebuild from the entries inside its own window, and
+/// that window starts when the session did, so an entry timestamped last Thursday is
+/// invisible to it and Thursday keeps showing no hours. Here the day is named.
+///
+/// No `--confirm`, unlike `repair` above, and the asymmetry is deliberate: `repair`
+/// can *lose* hours (an orphan whose entries are gone is discarded, not moved), while
+/// this only ever rewrites one task's own half-days from entries that are still there.
+/// Re-running it leaves the same day.
+pub fn rebuild(api_url: &str, json: bool, task: &str, date: &str) -> ExitCode {
+    let date = match parse_date("--date", date) {
+        Ok(date) => date,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::PreconditionFailed;
+        }
+    };
+
+    let client = Client::new(api_url.to_string());
+    let target = match crate::lookup::resolve_task(&client, Some(task)) {
+        Ok(target) => target,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return e.exit_code();
+        }
+    };
+
+    let result = match client.run::<RebuildWorklogProjection>(rebuild_worklog_projection::Variables {
+        task_id: target.id.clone(),
+        date: date.clone(),
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return exit_code_for(&e);
+        }
+    };
+
+    if json {
+        if let Err(e) = print_json(&result.raw) {
+            eprintln!("error writing output: {e}");
+            return ExitCode::Generic;
+        }
+        return ExitCode::Success;
+    }
+
+    let out = &result.data.rebuild_worklog_projection;
+    if out.half_days.is_empty() {
+        // Not a failure, and said plainly: the operator asked about a day this task
+        // has no entry on, so there is nothing to derive slots from. Silence here
+        // would read as "rebuilt, and it came to nothing".
+        println!(
+            "\u{2713} {} \u{2014} {} logged nothing that day, nothing to rebuild",
+            out.date, target.title
+        );
+        return ExitCode::Success;
+    }
+
+    println!(
+        "\u{21bb} {} {}: {} written{}  \u{2014} {}",
+        out.date,
+        crate::commands::half_day_labels(&out.half_days),
+        slots(out.slots_written as i64),
+        if out.slots_discarded > 0 {
+            format!(", {} replaced", out.slots_discarded)
+        } else {
+            String::new()
+        },
+        target.title
+    );
+    println!(
+        "  the timesheet draft of that day predates this rebuild \u{2014} \
+         re-run `aplan timesheet --date {}`",
+        out.date
+    );
 
     ExitCode::Success
 }

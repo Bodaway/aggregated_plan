@@ -168,6 +168,12 @@ pub enum Commands {
         /// Override the implicit active-task target.
         #[arg(long)]
         task: Option<String>,
+        /// When the work happened, in LOCAL time — for writing up a past day.
+        /// `2026-08-06T14:30`, `"2026-08-06 14:30"`, `14:30` (today) or
+        /// `2026-08-06` (that day at noon). Also rebuilds the day's activity
+        /// slots, so the hours land on it instead of on today.
+        #[arg(long, value_name = "WHEN")]
+        at: Option<String>,
     },
     /// Set the status of the currently-tracked task (or --task TARGET).
     Status {
@@ -389,6 +395,25 @@ pub enum SlotsCmd {
         /// Apply the repair. Without it nothing is written.
         #[arg(long)]
         confirm: bool,
+    },
+    /// Rebuild ONE task's slots for ONE local day from its worklog entries.
+    ///
+    /// What `aplan flush` cannot reach: the flush works out which half-days to
+    /// rebuild from the entries inside its own window, which starts when the
+    /// session did, so an entry backdated with `aplan log --at` is invisible to
+    /// it and its day keeps showing no hours. Naming the day closes that.
+    ///
+    /// `aplan log --at` runs this itself; use it by hand to repair a day whose
+    /// entries were backdated some other way, or when that automatic pass failed.
+    /// No --confirm: it derives the slots from the entries and replaces only the
+    /// ones the projection owns, so running it twice leaves the same day.
+    Rebuild {
+        /// Task to rebuild: UUID, Jira-style key, or fuzzy title.
+        #[arg(long)]
+        task: String,
+        /// The local day to rebuild, YYYY-MM-DD.
+        #[arg(long)]
+        date: String,
     },
 }
 

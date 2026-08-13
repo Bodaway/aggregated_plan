@@ -126,12 +126,26 @@ impl MutationRoot {
 
     /// Add a timestamped worklog entry to a task. `sessionId` attributes the entry
     /// to the session that wrote it; omitted, it is the human's, working by hand.
+    ///
+    /// Two ways to place the entry in time, at most one at a time:
+    /// - `loggedAt` — an absolute UTC instant, for a caller that already holds one
+    ///   (the web UI builds it from a browser `Date`).
+    /// - `loggedAtLocal` — a wall-clock reading in the user's own timezone, for a
+    ///   caller that has only what a human typed (`aplan log --at 2026-08-06T14:30`).
+    ///   Converted here, through the one `aplan.timezone` reading every other
+    ///   projection uses, so the entry cannot land on a different local day than the
+    ///   half-day arithmetic will later look for it in. A CLI doing this conversion
+    ///   itself would be the second implementation of local-to-UTC that
+    ///   `application::time` exists to prevent.
+    ///
+    /// Neither given, the entry is stamped `now`.
     async fn add_worklog_entry(
         &self,
         ctx: &Context<'_>,
         task_id: ID,
         body: String,
         logged_at: Option<chrono::DateTime<chrono::Utc>>,
+        logged_at_local: Option<chrono::NaiveDateTime>,
         session_id: Option<String>,
     ) -> Result<WorklogEntryGql> {
         let repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
@@ -139,6 +153,27 @@ impl MutationRoot {
         let tid = Uuid::parse_str(&task_id)
             .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
         let now = chrono::Utc::now();
+
+        // Refused rather than given a precedence rule: the two arguments are the same
+        // decision expressed twice, and a caller that sent both disagreeing values has
+        // a bug that a silent winner would hide inside billable hours.
+        let logged_at = match (logged_at, logged_at_local) {
+            (Some(_), Some(_)) => {
+                return Err(async_graphql::Error::new(
+                    "loggedAt and loggedAtLocal both name the entry's instant — pass one",
+                ))
+            }
+            (Some(utc), None) => Some(utc),
+            (None, Some(local)) => {
+                let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+                let tz = worklog_uc::user_timezone(config_repo.as_ref(), user_id)
+                    .await
+                    .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                Some(application::time::local_to_utc(tz, local))
+            }
+            (None, None) => None,
+        };
+
         let entry = worklog_uc::add_worklog_entry(
             repo.as_ref(),
             user_id,
@@ -413,6 +448,48 @@ impl MutationRoot {
         }
 
         Ok(FlushResultGql(outcome))
+    }
+
+    /// Rebuild one task's activity slots for one **named local day**, advancing no
+    /// flush watermark.
+    ///
+    /// What `flushWorklogTime` cannot do: it discovers which half-days to rebuild from
+    /// the entries inside its own window, and that window starts when the session did.
+    /// An entry written with a backdated instant (`addWorklogEntry`'s `loggedAt` /
+    /// `loggedAtLocal`, which `aplan log --at` uses to record yesterday's work) sits
+    /// before that window, so the flush never learns its half-day exists and its hours
+    /// never reach the timesheet — the entry is in the journal and the day still bills
+    /// zero. Naming the day closes that.
+    ///
+    /// Only the half-days this task actually has entries in are rebuilt. Idempotent:
+    /// it derives the slots from the entries and replaces only the ones the projection
+    /// owns, so re-running converges instead of doubling the day.
+    async fn rebuild_worklog_projection(
+        &self,
+        ctx: &Context<'_>,
+        task_id: ID,
+        date: NaiveDate,
+    ) -> Result<DayRebuildResultGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let activity_repo = ctx.data::<Arc<dyn ActivitySlotRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let tid = Uuid::parse_str(&task_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid task ID: {e}")))?;
+
+        let outcome = worklog_uc::rebuild_task_local_date(
+            worklog_repo.as_ref(),
+            activity_repo.as_ref(),
+            config_repo.as_ref(),
+            user_id,
+            tid,
+            date,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(outcome.into())
     }
 
     /// Move worklog entries — and the activity time derived from them — from one

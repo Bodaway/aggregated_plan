@@ -1,0 +1,8 @@
+mutation RebuildWorklogProjection($taskId: ID!, $date: NaiveDate!) {
+  rebuildWorklogProjection(taskId: $taskId, date: $date) {
+    date
+    halfDays
+    slotsDiscarded
+    slotsWritten
+  }
+}

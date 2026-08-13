@@ -215,6 +215,14 @@ pub struct FlushWorklogTime;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
+    query_path = "graphql/rebuild_worklog_projection.graphql",
+    response_derives = "Debug, Clone, PartialEq"
+)]
+pub struct RebuildWorklogProjection;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
     query_path = "graphql/reattribute_worklog.graphql",
     response_derives = "Debug, Clone"
 )]

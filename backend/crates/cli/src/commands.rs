@@ -12,12 +12,12 @@ use crate::queries::{
     activity_journal, activity_overlaps, add_worklog_entry, append_task_notes, bind_session,
     complete_task, create_task, daily_dashboard, delete_task, end_session, flush_worklog_time,
     force_sync, get_configuration, get_task, list_alerts, list_tasks, priority_matrix,
-    reset_urgency, resolve_alert, set_tracking_state, update_configuration, update_priority,
-    update_task_status, ActivityJournal, ActivityOverlaps, AddWorklogEntry, AppendTaskNotes,
-    BindSession, CompleteTask, CreateTask, DailyDashboard, DeleteTask, EndSession,
-    FlushWorklogTime, ForceSync, GetConfiguration, GetTask, ListAlerts, ListTasks, PriorityMatrix,
-    ResetUrgency, ResolveAlert, SetTrackingState, UpdateConfiguration, UpdatePriority,
-    UpdateTaskStatus,
+    rebuild_worklog_projection, reset_urgency, resolve_alert, set_tracking_state,
+    update_configuration, update_priority, update_task_status, ActivityJournal, ActivityOverlaps,
+    AddWorklogEntry, AppendTaskNotes, BindSession, CompleteTask, CreateTask, DailyDashboard,
+    DeleteTask, EndSession, FlushWorklogTime, ForceSync, GetConfiguration, GetTask, ListAlerts,
+    ListTasks, PriorityMatrix, RebuildWorklogProjection, ResetUrgency, ResolveAlert,
+    SetTrackingState, UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
 };
 
 /// Who logged one side of an overlap, as the pinned spec line prints it:
@@ -516,13 +516,122 @@ pub fn note(
     }
 }
 
+/// Where a bare `--at 2026-08-06` lands: local noon.
+///
+/// Not an arbitrary midpoint. A worklog entry is evidence for the 45 minutes BEFORE
+/// it (`domain::rules::presence::build_lanes`), clipped to the configured working
+/// windows, so what a bare date bills depends entirely on the hour chosen for it.
+/// Noon carries `11:15–12:00` — a full 45 minutes inside the morning window. Both
+/// obvious alternatives bill nothing at all: midnight falls in no window, and the
+/// workday's own 08:00 start casts its shadow over `07:15–08:00`, entirely before
+/// the window opens.
+const BARE_DATE_HOUR: u32 = 12;
+
+/// The four forms `--at` accepts, in the order they are tried. Date-and-time first:
+/// `%H:%M` would otherwise never be reached, since a `%Y-%m-%d` parse of `14:30`
+/// fails but a bare-date branch checked earlier could not tell the two apart.
+const AT_DATETIME_FORMATS: [&str; 4] =
+    ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"];
+
+/// The local wall-clock reading `--at` names, or a refusal naming the accepted forms.
+///
+/// Deliberately *local*, and sent to the server as such (`addWorklogEntry`'s
+/// `loggedAtLocal`). Converting to UTC here would make this the second
+/// implementation of local-to-UTC in the codebase, and the day a disagreement
+/// between the two lands on is the day the hours get billed to —
+/// `application::time` exists to keep that conversion single.
+///
+/// `today` is passed in rather than read, so the time-only form is testable.
+fn parse_at(value: &str, today: chrono::NaiveDate) -> Result<chrono::NaiveDateTime, String> {
+    for format in AT_DATETIME_FORMATS {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, format) {
+            return Ok(dt);
+        }
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return date
+            .and_hms_opt(BARE_DATE_HOUR, 0, 0)
+            .ok_or_else(|| format!("--at {value} has no noon"));
+    }
+    for format in ["%H:%M:%S", "%H:%M"] {
+        if let Ok(time) = chrono::NaiveTime::parse_from_str(value, format) {
+            return Ok(today.and_time(time));
+        }
+    }
+    Err(format!(
+        "--at {value} is not a moment (expected YYYY-MM-DDTHH:MM, \"YYYY-MM-DD HH:MM\", \
+         HH:MM for today, or YYYY-MM-DD for that day at noon)"
+    ))
+}
+
+/// The half-days a rebuild touched, as one line: `morning`, `afternoon`,
+/// `morning+afternoon`. Shared with `slots_cmd::rebuild`, which reports the same
+/// operation run by hand — two spellings of one outcome would read as two outcomes.
+pub(crate) fn half_day_labels(half_days: &[rebuild_worklog_projection::HalfDayGql]) -> String {
+    use rebuild_worklog_projection::HalfDayGql;
+    half_days
+        .iter()
+        .map(|h| match h {
+            HalfDayGql::MORNING => "morning",
+            HalfDayGql::AFTERNOON => "afternoon",
+            HalfDayGql::Other(_) => "half-day",
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// The `↻ …` line a rebuild reports.
+///
+/// An empty `halfDays` is unreachable straight after a backdated write — the entry
+/// that triggered the rebuild is on that day — but a silent nothing would be
+/// indistinguishable from a rebuild that wrote real slots, so it says so.
+fn rebuild_line(rebuilt: &rebuild_worklog_projection::RebuildWorklogProjectionRebuildWorklogProjection) -> String {
+    if rebuilt.half_days.is_empty() {
+        format!("↻ {}: nothing to rebuild", rebuilt.date)
+    } else {
+        format!(
+            "↻ {} {}: {} slot(s) rebuilt",
+            rebuilt.date,
+            half_day_labels(&rebuilt.half_days),
+            rebuilt.slots_written
+        )
+    }
+}
+
+/// Rebuild `task_id`'s activity slots for one local day.
+///
+/// Split out from [`log`] because the backdated write is already done by the time this
+/// runs: a failure here must be reported without claiming the entry failed.
+fn rebuild_day(
+    client: &Client,
+    task_id: &str,
+    date: chrono::NaiveDate,
+) -> Result<RunResult<rebuild_worklog_projection::ResponseData>, ClientError> {
+    client.run::<RebuildWorklogProjection>(rebuild_worklog_projection::Variables {
+        task_id: task_id.to_string(),
+        date: date.to_string(),
+    })
+}
+
 pub fn log(
     api_url: &str,
     json: bool,
     text: &[String],
     task: Option<&str>,
+    at: Option<&str>,
     session: Option<&str>,
 ) -> ExitCode {
+    // Before the lookup on purpose: a mistyped `--at` is a precondition failure, and
+    // finding that out costs no round-trip and writes nothing.
+    let at = match at.map(|v| parse_at(v, chrono::Local::now().date_naive())) {
+        Some(Ok(parsed)) => Some(parsed),
+        Some(Err(message)) => {
+            eprintln!("error: {message}");
+            return ExitCode::PreconditionFailed;
+        }
+        None => None,
+    };
+
     let client = Client::new(api_url.to_string());
     let (target, via) = match resolve_target(&client, session, task) {
         Ok(pair) => pair,
@@ -544,25 +653,74 @@ pub fn log(
     let result = client.run::<AddWorklogEntry>(add_worklog_entry::Variables {
         task_id: target.id.clone(),
         body: joined,
+        logged_at_local: at.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string()),
         session_id,
     });
-    match result {
-        Ok(r) => {
-            if json {
-                if let Err(e) = print_json(&r.raw) {
-                    eprintln!("error writing output: {}", e);
-                    return ExitCode::Generic;
-                }
-                return ExitCode::Success;
-            }
-            println!("✎ {}: worklog entry added", target.title);
-            ExitCode::Success
-        }
+    let mut raw = match result {
+        Ok(r) => r.raw,
         Err(e) => {
             eprintln!("error: {}", e);
-            ExitCode::Generic
+            return ExitCode::Generic;
+        }
+    };
+
+    // A backdated entry sits before the flush window, so nothing automatic would ever
+    // turn it into slots: `aplan journal` and the workload view would keep showing that
+    // day as empty. Rebuilding it here is what makes `--at` place the *hours*, not just
+    // the note. Ahead of the `--json` early return on purpose: a machine caller that
+    // got the entry written and the day left unrebuilt would be back at the very defect
+    // `--at` exists to fix, and silently.
+    let mut rebuilt_line = None;
+    if let Some(dt) = at {
+        match rebuild_day(&client, &target.id, dt.date()) {
+            Ok(r) => {
+                rebuilt_line = Some(rebuild_line(&r.data.rebuild_worklog_projection));
+                // Merged into the same `data` object the entry came back in, so
+                // `--json` reports both halves of what `--at` did. Only ever present
+                // alongside `--at`, so no existing caller's payload changes shape.
+                if let (Some(target), Some(source)) = (raw.as_object_mut(), r.raw.as_object()) {
+                    for (key, value) in source {
+                        target.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                // Success despite the failure, and deliberately: the entry is written
+                // and a re-run of this command would duplicate it, which is worse than
+                // an unrebuilt day. The rebuild itself is idempotent, so the named
+                // repair is safe to run as often as needed.
+                eprintln!(
+                    "warning: the entry was written, but rebuilding {date} failed: {e}\n\
+                     \x20        do NOT re-run this log — it would duplicate the entry.\n\
+                     \x20        rebuild alone: aplan slots rebuild --task {id} --date {date}",
+                    date = dt.date(),
+                    id = target.id,
+                );
+            }
         }
     }
+
+    if json {
+        if let Err(e) = print_json(&raw) {
+            eprintln!("error writing output: {}", e);
+            return ExitCode::Generic;
+        }
+        return ExitCode::Success;
+    }
+
+    match at {
+        Some(dt) => println!(
+            "✎ {}: worklog entry added ({})",
+            target.title,
+            dt.format("%Y-%m-%d %H:%M")
+        ),
+        None => println!("✎ {}: worklog entry added", target.title),
+    }
+    if let Some(line) = rebuilt_line {
+        println!("{line}");
+    }
+
+    ExitCode::Success
 }
 
 pub fn stop(api_url: &str, json: bool, session: Option<&str>) -> ExitCode {
@@ -1394,6 +1552,73 @@ pub fn config(api_url: &str, json: bool, cmd: &ConfigCmd) -> ExitCode {
 }
 
 #[cfg(test)]
+mod at_parsing_tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 8, 11).unwrap()
+    }
+
+    fn parsed(value: &str) -> String {
+        parse_at(value, today())
+            .unwrap_or_else(|e| panic!("{value} should parse: {e}"))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    }
+
+    #[test]
+    fn a_date_and_time_is_taken_as_written() {
+        assert_eq!(parsed("2026-08-06T14:30"), "2026-08-06 14:30:00");
+        assert_eq!(parsed("2026-08-06T14:30:09"), "2026-08-06 14:30:09");
+        assert_eq!(parsed("2026-08-06 14:30"), "2026-08-06 14:30:00");
+        assert_eq!(parsed("2026-08-06 14:30:09"), "2026-08-06 14:30:09");
+    }
+
+    #[test]
+    fn a_bare_time_means_today() {
+        assert_eq!(parsed("14:30"), "2026-08-11 14:30:00");
+        assert_eq!(parsed("09:05:30"), "2026-08-11 09:05:30");
+    }
+
+    /// The documented default, and load-bearing: a worklog entry is evidence for the
+    /// 45 minutes before it, clipped to the working windows, so midnight (no window)
+    /// and 08:00 (its shadow falls before the window opens) both bill nothing. Noon
+    /// carries a full 45 minutes inside the morning.
+    #[test]
+    fn a_bare_date_lands_at_noon() {
+        assert_eq!(parsed("2026-08-06"), "2026-08-06 12:00:00");
+    }
+
+    #[test]
+    fn a_bare_time_is_not_mistaken_for_a_date() {
+        // `14:30` must reach the time-only branch rather than being refused by the
+        // date branch that runs before it.
+        assert_eq!(parse_at("14:30", today()).unwrap().date(), today());
+    }
+
+    #[test]
+    fn a_moment_that_is_not_one_is_refused_with_the_accepted_forms() {
+        for bogus in ["hier", "06/08/2026", "2026-13-40", "2026-08-06T25:00", "", "14h30"] {
+            let error = parse_at(bogus, today())
+                .expect_err(&format!("{bogus} must not parse"));
+            assert!(error.contains("YYYY-MM-DDTHH:MM"), "{bogus}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_half_day_line_names_both_halves_when_both_were_rebuilt() {
+        use rebuild_worklog_projection::HalfDayGql;
+        assert_eq!(half_day_labels(&[HalfDayGql::MORNING]), "morning");
+        assert_eq!(half_day_labels(&[HalfDayGql::AFTERNOON]), "afternoon");
+        assert_eq!(
+            half_day_labels(&[HalfDayGql::MORNING, HalfDayGql::AFTERNOON]),
+            "morning+afternoon"
+        );
+    }
+}
+
+#[cfg(test)]
 mod overlap_display_tests {
     use super::*;
 
@@ -1459,3 +1684,4 @@ mod overlap_display_tests {
         );
     }
 }
+

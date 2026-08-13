@@ -187,6 +187,98 @@ pub async fn materialize_worklog_time(
     Ok(FlushOutcome { slots_written: written, active_since: now })
 }
 
+/// What a rebuild of one named local day did to one task's projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DayRebuildOutcome {
+    pub date: NaiveDate,
+    /// The half-days that actually held entries of this task, morning first. Empty
+    /// means the task logged nothing that day and nothing was touched.
+    pub half_days: Vec<HalfDay>,
+    /// Slots of this task the projection owned there and replaced.
+    pub slots_discarded: u32,
+    pub slots_written: u32,
+}
+
+/// Rebuild `task_id`'s projection for one **named local day**, advancing no watermark.
+///
+/// Why this exists beside [`materialize_worklog_time`]: that one discovers its
+/// half-days from the entries in `[from, now]`, and `from` comes from a flush window
+/// that starts when the session did. An entry written with a backdated `logged_at` —
+/// what `aplan log --at` produces — sits *before* that window, so the flush never
+/// learns its half-day exists and its hours never reach a slot. The day the operator
+/// named is passed in outright here, which is the whole difference.
+///
+/// The half-days rebuilt are the ones this task **has entries in** on that day, never
+/// simply both. A half-day named with no entry behind it puts this task's slots there
+/// on the delete list with nothing to rewrite them from, which is how a rebuild
+/// deletes hours — the same hazard `repair_orphaned_slots` intersects against.
+///
+/// Idempotent, like every path built on [`plan_task_projection`]: it derives
+/// everything from the entries and owns only the slots it wrote.
+pub async fn rebuild_task_local_date(
+    worklog_repo: &dyn WorklogRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    config_repo: &dyn ConfigRepository,
+    user_id: UserId,
+    task_id: TaskId,
+    date: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<DayRebuildOutcome, AppError> {
+    let tz = user_timezone(config_repo, user_id).await?;
+
+    let (from, to) = local_window(tz, date, date);
+    let entries = worklog_repo
+        .list(
+            user_id,
+            &WorklogFilter {
+                task_ids: Some(vec![task_id]),
+                from: Some(from),
+                to: Some(to),
+                limit: WORKLOG_FILTER_MAX_LIMIT,
+                offset: 0,
+            },
+        )
+        .await?;
+    let entries = refuse_a_truncated_page(entries, "the task's entries on that day")?;
+
+    // Morning before afternoon, so the outcome reads in the order a day happens.
+    let mut half_days: Vec<AffectedHalfDay> = Vec::new();
+    for entry in &entries {
+        let local = crate::time::to_local(entry.logged_at, tz);
+        let half_day = half_day_of(local.time().hour());
+        if !half_days.iter().any(|u| u.half_day == half_day) {
+            half_days.push(AffectedHalfDay { date, half_day });
+        }
+    }
+    half_days.sort_by_key(|u| matches!(u.half_day, HalfDay::Afternoon));
+
+    if half_days.is_empty() {
+        // Not a refusal: a day this task never logged in has a correct, empty
+        // projection already. Erroring here would make the caller of a backdated
+        // `log` report a failure after the entry it asked for was written.
+        return Ok(DayRebuildOutcome {
+            date,
+            half_days: Vec::new(),
+            slots_discarded: 0,
+            slots_written: 0,
+        });
+    }
+
+    let plan = plan_task_projection(
+        activity_repo, worklog_repo, user_id, task_id, &half_days, tz, now,
+    )
+    .await?;
+    let outcome = DayRebuildOutcome {
+        date,
+        half_days: half_days.iter().map(|u| u.half_day).collect(),
+        slots_discarded: plan.delete.len() as u32,
+        slots_written: plan.write.len() as u32,
+    };
+    apply_task_projection(activity_repo, &plan).await?;
+
+    Ok(outcome)
+}
+
 /// What a rebuild of one task's projection over some half-days would do.
 ///
 /// Separated from the applying so the reattribution preview and the flush share one
@@ -574,6 +666,172 @@ pub(crate) mod tests {
             materialize_worklog_time(&wlog, &acts, &cfg, uid, tid, from, to).await.unwrap();
         assert_eq!(result.slots_written, 0);
         assert!(acts.slots.lock().unwrap().is_empty());
+    }
+
+    /// The reported defect, reproduced: seven entries written today about work done
+    /// on 2026-08-06 leave that day with no hours, because the flush window starts
+    /// when the session did and never learns 08-06 had a morning.
+    ///
+    /// Backdating the entries is only half the fix — this asserts the flush still
+    /// cannot see them, which is what `rebuild_task_local_date` exists for.
+    #[tokio::test]
+    async fn materialize_cannot_reach_an_entry_older_than_its_window() {
+        use chrono::TimeZone;
+        let (wlog, acts, cfg) = (FakeRepo::default(), FakeActivityRepo::default(), FakeConfigRepo::default());
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let (uid, tid) = (Uuid::new_v4(), Uuid::new_v4());
+        let backdated = Utc.with_ymd_and_hms(2026, 8, 6, 8, 0, 0).unwrap(); // 10:00 Paris
+        let session_started = Utc.with_ymd_and_hms(2026, 8, 11, 13, 0, 0).unwrap();
+        add_worklog_entry(&wlog, uid, tid, "on the 6th".into(), Some(backdated), session_started, None)
+            .await
+            .unwrap();
+
+        let flushed = materialize_worklog_time(
+            &wlog, &acts, &cfg, uid, tid, session_started, session_started + chrono::Duration::hours(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(flushed.slots_written, 0, "the flush window starts after the entry");
+        assert!(acts.slots.lock().unwrap().is_empty());
+    }
+
+    /// And the other half: naming the day outright reaches the same entry.
+    #[tokio::test]
+    async fn rebuilding_a_named_day_reaches_a_backdated_entry() {
+        use chrono::TimeZone;
+        let (wlog, acts, cfg) = (FakeRepo::default(), FakeActivityRepo::default(), FakeConfigRepo::default());
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let (uid, tid) = (Uuid::new_v4(), Uuid::new_v4());
+        let day = NaiveDate::from_ymd_opt(2026, 8, 6).unwrap();
+        // 10:00 and 10:20 Paris — one uninterrupted morning stretch.
+        for (body, hm) in [("a", (8, 0)), ("b", (8, 20))] {
+            add_worklog_entry(
+                &wlog, uid, tid, body.into(),
+                Some(Utc.with_ymd_and_hms(2026, 8, 6, hm.0, hm.1, 0).unwrap()),
+                now(), None,
+            )
+            .await
+            .unwrap();
+        }
+
+        let outcome = rebuild_task_local_date(&wlog, &acts, &cfg, uid, tid, day, now()).await.unwrap();
+
+        assert_eq!(outcome.half_days, vec![HalfDay::Morning]);
+        assert_eq!(outcome.slots_written, 1);
+        assert_eq!(outcome.slots_discarded, 0);
+        let slots = acts.slots.lock().unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].date, day);
+        assert_eq!(slots[0].task_id, Some(tid));
+        assert_eq!(
+            (slots[0].end_time.unwrap() - slots[0].start_time).num_minutes(),
+            20,
+            "the twenty minutes between the two entries"
+        );
+    }
+
+    /// Re-running must converge, not accumulate: a second `--at` on the same day
+    /// rebuilds the half-day rather than appending a second slot beside the first.
+    #[tokio::test]
+    async fn rebuilding_the_same_day_twice_replaces_instead_of_doubling() {
+        use chrono::TimeZone;
+        let (wlog, acts, cfg) = (FakeRepo::default(), FakeActivityRepo::default(), FakeConfigRepo::default());
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let (uid, tid) = (Uuid::new_v4(), Uuid::new_v4());
+        let day = NaiveDate::from_ymd_opt(2026, 8, 6).unwrap();
+        add_worklog_entry(
+            &wlog, uid, tid, "a".into(),
+            Some(Utc.with_ymd_and_hms(2026, 8, 6, 8, 0, 0).unwrap()), now(), None,
+        )
+        .await
+        .unwrap();
+        rebuild_task_local_date(&wlog, &acts, &cfg, uid, tid, day, now()).await.unwrap();
+
+        // A second backdated entry twenty minutes later, then a rebuild.
+        add_worklog_entry(
+            &wlog, uid, tid, "b".into(),
+            Some(Utc.with_ymd_and_hms(2026, 8, 6, 8, 20, 0).unwrap()), now(), None,
+        )
+        .await
+        .unwrap();
+        let second = rebuild_task_local_date(&wlog, &acts, &cfg, uid, tid, day, now()).await.unwrap();
+
+        assert_eq!(second.slots_discarded, 1, "the one-minute slot the first pass wrote");
+        assert_eq!(second.slots_written, 1);
+        let slots = acts.slots.lock().unwrap();
+        assert_eq!(slots.len(), 1, "one morning stretch, not two slots");
+        assert_eq!((slots[0].end_time.unwrap() - slots[0].start_time).num_minutes(), 20);
+    }
+
+    /// Both halves of a day are rebuilt when both hold entries, and only those.
+    #[tokio::test]
+    async fn rebuilding_covers_every_half_day_the_task_logged_in() {
+        use chrono::TimeZone;
+        let (wlog, acts, cfg) = (FakeRepo::default(), FakeActivityRepo::default(), FakeConfigRepo::default());
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let (uid, tid) = (Uuid::new_v4(), Uuid::new_v4());
+        let day = NaiveDate::from_ymd_opt(2026, 8, 6).unwrap();
+        // 10:00 Paris (morning) and 15:00 Paris (afternoon).
+        for hm in [(8, 0), (13, 0)] {
+            add_worklog_entry(
+                &wlog, uid, tid, "x".into(),
+                Some(Utc.with_ymd_and_hms(2026, 8, 6, hm.0, hm.1, 0).unwrap()), now(), None,
+            )
+            .await
+            .unwrap();
+        }
+
+        let outcome = rebuild_task_local_date(&wlog, &acts, &cfg, uid, tid, day, now()).await.unwrap();
+
+        assert_eq!(
+            outcome.half_days,
+            vec![HalfDay::Morning, HalfDay::Afternoon],
+            "morning first, in the order the day happened"
+        );
+        assert_eq!(outcome.slots_written, 2);
+    }
+
+    /// A day the task never logged in is a no-op, not an error: the caller has just
+    /// written the entry the operator asked for, and must not report a failure.
+    #[tokio::test]
+    async fn rebuilding_a_day_without_entries_touches_nothing() {
+        let (wlog, acts, cfg) = (FakeRepo::default(), FakeActivityRepo::default(), FakeConfigRepo::default());
+        let (uid, tid) = (Uuid::new_v4(), Uuid::new_v4());
+        let outcome = rebuild_task_local_date(
+            &wlog, &acts, &cfg, uid, tid, NaiveDate::from_ymd_opt(2026, 8, 6).unwrap(), now(),
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.half_days.is_empty());
+        assert_eq!(outcome.slots_written, 0);
+        assert!(acts.slots.lock().unwrap().is_empty());
+    }
+
+    /// Another task's slots in the same half-day are none of this rebuild's business.
+    #[tokio::test]
+    async fn rebuilding_leaves_another_task_alone() {
+        use chrono::TimeZone;
+        let (wlog, acts, cfg) = (FakeRepo::default(), FakeActivityRepo::default(), FakeConfigRepo::default());
+        cfg.set(Uuid::new_v4(), "aplan.timezone", "Europe/Paris").await.unwrap();
+        let (uid, mine, theirs) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let day = NaiveDate::from_ymd_opt(2026, 8, 6).unwrap();
+        for tid in [mine, theirs] {
+            add_worklog_entry(
+                &wlog, uid, tid, "x".into(),
+                Some(Utc.with_ymd_and_hms(2026, 8, 6, 8, 0, 0).unwrap()), now(), None,
+            )
+            .await
+            .unwrap();
+        }
+        rebuild_task_local_date(&wlog, &acts, &cfg, uid, theirs, day, now()).await.unwrap();
+
+        let outcome = rebuild_task_local_date(&wlog, &acts, &cfg, uid, mine, day, now()).await.unwrap();
+
+        assert_eq!(outcome.slots_discarded, 0, "the other task's slot is not ours to drop");
+        let slots = acts.slots.lock().unwrap();
+        assert_eq!(slots.len(), 2, "both tasks keep their own slot");
     }
 
     /// Reused as-is by `session_reaper`'s test module.

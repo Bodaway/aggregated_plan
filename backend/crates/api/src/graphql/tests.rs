@@ -4564,3 +4564,162 @@ async fn a_failing_touch_does_not_fail_the_worklog_write() {
     );
     assert!(added.data.into_json().unwrap()["addWorklogEntry"]["id"].is_string());
 }
+
+// ---------------------------------------------------------------------------
+// `loggedAtLocal` and `rebuildWorklogProjection` — `aplan log --at`'s two halves.
+// ---------------------------------------------------------------------------
+
+/// The CLI sends a wall-clock reading and the server converts it, so that the one
+/// `aplan.timezone` reading every projection uses is also the one that decides the
+/// entry's instant. The test schema has no `aplan.timezone` row, so the default
+/// (Europe/Paris) applies: 14:30 local in August is 12:30 UTC.
+#[tokio::test]
+async fn logged_at_local_is_converted_through_the_users_timezone() {
+    let (schema, task_id) = schema_with_one_task().await;
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait",
+                 loggedAtLocal: "2026-08-06T14:30:00") {{ loggedAt }} }}"#
+        ))
+        .await;
+
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+    let logged_at = added.data.into_json().unwrap()["addWorklogEntry"]["loggedAt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let parsed = chrono::DateTime::parse_from_rfc3339(&logged_at).expect("rfc3339");
+    assert_eq!(
+        parsed.with_timezone(&chrono::Utc).to_rfc3339(),
+        "2026-08-06T12:30:00+00:00",
+        "CEST is UTC+2 in August"
+    );
+}
+
+/// Both arguments name the same decision. A caller that sent two disagreeing values
+/// has a bug, and a silent winner would hide it inside billable hours.
+#[tokio::test]
+async fn logged_at_and_logged_at_local_together_are_refused() {
+    let (schema, task_id) = schema_with_one_task().await;
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait",
+                 loggedAt: "2026-08-06T12:30:00+00:00",
+                 loggedAtLocal: "2026-08-06T09:00:00") {{ id }} }}"#
+        ))
+        .await;
+
+    assert!(!added.errors.is_empty(), "both arguments must be refused");
+    assert!(
+        added.errors[0].message.contains("pass one"),
+        "{:?}",
+        added.errors
+    );
+}
+
+/// The end-to-end shape of the reported defect and its fix: an entry backdated to a
+/// day the flush window does not cover produces no slot on its own, and naming that
+/// day produces one.
+#[tokio::test]
+async fn rebuilding_a_named_day_materialises_a_backdated_entry() {
+    let (schema, task_id) = schema_with_one_task().await;
+    // Two local-morning entries twenty minutes apart on a day well in the past.
+    for at in ["2026-08-06T10:00:00", "2026-08-06T10:20:00"] {
+        let added = schema
+            .execute(format!(
+                r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait",
+                     loggedAtLocal: "{at}") {{ id }} }}"#
+            ))
+            .await;
+        assert!(added.errors.is_empty(), "{:?}", added.errors);
+    }
+
+    // A flush cannot see them: its window starts at the human's `active_since`,
+    // which no test has moved back before August 6th.
+    let flushed = schema
+        .execute(format!(
+            r#"mutation {{ flushWorklogTime(taskId: "{task_id}") {{ slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(flushed.errors.is_empty(), "{:?}", flushed.errors);
+
+    let rebuilt = schema
+        .execute(format!(
+            r#"mutation {{ rebuildWorklogProjection(taskId: "{task_id}", date: "2026-08-06")
+                 {{ date halfDays slotsDiscarded slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
+    let out = rebuilt.data.into_json().unwrap()["rebuildWorklogProjection"].clone();
+    assert_eq!(out["date"], "2026-08-06");
+    assert_eq!(out["halfDays"], serde_json::json!(["MORNING"]));
+    assert_eq!(out["slotsWritten"], 1, "one uninterrupted morning stretch");
+
+    // And the slot is really there, on that local day.
+    let journal = schema
+        .execute(r#"{ activityJournal(date: "2026-08-06") { halfDay durationMinutes } }"#)
+        .await;
+    assert!(journal.errors.is_empty(), "{:?}", journal.errors);
+    let slots = journal.data.into_json().unwrap()["activityJournal"].clone();
+    assert_eq!(slots.as_array().map(|a| a.len()), Some(1), "{slots:?}");
+    assert_eq!(slots[0]["halfDay"], "MORNING");
+    assert_eq!(slots[0]["durationMinutes"], 20, "the twenty minutes between the entries");
+}
+
+/// Idempotent: a second rebuild replaces what the first wrote instead of adding to
+/// it. A rebuild that doubled the day would inflate an invoice.
+#[tokio::test]
+async fn rebuilding_the_same_day_twice_does_not_double_it() {
+    let (schema, task_id) = schema_with_one_task().await;
+    schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "fait",
+                 loggedAtLocal: "2026-08-06T10:00:00") {{ id }} }}"#
+        ))
+        .await;
+
+    let first = schema
+        .execute(format!(
+            r#"mutation {{ rebuildWorklogProjection(taskId: "{task_id}", date: "2026-08-06")
+                 {{ slotsDiscarded slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    assert_eq!(first.data.into_json().unwrap()["rebuildWorklogProjection"]["slotsDiscarded"], 0);
+
+    let second = schema
+        .execute(format!(
+            r#"mutation {{ rebuildWorklogProjection(taskId: "{task_id}", date: "2026-08-06")
+                 {{ slotsDiscarded slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    let out = second.data.into_json().unwrap()["rebuildWorklogProjection"].clone();
+    assert_eq!(out["slotsDiscarded"], 1, "the first pass's slot is replaced, not kept");
+    assert_eq!(out["slotsWritten"], 1);
+
+    let journal = schema
+        .execute(r#"{ activityJournal(date: "2026-08-06") { id } }"#)
+        .await;
+    let slots = journal.data.into_json().unwrap()["activityJournal"].clone();
+    assert_eq!(slots.as_array().map(|a| a.len()), Some(1), "still one slot: {slots:?}");
+}
+
+/// A day the task never logged in is a no-op, not an error — the CLI has already
+/// written the operator's entry by the time this runs.
+#[tokio::test]
+async fn rebuilding_a_day_without_entries_is_a_success() {
+    let (schema, task_id) = schema_with_one_task().await;
+    let rebuilt = schema
+        .execute(format!(
+            r#"mutation {{ rebuildWorklogProjection(taskId: "{task_id}", date: "2026-08-06")
+                 {{ halfDays slotsWritten }} }}"#
+        ))
+        .await;
+    assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
+    let out = rebuilt.data.into_json().unwrap()["rebuildWorklogProjection"].clone();
+    assert_eq!(out["halfDays"], serde_json::json!([]));
+    assert_eq!(out["slotsWritten"], 0);
+}

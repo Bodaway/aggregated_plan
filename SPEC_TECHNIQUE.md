@@ -163,10 +163,14 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
 - **Exit codes:** `0` success, `1` generic, `2` not found, `3` ambiguous lookup, `4` precondition failed.
 - **Claude integration:** a `.claude/skills/aplan/SKILL.md` ships in-repo so Claude Code uses the CLI instead of crafting GraphQL queries by hand.
 - **Worklog CLI verbs:**
-  - `aplan log [--task <TASK>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
+  - `aplan log [--task <TASK>] [--at <WHEN>] "<text>"` — appends a timestamped worklog entry (body) to the active task (or `--task` target). This is the primary logging verb for Claude; each call is atomic (one finding/decision/action per call). Calls the `addWorklogEntry` GraphQL mutation internally.
+    - `--at <WHEN>` place l'entrée **dans le passé**, en heure locale, pour rédiger après coup une journée déjà écoulée : sans lui, sept entrées écrites lundi à propos de jeudi laissent jeudi à zéro heure et posent un créneau quasi nul sur lundi. Quatre formes acceptées, validées **côté client** (une date mal écrite est un refus, code 4, avant tout aller-retour réseau) : `AAAA-MM-JJTHH:MM[:SS]`, `"AAAA-MM-JJ HH:MM[:SS]"`, `HH:MM[:SS]` (aujourd'hui) et `AAAA-MM-JJ` seul — **qui vaut midi**. Midi n'est pas un milieu arbitraire : une entrée est la preuve des 45 minutes qui la *précèdent* (`presence::build_lanes`), rognées aux fenêtres de travail, donc midi porte 11:15–12:00, entièrement dans la matinée, tandis que minuit ne tombe dans aucune fenêtre et que 08:00 — le début même de la journée — projette son ombre sur 07:15–08:00, avant l'ouverture : les deux factureraient zéro. La valeur part en `loggedAtLocal` **non convertie** (voir cette mutation).
+    - `--at` **reconstruit aussi les créneaux de ce jour-là** (`rebuildWorklogProjection`), et c'est nécessaire : `aplan flush` ne regarde que dans sa propre fenêtre, donc une entrée antidatée lui est invisible et son jour continuerait d'afficher zéro heure. Si cette reconstruction échoue, la commande **réussit quand même** — l'entrée est écrite et relancer `log` la dupliquerait — et l'avertissement nomme la réparation idempotente (`aplan slots rebuild`).
+    - Ce que `--at` n'invente pas : **les heures viennent toujours de l'étalement des entrées.** Sept entrées antidatées à la même minute valent une minute, exactement comme en direct.
   - `aplan flush [--json] <TASK>` — rebuilds the task's closed activity slots for the local half-days its window touched. The window is only a **selector**: it decides which half-days to rebuild, and every worklog entry of the task in each of those half-days — not only the ones inside the window — then decides what the slots are, via `derive_time_blocks`. Re-running is a no-op; a backdated entry is still picked up. This verb carries no `--session` flag yet, so it resolves against the human's `aplan.active_since`; the `flushWorklogTime` mutation it calls internally also accepts an optional `sessionId` to select a Claude session's own window (`sessions.last_flush_at`) instead — wired up by a later plan's hook rewrite. Does **not** clear the active-task pointer (`aplan.active_task_id`). Used by the `SessionEnd` hook.
   - `aplan reattribute --from <TASK> --to <TASK> {--date AAAA-MM-JJ | --since D [--until D] | --entry <ID>…} [--confirm]` — déplace des entrées de journal **et redérive** les créneaux d'activité qui en découlent (US-RE, R23b). Appelle la mutation `reattributeWorklogEntries`. `--from`/`--to` passent par le résolveur de tâche habituel ; les références d'entrée (`--entry`) sont résolues **côté serveur** par préfixe d'identifiant (`WorklogRepository::find_by_id_prefix`, même contrat que `MemoryRepository::find_by_id_prefix`), une collision étant signalée (code 3) et jamais devinée. `--date` et `--entry` sont mutuellement exclusifs à l'analyse des arguments (clap `conflicts_with`), `--until` exige `--since`. **Aperçu par défaut** : sans `--confirm` la mutation résout tout, calcule le même compte rendu et n'écrit rien — un seul chemin de code, donc l'aperçu ne peut pas dériver de l'écriture. Codes de sortie : 2 tâche/entrée introuvable, 3 référence ambiguë, 4 refus (source = destination, entrée d'une autre tâche, sélection vide, plafond de page atteint), 1 réseau/GraphQL.
-- **Verbe de maintenance des créneaux :**
+- **Verbes de maintenance des créneaux :**
+  - `aplan slots rebuild --task <TASK> --date AAAA-MM-JJ [--json]` — reconstruit les créneaux d'une tâche pour un jour local, depuis ses entrées de journal. Appelle `rebuildWorklogProjection`. C'est le chemin de réparation d'une journée dont les entrées sont antidatées : `aplan flush` déduit ses demi-journées de sa propre fenêtre, qui commence au démarrage de la session, donc une entrée horodatée la semaine dernière lui est invisible et ce jour-là continue d'afficher zéro heure. `aplan log --at` l'exécute lui-même ; on l'utilise à la main pour une journée antidatée autrement (l'éditeur d'horodatage de l'UI web, `updateWorklogEntry`) ou quand cette passe automatique a échoué. **Pas de `--confirm`**, contrairement à `repair`, et l'asymétrie est voulue : `repair` peut *perdre* des heures (un orphelin dont les entrées ont disparu est jeté, pas déplacé), tandis que celui-ci ne réécrit jamais que les demi-journées propres à une tâche depuis des entrées toujours présentes — le relancer laisse la même journée. Le format de la date est validé côté client (refus code 4). Une journée sans entrée imprime « logged nothing that day » et sort en 0. Après application, relancer `aplan timesheet --date <jour>` : le brouillon a été reconstruit avant la reconstruction des créneaux.
   - `aplan slots repair --from AAAA-MM-JJ --to AAAA-MM-JJ [--confirm] [--json]` — rend leur tâche aux créneaux qui l'ont perdue (US-SR, R23c). Appelle la mutation `repairOrphanedSlots`. Les deux bornes sont **obligatoires** (`clap`, pas de défaut) et leur **format** est validé côté client — une date mal écrite est un refus (code 4) et non une erreur de coercition de scalaire (code 1) ; l'**ordre** des deux bornes, lui, est validé côté serveur, pour que la règle n'ait qu'un seul propriétaire. **Aperçu par défaut** : sans `--confirm`, la mutation calcule tout et n'écrit rien. Le rendu humain imprime une ligne par date (`N orphelins (Xh) → M créneaux écrits`), le tableau avant/après par tâche — titre inclus, car ces tâches ont été *découvertes* par la réparation et non nommées par l'appelant — et une ligne d'avertissement par date dont les orphelins n'ont plus aucune entrée à réécrire (le seul cas où ce verbe perd des heures). Une plage sans dégât imprime « nothing to repair » et sort en 0. Codes de sortie : 4 refus (plage inversée, date invalide, plafond de page), 1 réseau/GraphQL.
 - **Verbe de mémoire du démarrage :**
   - `aplan brief [--morning] [--project <P>] [--date AAAA-MM-JJ]` — imprime le brief de session
@@ -1810,6 +1814,52 @@ pub async fn materialize_worklog_time(
     from: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<FlushOutcome, AppError> { /* ... */ }
+
+/// Rebuild `task_id`'s projection for one **named local day**, advancing no watermark.
+///
+/// Exists beside `materialize_worklog_time` because that one *discovers* its
+/// half-days from the entries in `[from, now)`, and `from` comes from a flush window
+/// that starts when the session did. An entry written with a backdated `logged_at` —
+/// what `aplan log --at` produces — sits before that window, so the flush never
+/// learns its half-day exists and its hours never reach a slot: the entry is in the
+/// journal and the day still bills zero. Here the day is passed in outright.
+///
+/// The half-days rebuilt are the ones this task **has entries in** on that day, never
+/// simply both: a half-day named with no entry behind it puts this task's slots on the
+/// delete list with nothing to rewrite them from, which is how a rebuild deletes hours
+/// (the same hazard `repair_orphaned_slots` intersects against). An empty result is a
+/// success — the task logged nothing that day — not a refusal, because the caller has
+/// just written the operator's entry and must not report a failure.
+///
+/// Called by the `rebuildWorklogProjection` mutation (`aplan log --at`,
+/// `aplan slots rebuild`). Idempotent, like every path built on
+/// `plan_task_projection`.
+pub async fn rebuild_task_local_date(
+    worklog_repo: &dyn WorklogRepository,
+    activity_repo: &dyn ActivitySlotRepository,
+    config_repo: &dyn ConfigRepository,
+    user_id: UserId,
+    task_id: TaskId,
+    date: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<DayRebuildOutcome, AppError> { /* ... */ }
+```
+
+```rust
+// time.rs
+
+/// The UTC instant a local wall-clock reading names — the inverse of `to_local`, and
+/// the only one. A caller that names a past moment in local terms
+/// (`aplan log --at 2026-08-06T14:30`, arriving as `addWorklogEntry`'s
+/// `loggedAtLocal`) must land on the instant `to_local` maps back to that reading, or
+/// the entry documents a different half-day than the operator typed.
+///
+/// The two readings with no single answer are resolved as `local_day_start` resolves
+/// them: an **ambiguous** hour (DST fall-back) takes the earliest of its two instants,
+/// so the conversion stays a function; a **nonexistent** one (spring-forward gap) is
+/// walked forward an hour rather than reinterpreted as UTC, which would be off by the
+/// zone's whole offset and could move the entry to another day.
+pub fn local_to_utc(tz: Tz, local: NaiveDateTime) -> DateTime<Utc> { /* ... */ }
 ```
 
 ```rust
@@ -2965,7 +3015,8 @@ CREATE INDEX idx_worklog_entries_task_logged_at ON worklog_entries(task_id, logg
   - Query `worklogEntries(filter: WorklogEntryFilterInput): [WorklogEntry!]!`
     - `WorklogEntryFilterInput.recurrenceId: ID` — when provided, routes to `WorklogRepository::find_by_recurrence`; wins over `taskIds` if both are present.
     - `WorklogEntryGql.occurrenceDate: Date` — resolved by loading the task and returning its `occurrence_date`; `null` for non-recurring tasks.
-  - Mutation `addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime): WorklogEntry!`
+  - Mutation `addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime, loggedAtLocal: NaiveDateTime, sessionId: String): WorklogEntry!` — `loggedAt` est un instant UTC absolu (ce que construit l'UI web depuis un `Date` navigateur) ; `loggedAtLocal` est une lecture d'horloge murale dans le fuseau de l'utilisateur, convertie **côté serveur** via `worklog::user_timezone` + `time::local_to_utc`. C'est la forme que la CLI envoie pour `aplan log --at`, et la raison est unique : une conversion heure locale → UTC faite dans la CLI serait la seconde implémentation de cette conversion, et un désaccord entre les deux ferait basculer l'entrée sur un autre jour local — donc sur une autre journée facturée. Les deux arguments ensemble sont **refusés** (même décision exprimée deux fois : un appelant qui envoie deux valeurs divergentes a un bug qu'un vainqueur silencieux cacherait dans des heures facturables). Aucun des deux : l'entrée est horodatée `now`.
+  - Mutation `rebuildWorklogProjection(taskId: ID!, date: NaiveDate!): DayRebuildResultGql!` — reconstruit les créneaux d'activité d'**une** tâche pour **un** jour local nommé, sans faire avancer aucun filigrane. Appelle `use_cases::worklog::rebuild_task_local_date`. Ce que `flushWorklogTime` ne peut pas faire : il déduit les demi-journées à reconstruire des entrées **présentes dans sa propre fenêtre**, laquelle commence au démarrage de la session ; une entrée antidatée (`loggedAt`/`loggedAtLocal`, donc `aplan log --at`) se situe avant cette fenêtre, le flush n'apprend jamais que cette demi-journée existe et ses heures n'atteignent jamais le timesheet — l'entrée est au journal et la journée facture zéro. Nommer le jour ferme ce trou. Seules les demi-journées où la tâche **a effectivement des entrées** sont reconstruites : nommer une demi-journée sans entrée derrière mettrait les créneaux de cette tâche sur la liste de suppression sans rien pour les réécrire, ce qui est la manière dont une reconstruction perd des heures. Idempotent. Retourne `{ date, halfDays, slotsDiscarded, slotsWritten }` ; `halfDays` vide = la tâche n'a rien journalisé ce jour-là, rien n'a été touché (un succès, pas un échec).
   - Mutation `updateWorklogEntry(id: ID!, body: String, loggedAt: DateTime): WorklogEntry!`
   - Mutation `deleteWorklogEntry(id: ID!): Boolean!`
   - Mutation `flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!` — calls `materialize_worklog_time` for the given task. The window (`sessionId`'s own `sessions.last_flush_at` when provided, otherwise `aplan.active_since`) only selects which local half-days to rebuild; every entry of the task in those half-days then decides the slots. Returns `{ activeSince, slotsWritten }`. Does not modify the active-task pointer. Idempotent: re-running produces the same slots, never duplicates, and a backdated entry is still picked up.

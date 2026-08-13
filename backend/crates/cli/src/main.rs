@@ -67,12 +67,16 @@ fn main() -> ExitCode {
             cli::SlotsCmd::Repair { from, to, confirm } => {
                 slots_cmd::repair(&args.api_url, args.json, &from, &to, confirm)
             }
+            cli::SlotsCmd::Rebuild { task, date } => {
+                slots_cmd::rebuild(&args.api_url, args.json, &task, &date)
+            }
         },
-        cli::Commands::Log { text, task } => commands::log(
+        cli::Commands::Log { text, task, at } => commands::log(
             &args.api_url,
             args.json,
             &text,
             task.as_deref(),
+            at.as_deref(),
             args.session.as_deref(),
         ),
         cli::Commands::Status { state, task } => commands::status(

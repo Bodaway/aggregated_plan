@@ -3211,3 +3211,371 @@ async fn session_end_refuses_to_close_when_the_flush_fails() {
     // wiremock verifies .expect(1) on ClaudeSession and FlushWorklogTime, and
     // .expect(0) on EndSession, when `server` drops.
 }
+
+// ---------------------------------------------------------------------------
+// `aplan log --at` — writing up a past day.
+//
+// The reported gap: `log` stamped every entry `now`, so seven entries written on
+// the 11th about work done on the 6th and the 10th left both those days billing
+// nothing. Backdating the entry is only half of it — the flush picks its
+// half-days out of a window that starts when the session did, so a backdated
+// entry is invisible to it and its day keeps showing no hours. `--at` therefore
+// writes the entry AND rebuilds that day.
+// ---------------------------------------------------------------------------
+
+/// The local wall-clock goes on the wire as `loggedAtLocal`, unconverted: the
+/// server owns the one `aplan.timezone` reading, and a CLI-side conversion would be
+/// the second implementation of local-to-UTC that decides which day gets billed.
+#[tokio::test]
+async fn log_at_sends_the_local_wall_clock_and_rebuilds_that_day() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .and(wiremock::matchers::body_string_contains(
+            r#""loggedAtLocal":"2026-08-06T14:30:00""#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": task_id,
+                "loggedAt": "2026-08-06T12:30:00+00:00", "sessionId": null } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .and(wiremock::matchers::body_string_contains(r#""date":"2026-08-06""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rebuildWorklogProjection": {
+                "date": "2026-08-06", "halfDays": ["AFTERNOON"],
+                "slotsDiscarded": 0, "slotsWritten": 1 } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args([
+            "--api-url", &url, "log", "--task", task_id, "--at", "2026-08-06T14:30",
+            "cause racine trouvee",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worklog entry added (2026-08-06 14:30)"))
+        .stdout(predicate::str::contains("2026-08-06 afternoon: 1 slot(s) rebuilt"));
+    // wiremock verifies both .expect(1)s when `server` drops.
+}
+
+/// The entry must be written before the rebuild is asked for — a rebuild that ran
+/// first would derive the day from the entries as they were, and the new one would
+/// not be among them.
+#[tokio::test]
+async fn log_at_writes_the_entry_before_rebuilding() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": task_id,
+                "loggedAt": "2026-08-06T10:00:00+00:00", "sessionId": null } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rebuildWorklogProjection": {
+                "date": "2026-08-06", "halfDays": ["MORNING"],
+                "slotsDiscarded": 0, "slotsWritten": 1 } }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "log", "--task", task_id, "--at", "2026-08-06", "note"])
+        .assert()
+        .success();
+
+    let received = server.received_requests().await.expect("recording is on");
+    let add_at = received
+        .iter()
+        .position(|r| String::from_utf8_lossy(&r.body).contains("AddWorklogEntry"))
+        .expect("an AddWorklogEntry request was made");
+    let rebuild_at = received
+        .iter()
+        .position(|r| String::from_utf8_lossy(&r.body).contains("RebuildWorklogProjection"))
+        .expect("a RebuildWorklogProjection request was made");
+    assert!(
+        add_at < rebuild_at,
+        "AddWorklogEntry (index {add_at}) must precede RebuildWorklogProjection (index {rebuild_at})"
+    );
+}
+
+/// A bare date lands at noon — the hour whose 45-minute back-shadow falls inside the
+/// morning window. Asserted on the wire, since the whole point of the default is the
+/// hours it produces.
+#[tokio::test]
+async fn log_at_with_a_bare_date_sends_noon() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .and(wiremock::matchers::body_string_contains(
+            r#""loggedAtLocal":"2026-08-10T12:00:00""#,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": task_id,
+                "loggedAt": "2026-08-10T10:00:00+00:00", "sessionId": null } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rebuildWorklogProjection": {
+                "date": "2026-08-10", "halfDays": ["MORNING"],
+                "slotsDiscarded": 0, "slotsWritten": 1 } }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "log", "--task", task_id, "--at", "2026-08-10", "note"])
+        .assert()
+        .success();
+}
+
+/// Without `--at`, nothing changes: no `loggedAtLocal`, and no rebuild.
+#[tokio::test]
+async fn log_without_at_neither_backdates_nor_rebuilds() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .and(wiremock::matchers::body_string_contains(r#""loggedAtLocal":null"#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": task_id,
+                "loggedAt": "2026-08-11T13:54:00+00:00", "sessionId": null } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "log", "--task", task_id, "note"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worklog entry added"));
+}
+
+/// A mistyped `--at` is a precondition failure (exit 4) and must cost no round-trip:
+/// exit 1 is the code an automated caller retries on, and there is nothing to retry.
+#[tokio::test]
+async fn log_at_refuses_a_bad_moment_with_exit_4_before_writing_anything() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "log", "--at", "hier", "note"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("is not a moment"))
+        .stderr(predicate::str::contains("YYYY-MM-DDTHH:MM"));
+}
+
+/// A failed rebuild must NOT report failure: the entry is already written, and a
+/// retry of `log` would duplicate it. The warning names the idempotent repair instead.
+#[tokio::test]
+async fn log_at_survives_a_failed_rebuild_without_inviting_a_retry() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": task_id,
+                "loggedAt": "2026-08-06T12:30:00+00:00", "sessionId": null } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "log", "--task", task_id, "--at", "2026-08-06T14:30", "note"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worklog entry added"))
+        .stderr(predicate::str::contains("do NOT re-run this log"))
+        .stderr(predicate::str::contains("aplan slots rebuild --task"));
+}
+
+// ---------------------------------------------------------------------------
+// `aplan slots rebuild` — the same rebuild, run by hand.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn slots_rebuild_names_the_day_and_reports_what_it_replaced() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .and(wiremock::matchers::body_string_contains(r#""date":"2026-08-06""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rebuildWorklogProjection": {
+                "date": "2026-08-06", "halfDays": ["MORNING", "AFTERNOON"],
+                "slotsDiscarded": 2, "slotsWritten": 3 } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args([
+            "--api-url", &url, "slots", "rebuild", "--task", task_id, "--date", "2026-08-06",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "2026-08-06 morning+afternoon: 3 slots written, 2 replaced",
+        ))
+        .stdout(predicate::str::contains("aplan timesheet --date 2026-08-06"));
+}
+
+/// A day the task never logged in is a success that says so, not a silent nothing.
+#[tokio::test]
+async fn slots_rebuild_on_a_day_without_entries_says_so() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rebuildWorklogProjection": {
+                "date": "2026-08-06", "halfDays": [],
+                "slotsDiscarded": 0, "slotsWritten": 0 } }
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args([
+            "--api-url", &url, "slots", "rebuild", "--task", task_id, "--date", "2026-08-06",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("logged nothing that day"));
+}
+
+#[tokio::test]
+async fn slots_rebuild_refuses_a_bad_date_with_exit_4() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    aplan_no_session()
+        .args(["--api-url", &url, "slots", "rebuild", "--task", "X-1", "--date", "06/08/2026"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("expected YYYY-MM-DD"));
+}
+
+/// `--json` must not skip the rebuild. Before this was pinned, the early return on
+/// `--json` wrote the backdated entry and left the day unrebuilt — a machine caller
+/// silently back at the very defect `--at` exists to fix. Both halves also land in one
+/// payload, so the caller can see what the rebuild did.
+#[tokio::test]
+async fn log_at_json_still_rebuilds_and_reports_both_halves() {
+    let task_id = "00000000-0000-0000-0000-000000000001";
+    let server = MockServer::start().await;
+    mount_get_task(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("AddWorklogEntry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "addWorklogEntry": {
+                "id": "e1", "taskId": task_id,
+                "loggedAt": "2026-08-06T12:30:00+00:00", "sessionId": null } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(wiremock::matchers::body_string_contains("RebuildWorklogProjection"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rebuildWorklogProjection": {
+                "date": "2026-08-06", "halfDays": ["AFTERNOON"],
+                "slotsDiscarded": 0, "slotsWritten": 1 } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/graphql", server.uri());
+    let output = aplan_no_session()
+        .args([
+            "--api-url", &url, "--json", "log", "--task", task_id, "--at", "2026-08-06T14:30",
+            "note",
+        ])
+        .output()
+        .expect("the command runs");
+    assert!(output.status.success(), "{output:?}");
+
+    let payload: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout is one JSON object");
+    assert_eq!(payload["addWorklogEntry"]["id"], "e1");
+    assert_eq!(payload["rebuildWorklogProjection"]["slotsWritten"], 1);
+    // wiremock verifies both .expect(1)s when `server` drops.
+}

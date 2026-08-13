@@ -279,8 +279,21 @@ type CombinedMutation {
 	"""
 	Add a timestamped worklog entry to a task. `sessionId` attributes the entry
 	to the session that wrote it; omitted, it is the human's, working by hand.
+	
+	Two ways to place the entry in time, at most one at a time:
+	- `loggedAt` — an absolute UTC instant, for a caller that already holds one
+	(the web UI builds it from a browser `Date`).
+	- `loggedAtLocal` — a wall-clock reading in the user's own timezone, for a
+	caller that has only what a human typed (`aplan log --at 2026-08-06T14:30`).
+	Converted here, through the one `aplan.timezone` reading every other
+	projection uses, so the entry cannot land on a different local day than the
+	half-day arithmetic will later look for it in. A CLI doing this conversion
+	itself would be the second implementation of local-to-UTC that
+	`application::time` exists to prevent.
+	
+	Neither given, the entry is stamped `now`.
 	"""
-	addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime, sessionId: String): WorklogEntryGql!
+	addWorklogEntry(taskId: ID!, body: String!, loggedAt: DateTime, loggedAtLocal: NaiveDateTime, sessionId: String): WorklogEntryGql!
 	"""
 	Point a session at a task. Returns the task it was on before, if any, so the
 	caller can flush it.
@@ -325,6 +338,23 @@ type CombinedMutation {
 	which would advance a key this call never should have touched.
 	"""
 	flushWorklogTime(taskId: ID!, sessionId: String): FlushResultGql!
+	"""
+	Rebuild one task's activity slots for one **named local day**, advancing no
+	flush watermark.
+	
+	What `flushWorklogTime` cannot do: it discovers which half-days to rebuild from
+	the entries inside its own window, and that window starts when the session did.
+	An entry written with a backdated instant (`addWorklogEntry`'s `loggedAt` /
+	`loggedAtLocal`, which `aplan log --at` uses to record yesterday's work) sits
+	before that window, so the flush never learns its half-day exists and its hours
+	never reach the timesheet — the entry is in the journal and the day still bills
+	zero. Naming the day closes that.
+	
+	Only the half-days this task actually has entries in are rebuilt. Idempotent:
+	it derives the slots from the entries and replaces only the ones the projection
+	owns, so re-running converges instead of doubling the day.
+	"""
+	rebuildWorklogProjection(taskId: ID!, date: NaiveDate!): DayRebuildResultGql!
 	"""
 	Move worklog entries — and the activity time derived from them — from one
 	task to another.
@@ -898,6 +928,22 @@ enum DayOffScopeGql {
 	FULL
 	MORNING
 	AFTERNOON
+}
+
+"""
+Result of `rebuildWorklogProjection`: what naming one local day did to one
+task's slots.
+
+`halfDays` empty means the task logged nothing that day, so nothing was touched —
+a correct outcome, not a failure. `slotsDiscarded` counts the projection's own
+stale slots this rebuild replaced, so a re-run reports `discarded == written`
+rather than growing the day's hours.
+"""
+type DayRebuildResultGql {
+	date: NaiveDate!
+	halfDays: [HalfDayGql!]!
+	slotsDiscarded: Int!
+	slotsWritten: Int!
 }
 
 type DeduplicationSuggestionGql {
