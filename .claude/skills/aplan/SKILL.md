@@ -98,6 +98,7 @@ bind`, not just flipping back to tracking.
 | "mark this done" | `aplan done --json` |
 | "set the status to in_progress" | `aplan status --json in_progress` |
 | "triage AP-1234 as followed" | `aplan triage --json followed AP-1234` |
+| "what did I log on AP-1234" / "read the worklog back" | `aplan show --json AP-1234` — the `worklogEntries` array beside `task`, oldest first. Default is the last 10; `--worklog all` for the complete journal (it pages), `--worklog N` for a longer tail. A `null` there means the read failed, **not** that nothing was logged |
 | "that time went on the wrong task" | `aplan reattribute --json --from <wrong> --to <right> --date <day>` (preview first) |
 | "the journal shows hours with no task" | `aplan slots repair --json --from <day> --to <day>` (preview first) |
 
@@ -109,7 +110,8 @@ forbidden — see "If you are a subagent" below, which also covers `aplan new`,
 
 ```bash
 aplan ls --json                 # followed, non-done tasks (compact list)
-aplan show --json <task>        # full detail of one task
+aplan show --json <task>        # full detail of one task + its 10 latest worklog entries
+aplan show --json <task> --worklog all  # the whole worklog (N for a tail, 0 to skip it)
 aplan dash --json               # daily summary: tasks, meetings, alerts
 aplan matrix --json             # Eisenhower priority matrix
 aplan journal --json            # today's activity slots

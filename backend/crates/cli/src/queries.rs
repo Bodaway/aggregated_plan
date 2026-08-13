@@ -212,6 +212,17 @@ pub struct AddWorklogEntry;
 )]
 pub struct FlushWorklogTime;
 
+/// The read side of `aplan log`: the entries of one task, newest first, as
+/// `aplan show` prints them. `AddWorklogEntry` writes, this reads — nothing
+/// else in the CLI could get a worklog back out.
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/task_worklog.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct TaskWorklog;
+
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",

@@ -1,7 +1,9 @@
 //! Subcommand implementations. Each function takes the parsed `Cli` for global
 //! flags (api_url, json) and returns an exit code.
 
-use crate::cli::{ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg};
+use crate::cli::{
+    ConfigCmd, ImpactArg, SourceArg, StatusArg, TriageArg, UrgencyArg, WorklogAmount,
+};
 use crate::client::{Client, ClientError, RunResult};
 use crate::lookup::{
     resolve_target, resolve_task, session_task_id, task_id_to_flush_before_closing, LookupError,
@@ -12,22 +14,23 @@ use crate::queries::{
     activity_journal, activity_overlaps, add_worklog_entry, append_task_notes, bind_session,
     complete_task, create_task, daily_dashboard, delete_task, end_session, flush_worklog_time,
     force_sync, get_configuration, get_task, list_alerts, list_tasks, priority_matrix,
-    rebuild_worklog_projection, reset_urgency, resolve_alert, set_tracking_state,
+    rebuild_worklog_projection, reset_urgency, resolve_alert, set_tracking_state, task_worklog,
     update_configuration, update_priority, update_task_status, ActivityJournal, ActivityOverlaps,
     AddWorklogEntry, AppendTaskNotes, BindSession, CompleteTask, CreateTask, DailyDashboard,
     DeleteTask, EndSession, FlushWorklogTime, ForceSync, GetConfiguration, GetTask, ListAlerts,
     ListTasks, PriorityMatrix, RebuildWorklogProjection, ResetUrgency, ResolveAlert,
-    SetTrackingState, UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
+    SetTrackingState, TaskWorklog, UpdateConfiguration, UpdatePriority, UpdateTaskStatus,
 };
 
-/// Who logged one side of an overlap, as the pinned spec line prints it:
-/// `manuel` for the human (no session id), else the first 4 characters of
-/// the session id.
+/// Who authored a row that carries a `session_id`, as the pinned overlap-line
+/// spec prints it: `manuel` for the human (no session id), else the first 4
+/// characters of the session id.
 ///
 /// Contrary to the brief's claim, `aplan sessions` does *not* abbreviate —
-/// it prints the full id (`session_cmd.rs:63`). This 4-character form is
-/// introduced here to match the pinned overlap-line spec exactly; it has no
-/// other precedent in this crate.
+/// it prints the full id (`session_cmd.rs:63`). This 4-character form was
+/// introduced here to match the pinned overlap-line spec exactly, and
+/// `show`'s worklog reuses it so the same session reads the same in both
+/// places.
 fn overlap_actor_label(session_id: &Option<String>) -> String {
     match session_id {
         Some(id) => id.chars().take(4).collect(),
@@ -1007,7 +1010,170 @@ pub fn dash(api_url: &str, json: bool, date: Option<&str>) -> ExitCode {
     }
 }
 
-pub fn show(api_url: &str, json: bool, task: &str) -> ExitCode {
+/// A worklog entry's instant in the reader's local time — `2026-08-12 09:12`.
+///
+/// `aplan log --at` reads local wall-clock time, so echoing the entry back in
+/// the UTC the server stores would make the same instant look like two
+/// different ones depending on which verb printed it. A timestamp the server
+/// sends in some other shape degrades to its first 16 characters rather than
+/// being dropped.
+fn worklog_stamp(logged_at: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(logged_at) {
+        Ok(dt) => dt
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+        Err(_) => logged_at
+            .chars()
+            .take(16)
+            .map(|c| if c == 'T' { ' ' } else { c })
+            .collect(),
+    }
+}
+
+/// One worklog line under `aplan show`:
+/// `  2026-08-12 09:12  a1b2    Root cause identified: …`
+///
+/// The actor column is [`overlap_actor_label`], so the session that wrote an
+/// entry reads the same here as in a `journal` overlap warning. A body that
+/// spans several lines keeps its shape: continuation lines are indented under
+/// the first, never re-wrapped and never flattened into one line, because an
+/// entry is a quotation of what was logged.
+fn format_worklog_entry(logged_at: &str, body: &str, session_id: &Option<String>) -> String {
+    let stamp = worklog_stamp(logged_at);
+    let actor = overlap_actor_label(session_id);
+    let actor_width = actor.chars().count().max(6);
+    let indent = 2 + stamp.chars().count() + 2 + actor_width + 2;
+
+    let mut lines = body.lines();
+    let head = lines.next().unwrap_or("");
+    let mut out = format!("  {stamp}  {actor:<actor_width$}  {head}");
+    for line in lines {
+        out.push('\n');
+        out.push_str(&" ".repeat(indent));
+        out.push_str(line);
+    }
+    out
+}
+
+/// A slice of a task's worklog, **oldest first**, so the section reads forwards
+/// like the journal it is.
+struct WorklogTail {
+    entries: Vec<task_worklog::TaskWorklogWorklogEntries>,
+    /// Whether entries older than the ones kept exist. Known without a count
+    /// query because [`fetch_worklog`] asks for one more row than it shows;
+    /// always false for [`WorklogAmount::All`], which left nothing behind.
+    older_exist: bool,
+    /// The same entries, same order, as raw JSON — what `--json` embeds so the
+    /// two modes never disagree about which entries `show` reported.
+    raw: serde_json::Value,
+}
+
+/// The server's own per-request ceiling (`WORKLOG_FILTER_MAX_LIMIT`). Asking
+/// for more than this silently gets this, which is exactly why `--worklog all`
+/// pages instead of asking for one enormous page.
+const WORKLOG_MAX_PAGE: i64 = 1000;
+
+/// Stops `--worklog all` from looping forever if a server ever ignored
+/// `offset`. Fifty full pages is far past any real worklog, so hitting it means
+/// the pagination contract broke, not that the task is chatty — hence the note.
+const WORKLOG_MAX_PAGES: usize = 50;
+
+/// One page of `worklogEntries` for a task, newest first.
+fn worklog_page(
+    client: &Client,
+    task_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<RunResult<task_worklog::ResponseData>, ClientError> {
+    client.run::<TaskWorklog>(task_worklog::Variables {
+        filter: Some(task_worklog::WorklogEntryFilterInput {
+            task_ids: Some(vec![task_id.to_string()]),
+            recurrence_id: None,
+            from: None,
+            to: None,
+            limit: Some(limit),
+            offset: Some(offset),
+        }),
+    })
+}
+
+/// Pull the raw `worklogEntries` array out of a response's `data` block.
+fn worklog_rows(raw: &serde_json::Value) -> Vec<serde_json::Value> {
+    raw.get("worklogEntries")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Read as much of one task's worklog as `amount` asks for.
+///
+/// [`WorklogAmount::Tail`] is a single request for `n + 1` rows: the extra one
+/// is how `older_exist` is known without a count query.
+///
+/// [`WorklogAmount::All`] pages instead, because the server caps any single
+/// request at [`WORKLOG_MAX_PAGE`] — asking for `i64::MAX` would quietly return
+/// the first thousand and *look* complete, which is the failure this whole
+/// branch exists to avoid.
+fn fetch_worklog(
+    client: &Client,
+    task_id: &str,
+    amount: WorklogAmount,
+) -> Result<WorklogTail, ClientError> {
+    let (mut entries, mut raw, older_exist) = match amount {
+        // The caller does not fetch at all in this case; answering with an
+        // empty page keeps the function total rather than panicking.
+        WorklogAmount::None => (Vec::new(), Vec::new(), false),
+
+        WorklogAmount::Tail(n) => {
+            let keep = n as usize;
+            let r = worklog_page(client, task_id, i64::from(n).saturating_add(1), 0)?;
+            let older_exist = r.data.worklog_entries.len() > keep;
+
+            // The server returns newest first (`logged_at DESC`): truncate on
+            // that end to keep the *most recent* n.
+            let mut entries = r.data.worklog_entries;
+            entries.truncate(keep);
+            let mut raw = worklog_rows(&r.raw);
+            raw.truncate(keep);
+            (entries, raw, older_exist)
+        }
+
+        WorklogAmount::All => {
+            let mut entries = Vec::new();
+            let mut raw = Vec::new();
+            for page in 0..WORKLOG_MAX_PAGES {
+                let offset = WORKLOG_MAX_PAGE * page as i64;
+                let r = worklog_page(client, task_id, WORKLOG_MAX_PAGE, offset)?;
+                let full = r.data.worklog_entries.len() as i64 == WORKLOG_MAX_PAGE;
+                entries.extend(r.data.worklog_entries);
+                raw.extend(worklog_rows(&r.raw));
+                if !full {
+                    break;
+                }
+                if page == WORKLOG_MAX_PAGES - 1 {
+                    eprintln!(
+                        "note: stopped after {} entries; the worklog may be incomplete",
+                        entries.len()
+                    );
+                }
+            }
+            (entries, raw, false)
+        }
+    };
+
+    // Reverse once, at the end: every branch above collected newest-first.
+    entries.reverse();
+    raw.reverse();
+
+    Ok(WorklogTail {
+        entries,
+        older_exist,
+        raw: serde_json::Value::Array(raw),
+    })
+}
+
+pub fn show(api_url: &str, json: bool, task: &str, worklog: WorklogAmount) -> ExitCode {
     let client = Client::new(api_url.to_string());
     let target = match resolve_task(&client, Some(task)) {
         Ok(t) => t,
@@ -1020,50 +1186,97 @@ pub fn show(api_url: &str, json: bool, task: &str) -> ExitCode {
     let result = client.run::<GetTask>(get_task::Variables {
         id: target.id.clone(),
     });
-    match result {
-        Ok(r) => {
-            if json {
-                if let Err(e) = print_json(&r.raw) {
-                    eprintln!("error writing output: {}", e);
-                    return ExitCode::Generic;
-                }
-                return ExitCode::Success;
-            }
-            match r.data.task {
-                None => {
-                    eprintln!("error: task {} not found", target.id);
-                    return ExitCode::NotFound;
-                }
-                Some(t) => {
-                    let key = t.source_id.as_deref().unwrap_or("—");
-                    println!("{} — {}", key, t.title);
-                    println!("status:   {:?}", t.status);
-                    println!(
-                        "urgency:  {:?}  impact: {:?}  quadrant: {:?}",
-                        t.urgency, t.impact, t.quadrant
-                    );
-                    println!("triage:   {:?}", t.tracking_state);
-                    if let Some(d) = t.deadline {
-                        println!("deadline: {}", d);
-                    }
-                    if let Some(h) = t.estimated_hours {
-                        println!("estimate: {}h", h);
-                    }
-                    if let Some(desc) = t.description.as_deref() {
-                        println!("\ndescription:\n{}", desc);
-                    }
-                    if let Some(notes) = t.notes.as_deref() {
-                        println!("\nnotes:\n{}", notes);
-                    }
-                }
-            }
-            ExitCode::Success
-        }
+    let r = match result {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("error: {}", e);
-            ExitCode::Generic
+            return ExitCode::Generic;
+        }
+    };
+
+    // A second round trip rather than a field on `GetTask`: `TaskGql` carries
+    // no worklog, and `--worklog 0` should cost nothing. Best-effort, on the
+    // `journal`/`dash` precedent — the task detail below printed fine, and an
+    // older server without the operation must not turn `show` into a hard
+    // error. The failure is never silent though: a note on stderr (stdout
+    // stays machine-clean) and, in `--json`, an explicit `null` so "no
+    // entries" and "the read failed" can never be confused.
+    let tail = if worklog == WorklogAmount::None {
+        None
+    } else {
+        match fetch_worklog(&client, &target.id, worklog) {
+            Ok(t) => Some(Some(t)),
+            Err(e) => {
+                eprintln!("note: worklog unavailable: {}", e);
+                Some(None)
+            }
+        }
+    };
+
+    if json {
+        let mut raw = r.raw;
+        if let (Some(obj), Some(tail)) = (raw.as_object_mut(), tail.as_ref()) {
+            let value = match tail {
+                Some(t) => t.raw.clone(),
+                None => serde_json::Value::Null,
+            };
+            obj.insert("worklogEntries".to_string(), value);
+        }
+        if let Err(e) = print_json(&raw) {
+            eprintln!("error writing output: {}", e);
+            return ExitCode::Generic;
+        }
+        return ExitCode::Success;
+    }
+
+    match r.data.task {
+        None => {
+            eprintln!("error: task {} not found", target.id);
+            return ExitCode::NotFound;
+        }
+        Some(t) => {
+            let key = t.source_id.as_deref().unwrap_or("—");
+            println!("{} — {}", key, t.title);
+            println!("status:   {:?}", t.status);
+            println!(
+                "urgency:  {:?}  impact: {:?}  quadrant: {:?}",
+                t.urgency, t.impact, t.quadrant
+            );
+            println!("triage:   {:?}", t.tracking_state);
+            if let Some(d) = t.deadline {
+                println!("deadline: {}", d);
+            }
+            if let Some(h) = t.estimated_hours {
+                println!("estimate: {}h", h);
+            }
+            if let Some(desc) = t.description.as_deref() {
+                println!("\ndescription:\n{}", desc);
+            }
+            if let Some(notes) = t.notes.as_deref() {
+                println!("\nnotes:\n{}", notes);
+            }
         }
     }
+
+    if let Some(Some(tail)) = &tail {
+        println!();
+        if tail.entries.is_empty() {
+            println!("worklog: (empty)");
+        } else {
+            println!("worklog:");
+            if tail.older_exist {
+                println!("  \u{2026} older entries not shown (--worklog N)");
+            }
+            for entry in &tail.entries {
+                println!(
+                    "{}",
+                    format_worklog_entry(&entry.logged_at, &entry.body, &entry.session_id)
+                );
+            }
+        }
+    }
+
+    ExitCode::Success
 }
 
 pub fn ls(api_url: &str, json: bool, status: &[StatusArg], triage: &[TriageArg]) -> ExitCode {
@@ -1685,3 +1898,68 @@ mod overlap_display_tests {
     }
 }
 
+#[cfg(test)]
+mod worklog_display_tests {
+    use super::*;
+
+    /// A timestamp with no offset is not RFC 3339, so this exercises the
+    /// fallback — and with it, the only rendering that is the same in every
+    /// timezone, which is what lets the layout below be pinned exactly.
+    #[test]
+    fn an_unparseable_timestamp_keeps_its_first_sixteen_characters() {
+        assert_eq!(worklog_stamp("2026-08-12T09:12:00"), "2026-08-12 09:12");
+        assert_eq!(worklog_stamp("nonsense"), "nonsense");
+    }
+
+    /// The stored instant is UTC; the reader thinks in the wall clock
+    /// `aplan log --at` accepts. Computed here rather than hardcoded so the
+    /// test states the rule instead of the tester's timezone.
+    #[test]
+    fn a_stored_utc_instant_is_printed_in_local_time() {
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-08-12T07:12:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        assert_eq!(worklog_stamp("2026-08-12T07:12:00Z"), expected);
+    }
+
+    #[test]
+    fn a_human_entry_prints_the_manuel_column_padded_to_the_session_width() {
+        assert_eq!(
+            format_worklog_entry("2026-08-12T09:12:00", "Relu le plan de migration.", &None),
+            "  2026-08-12 09:12  manuel  Relu le plan de migration."
+        );
+    }
+
+    /// The point of the column: a session-written entry and a hand-written one
+    /// must line their bodies up, or the tail is unreadable.
+    #[test]
+    fn a_session_entry_aligns_its_body_with_a_human_one() {
+        let session = format_worklog_entry(
+            "2026-08-12T09:12:00",
+            "Root cause identified.",
+            &Some("a1b2c3d4-ffff".to_string()),
+        );
+        assert_eq!(
+            session,
+            "  2026-08-12 09:12  a1b2    Root cause identified."
+        );
+        let human = format_worklog_entry("2026-08-12T09:12:00", "x", &None);
+        assert_eq!(
+            session.find("Root").unwrap(),
+            human.find('x').unwrap(),
+            "session and manual bodies must start in the same column"
+        );
+    }
+
+    /// An entry is a quotation: a body written over several lines keeps its
+    /// breaks, indented under the first line rather than collapsed into it.
+    #[test]
+    fn a_multi_line_body_indents_its_continuation_under_the_first_line() {
+        let line = format_worklog_entry("2026-08-12T09:12:00", "first\nsecond", &None);
+        let (head, tail) = line.split_once('\n').expect("two lines");
+        assert_eq!(head, "  2026-08-12 09:12  manuel  first");
+        assert_eq!(tail, format!("{}second", " ".repeat(head.find("first").unwrap())));
+    }
+}

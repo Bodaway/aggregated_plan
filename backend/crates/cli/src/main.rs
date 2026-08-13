@@ -99,7 +99,9 @@ fn main() -> ExitCode {
         cli::Commands::Ls { status, triage } => {
             commands::ls(&args.api_url, args.json, &status, &triage)
         }
-        cli::Commands::Show { task } => commands::show(&args.api_url, args.json, &task),
+        cli::Commands::Show { task, worklog } => {
+            commands::show(&args.api_url, args.json, &task, worklog)
+        }
         cli::Commands::Dash { date } => commands::dash(&args.api_url, args.json, date.as_deref()),
         cli::Commands::Matrix => commands::matrix(&args.api_url, args.json),
         cli::Commands::Journal { date } => {

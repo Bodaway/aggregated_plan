@@ -1176,9 +1176,10 @@ async fn timesheet_notes_a_failed_overlap_check_on_stderr_without_failing() {
         .stderr(predicate::str::contains("note: overlap check unavailable"));
 }
 
-#[tokio::test]
-async fn show_prints_task_detail() {
-    let server = mock_graphql(json!({
+/// The `GetTask` response `show`'s own tests read: a fully-populated task, so a
+/// dropped line in the detail block is visible.
+fn show_task_body() -> serde_json::Value {
+    json!({
         "data": {
             "task": {
                 "id": "00000000-0000-0000-0000-000000000001",
@@ -1197,7 +1198,43 @@ async fn show_prints_task_detail() {
                 "estimatedHours": 8.0
             }
         }
-    })).await;
+    })
+}
+
+/// A `worklogEntries` response shaped exactly as `graphql/task_worklog.graphql`
+/// selects it. Entries are given **newest first**, the order the repository
+/// guarantees (`logged_at DESC`), because reversing it is `show`'s job and a
+/// fixture that pre-sorted them would hide a regression there.
+fn task_worklog_body(entries: &[(&str, &str, Option<&str>)]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, (logged_at, body, session))| {
+            json!({
+                "id": format!("00000000-0000-0000-0000-00000000e{:03}", i + 1),
+                "body": body,
+                "loggedAt": logged_at,
+                "sessionId": session,
+            })
+        })
+        .collect();
+    json!({ "data": { "worklogEntries": rows } })
+}
+
+/// `aplan show TASK` with both operations stubbed. `worklog` is appended
+/// verbatim so tests can pass `--worklog N` (or nothing).
+async fn show_server(worklog: Option<serde_json::Value>) -> MockServer {
+    let server = MockServer::start().await;
+    mount_operation(&server, "GetTask", show_task_body()).await;
+    if let Some(body) = worklog {
+        mount_operation(&server, "TaskWorklog", body).await;
+    }
+    server
+}
+
+#[tokio::test]
+async fn show_prints_task_detail() {
+    let server = show_server(Some(task_worklog_body(&[]))).await;
     let url = format!("{}/graphql", server.uri());
 
     aplan()
@@ -1207,7 +1244,253 @@ async fn show_prints_task_detail() {
         .stdout(predicate::str::contains("AP-1234"))
         .stdout(predicate::str::contains("Auth migration"))
         .stdout(predicate::str::contains("URGENT_IMPORTANT"))
-        .stdout(predicate::str::contains("Saw lock contention"));
+        .stdout(predicate::str::contains("Saw lock contention"))
+        // A task nobody logged against says so, rather than ending on a bare
+        // heading that reads like a truncated output.
+        .stdout(predicate::str::contains("worklog: (empty)"));
+}
+
+/// The read side of `aplan log`: the entries come back newest-first from the
+/// server and must print forwards, so the tail reads like a journal.
+#[tokio::test]
+async fn show_prints_the_worklog_oldest_first_with_its_author() {
+    let server = show_server(Some(task_worklog_body(&[
+        ("2026-08-12T08:40:00Z", "Cause racine identifiée.", Some("a1b2c3d4-ffff")),
+        ("2026-08-12T07:12:00Z", "Relu le plan de migration.", None),
+    ])))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    let out = aplan()
+        .args(["--api-url", &url, "show", "00000000-0000-0000-0000-000000000001"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    let older = stdout.find("Relu le plan").expect("older entry printed");
+    let newer = stdout.find("Cause racine").expect("newer entry printed");
+    assert!(older < newer, "oldest entry must come first:\n{stdout}");
+    // Authorship, in the vocabulary `journal`'s overlap lines already use.
+    assert!(stdout.contains("manuel"), "{stdout}");
+    assert!(stdout.contains("a1b2"), "{stdout}");
+    assert!(!stdout.contains("older entries not shown"), "{stdout}");
+}
+
+/// `--worklog N` keeps the N *most recent* entries, and says so when it dropped
+/// older ones — the one thing a silent tail could not be told apart from a task
+/// that was only logged against twice.
+#[tokio::test]
+async fn show_keeps_the_most_recent_entries_and_flags_the_older_ones() {
+    let server = show_server(Some(task_worklog_body(&[
+        ("2026-08-12T09:00:00Z", "third", None),
+        ("2026-08-12T08:00:00Z", "second", None),
+        ("2026-08-12T07:00:00Z", "first", None),
+    ])))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    let out = aplan()
+        .args([
+            "--api-url",
+            &url,
+            "show",
+            "00000000-0000-0000-0000-000000000001",
+            "--worklog",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    assert!(stdout.contains("older entries not shown"), "{stdout}");
+    assert!(stdout.contains("second") && stdout.contains("third"), "{stdout}");
+    assert!(!stdout.contains("first"), "the oldest entry was dropped:\n{stdout}");
+}
+
+/// `--worklog 0` must not merely hide the section: it must not ask for it. The
+/// server here has no `TaskWorklog` stub, so a request would come back 404 and
+/// print the unavailability note this asserts is absent.
+#[tokio::test]
+async fn show_with_worklog_zero_issues_no_worklog_request() {
+    let server = show_server(None).await;
+    let url = format!("{}/graphql", server.uri());
+
+    let out = aplan()
+        .args([
+            "--api-url",
+            &url,
+            "show",
+            "00000000-0000-0000-0000-000000000001",
+            "--worklog",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("worklog"));
+    assert!(!String::from_utf8(out.stderr).unwrap().contains("worklog"));
+}
+
+/// `--json` carries the same entries in the same order as the printed tail, so
+/// the two modes can never disagree about what `show` reported.
+#[tokio::test]
+async fn show_json_embeds_the_worklog_entries_alongside_the_task() {
+    let server = show_server(Some(task_worklog_body(&[
+        ("2026-08-12T08:40:00Z", "newer", Some("a1b2c3d4")),
+        ("2026-08-12T07:12:00Z", "older", None),
+    ])))
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    let out = aplan()
+        .args([
+            "--api-url",
+            &url,
+            "--json",
+            "show",
+            "00000000-0000-0000-0000-000000000001",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    assert_eq!(value["task"]["sourceId"], "AP-1234");
+    let entries = value["worklogEntries"].as_array().expect("array");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["body"], "older");
+    assert_eq!(entries[1]["body"], "newer");
+    assert_eq!(entries[1]["sessionId"], "a1b2c3d4");
+}
+
+/// `--worklog all` must page: the server caps any single request at 1000 rows,
+/// so a task with more than that would come back looking complete after one
+/// request. Two pages are stubbed by their `offset`, and the assertion is that
+/// the entry only reachable on the second one is printed.
+#[tokio::test]
+async fn show_worklog_all_pages_past_the_servers_thousand_row_ceiling() {
+    // A full first page (exactly the server ceiling) is the signal to ask for
+    // another one; a short second page is the signal to stop.
+    let first_page: Vec<(String, String, Option<&str>)> = (0..1000)
+        .map(|i| {
+            (
+                format!("2026-08-12T{:02}:{:02}:00Z", 8 + i / 60, i % 60),
+                format!("page one entry {i}"),
+                None,
+            )
+        })
+        .collect();
+    let borrowed: Vec<(&str, &str, Option<&str>)> = first_page
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), *c))
+        .collect();
+
+    let server = MockServer::start().await;
+    mount_operation(&server, "GetTask", show_task_body()).await;
+    mount_operation(&server, "\"offset\":0", task_worklog_body(&borrowed)).await;
+    mount_operation(
+        &server,
+        "\"offset\":1000",
+        task_worklog_body(&[("2026-08-11T09:00:00Z", "the oldest entry of all", None)]),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    let out = aplan()
+        .args([
+            "--api-url",
+            &url,
+            "show",
+            "00000000-0000-0000-0000-000000000001",
+            "--worklog",
+            "all",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    assert!(
+        stdout.contains("the oldest entry of all"),
+        "the second page was never requested"
+    );
+    assert!(stdout.contains("page one entry 999"), "{}", &stdout[..200]);
+    // Everything was read, so there is nothing older to warn about.
+    assert!(!stdout.contains("older entries not shown"));
+    // Page 2 holds the oldest entry, so it must print first.
+    let oldest = stdout.find("the oldest entry of all").unwrap();
+    assert!(oldest < stdout.find("page one entry 0").unwrap());
+}
+
+/// `--worklog all` on a task whose worklog fits in one page must stop after
+/// that page — a short page is the end of the list, not an invitation to ask
+/// again.
+#[tokio::test]
+async fn show_worklog_all_stops_on_a_single_short_page() {
+    let server = MockServer::start().await;
+    mount_operation(&server, "GetTask", show_task_body()).await;
+    mount_operation(
+        &server,
+        "\"offset\":0",
+        task_worklog_body(&[
+            ("2026-08-12T08:40:00Z", "newer", None),
+            ("2026-08-12T07:12:00Z", "older", None),
+        ]),
+    )
+    .await;
+    let url = format!("{}/graphql", server.uri());
+
+    // No `offset: 1000` stub: a second request would 404 and print the
+    // unavailability note this asserts is absent.
+    let out = aplan()
+        .args([
+            "--api-url",
+            &url,
+            "show",
+            "00000000-0000-0000-0000-000000000001",
+            "--worklog",
+            "all",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("older"));
+    assert!(!String::from_utf8(out.stderr).unwrap().contains("unavailable"));
+}
+
+/// A worklog read that fails must not take the task detail down with it — but
+/// it must not pass for "no entries" either: a note on stderr, and in `--json`
+/// an explicit null rather than an empty array or a missing key.
+#[tokio::test]
+async fn show_survives_a_worklog_read_that_fails() {
+    let server = show_server(None).await;
+    let url = format!("{}/graphql", server.uri());
+
+    let out = aplan()
+        .args(["--api-url", &url, "show", "00000000-0000-0000-0000-000000000001"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(String::from_utf8(out.stdout).unwrap().contains("Auth migration"));
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains("note: worklog unavailable"));
+
+    let out = aplan()
+        .args([
+            "--api-url",
+            &url,
+            "--json",
+            "show",
+            "00000000-0000-0000-0000-000000000001",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(value["worklogEntries"].is_null(), "{value}");
 }
 
 #[tokio::test]

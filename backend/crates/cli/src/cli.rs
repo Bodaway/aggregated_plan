@@ -194,8 +194,16 @@ pub enum Commands {
         #[arg(long)]
         keep_running: bool,
     },
-    /// Show full detail for TASK (UUID, key, fuzzy, or @current).
-    Show { task: String },
+    /// Show full detail for TASK (UUID, key, fuzzy, or @current), ending with
+    /// the tail of its worklog — the read side of `aplan log`.
+    Show {
+        task: String,
+        /// How many worklog entries to print: the N most recent, oldest first.
+        /// `all` prints the whole worklog, paging past the server's 1000-row
+        /// ceiling; `0` skips it (and its round trip) entirely.
+        #[arg(long, value_name = "N|all", default_value = "10")]
+        worklog: WorklogAmount,
+    },
     /// Daily dashboard summary (tasks, meetings, alerts).
     Dash {
         /// Defaults to today.
@@ -608,6 +616,41 @@ pub enum ConfigCmd {
     Set { key: String, value: String },
 }
 
+/// How much of a task's worklog `aplan show` prints.
+///
+/// One argument rather than a count plus a `--worklog-all` flag: the three
+/// answers ("none", "the last N", "everything") are values of the same
+/// question, and splitting them across two flags would let a user ask two
+/// contradictory things at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorklogAmount {
+    /// No worklog section — and no round trip to fetch one.
+    None,
+    /// The N most recent entries.
+    Tail(u32),
+    /// Every entry the task has, paged out of the server.
+    All,
+}
+
+impl std::str::FromStr for WorklogAmount {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("all") {
+            return Ok(WorklogAmount::All);
+        }
+        match s.parse::<u32>() {
+            Ok(0) => Ok(WorklogAmount::None),
+            Ok(n) => Ok(WorklogAmount::Tail(n)),
+            // Refused at parse time, before any network round trip — the same
+            // rule `--at` follows: a mistyped argument is never a request.
+            Err(_) => Err(format!(
+                "expected a number of entries or `all`, got `{s}`"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,5 +1037,57 @@ mod tests {
             }
             other => panic!("expected Brief, got {other:?}"),
         }
+    }
+
+    fn worklog_amount(args: &[&str]) -> WorklogAmount {
+        let mut argv = vec!["aplan", "show", "AP-1234"];
+        argv.extend_from_slice(args);
+        match parse(&argv).expect("parses").command {
+            Commands::Show { worklog, .. } => worklog,
+            other => panic!("expected Show, got {other:?}"),
+        }
+    }
+
+    /// The default is a *tail*, not the whole journal: `show` is a task-detail
+    /// verb, and a task with 400 entries would otherwise scroll its own header
+    /// off the screen.
+    #[test]
+    fn show_defaults_to_the_ten_most_recent_worklog_entries() {
+        assert_eq!(worklog_amount(&[]), WorklogAmount::Tail(10));
+    }
+
+    #[test]
+    fn worklog_all_asks_for_the_whole_journal() {
+        assert_eq!(worklog_amount(&["--worklog", "all"]), WorklogAmount::All);
+        assert_eq!(worklog_amount(&["--worklog", "ALL"]), WorklogAmount::All);
+    }
+
+    #[test]
+    fn worklog_zero_is_none_not_an_empty_tail() {
+        assert_eq!(worklog_amount(&["--worklog", "0"]), WorklogAmount::None);
+        assert_eq!(worklog_amount(&["--worklog", "25"]), WorklogAmount::Tail(25));
+    }
+
+    /// Refused at parse time, before the network: a typo must never reach the
+    /// server as some other request. The message names both accepted forms,
+    /// because "invalid value" alone would not tell a user `all` exists.
+    #[test]
+    fn a_worklog_amount_that_is_neither_a_count_nor_all_is_refused() {
+        for bogus in ["tout", "10.5", "", "everything"] {
+            let err = parse(&["aplan", "show", "AP-1234", "--worklog", bogus])
+                .expect_err(&format!("{bogus} must not be accepted"));
+            assert!(
+                err.to_string().contains("number of entries or `all`"),
+                "{bogus}: {err}"
+            );
+        }
+    }
+
+    /// A negative count is refused by clap before it ever reaches the parser
+    /// above (it reads as an unknown flag). Pinned because the alternative —
+    /// coercing it to `0` — would silently print no worklog at all.
+    #[test]
+    fn a_negative_worklog_count_is_refused() {
+        assert!(parse(&["aplan", "show", "AP-1234", "--worklog", "-1"]).is_err());
     }
 }

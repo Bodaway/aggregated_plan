@@ -1,0 +1,8 @@
+query TaskWorklog($filter: WorklogEntryFilterInput) {
+  worklogEntries(filter: $filter) {
+    id
+    body
+    loggedAt
+    sessionId
+  }
+}

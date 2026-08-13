@@ -30,7 +30,8 @@ aplan triage followed AP-1234 # set tracking state on an inbox item
 ```bash
 aplan current                 # what am I working on?
 aplan ls                      # followed, not-done tasks
-aplan show AP-1234            # full detail of a task
+aplan show AP-1234            # full detail of a task + the tail of its worklog
+aplan show AP-1234 --worklog all  # …the whole worklog (N for a tail, 0 for none)
 aplan dash                    # daily dashboard summary
 aplan matrix                  # Eisenhower priority matrix
 aplan journal                 # today's activity slots
@@ -120,6 +121,48 @@ reconstructed before the rebuild.
 One thing `--at` does not invent: **hours still come from the spread of the entries.**
 Seven entries backdated to the same minute are worth one minute, exactly as they would
 be live. Writing up a past day honestly means giving each entry the time it happened at.
+
+## Reading the worklog back
+
+`aplan show <task>` ends on the tail of the worklog `aplan log` wrote — the ten most
+recent entries, oldest first, so it reads forwards like the journal it is:
+
+```text
+worklog:
+  … older entries not shown (--worklog N)
+  2026-08-13 10:35  d155    Vérification doc Snowflake suite au challenge de Michel : …
+  2026-08-13 10:43  d155    Kit de passation Snowflake/Cortex rédigé : 12 questions …
+  2026-08-13 11:02  manuel  Relu avec Pierre, deux questions retirées.
+```
+
+The middle column is **who wrote it**: `manuel` for the human working by hand, otherwise
+the first four characters of the Claude Code session id — the same abbreviation
+`aplan journal` uses on its overlap warnings, so one session reads the same everywhere.
+Times are shown in your local timezone, the one `--at` accepts.
+
+`--worklog` takes a count or `all`:
+
+| Value | What prints |
+|---|---|
+| *(default)* `10` | the 10 most recent entries |
+| `N` | the N most recent |
+| `all` | **every entry the task has** |
+| `0` | nothing — and no round trip to fetch it |
+
+The `… older entries not shown` line appears only when a tail left something behind, so a
+short tail is never mistaken for a complete one, and `all` never prints it.
+
+**`all` pages.** The server caps any single read at 1000 entries, so asking for one huge
+page would come back looking complete after exactly 1000 — `--worklog all` walks the
+offsets until a short page ends the list. A worklog long enough to need that is unusual;
+the walk stops after 50 pages with a note on stderr rather than looping, which would only
+happen if the server stopped honouring `offset`.
+
+Under `--json` the entries come back as a `worklogEntries` array beside `task`, in the
+same order and count as the printed tail. A worklog read that fails does not take the
+task detail down with it: the detail still prints, a note goes to stderr, and `--json`
+carries `"worklogEntries": null` — never an empty array, which would claim there is
+nothing logged.
 
 ## Correcting an attribution
 
