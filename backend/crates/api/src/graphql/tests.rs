@@ -4786,3 +4786,101 @@ async fn brief_exposes_preferences() {
     );
     assert_eq!(data["brief"]["preferenceTotal"], 1);
 }
+
+// ─── Search ───
+
+/// A task, a worklog entry and a memory all carry "waf" in their text, but with
+/// distinct titles/bodies — so the assertion can tell which group a hit landed
+/// in, not just that some group is non-empty. Wiring `tasks` to `worklog` (or
+/// any other pair) would still leave every total non-zero, but would fail on
+/// the title/body text, which is the point.
+#[tokio::test]
+async fn search_discriminates_hits_by_entity() {
+    let (schema, store) = build_memory_test_schema();
+
+    let created = schema
+        .execute(r#"mutation { createTask(input: { title: "Réunion WAF eActions" }) { id } }"#)
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+    let task_id = created.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "Ticket WAF Front Door") {{ id }} }}"#
+        ))
+        .await;
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+
+    store.seed(seeded_memory_of_kind(MemoryKind::Decision, "Décision WAF eActions"));
+
+    let response = schema
+        .execute(
+            r#"{ search(q: "waf") {
+                tasks { title } taskTotal
+                worklog { title } worklogTotal
+                memories { title } memoryTotal
+            } }"#,
+        )
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let data = response.data.into_json().unwrap();
+    let search = &data["search"];
+
+    assert_eq!(search["taskTotal"], 1);
+    assert_eq!(
+        search["tasks"][0]["title"], "Réunion WAF eActions",
+        "the task group must carry the task's own title, not another group's"
+    );
+    assert_eq!(search["worklogTotal"], 1);
+    assert_eq!(
+        search["worklog"][0]["title"], "Ticket WAF Front Door",
+        "the worklog group must carry the worklog entry's body, not another group's"
+    );
+    assert_eq!(search["memoryTotal"], 1);
+    assert_eq!(
+        search["memories"][0]["title"], "Décision WAF eActions",
+        "the memory group must carry the memory's own title, not another group's"
+    );
+}
+
+/// Matchable content is seeded in every group first, then queried with a
+/// whitespace-only `q` — proving the resolver forwards the blank-query guard
+/// rather than dumping the store. Querying an empty store would pass this
+/// assertion whatever `search` does with a blank query; seeding first is what
+/// makes the zero mean something.
+#[tokio::test]
+async fn search_with_a_blank_query_returns_nothing_rather_than_everything() {
+    let (schema, store) = build_memory_test_schema();
+
+    let created = schema
+        .execute(r#"mutation { createTask(input: { title: "Réunion WAF eActions" }) { id } }"#)
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+    let task_id = created.data.into_json().unwrap()["createTask"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let added = schema
+        .execute(format!(
+            r#"mutation {{ addWorklogEntry(taskId: "{task_id}", body: "Ticket WAF Front Door") {{ id }} }}"#
+        ))
+        .await;
+    assert!(added.errors.is_empty(), "{:?}", added.errors);
+
+    store.seed(seeded_memory_of_kind(MemoryKind::Decision, "Décision WAF eActions"));
+
+    let response = schema
+        .execute(r#"{ search(q: "   ") { taskTotal worklogTotal memoryTotal } }"#)
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let data = response.data.into_json().unwrap();
+    assert_eq!(data["search"]["taskTotal"], 0, "a blank query must not become a task dump");
+    assert_eq!(data["search"]["worklogTotal"], 0, "a blank query must not become a worklog dump");
+    assert_eq!(data["search"]["memoryTotal"], 0, "a blank query must not become a memory dump");
+}
