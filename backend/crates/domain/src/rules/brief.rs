@@ -882,6 +882,67 @@ mod tests {
         );
     }
 
+    /// `the_ceiling_is_enforced_even_on_an_oversized_brief` proves the guard
+    /// fires, but with an empty preferences section it says nothing about
+    /// R55's sacrifice order. Built the same way — a `Brief` assembled by hand
+    /// so `enforce_line_cap`'s tail-truncation actually engages — but this time
+    /// with a real preference entry alongside the oversized commitments, so the
+    /// claim "preferences are the last thing cut" is checked at the boundary
+    /// where truncation happens, not merely inferred from render order.
+    #[test]
+    fn preferences_survive_the_last_resort_truncation() {
+        let preferences = BriefSection {
+            total: 1,
+            entries: vec![MemoryEntry {
+                id: Uuid::new_v4(),
+                reference: "m:pref".to_string(),
+                title: "une idée par slide".to_string(),
+                stakeholders: vec![],
+                occurred_on: today(),
+            }],
+        };
+        let entries: Vec<MemoryEntry> = (0..200)
+            .map(|i| MemoryEntry {
+                id: Uuid::new_v4(),
+                reference: format!("m:{i:03x}"),
+                title: format!("promesse {i}"),
+                stakeholders: vec![],
+                occurred_on: today(),
+            })
+            .collect();
+        let brief = Brief {
+            variant: BriefVariant::Session,
+            date: today(),
+            preferences,
+            deadlines: BriefSection::empty(),
+            commitments: BriefSection {
+                total: entries.len(),
+                entries,
+            },
+            decisions: BriefSection::empty(),
+            decisions_scoped_to_project: false,
+            pending_count: 0,
+            consolidation: ConsolidationAge::Ran { days_ago: 0 },
+        };
+
+        let lines = render_brief(&brief);
+
+        assert_eq!(lines.len(), BRIEF_MAX_LINES);
+        assert!(
+            lines.iter().any(|l| l.contains("une idée par slide")),
+            "the preference line must survive the truncation, got {lines:?}"
+        );
+        assert!(
+            lines.last().expect("a last line").contains("tronqué"),
+            "truncation must be visible, got: {:?}",
+            lines.last()
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("promesse 199")),
+            "a commitment must have been cut for the preference to have room, got {lines:?}"
+        );
+    }
+
     #[test]
     fn truncation_is_visible_in_every_section() {
         let tasks: Vec<Task> = (0..20)
