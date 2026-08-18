@@ -761,6 +761,15 @@ type CombinedQuery {
 	"""
 	brief(variant: BriefVariantGql! = SESSION, projectId: ID, date: NaiveDate): BriefGql!
 	"""
+	Cross-entity text search (`aplan search`): tasks, worklog, meetings and
+	memories that match `q`, one capped group per entity.
+	
+	`limit` caps each group independently — it is not a total across the
+	four. An empty or blank `q` returns four empty groups rather than every
+	task, worklog entry and meeting the user has (`use_cases::search`).
+	"""
+	search(q: String!, limit: Int! = 5): SearchGql!
+	"""
 	Search memories from raw user input (`aplan recall --q "…"`), best-first.
 	
 	`q` is raw text: `AP-1234` and `Cartier : certificat` are safe here, they
@@ -1620,6 +1629,44 @@ best-first, so `score` is for debugging the ranking, not for re-sorting.
 type ScoredMemoryGql {
 	memory: MemoryGql!
 	score: Float!
+}
+
+"""
+The cross-entity search (`aplan search`): tasks, worklog, meetings and
+memories that match the same query, one already-capped group per entity.
+Selection, matching and capping all happen in `domain`/`application` —
+this type only carries their shape across the wire.
+"""
+type SearchGql {
+	tasks: [SearchHitGql!]!
+	"""
+	How many tasks matched, before the group cap.
+	"""
+	taskTotal: Int!
+	worklog: [SearchHitGql!]!
+	"""
+	How many worklog entries matched, before the group cap.
+	"""
+	worklogTotal: Int!
+	meetings: [SearchHitGql!]!
+	"""
+	How many meetings matched, before the group cap.
+	"""
+	meetingTotal: Int!
+	memories: [SearchHitGql!]!
+	"""
+	How many memories matched, before the group cap.
+	"""
+	memoryTotal: Int!
+}
+
+"""
+One search hit, reduced to what a caller needs to decide whether to drill in.
+"""
+type SearchHitGql {
+	id: String!
+	title: String!
+	occurredOn: NaiveDate!
 }
 
 type SearchableTaskGql {

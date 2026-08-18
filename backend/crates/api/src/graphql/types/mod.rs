@@ -20,6 +20,7 @@ pub mod timesheet;
 pub mod memory;
 pub mod brief;
 pub mod session;
+pub mod search;
 
 pub use gryzzly::*;
 pub use task::*;
@@ -43,3 +44,4 @@ pub use timesheet::*;
 pub use memory::*;
 pub use brief::*;
 pub use session::*;
+pub use search::*;

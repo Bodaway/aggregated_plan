@@ -12,6 +12,7 @@ use application::use_cases::brief as brief_uc;
 use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
 use application::use_cases::recurrence as recurrence_uc;
+use application::use_cases::search as search_uc;
 use application::use_cases::session_tracking;
 use application::use_cases::timesheet::load_reconstruction_config;
 
@@ -723,6 +724,41 @@ impl QueryRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(BriefGql::from(brief))
+    }
+
+    /// Cross-entity text search (`aplan search`): tasks, worklog, meetings and
+    /// memories that match `q`, one capped group per entity.
+    ///
+    /// `limit` caps each group independently — it is not a total across the
+    /// four. An empty or blank `q` returns four empty groups rather than every
+    /// task, worklog entry and meeting the user has (`use_cases::search`).
+    async fn search(
+        &self,
+        ctx: &Context<'_>,
+        q: String,
+        #[graphql(default_with = "domain::rules::search::SEARCH_MAX_PER_GROUP as i32")]
+        limit: i32,
+    ) -> Result<SearchGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let meeting_repo = ctx.data::<Arc<dyn MeetingRepository>>()?;
+        let memory_retriever = ctx.data::<Arc<dyn MemoryRetriever>>()?;
+        let outcome = search_uc::search(
+            task_repo.as_ref(),
+            worklog_repo.as_ref(),
+            meeting_repo.as_ref(),
+            memory_retriever.as_ref(),
+            user_id,
+            search_uc::SearchRequest {
+                query: q,
+                limit: limit.max(0) as usize,
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(SearchGql::from(outcome))
     }
 
     /// Search memories from raw user input (`aplan recall --q "…"`), best-first.
