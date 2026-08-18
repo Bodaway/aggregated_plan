@@ -17,3 +17,4 @@ pub mod recall;
 pub mod memory_import;
 pub mod memory_lifecycle;
 pub mod brief;
+pub mod search;
