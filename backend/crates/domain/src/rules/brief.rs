@@ -426,9 +426,15 @@ pub fn parse_memory_reference(token: &str) -> Option<String> {
 /// Compose the brief, deciding both content and how much of it survives the line
 /// budget.
 ///
-/// Truncation runs from the lowest-value section up: deadlines are served first,
-/// then commitments, and decisions get whatever the budget has left. Every cut is
-/// reported through [`BriefSection::hidden`], so the rendering can say it happened.
+/// Truncation runs from the least useful section to the most useful: decisions
+/// are cut first, then commitments, then deadlines, and preferences last (R55).
+/// Preferences and deadlines are each sized from a fixed per-section constant
+/// rather than from the remaining budget, so neither is itself budget-capped —
+/// what makes preferences the last one sacrificed is that their cost, like the
+/// deadlines', is reserved *before* the commitment and decision caps are
+/// computed, so it is never invisible to what those two get to keep. Every cut
+/// is reported through [`BriefSection::hidden`], so the rendering can say it
+/// happened.
 pub fn compose_brief(input: &BriefInput) -> Brief {
     let consolidation = match input.last_consolidation {
         None => ConsolidationAge::NeverRun,
