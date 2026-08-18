@@ -685,6 +685,7 @@ pub fn render_brief(brief: &Brief) -> Vec<String> {
             .entries
             .first()
             .or_else(|| brief.commitments.entries.first())
+            .or_else(|| brief.preferences.entries.first())
             .map(|e| e.reference.clone());
         match sample {
             Some(reference) => lines.push(format!(
@@ -1260,6 +1261,35 @@ mod tests {
         assert!(
             brief.preferences.entries[0].reference.starts_with("m:"),
             "sans référence courte la ligne est un cul-de-sac (R56)"
+        );
+    }
+
+    #[test]
+    fn a_preference_only_briefs_footer_carries_a_usable_reference() {
+        // Footer sample falls back decisions -> commitments -> preferences: a
+        // brief with nothing but a preference must still land on that last
+        // rung rather than printing the bare, reference-less footer.
+        let memories = vec![memory(MemoryKind::Preference, "une idée par slide", 3)];
+        let input = BriefInput {
+            variant: BriefVariant::Session,
+            today: today(),
+            now: now(),
+            tasks: &[],
+            memories: &memories,
+            current_project: None,
+            pending_count: 0,
+            last_consolidation: Some(now()),
+        };
+
+        let brief = compose_brief(&input);
+        assert!(brief.commitments.is_empty());
+        assert!(brief.decisions.is_empty());
+        let reference = brief.preferences.entries[0].reference.clone();
+
+        let text = render_brief(&brief).join("\n");
+        assert!(
+            text.contains(&format!("aplan recall {reference}")),
+            "a preference-only brief must offer a drill-down reference, not the bare fallback: {text}"
         );
     }
 
