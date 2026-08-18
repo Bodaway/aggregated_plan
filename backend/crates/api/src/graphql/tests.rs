@@ -4723,3 +4723,17 @@ async fn rebuilding_a_day_without_entries_is_a_success() {
     assert_eq!(out["halfDays"], serde_json::json!([]));
     assert_eq!(out["slotsWritten"], 0);
 }
+
+// ─── Brief: preferences ───
+
+#[tokio::test]
+async fn brief_exposes_preferences() {
+    let (schema, _task_id) = schema_with_one_task().await;
+    let response = schema
+        .execute(
+            r#"{ brief(variant: SESSION) { preferences { title reference } preferenceTotal } }"#,
+        )
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+}

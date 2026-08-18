@@ -72,6 +72,10 @@ pub struct BriefGql {
     pub deadlines: Vec<BriefDeadlineGql>,
     /// How many deadlines qualified, before the section cap.
     pub deadline_total: i32,
+    /// Working rules. Rendered first, cut last.
+    pub preferences: Vec<BriefMemoryGql>,
+    /// How many qualified, before the section cap.
+    pub preference_total: i32,
     pub commitments: Vec<BriefMemoryGql>,
     pub commitment_total: i32,
     pub decisions: Vec<BriefMemoryGql>,
@@ -118,6 +122,8 @@ impl From<Brief> for BriefGql {
             lines,
             deadlines: deadline_entries(&brief.deadlines),
             deadline_total: brief.deadlines.total as i32,
+            preferences: memory_entries(&brief.preferences),
+            preference_total: brief.preferences.total as i32,
             commitments: memory_entries(&brief.commitments),
             commitment_total: brief.commitments.total as i32,
             decisions: memory_entries(&brief.decisions),
