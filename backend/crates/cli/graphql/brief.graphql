@@ -3,6 +3,14 @@ query Brief($variant: BriefVariantGql!, $projectId: ID, $date: NaiveDate) {
     variant
     date
     lines
+    preferences {
+      id
+      reference
+      title
+      stakeholders
+      occurredOn
+    }
+    preferenceTotal
     deadlines {
       title
       daysUntil
