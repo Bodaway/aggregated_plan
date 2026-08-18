@@ -1311,7 +1311,9 @@ mod tests {
     }
 
     #[test]
-    fn facts_and_preferences_are_not_brief_material() {
+    fn facts_and_preferences_never_leak_into_commitments_or_decisions() {
+        // Facts are never brief material at all; preferences are (R56), but
+        // through their own section — neither belongs in commitments/decisions.
         let memories = vec![
             memory(MemoryKind::Fact, "le crate mcp ne compile pas", 1),
             memory(MemoryKind::Preference, "notes atomiques", 1),
