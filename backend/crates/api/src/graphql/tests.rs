@@ -4726,9 +4726,44 @@ async fn rebuilding_a_day_without_entries_is_a_success() {
 
 // ─── Brief: preferences ───
 
+/// A memory of a chosen kind, active immediately — for tests that must tell
+/// which section of the brief a memory landed in, not just that the query ran.
+fn seeded_memory_of_kind(kind: MemoryKind, title: &str) -> Memory {
+    Memory::new(
+        memory_test_user(),
+        NewMemory {
+            kind,
+            title: title.to_string(),
+            body: None,
+            occurred_at: None,
+            source: MemorySource::Manual,
+            source_ref: None,
+            status: MemoryStatus::Active,
+            proposed_supersedes: None,
+            project_id: None,
+            task_id: None,
+            stakeholders: vec![],
+        },
+        chrono::Utc::now(),
+    )
+    .expect("valid fixture memory")
+}
+
+/// Two active memories of different kinds are seeded so the assertion can tell
+/// `preferences` from `commitments` apart: an empty-fixture test would pass even
+/// if the resolver read the wrong section (see review finding on this test).
 #[tokio::test]
 async fn brief_exposes_preferences() {
-    let (schema, _task_id) = schema_with_one_task().await;
+    let (schema, store) = build_memory_test_schema();
+    store.seed(seeded_memory_of_kind(
+        MemoryKind::Preference,
+        "Toujours confirmer avant de merger",
+    ));
+    store.seed(seeded_memory_of_kind(
+        MemoryKind::Commitment,
+        "Livrer le rapport Cartier",
+    ));
+
     let response = schema
         .execute(
             r#"{ brief(variant: SESSION) { preferences { title reference } preferenceTotal } }"#,
@@ -4736,4 +4771,18 @@ async fn brief_exposes_preferences() {
         .await;
 
     assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let data = response.data.into_json().unwrap();
+    let preferences = data["brief"]["preferences"].as_array().unwrap();
+
+    assert_eq!(
+        preferences.len(),
+        1,
+        "only the preference-kind memory belongs here, not the commitment: {preferences:?}"
+    );
+    assert_eq!(preferences[0]["title"], "Toujours confirmer avant de merger");
+    assert!(
+        !preferences[0]["reference"].as_str().unwrap().is_empty(),
+        "the short reference `recall`/the CLI accept must not be blank"
+    );
+    assert_eq!(data["brief"]["preferenceTotal"], 1);
 }
