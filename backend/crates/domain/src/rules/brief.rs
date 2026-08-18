@@ -632,6 +632,8 @@ pub fn render_brief(brief: &Brief) -> Vec<String> {
         return lines;
     }
 
+    render_memory_section(&mut lines, "Préférences", &brief.preferences);
+
     if !brief.deadlines.is_empty() {
         // One line per deadline. The design's sample put them on a single line,
         // but real titles run to a hundred characters: joined, two survived the
@@ -1323,6 +1325,64 @@ mod tests {
                     brief.decisions.entries[0].reference
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn preferences_are_rendered_before_the_deadlines() {
+        let memories = vec![memory(MemoryKind::Preference, "une idée par slide", 3)];
+        let tasks = vec![task("rendre le dossier", in_days(1))];
+        let input = BriefInput {
+            variant: BriefVariant::Session,
+            today: today(),
+            now: now(),
+            tasks: &tasks,
+            memories: &memories,
+            current_project: None,
+            pending_count: 0,
+            last_consolidation: Some(now()),
+        };
+
+        let lines = render_brief(&compose_brief(&input));
+        let preferences = lines.iter().position(|l| l.starts_with("Préférences"));
+        let deadlines = lines.iter().position(|l| l.starts_with("Échéances"));
+
+        assert!(preferences.is_some(), "la section doit être rendue");
+        assert!(
+            preferences < deadlines,
+            "une règle de méthode se lit avant une échéance, got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn preferences_survive_a_pathological_brief() {
+        // 40 deadlines and 40 decisions: everything else is cut, the working rules
+        // are not. This is R55's sacrifice order, end to end.
+        let mut memories: Vec<Memory> = (0..40)
+            .map(|i| memory(MemoryKind::Decision, &format!("décision {i}"), i))
+            .collect();
+        memories.push(memory(MemoryKind::Preference, "une idée par slide", 1));
+        let tasks: Vec<Task> = (0..40)
+            .map(|i| task(&format!("tâche {i}"), in_days(i)))
+            .collect();
+        let input = BriefInput {
+            variant: BriefVariant::Session,
+            today: today(),
+            now: now(),
+            tasks: &tasks,
+            memories: &memories,
+            current_project: None,
+            pending_count: 0,
+            last_consolidation: Some(now()),
+        };
+
+        let lines = render_brief(&compose_brief(&input));
+
+        assert!(lines.len() <= BRIEF_MAX_LINES, "plafond de R55 : {}", lines.len());
+        assert!(lines.iter().all(|l| l.chars().count() <= BRIEF_MAX_LINE_CHARS));
+        assert!(
+            lines.iter().any(|l| l.contains("une idée par slide")),
+            "les préférences sont les dernières coupées, got {lines:?}"
         );
     }
 
