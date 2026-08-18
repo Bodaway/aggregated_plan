@@ -332,8 +332,10 @@ pub enum Commands {
         // present, which is exactly the case where the flag was being ignored.
         #[arg(long, requires = "q", conflicts_with = "id")]
         history: bool,
-        /// Restrict the search context to a project: UUID or (fuzzy) name.
-        /// Search-only, and refused rather than ignored next to an id.
+        /// Favour memories attached to this project (UUID or fuzzy name). A
+        /// bonus in the ranking, not a filter: memories from other projects
+        /// still come back, lower down. Search-only, and refused rather than
+        /// ignored next to an id.
         #[arg(long, requires = "q", conflicts_with = "id")]
         project: Option<String>,
         /// Max results. Search-only, same reason.
