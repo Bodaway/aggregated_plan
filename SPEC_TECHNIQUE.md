@@ -184,25 +184,33 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
     le plafond ne peut pas être contourné côté client. `--json` émet `data.brief` brut.
 - **Verbe de recherche transverse :**
   - `aplan search --q <TERMES> [--limit N] [--json]` (R64) — cherche dans les tâches (titre et
-    description), les entrées de journal et les réunions en lisant chaque dépôt directement
-    (`TaskRepository::find_by_user`, pagination complète du journal par pages de
-    `WORKLOG_FILTER_MAX_LIMIT`, réunions sur une fenêtre glissante de **24 mois** car
-    `MeetingRepository` n'expose aucune liste non bornée, seulement une plage de dates), et dans
-    les mémoires via le chemin de rappel existant — **jamais** la query GraphQL `tasks` et son
-    `first: 50`. Les résultats sont **groupés par entité**, jamais fusionnés en un classement
-    unique : mémoires dans l'ordre du rappel (pertinence), tâches/journal/réunions triés par
-    récence. Plafond de **`SEARCH_MAX_PER_GROUP` = 5** résultats par groupe, relevable par
+    description **concaténés en un seul texte à matcher**, exactement comme une mémoire est un seul
+    document FTS5 titre + corps ; sans quoi la même requête matcherait différemment selon l'entité
+    qu'elle touche, le défaut même que `search` doit faire disparaître), les entrées de journal et
+    les réunions en lisant chaque dépôt directement (`TaskRepository::find_by_user`, pagination
+    complète du journal par pages de `WORKLOG_FILTER_MAX_LIMIT`, réunions sur une fenêtre glissante
+    de **24 mois de part et d'autre d'aujourd'hui** — passé *et* futur, car `MeetingRepository`
+    n'expose aucune liste non bornée, seulement une plage de dates, et une réunion planifiée doit
+    rester trouvable), et dans les mémoires via le chemin de rappel existant — **jamais** la query
+    GraphQL `tasks` et son `first: 50`. Les résultats sont **groupés par entité**, jamais fusionnés
+    en un classement unique : mémoires dans l'ordre du rappel (pertinence), tâches/journal/réunions
+    triés par récence. Plafond de **`SEARCH_MAX_PER_GROUP` = 5** résultats par groupe, relevable par
     `--limit` (même valeur par défaut côté serveur et côté CLI) ; un groupe sans résultat est omis,
-    toute troncature annoncée (`(12, 5 affichés)`, même formule que `aplan brief`). Les accents
-    énumérés dans `fold_diacritic` (aigu/caron/ogonek/ring d'Europe centrale et occidentale, plus
-    le letton `ģ ķ ļ ņ`) sont pliés (`domain::rules::search::normalize`) comme le fait
-    `memories_fts` (`unicode61 remove_diacritics 2`), pour que la requête se comporte pareil sur
-    les quatre entités — sauf, dans les deux moteurs, les lettres à barre ou ligature (`ł`, `ø`,
-    `đ`, `æ`, `œ`, `ß`), à saisir telles quelles, et sauf tout diacritique **non énuméré** dans
-    `fold_diacritic` : un écart non mesuré, qui plie côté `memories_fts` (FTS5) mais pas côté
-    tâches, journal ou réunions (ce module), tant qu'il n'a pas été confirmé via `fts5vocab` et
-    ajouté. Une saisie vide ou blanche ne ramène **rien**, jamais les 642 tâches ou les 572
-    entrées de journal du magasin. `--json` émet `data.search` brut.
+    toute troncature annoncée (`(12, 5 affichés)`, même formule que `aplan brief`) — y compris pour
+    les mémoires : le chemin de rappel est interrogé pour `RECALL_MAX_LIMIT` résultats, jamais
+    seulement pour ce que `--limit` affichera, sans quoi le nombre trouvé ne pourrait jamais dépasser
+    le nombre montré et la troncature ne serait jamais annonçable. Les accents énumérés dans
+    `fold_diacritic` (aigu/caron/ogonek/ring/cédille d'Europe centrale et occidentale, plus le
+    letton `ģ ķ ļ ņ`) sont pliés (`domain::rules::search::normalize`) comme le fait `memories_fts`
+    (`unicode61 remove_diacritics 2`), pour que la requête se comporte pareil sur les quatre
+    entités — sauf, dans les deux moteurs, les lettres à barre ou ligature (`ł`, `ø`, `đ`, `æ`, `œ`,
+    `ß`), à saisir telles quelles, et sauf tout diacritique **non énuméré** dans `fold_diacritic` :
+    un écart non mesuré, qui plie côté `memories_fts` (FTS5) mais pas côté tâches, journal ou
+    réunions (ce module), tant qu'il n'a pas été confirmé via `fts5vocab` et ajouté. Une saisie vide
+    ou blanche ne ramène **rien**, jamais les 642 tâches ou les 572 entrées de journal du magasin.
+    `--json` émet le bloc `data` de la réponse GraphQL, dont la seule clé de premier niveau est
+    `search` : le chemin d'un champ est donc `.search.taskTotal`, jamais `.taskTotal` ni
+    `.data.search.taskTotal`.
 - **Verbes de consolidation (lot 5)** — pilotés par une session Claude Code planifiée, jamais par le
   backend. Les trois acceptent `--json`, ce qui est la condition pour être pilotables :
   - `aplan consolidate pending [--limit N]` (défaut 200) — les entrées de journal dont
