@@ -182,6 +182,24 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
     tâches suivies sans la remplacer (R56) : cette liste alimente le sélecteur de tâche du hook.
     La CLI imprime les lignes rendues par `domain::rules::brief` telle quelles — un seul rendu, donc
     le plafond ne peut pas être contourné côté client. `--json` émet `data.brief` brut.
+- **Verbe de recherche transverse :**
+  - `aplan search --q <TERMES> [--limit N] [--json]` (R64) — cherche dans les tâches (titre et
+    description), les entrées de journal et les réunions en lisant chaque dépôt directement
+    (`TaskRepository::find_by_user`, pagination complète du journal par pages de
+    `WORKLOG_FILTER_MAX_LIMIT`, réunions sur une fenêtre glissante de **24 mois** car
+    `MeetingRepository` n'expose aucune liste non bornée, seulement une plage de dates), et dans
+    les mémoires via le chemin de rappel existant — **jamais** la query GraphQL `tasks` et son
+    `first: 50`. Les résultats sont **groupés par entité**, jamais fusionnés en un classement
+    unique : mémoires dans l'ordre du rappel (pertinence), tâches/journal/réunions triés par
+    récence. Plafond de **`SEARCH_MAX_PER_GROUP` = 5** résultats par groupe, relevable par
+    `--limit` (même valeur par défaut côté serveur et côté CLI) ; un groupe sans résultat est omis,
+    toute troncature annoncée (`(12, 5 affichés)`, même formule que `aplan brief`). Les accents
+    sont pliés (`domain::rules::search::normalize`) comme le fait `memories_fts`
+    (`unicode61 remove_diacritics 2`), pour que la requête se comporte pareil sur les quatre
+    entités — à l'exception, dans les deux moteurs, des lettres à barre ou ligature (`ł`, `ø`,
+    `đ`, `æ`, `œ`, `ß`), à saisir telles quelles. Une saisie vide ou blanche ne ramène **rien**,
+    jamais les 642 tâches ou les 572 entrées de journal du magasin. `--json` émet `data.search`
+    brut.
 - **Verbes de consolidation (lot 5)** — pilotés par une session Claude Code planifiée, jamais par le
   backend. Les trois acceptent `--json`, ce qui est la condition pour être pilotables :
   - `aplan consolidate pending [--limit N]` (défaut 200) — les entrées de journal dont
