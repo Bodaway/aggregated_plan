@@ -43,25 +43,57 @@ pub fn group_from(hits: Vec<SearchHit>, cap: usize) -> SearchGroup {
 }
 
 /// Lowercase and strip the diacritics FTS5 strips, so the same query reaches
-/// memories and tasks alike. Deliberately narrow: the Latin-1 range covers every
-/// accent this store actually holds (French, plus the odd German umlaut).
+/// memories and tasks alike.
+///
+/// Checked live against real FTS5 (`unicode61 remove_diacritics 2`, sqlite3
+/// 3.53.4), this is at parity for: Latin-1 (French, German) and the Latin
+/// Extended-A letters that occur in Polish/Czech/Slovak/Hungarian names —
+/// the realistic carriers of a name this module would otherwise mis-fold.
+/// Ligatures (`œ`, `æ`, `ø`) and `ß` are folded by *neither* engine, so
+/// leaving them alone is correct parity, not a gap. Any character outside
+/// those two ranges is a real, unproven gap: it would match a query on
+/// memories (FTS5-backed) but not on tasks or worklog (this function).
+/// Extend [`fold_diacritic`] if one turns up in this store's actual content.
+///
+/// Two passes are needed, not one: lowercasing alone does not remove every
+/// diacritic. Turkish `İ` (U+0130) lowercases to `i` + COMBINING DOT ABOVE
+/// (U+0307) — Unicode's own special-casing, not a bug in this code — and
+/// already-decomposed input (NFD) carries its accents as separate combining
+/// marks the same way. Both are stripped generically by the combining-mark
+/// filter below, rather than one arm per decomposed letter.
 pub fn normalize(text: &str) -> String {
     text.chars()
         .flat_map(|c| c.to_lowercase())
+        .filter(|c| !is_combining_diacritic(*c))
         .map(fold_diacritic)
         .collect()
 }
 
+/// Combining diacritical marks (U+0300–U+036F): accents left dangling by
+/// Unicode case folding (see [`normalize`]), or present in NFD input.
+fn is_combining_diacritic(c: char) -> bool {
+    ('\u{0300}'..='\u{036F}').contains(&c)
+}
+
+/// Precomposed diacritics folded to their bare letter. Latin-1 (French,
+/// German) plus the Latin Extended-A letters a Polish, Czech, Slovak or
+/// Hungarian name would carry.
 fn fold_diacritic(c: char) -> char {
     match c {
-        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
-        'ç' => 'c',
-        'è' | 'é' | 'ê' | 'ë' => 'e',
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ą' => 'a',
+        'ç' | 'ć' | 'č' => 'c',
+        'è' | 'é' | 'ê' | 'ë' | 'ě' | 'ę' => 'e',
         'ì' | 'í' | 'î' | 'ï' => 'i',
-        'ñ' => 'n',
-        'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
-        'ù' | 'ú' | 'û' | 'ü' => 'u',
+        'ñ' | 'ń' | 'ň' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ő' => 'o',
+        'ù' | 'ú' | 'û' | 'ü' | 'ů' | 'ű' => 'u',
         'ý' | 'ÿ' => 'y',
+        'ł' => 'l',
+        'ź' | 'ż' | 'ž' => 'z',
+        'ś' | 'š' => 's',
+        'ť' => 't',
+        'ď' => 'd',
+        'ř' => 'r',
         other => other,
     }
 }
@@ -118,6 +150,28 @@ mod tests {
     #[test]
     fn an_empty_query_matches_nothing() {
         assert!(!matches("n'importe quoi", &parse_terms("")));
+    }
+
+    #[test]
+    fn normalize_folds_central_and_eastern_european_diacritics() {
+        // Proven live against real FTS5 (unicode61 remove_diacritics 2, sqlite3
+        // 3.53.4): these fold there, so they must fold here too, or a name
+        // would match on memories and miss on tasks/worklog.
+        assert_eq!(normalize("łódź"), "lodz");
+        assert_eq!(normalize("Košice"), "kosice");
+    }
+
+    #[test]
+    fn matches_folds_central_and_eastern_european_diacritics_too() {
+        assert!(matches("žluťoučký kůň", &parse_terms("zlutoucky kun")));
+    }
+
+    #[test]
+    fn normalize_strips_the_combining_mark_turkish_lowercasing_leaves_behind() {
+        // Rust's to_lowercase() on 'İ' (U+0130) yields 'i' + COMBINING DOT
+        // ABOVE (U+0307), not plain 'i'. FTS5 folds both forms to the same
+        // string; this must too, or "İstanbul" would fail to match "istanbul".
+        assert_eq!(normalize("İstanbul"), normalize("istanbul"));
     }
 
     fn hit(title: &str, day: u32) -> SearchHit {
