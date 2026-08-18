@@ -32,6 +32,9 @@ pub const CONSOLIDATION_STALE_AFTER_DAYS: i64 = 3;
 pub const MAX_DEADLINE_ENTRIES: usize = 6;
 pub const MAX_COMMITMENT_ENTRIES: usize = 8;
 pub const MAX_DECISION_ENTRIES: usize = 6;
+/// Working rules are few and very stable: a low ceiling suffices, and it keeps
+/// the section under the ~50 tokens that justify it being the last one cut.
+pub const MAX_PREFERENCE_ENTRIES: usize = 4;
 
 /// Shortest memory reference rendered (`m:7c1`). Long enough to be typed back,
 /// short enough to keep a line readable.
@@ -276,6 +279,15 @@ fn memories_of_kind(memories: &[Memory], kind: MemoryKind) -> Vec<&Memory> {
         // superseded or unvalidated fact, whatever the caller passed in.
         .filter(|m| m.is_recallable() && m.kind == kind)
         .collect()
+}
+
+/// Working rules, **newest first**: a preference restated recently is the one
+/// that currently holds. Rendered before everything else and cut last — the
+/// section is both the most useful and the cheapest (three short lines).
+pub fn select_preferences(memories: &[Memory], cap: usize) -> BriefSection<MemoryEntry> {
+    let mut rows = memories_of_kind(memories, MemoryKind::Preference);
+    rows.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at).then_with(|| a.id.cmp(&b.id)));
+    section_from(rows, cap)
 }
 
 /// Open commitments, **oldest first**: a promise made three months ago and still
@@ -1114,6 +1126,36 @@ mod tests {
             unscoped.total, 2,
             "with no project in focus, an empty section would teach nothing"
         );
+    }
+
+    #[test]
+    fn preferences_are_selected_newest_first() {
+        let memories = vec![
+            memory(MemoryKind::Preference, "ancienne règle", 90),
+            memory(MemoryKind::Preference, "règle du jour", 1),
+            memory(MemoryKind::Fact, "un fait, pas une règle", 2),
+        ];
+
+        let section = select_preferences(&memories, 10);
+
+        assert_eq!(section.total, 2, "seules les préférences comptent");
+        assert_eq!(section.entries[0].title, "règle du jour");
+        assert_eq!(section.entries[1].title, "ancienne règle");
+    }
+
+    #[test]
+    fn preferences_report_what_the_cap_hid() {
+        let memories = vec![
+            memory(MemoryKind::Preference, "une", 1),
+            memory(MemoryKind::Preference, "deux", 2),
+            memory(MemoryKind::Preference, "trois", 3),
+        ];
+
+        let section = select_preferences(&memories, 2);
+
+        assert_eq!(section.entries.len(), 2);
+        assert_eq!(section.total, 3);
+        assert_eq!(section.hidden(), 1, "la troncature n'est jamais silencieuse");
     }
 
     #[test]
