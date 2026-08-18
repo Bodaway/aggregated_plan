@@ -679,7 +679,10 @@ pub fn render_brief(brief: &Brief) -> Vec<String> {
 
     if brief.variant == BriefVariant::Session {
         // The footer names a reference that actually exists, so the hint is
-        // copy-pasteable rather than decorative.
+        // copy-pasteable rather than decorative. It names both search verbs:
+        // `recall` for memories alone, `search` for the other three entities
+        // too — the only bridge from this push (read at every session start)
+        // to the pull half (`aplan search`, which a session must think to run).
         let sample = brief
             .decisions
             .entries
@@ -689,9 +692,12 @@ pub fn render_brief(brief: &Brief) -> Vec<String> {
             .map(|e| e.reference.clone());
         match sample {
             Some(reference) => lines.push(format!(
-                "Détail : `aplan recall {reference}` · Recherche : `aplan recall --q \"…\"`"
+                "Détail : `aplan recall {reference}` · Recherche mémoires : `aplan recall --q \"…\"` · Recherche globale : `aplan search --q \"…\"`"
             )),
-            None => lines.push("Recherche : `aplan recall --q \"…\"`".to_string()),
+            None => lines.push(
+                "Recherche mémoires : `aplan recall --q \"…\"` · Recherche globale : `aplan search --q \"…\"`"
+                    .to_string(),
+            ),
         }
     }
 
@@ -1414,7 +1420,7 @@ mod tests {
                 "À trier : 4 candidats mémoire → `aplan inbox`".to_string(),
                 "⚠ Dernière consolidation : il y a 19 jours".to_string(),
                 format!(
-                    "Détail : `aplan recall {}` · Recherche : `aplan recall --q \"…\"`",
+                    "Détail : `aplan recall {}` · Recherche mémoires : `aplan recall --q \"…\"` · Recherche globale : `aplan search --q \"…\"`",
                     brief.decisions.entries[0].reference
                 ),
             ]
@@ -1549,7 +1555,10 @@ mod tests {
             &[],
         )));
         let footer = lines.last().expect("a footer");
-        assert_eq!(footer, "Recherche : `aplan recall --q \"…\"`");
+        assert_eq!(
+            footer,
+            "Recherche mémoires : `aplan recall --q \"…\"` · Recherche globale : `aplan search --q \"…\"`"
+        );
     }
 
     #[test]
