@@ -5,6 +5,43 @@
 //! query that behaves differently depending on which entity it happens to hit,
 //! so the folding lives here — one rule, four entities, no I/O.
 
+use chrono::NaiveDate;
+
+/// How many hits a group shows before it starts hiding them. The caller is an
+/// agent: a command that prints 642 tasks is a command nobody calls twice.
+pub const SEARCH_MAX_PER_GROUP: usize = 5;
+
+/// One result, reduced to what a caller needs to decide whether to drill in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub id: String,
+    pub title: String,
+    pub occurred_on: NaiveDate,
+}
+
+/// One entity's results, plus the count they were cut down from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchGroup {
+    pub hits: Vec<SearchHit>,
+    /// How many matched, before the cap.
+    pub total: usize,
+}
+
+impl SearchGroup {
+    pub fn hidden(&self) -> usize {
+        self.total.saturating_sub(self.hits.len())
+    }
+}
+
+/// Cap a group, remembering what it dropped.
+pub fn group_from(hits: Vec<SearchHit>, cap: usize) -> SearchGroup {
+    let total = hits.len();
+    SearchGroup {
+        hits: hits.into_iter().take(cap).collect(),
+        total,
+    }
+}
+
 /// Lowercase and strip the diacritics FTS5 strips, so the same query reaches
 /// memories and tasks alike. Deliberately narrow: the Latin-1 range covers every
 /// accent this store actually holds (French, plus the odd German umlaut).
@@ -81,5 +118,29 @@ mod tests {
     #[test]
     fn an_empty_query_matches_nothing() {
         assert!(!matches("n'importe quoi", &parse_terms("")));
+    }
+
+    fn hit(title: &str, day: u32) -> SearchHit {
+        SearchHit {
+            id: format!("id-{day}"),
+            title: title.to_string(),
+            occurred_on: NaiveDate::from_ymd_opt(2026, 8, day).expect("valid date"),
+        }
+    }
+
+    #[test]
+    fn a_group_caps_and_says_what_it_hid() {
+        let group = group_from(vec![hit("un", 1), hit("deux", 2), hit("trois", 3)], 2);
+
+        assert_eq!(group.hits.len(), 2);
+        assert_eq!(group.total, 3);
+        assert_eq!(group.hidden(), 1, "la troncature n'est jamais silencieuse");
+    }
+
+    #[test]
+    fn a_group_under_its_cap_hides_nothing() {
+        let group = group_from(vec![hit("un", 1)], SEARCH_MAX_PER_GROUP);
+
+        assert_eq!(group.hidden(), 0);
     }
 }
