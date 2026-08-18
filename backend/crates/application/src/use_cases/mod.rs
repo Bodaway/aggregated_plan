@@ -19,3 +19,4 @@ pub mod session_reaper;
 pub mod session_tracking;
 pub mod slot_classification;
 pub mod slot_repair;
+pub mod search;
