@@ -194,12 +194,15 @@ In addition to the React frontend, the system exposes an `aplan` command-line cl
     récence. Plafond de **`SEARCH_MAX_PER_GROUP` = 5** résultats par groupe, relevable par
     `--limit` (même valeur par défaut côté serveur et côté CLI) ; un groupe sans résultat est omis,
     toute troncature annoncée (`(12, 5 affichés)`, même formule que `aplan brief`). Les accents
-    sont pliés (`domain::rules::search::normalize`) comme le fait `memories_fts`
-    (`unicode61 remove_diacritics 2`), pour que la requête se comporte pareil sur les quatre
-    entités — à l'exception, dans les deux moteurs, des lettres à barre ou ligature (`ł`, `ø`,
-    `đ`, `æ`, `œ`, `ß`), à saisir telles quelles. Une saisie vide ou blanche ne ramène **rien**,
-    jamais les 642 tâches ou les 572 entrées de journal du magasin. `--json` émet `data.search`
-    brut.
+    énumérés dans `fold_diacritic` (aigu/caron/ogonek/ring d'Europe centrale et occidentale, plus
+    le letton `ģ ķ ļ ņ`) sont pliés (`domain::rules::search::normalize`) comme le fait
+    `memories_fts` (`unicode61 remove_diacritics 2`), pour que la requête se comporte pareil sur
+    les quatre entités — sauf, dans les deux moteurs, les lettres à barre ou ligature (`ł`, `ø`,
+    `đ`, `æ`, `œ`, `ß`), à saisir telles quelles, et sauf tout diacritique **non énuméré** dans
+    `fold_diacritic` : un écart non mesuré, qui plie côté `memories_fts` (FTS5) mais pas côté
+    tâches, journal ou réunions (ce module), tant qu'il n'a pas été confirmé via `fts5vocab` et
+    ajouté. Une saisie vide ou blanche ne ramène **rien**, jamais les 642 tâches ou les 572
+    entrées de journal du magasin. `--json` émet `data.search` brut.
 - **Verbes de consolidation (lot 5)** — pilotés par une session Claude Code planifiée, jamais par le
   backend. Les trois acceptent `--json`, ce qui est la condition pour être pilotables :
   - `aplan consolidate pending [--limit N]` (défaut 200) — les entrées de journal dont
