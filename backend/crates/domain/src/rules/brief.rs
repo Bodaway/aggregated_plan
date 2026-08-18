@@ -155,6 +155,8 @@ impl ConsolidationAge {
 pub struct Brief {
     pub variant: BriefVariant,
     pub date: NaiveDate,
+    /// Working rules. First rendered, last cut.
+    pub preferences: BriefSection<MemoryEntry>,
     pub deadlines: BriefSection<DeadlineEntry>,
     pub commitments: BriefSection<MemoryEntry>,
     pub decisions: BriefSection<MemoryEntry>,
@@ -167,7 +169,8 @@ pub struct Brief {
 impl Brief {
     /// True when nothing at all is worth saying.
     pub fn is_silent(&self) -> bool {
-        self.deadlines.is_empty()
+        self.preferences.is_empty()
+            && self.deadlines.is_empty()
             && self.commitments.is_empty()
             && self.decisions.is_empty()
             && self.pending_count == 0
@@ -435,6 +438,9 @@ pub fn compose_brief(input: &BriefInput) -> Brief {
     };
 
     let morning = input.variant == BriefVariant::Morning;
+    // Reserved before the deadlines, so a pathological deadline list can never
+    // squeeze the working rules out: R55's sacrifice order ends with them.
+    let preferences = select_preferences(input.memories, MAX_PREFERENCE_ENTRIES);
     let deadlines = select_deadlines(
         input.tasks,
         input.today,
@@ -444,6 +450,9 @@ pub fn compose_brief(input: &BriefInput) -> Brief {
 
     // Line budget: the header, plus the lines the rendering always spends.
     let mut budget = BRIEF_MAX_LINES.saturating_sub(1);
+    if !preferences.is_empty() {
+        budget = budget.saturating_sub(1 + preferences.entries.len());
+    }
     if !deadlines.is_empty() {
         // A label plus one line per deadline.
         budget = budget.saturating_sub(1 + deadlines.entries.len());
@@ -477,6 +486,7 @@ pub fn compose_brief(input: &BriefInput) -> Brief {
     let mut brief = Brief {
         variant: input.variant,
         date: input.today,
+        preferences,
         deadlines,
         commitments,
         decisions,
@@ -487,17 +497,19 @@ pub fn compose_brief(input: &BriefInput) -> Brief {
 
     // References last: the width depends on every id that ended up in the brief.
     let ids: Vec<MemoryId> = brief
-        .commitments
+        .preferences
         .entries
         .iter()
+        .chain(brief.commitments.entries.iter())
         .chain(brief.decisions.entries.iter())
         .map(|e| e.id)
         .collect();
     let width = memory_reference_width(&ids);
     for entry in brief
-        .commitments
+        .preferences
         .entries
         .iter_mut()
+        .chain(brief.commitments.entries.iter_mut())
         .chain(brief.decisions.entries.iter_mut())
     {
         entry.reference = memory_reference(entry.id, width);
@@ -841,6 +853,7 @@ mod tests {
         let brief = Brief {
             variant: BriefVariant::Session,
             date: today(),
+            preferences: BriefSection::empty(),
             deadlines: BriefSection::empty(),
             commitments: BriefSection {
                 total: entries.len(),
@@ -1156,6 +1169,46 @@ mod tests {
         assert_eq!(section.entries.len(), 2);
         assert_eq!(section.total, 3);
         assert_eq!(section.hidden(), 1, "la troncature n'est jamais silencieuse");
+    }
+
+    #[test]
+    fn composed_brief_carries_preferences_with_references() {
+        let memories = vec![memory(MemoryKind::Preference, "une idée par slide", 3)];
+        let input = BriefInput {
+            variant: BriefVariant::Session,
+            today: today(),
+            now: now(),
+            tasks: &[],
+            memories: &memories,
+            current_project: None,
+            pending_count: 0,
+            last_consolidation: Some(now()),
+        };
+
+        let brief = compose_brief(&input);
+
+        assert_eq!(brief.preferences.entries.len(), 1);
+        assert!(
+            brief.preferences.entries[0].reference.starts_with("m:"),
+            "sans référence courte la ligne est un cul-de-sac (R56)"
+        );
+    }
+
+    #[test]
+    fn a_brief_holding_only_a_preference_is_not_silent() {
+        let memories = vec![memory(MemoryKind::Preference, "une idée par slide", 3)];
+        let input = BriefInput {
+            variant: BriefVariant::Session,
+            today: today(),
+            now: now(),
+            tasks: &[],
+            memories: &memories,
+            current_project: None,
+            pending_count: 0,
+            last_consolidation: Some(now()),
+        };
+
+        assert!(!compose_brief(&input).is_silent());
     }
 
     #[test]
