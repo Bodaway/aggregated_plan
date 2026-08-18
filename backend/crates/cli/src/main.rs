@@ -11,6 +11,7 @@ mod memory_cmd;
 mod output;
 mod queries;
 mod reattribute_cmd;
+mod search_cmd;
 mod session_cmd;
 mod slots_cmd;
 mod timesheet_cmd;
@@ -233,6 +234,9 @@ fn main() -> ExitCode {
             project.as_deref(),
             date.as_deref(),
         ),
+        cli::Commands::Search { q, limit } => {
+            search_cmd::search(&args.api_url, args.json, &q, limit)
+        }
         cli::Commands::Inbox { cmd, limit } => match cmd {
             None => memory_cmd::inbox_list(&args.api_url, args.json, limit),
             Some(cli::InboxCmd::Accept { id, kind, force }) => {

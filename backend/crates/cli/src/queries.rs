@@ -402,6 +402,14 @@ pub struct Brief;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
+    query_path = "graphql/search.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct Search;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
     query_path = "graphql/unconsolidated_entries.graphql",
     response_derives = "Debug, Clone"
 )]

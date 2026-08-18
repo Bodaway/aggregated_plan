@@ -1,0 +1,26 @@
+fragment SearchHitFields on SearchHitGql {
+  id
+  title
+  occurredOn
+}
+
+query Search($q: String!, $limit: Int!) {
+  search(q: $q, limit: $limit) {
+    tasks {
+      ...SearchHitFields
+    }
+    taskTotal
+    worklog {
+      ...SearchHitFields
+    }
+    worklogTotal
+    meetings {
+      ...SearchHitFields
+    }
+    meetingTotal
+    memories {
+      ...SearchHitFields
+    }
+    memoryTotal
+  }
+}

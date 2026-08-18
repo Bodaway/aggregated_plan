@@ -356,6 +356,18 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Search across everything aplan holds: tasks, worklog entries, meetings and
+    /// memories. Results are grouped per entity — memories by relevance, the rest
+    /// by recency — and capped, because the caller is usually an agent.
+    Search {
+        /// What to look for. Whitespace-separated terms, all of which must appear.
+        /// Accents are folded, so `fenetre` finds `fenêtre`.
+        #[arg(long)]
+        q: String,
+        /// How many results per group.
+        #[arg(long, default_value_t = 5)]
+        limit: i64,
+    },
     /// The memory validation queue. With no subcommand, lists pending candidates.
     Inbox {
         #[command(subcommand)]
@@ -1036,6 +1048,28 @@ mod tests {
                 assert_eq!(date.as_deref(), Some("2026-08-03"));
             }
             other => panic!("expected Brief, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_parses_its_query_and_limit() {
+        match parse(&["aplan", "search", "--q", "waf eactions", "--limit", "10"])
+            .expect("parses")
+            .command
+        {
+            Commands::Search { q, limit } => {
+                assert_eq!(q, "waf eactions");
+                assert_eq!(limit, 10);
+            }
+            other => panic!("expected Search, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_defaults_to_the_group_cap() {
+        match parse(&["aplan", "search", "--q", "waf"]).expect("parses").command {
+            Commands::Search { limit, .. } => assert_eq!(limit, 5),
+            other => panic!("expected Search, got {other:?}"),
         }
     }
 
