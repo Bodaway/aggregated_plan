@@ -132,6 +132,10 @@ aplan remember --json \
   plus fraîche serait structurellement la moins lisible.
 - `--kind decision` et `--kind commitment` : **pas** de `--confirm`. Le garde-fou humain est conservé
   là où l'enjeu engage — c'est ce que `aplan inbox` sert à trier.
+- `--kind preference` : **pas** de `--confirm` non plus, bien qu'une préférence ne soit pas un
+  engagement : elle s'injecte, non lue, dans le contexte de démarrage de **chaque** session et
+  gouverne la façon dont l'assistant travaille — l'enjeu y dépasse celui d'une décision, le garde-fou
+  humain y est donc d'autant plus nécessaire.
 - `--source-ref` porte l'id de l'entrée de journal dont le souvenir est tiré. C'est la chaîne de
   provenance : sans elle, personne ne peut retrouver d'où sort un candidat étrange.
 - `--project` quand l'entrée en a un (`task.projectId`) : c'est ce qui fait marcher le bonus
@@ -292,7 +296,7 @@ Termine par un résumé court, en français :
 ## Invariants — à ne pas franchir
 
 1. **L'API d'abord.** Injoignable = ne rien faire du tout, ne rien marquer.
-2. **`pending` par défaut, `fact` excepté.** `--kind fact` seul prend `--confirm` ; jamais pour `decision`/`commitment`, jamais `--force`.
+2. **`pending` par défaut, `fact` excepté.** `--kind fact` seul prend `--confirm` ; jamais pour `decision`/`commitment`/`preference`, jamais `--force`.
 3. **Marquer en dernier**, seulement après des écritures réussies.
 4. **Ne jamais exécuter `inbox accept` / `merge` / `supersede` / `reject`** : ce sont les verbes de
    l'utilisateur.
