@@ -99,6 +99,20 @@ fn resolve_project(client: &Client, token: &str) -> Result<String, LookupError> 
     }
 }
 
+/// Render a `resolve_project` failure for the user.
+///
+/// `resolve_project` reports through the shared `LookupError`, whose
+/// `NotFound` variant is worded for the task lookup it was built for
+/// (`no task matches`). A `--project` token resolves over projects, so that
+/// specific message is rewritten here rather than in the shared type, which
+/// still says "task" correctly everywhere it resolves a task.
+fn describe_project_error(error: &LookupError) -> String {
+    match error {
+        LookupError::NotFound(token) => format!("no project matches `{token}`"),
+        other => other.to_string(),
+    }
+}
+
 /// `remember`'s own task resolution — deliberately NOT `lookup::resolve_target`.
 ///
 /// The worklog verbs (`log`/`note`/`status`/`done`) refuse with exit 4 when a
@@ -214,7 +228,7 @@ pub fn remember(
         Some(token) => match resolve_project(&client, token) {
             Ok(id) => Some(id),
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("error: {}", describe_project_error(&e));
                 return e.exit_code();
             }
         },
@@ -365,7 +379,7 @@ pub fn recall_search(
         Some(token) => match resolve_project(&client, token) {
             Ok(id) => Some(id),
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("error: {}", describe_project_error(&e));
                 return e.exit_code();
             }
         },
@@ -653,7 +667,7 @@ pub fn brief(
         Some(token) => match resolve_project(&client, token) {
             Ok(id) => Some(id),
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("error: {}", describe_project_error(&e));
                 return e.exit_code();
             }
         },
