@@ -21,3 +21,12 @@ export const SEVERITY_COLORS = {
   WARNING: '#F59E0B',
   INFORMATION: '#3B82F6',
 } as const;
+
+/**
+ * Directory `importMemories` reads by default — the harness memory folder.
+ * Override with `VITE_MEMORY_IMPORT_DIR`. The BACKEND resolves this path on its
+ * own filesystem, so it must be absolute: nothing expands a leading `~`.
+ */
+export const MEMORY_IMPORT_DEFAULT_DIR =
+  import.meta.env.VITE_MEMORY_IMPORT_DIR?.toString() ??
+  '/home/mbt/.claude/projects/-home-mbt-appfactory-aggregated-plan/memory';

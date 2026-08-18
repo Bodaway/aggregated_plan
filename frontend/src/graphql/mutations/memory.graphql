@@ -1,0 +1,75 @@
+# `force` mirrors the schema default (`Boolean! = false`): a nullable variable
+# cannot feed a non-null argument.
+mutation AcceptMemory($id: ID!, $force: Boolean! = false) {
+  acceptMemory(id: $id, force: $force) {
+    accepted {
+      id
+      status
+      kind
+      title
+    }
+    nearDuplicates {
+      id
+      kind
+      title
+      occurredAt
+    }
+  }
+}
+
+mutation RejectMemory($id: ID!) {
+  rejectMemory(id: $id) {
+    id
+    status
+  }
+}
+
+mutation MergeMemory($id: ID!, $into: ID!) {
+  mergeMemory(id: $id, into: $into) {
+    survivor {
+      id
+      title
+    }
+    discardedId
+  }
+}
+
+# `old` is optional: left null, the backend falls back to the memory the
+# candidate itself records as contradicted (`proposedSupersedes`).
+mutation SupersedeMemory($old: ID, $by: ID!) {
+  supersedeMemory(old: $old, by: $by) {
+    invalidated {
+      id
+      invalidatedAt
+      supersededBy
+    }
+    successor {
+      id
+      title
+      status
+    }
+  }
+}
+
+mutation Remember($input: RememberInputGql!) {
+  remember(input: $input) {
+    id
+    status
+  }
+}
+
+mutation ImportMemories($directory: String!) {
+  importMemories(directory: $directory) {
+    importedCount
+    skippedCount
+    imported {
+      id
+      kind
+      title
+    }
+    skipped {
+      fileName
+      reason
+    }
+  }
+}

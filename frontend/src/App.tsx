@@ -10,6 +10,7 @@ import { DeduplicationPage } from '@/pages/DeduplicationPage';
 import { AlertsPage } from '@/pages/AlertsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { TriagePage } from '@/pages/TriagePage';
+import { MemoryPage } from '@/pages/MemoryPage';
 import { SearchProvider } from '@/lib/search/SearchProvider';
 
 export function App() {
@@ -71,6 +72,14 @@ export function App() {
           element={
             <PageLayout title="Worklog">
               <WorklogPage />
+            </PageLayout>
+          }
+        />
+        <Route
+          path="/memory"
+          element={
+            <PageLayout title="Memory">
+              <MemoryPage />
             </PageLayout>
           }
         />

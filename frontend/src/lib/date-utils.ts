@@ -36,3 +36,9 @@ export const getPrevWeek = (date: Date): Date => addWeeks(date, -1);
 export const getWeekDays = (weekStart: Date, workingDays: readonly number[] = [1, 2, 3, 4, 5]): Date[] =>
   workingDays.map(d => addDays(weekStart, d - 1));
 export { addDays, isToday, isSameDay, parseISO };
+
+/** `17/08` — day and month only, for compact memory cards. */
+export const formatDayMonth = (date: Date | string): string => {
+  const d = typeof date === 'string' ? parseISO(date) : date;
+  return format(d, 'dd/MM');
+};

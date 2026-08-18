@@ -27,6 +27,8 @@ import {
   isToday,
 } from '@/lib/date-utils';
 import { TaskCreateSheet } from '@/components/task/TaskCreateSheet';
+import { SelectionToMemory } from '@/components/memory/SelectionToMemory';
+import { useMemoryCapture } from '@/hooks/use-memory';
 import { getTaskHours } from '@/lib/task-hours';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -376,6 +378,9 @@ const UNPLANNED_WIDTH_KEY = 'dashboard.unplannedWidth';
 export function DashboardPage() {
   // ── Edit sheet (owned by SearchProvider) ──
   const { openTaskInSheet } = useSearch();
+
+  // ── Selection capture: any text selected on the board can become a memory ──
+  const capture = useMemoryCapture();
   const [creatingForDate, setCreatingForDate] = useState<string | null>(null);
 
   // ── Unplanned sidebar width ──
@@ -701,6 +706,12 @@ export function DashboardPage() {
         plannedDate={creatingForDate}
         onClose={() => setCreatingForDate(null)}
         onCreated={() => refetch()}
+      />
+
+      <SelectionToMemory
+        onRemember={capture.remember}
+        saving={capture.saving}
+        error={capture.error}
       />
     </div>
   );

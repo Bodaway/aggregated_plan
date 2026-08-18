@@ -105,6 +105,16 @@ function urgencyBorderClass(urgency: number): string {
   return 'border-l-gray-400';                      // Low (1) and fallback
 }
 
+
+/**
+ * A click that ends a text selection is the user selecting, not navigating —
+ * without this the memory-capture chip is unreachable, because opening the edit
+ * sheet drops a backdrop over it.
+ */
+function isCompletingASelection(): boolean {
+  return (window.getSelection()?.toString() ?? '').trim() !== '';
+}
+
 export function TaskCard({
   id,
   title,
@@ -127,6 +137,13 @@ export function TaskCard({
   compact = false,
   onClick,
 }: TaskCardProps) {
+  const handleRootClick = onClick
+    ? () => {
+        if (isCompletingASelection()) return;
+        onClick();
+      }
+    : undefined;
+
   const { highlightActive, matchedIds } = useSearch();
   const isMatch = matchedIds.has(id);
   const highlightClasses = !highlightActive
@@ -140,8 +157,9 @@ export function TaskCard({
     return (
       <div
         data-testid="task-card-root"
+        data-task-id={id}
         className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
-        onClick={onClick}
+        onClick={handleRootClick}
       >
         {/* Top row: source ID + remaining hours */}
         <div className="flex items-center justify-between gap-1 mb-1">
@@ -192,8 +210,9 @@ export function TaskCard({
   return (
     <div
       data-testid="task-card-root"
+      data-task-id={id}
       className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
-      onClick={onClick}
+      onClick={handleRootClick}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">

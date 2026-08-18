@@ -2585,6 +2585,7 @@ const router = createBrowserRouter([
       { path: 'priority', element: <PriorityMatrixPage /> },
       { path: 'workload', element: <WorkloadPage /> },
       { path: 'activity', element: <ActivityJournalPage /> },
+      { path: 'memory', element: <MemoryPage /> },
       { path: 'settings', element: <SettingsPage /> },
       // v2
       { path: 'team', element: <TeamPage /> },
@@ -2662,6 +2663,66 @@ Configuration interface (section 15):
 - Weekly capacity
 - Activity reminder settings
 - Deadline alert threshold
+
+#### MemoryPage (`/memory`)
+
+Semantic-memory cockpit — the web face of section 6.10 of the functional spec (US-097). No backend
+change: every operation already exists on the GraphQL schema.
+
+- **Layout**: `MemoryBriefBar` (counters + consolidation health) → `MemorySearch` (`recall`) →
+  validation queue of `PendingMemoryCard` → `MemoryImportPanel`. `MemoryPickerDialog` and
+  `RememberSheet` are mounted at the page root.
+- **Hooks** (`src/hooks/use-memory.ts`):
+  - `useMemoryQueue()` — `pendingMemories` + `brief`, and the verdicts `accept` / `forceAccept` /
+    `reject` / `mergeInto` / `supersede`, plus `remember` and `importDirectory`. A verdict that
+    lands refetches both queries `network-only`; a verdict the backend **refused** writes nothing
+    and stores the returned `nearDuplicates` under the candidate id, which is what puts the card in
+    arbitration.
+  - `useMemoryRecall()` — one search, `pause`d until the caller actually searches (an empty match
+    expression is refused by the backend, exit 4 on the CLI). Instantiated twice: page search and
+    picker search.
+  - `useMemoryCapture()` — `remember` alone, for the dashboard selection chip.
+- **GraphQL variables**: `acceptMemory.force` is `Boolean! = false` in the schema, so the variable
+  must be declared `$force: Boolean! = false` — a nullable variable cannot feed a non-null argument.
+  `supersedeMemory.old` stays nullable on purpose: left null, the backend falls back to the
+  candidate's `proposedSupersedes`.
+- **Default import directory**: `MEMORY_IMPORT_DEFAULT_DIR` in `src/lib/constants.ts`, overridable
+  with `VITE_MEMORY_IMPORT_DIR`. Resolved by the **backend**, so it must be absolute — nothing
+  expands a leading `~`.
+
+#### Memory stacking layers (`src/lib/memory/layers.ts`)
+
+`TASK_SHEET_Z` (50) · `CAPTURE_CHIP_Z` (60) · `MEMORY_BACKDROP_Z` (70) · `MEMORY_SHEET_Z` (80),
+applied as inline `zIndex` rather than Tailwind classes so the values are readable from a test (a
+`z-[${n}]` template would never reach Tailwind's JIT).
+
+The memory sheet must be **strictly** above the task sheets, not equal to them: `SearchProvider`
+renders `TaskEditSheet` *after* `{children}`, so at an equal z-index DOM order hands the win to the
+task sheet — whose panel (`max-w-2xl`) then covers the memory sheet (`max-w-xl`) completely. The
+symptom is a greyed screen with nothing on it: the memory backdrop paints, the memory panel is
+hidden behind the task panel.
+
+#### SelectionToMemory (mounted in `DashboardPage`)
+
+Turns any text selection into a memory. Offers a capture on `mouseup` / `keyup` — the events that
+fire *after* the browser has settled the selection (`keydown` fires before it and reads stale
+values) — and renders a floating chip when the trimmed selection exceeds `MIN_SELECTION_LENGTH` (4).
+
+`chipPosition()` validates the range geometry before deriving coordinates, and returns `null` — no
+chip — when there is none to trust: a zero-area rect (a range whose nodes a re-render replaced still
+stringifies, but its rect collapses to 0×0 at the origin) or a rect that does not intersect the
+viewport (an inner container scrolled after the selection was made). Both used to yield a position:
+`rect.bottom + 8` of a zeroed rect is `8px`, which parked the chip in the **top-left corner of the
+screen**. The position is then clamped to the viewport, flipping above the selection when the bottom
+lacks room. A `selectionchange` listener drops a stale capture — a re-render can destroy the
+selection with no click and no keystroke — but never creates one, since it fires throughout a
+drag-select and the chip would follow the cursor. The chip sits at `z-[60]` — **above** every sheet backdrop (`z-40`) and
+sheet (`z-50`): a selection made inside an open sheet must stay capturable. The task is resolved by
+walking up to the closest `[data-task-id]` ancestor, an attribute `TaskCard` now carries on both
+variants. `TaskCard`'s root click is guarded by `isCompletingASelection()`, so selecting card text no
+longer opens the edit sheet. `splitSelection()` (`src/lib/memory/selection.ts`) cuts the title at the
+last sentence end that fits 120 characters and keeps the whole selection in the body when it has to
+elide.
 
 ### 6.5 Key Components
 

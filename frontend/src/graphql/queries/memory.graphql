@@ -1,0 +1,65 @@
+query PendingMemories($limit: Int!) {
+  pendingMemories(limit: $limit) {
+    id
+    kind
+    title
+    body
+    occurredAt
+    recordedAt
+    invalidatedAt
+    supersededBy
+    proposedSupersedes
+    status
+    taskId
+    projectId
+    stakeholders
+  }
+}
+
+query MemoryBrief {
+  brief {
+    date
+    pendingCount
+    decisions {
+      id
+      reference
+      title
+      stakeholders
+      occurredOn
+    }
+    decisionTotal
+    commitments {
+      id
+      reference
+      title
+      stakeholders
+      occurredOn
+    }
+    commitmentTotal
+    consolidation {
+      daysAgo
+      stale
+    }
+  }
+}
+
+query RecallMemories($q: String!, $includeHistory: Boolean!, $limit: Int!) {
+  recall(q: $q, includeHistory: $includeHistory, limit: $limit) {
+    score
+    memory {
+      id
+      kind
+      title
+      body
+      occurredAt
+      recordedAt
+      invalidatedAt
+      supersededBy
+      proposedSupersedes
+      status
+      taskId
+      projectId
+      stakeholders
+    }
+  }
+}

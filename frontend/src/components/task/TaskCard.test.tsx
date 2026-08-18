@@ -135,4 +135,42 @@ describe('TaskCard highlight', () => {
     const root = container.querySelector('[data-testid="task-card-root"]');
     expect(root?.className).toMatch(/opacity-40/);
   });
+
+  it('names the task it renders, so a text selection inside it can be attributed', () => {
+    const { container } = renderCard();
+
+    expect(container.querySelector(`[data-task-id="${TASK.id}"]`)).not.toBeNull();
+  });
+
+  it('names the task in the compact variant too', () => {
+    const { container } = renderCard({ compact: true });
+
+    expect(container.querySelector(`[data-task-id="${TASK.id}"]`)).not.toBeNull();
+  });
+
+  it('does not open the task when the click merely completes a text selection', () => {
+    const onClick = vi.fn();
+    const original = window.getSelection;
+    window.getSelection = () => ({ toString: () => 'un fragment sélectionné' }) as unknown as Selection;
+
+    const { container } = renderCard({ onClick });
+    const root = container.querySelector('[data-testid="task-card-root"]') as HTMLElement;
+    root.click();
+
+    window.getSelection = original;
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('still opens the task on a plain click', () => {
+    const onClick = vi.fn();
+    const original = window.getSelection;
+    window.getSelection = () => ({ toString: () => '' }) as unknown as Selection;
+
+    const { container } = renderCard({ onClick });
+    const root = container.querySelector('[data-testid="task-card-root"]') as HTMLElement;
+    root.click();
+
+    window.getSelection = original;
+    expect(onClick).toHaveBeenCalled();
+  });
 });

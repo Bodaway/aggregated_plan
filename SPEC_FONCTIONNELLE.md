@@ -1355,6 +1355,58 @@ la conception restent à valider : le hook `SessionStart` doit détecter une ses
 plutôt que d'exiger une question, et l'API doit tourner en service (`systemd --user`) pour que la
 garde de joignabilité rende une panne visible au lieu d'être la panne.
 
+#### US-097 : Onglet Mémoire dans l'application web
+
+> En tant que Tech Lead, je veux trier, chercher et alimenter ma mémoire depuis l'application web,
+> afin que la file de validation ne dépende plus du seul CLI.
+
+**Critères d'acceptation :**
+- L'onglet `/memory` est accessible depuis la navigation principale (libellé « Memory »).
+- **Zone 1 — Bandeau** : nombre de candidats à trier, décisions actives, engagements ouverts, âge de
+  la consolidation. Un âge absent affiche « Never consolidated », un âge périmé « Consolidation has
+  gone quiet (N days) » en orange — c'est le signal de santé de la couche : une file qui cesse de
+  grossir veut d'ordinaire dire que le passage de 17h30 ne tourne plus, pas qu'il ne s'est rien
+  passé.
+- **Zone 2 — Recherche** : `recall`, avec bascule « Include history ». Chaque résultat porte son
+  score ; une mémoire invalidée est barrée et nommée « No longer true — replaced by <id> » ; un
+  candidat non validé porte le badge « awaiting validation ». Sans l'historique, un candidat
+  `pending` n'apparaît pas : le filtre dur du recall est conservé tel quel côté UI (R44).
+- **Zone 3 — File de validation** : une carte par candidat (type, date, titre, contexte,
+  destinataires d'un engagement, marqueur « replaces an existing memory » quand le candidat propose
+  une supersession) et quatre verdicts : Keep / Discard / Merge… / Replace….
+  - Un refus pour quasi-doublon n'est **pas** une erreur : la carte bascule en arbitrage, nomme la
+    mémoire proche et propose « Merge into it » ou « Add anyway » (`force`). Rien n'a été écrit.
+  - Merge… et Replace… ouvrent un sélecteur de mémoire cible (recherche `recall`). Quand le candidat
+    nomme déjà ce qu'il contredit (`proposedSupersedes`), Replace… n'ouvre aucun sélecteur : la
+    mutation laisse le backend résoudre la cible, comme `aplan inbox supersede` sans `--replaces`.
+  - File vide : « Nothing to triage — every candidate has a verdict. »
+- **Zone 4 — Import** : champ de répertoire pré-rempli avec le dossier de mémoire du harness
+  (surchargeable par `VITE_MEMORY_IMPORT_DIR`), rapport listant les mémoires importées et **chaque
+  fichier ignoré avec sa raison** (`no frontmatter`, `already imported`). Une seconde passe sans
+  nouveauté affiche « the store is already up to date » au lieu d'un rapport vide. Le chemin est
+  résolu par le **backend**, sur son propre système de fichiers : il doit donc être absolu.
+- **Création manuelle** : bouton « + New memory » ouvrant la même feuille que la capture, avec la
+  case « Validate now (skip the queue) » qui pose `confirmed` (US-090).
+- **Capture par sélection (Dashboard)** : toute sélection de plus de trois caractères fait
+  apparaître une puce « + Memory » sous la sélection (raccourci Ctrl/Cmd+M). Elle ouvre la feuille
+  pré-remplie : le titre reçoit la première phrase qui tient en 120 caractères, le reste part dans
+  le contexte, et **le corps conserve la sélection entière** quand le titre a dû être élidé — un
+  titre tronqué ne doit jamais être la seule copie survivante de ce que l'utilisateur a sélectionné.
+  Si la sélection se trouve dans une carte de tâche, la mémoire est rattachée à cette tâche.
+  - Un clic qui **termine une sélection** n'ouvre plus la feuille d'édition de la tâche : sans cette
+    garde, la capture était inatteignable, l'ouverture de la feuille recouvrant la puce.
+  - **La puce n'apparaît que si la sélection a une géométrie visible.** Une sélection sans rectangle
+    exploitable (nœuds remplacés par un re-render, sélection sortie du cadre par défilement) ne
+    déclenche aucune puce : positionner à partir d'un rectangle nul plaçait la puce dans le coin
+    supérieur haut-gauche de l'écran, loin de ce que l'utilisateur avait sélectionné. La puce est par
+    ailleurs maintenue **dans le cadre** — repositionnée au-dessus de la sélection quand le bas
+    manque de place — et **disparaît d'elle-même** quand la sélection est perdue sans clic ni frappe.
+- **Hors périmètre** : aucun compteur de mémoires actives dans le bandeau (l'API n'expose pas ce
+  total), et pas de filtre par projet sur la recherche — `recall --project` est un **bonus de score**,
+  pas un filtre.
+
+**Priorité** : Must (lot 6)
+
 ---
 
 ## 7. Règles métier
