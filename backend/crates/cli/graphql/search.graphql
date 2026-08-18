@@ -1,3 +1,9 @@
+# This document deliberately diverges from its neighbours by using a fragment.
+# `priority_matrix.graphql` inlines its own four identically-shaped sibling
+# arrays instead, and duplicates a print loop four times to match. Here the
+# four groups (tasks/worklog/meetings/memories) must render through one path
+# or the grouped output stops meaning what it says, so one shared type is
+# preferred over four field-identical structs — a choice, not an oversight.
 fragment SearchHitFields on SearchHitGql {
   id
   title
