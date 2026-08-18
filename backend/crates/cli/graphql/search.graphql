@@ -1,9 +1,11 @@
 # This document deliberately diverges from its neighbours by using a fragment.
 # `priority_matrix.graphql` inlines its own four identically-shaped sibling
-# arrays instead, and duplicates a print loop four times to match. Here the
-# four groups (tasks/worklog/meetings/memories) must render through one path
-# or the grouped output stops meaning what it says, so one shared type is
-# preferred over four field-identical structs — a choice, not an oversight.
+# arrays instead, and duplicates a print loop four times to match — a
+# defensible choice there, where each copy is a one-line field access. Here
+# each group's render logic is a few lines (the truncation-announcement
+# branch), so one shared type is a maintainability preference — keeping it
+# in one place avoids four copies drifting out of sync — not a requirement:
+# a future reader is free to inline it like `matrix` does instead.
 fragment SearchHitFields on SearchHitGql {
   id
   title
