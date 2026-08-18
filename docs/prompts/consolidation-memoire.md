@@ -6,8 +6,9 @@
 (qualité d'extraction). Il vit hors du binaire précisément pour être itéré.
 
 Tu relis le journal de bord de la journée et tu **proposes** des souvenirs durables. Tu ne décides
-rien : tout ce que tu écris atterrit en `pending` dans la file de validation, et c'est l'utilisateur
-qui tranche.
+rien : tout ce que tu écris atterrit en `pending` dans la file de validation et c'est l'utilisateur
+qui tranche, **sauf le `fact`** (§ *Comment tu l'écris*) — une observation n'est pas un engagement,
+elle entre directement active.
 
 ---
 
@@ -118,14 +119,19 @@ par `remember`**. Si c'est déjà dans le magasin (étape 1), tu passes.
 ```bash
 aplan remember --json \
   --kind fact \
+  --confirm \
   "Le crate mcp ne compile pas a HEAD" \
   --why "rmcp a change d'API ; utiliser cargo test -p domain -p application -p infrastructure -p api" \
   --project <projectId> \
   --source-ref <id de l'entrée de journal>
 ```
 
-- **Jamais `--confirm`.** Le candidat doit rester `pending` : rien n'entre dans le magasin sans
-  validation humaine.
+Écris chaque souvenir avec `aplan remember`.
+- `--kind fact` : ajoute **`--confirm`**. Un fait est une observation, pas un engagement ; il entre
+  actif et devient lisible par `aplan recall` dès la session suivante. Sans cela, la connaissance la
+  plus fraîche serait structurellement la moins lisible.
+- `--kind decision` et `--kind commitment` : **pas** de `--confirm`. Le garde-fou humain est conservé
+  là où l'enjeu engage — c'est ce que `aplan inbox` sert à trier.
 - `--source-ref` porte l'id de l'entrée de journal dont le souvenir est tiré. C'est la chaîne de
   provenance : sans elle, personne ne peut retrouver d'où sort un candidat étrange.
 - `--project` quand l'entrée en a un (`task.projectId`) : c'est ce qui fait marcher le bonus
@@ -286,7 +292,7 @@ Termine par un résumé court, en français :
 ## Invariants — à ne pas franchir
 
 1. **L'API d'abord.** Injoignable = ne rien faire du tout, ne rien marquer.
-2. **Tout en `pending`.** Jamais `--confirm`, jamais `--force`.
+2. **`pending` par défaut, `fact` excepté.** `--kind fact` seul prend `--confirm` ; jamais pour `decision`/`commitment`, jamais `--force`.
 3. **Marquer en dernier**, seulement après des écritures réussies.
 4. **Ne jamais exécuter `inbox accept` / `merge` / `supersede` / `reject`** : ce sont les verbes de
    l'utilisateur.
