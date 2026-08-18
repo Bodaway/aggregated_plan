@@ -51,8 +51,8 @@ pub fn group_from(hits: Vec<SearchHit>, cap: usize) -> SearchGroup {
 /// was folded, it can just as easily mean both sides matched unfolded.
 ///
 /// At parity: the acute, caron, ogonek and ring accents (Latin-1 French/
-/// German, plus the Polish/Czech/Slovak/Hungarian marks in
-/// [`fold_diacritic`]) fold in both engines. The **stroke and ligature
+/// German, plus the Polish/Czech/Slovak/Hungarian marks and the Latvian
+/// `ģ ķ ļ ņ` in [`fold_diacritic`]) fold in both engines. The **stroke and ligature
 /// letters — `ł`, `ø`, `đ`, `æ`, `œ`, `ß` — fold in *neither*.** They must be
 /// typed as-is on both sides; do not add them to [`fold_diacritic`]. Any
 /// other character is a real, unproven gap: it would match a query on
@@ -82,16 +82,23 @@ fn is_combining_diacritic(c: char) -> bool {
 
 /// Precomposed diacritics folded to their bare letter: Latin-1 (French,
 /// German) plus the acute/caron/ogonek/ring-accented Latin Extended-A
-/// letters that occur in Polish, Czech, Slovak and Hungarian names. Deliberately
-/// excludes the stroke and ligature letters (`ł`, `ø`, `đ`, `æ`, `œ`, `ß`) —
-/// see [`normalize`] for why those fold in neither engine.
+/// letters that occur in Polish, Czech, Slovak and Hungarian names, plus the
+/// cedilla-accented Latvian letters (`ģ ķ ļ ņ`) — confirmed via `fts5vocab`
+/// to fold under FTS5 the same way. Deliberately excludes the stroke and
+/// ligature letters (`ł`, `ø`, `đ`, `æ`, `œ`, `ß`) — see [`normalize`] for why
+/// those fold in neither engine. Any diacritic not enumerated here is an
+/// unmeasured gap, not a covered case: it may still fold under FTS5 and would
+/// then match memories but not tasks, worklog or meetings.
 fn fold_diacritic(c: char) -> char {
     match c {
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ą' => 'a',
         'ç' | 'ć' | 'č' => 'c',
         'è' | 'é' | 'ê' | 'ë' | 'ě' | 'ę' => 'e',
+        'ģ' => 'g',
         'ì' | 'í' | 'î' | 'ï' => 'i',
-        'ñ' | 'ń' | 'ň' => 'n',
+        'ķ' => 'k',
+        'ļ' => 'l',
+        'ñ' | 'ń' | 'ň' | 'ņ' => 'n',
         'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ő' => 'o',
         'ù' | 'ú' | 'û' | 'ü' | 'ů' | 'ű' => 'u',
         'ý' | 'ÿ' => 'y',
@@ -171,6 +178,13 @@ mod tests {
     #[test]
     fn matches_folds_central_and_eastern_european_diacritics_too() {
         assert!(matches("žluťoučký kůň", &parse_terms("zlutoucky kun")));
+    }
+
+    #[test]
+    fn normalize_folds_latvian_diacritics() {
+        // Confirmed via fts5vocab: ģ ķ ļ ņ fold under FTS5 too, so a memory
+        // and a task using the same word must match the same query.
+        assert_eq!(normalize("ģimene"), normalize("gimene"));
     }
 
     #[test]
