@@ -954,6 +954,6 @@ cd backend && cargo clippy -p domain -p application -p api -p cli
 - [ ] **Le pliage des accents est cohérent sur les quatre entités.** La preuve tient en deux commandes : le même terme, avec et sans accent, doit ramener le même nombre de résultats dans chaque groupe.
 
 ```bash
-aplan search --q "fenetre" --json | jq '{t:.taskTotal, w:.worklogTotal, m:.memoryTotal}'
-aplan search --q "fenêtre" --json | jq '{t:.taskTotal, w:.worklogTotal, m:.memoryTotal}'
+aplan search --q "fenetre" --json | jq '{t:.search.taskTotal, w:.search.worklogTotal, m:.search.memoryTotal}'
+aplan search --q "fenêtre" --json | jq '{t:.search.taskTotal, w:.search.worklogTotal, m:.search.memoryTotal}'
 ```

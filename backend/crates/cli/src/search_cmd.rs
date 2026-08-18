@@ -12,6 +12,25 @@ use crate::queries::{search as search_query, Search as SearchQuery};
 
 type Hit = search_query::SearchHitFields;
 
+/// Matches `domain::rules::brief::BRIEF_MAX_LINE_CHARS` (R55): `search`'s
+/// audience is the same agent with a token budget measured in hundreds, and
+/// the longest worklog body in the store runs to 887 characters — printed
+/// unclamped, one group could cost roughly 4 KB for a single hit. Duplicated
+/// rather than imported: this binary depends on nothing from `domain`, only
+/// on GraphQL over HTTP.
+const TITLE_MAX_CHARS: usize = 140;
+
+/// Clamp a rendered title to [`TITLE_MAX_CHARS`], marking the cut — the same
+/// technique `domain::rules::brief::clamp_line` uses for the brief. `search`
+/// already caps how many hits are shown; this caps how wide each one is.
+fn clamp_title(title: &str) -> String {
+    if title.chars().count() <= TITLE_MAX_CHARS {
+        return title.to_string();
+    }
+    let kept: String = title.chars().take(TITLE_MAX_CHARS - 1).collect();
+    format!("{kept}…")
+}
+
 /// One group as rendered: its French label, how many matched before the cap,
 /// and the (already capped) hits to print.
 struct Group<'a> {
@@ -36,7 +55,7 @@ impl Group<'_> {
             println!("{} ({}, {} affichés)", self.label, self.total, shown);
         }
         for hit in self.hits {
-            println!("  {} ({})", hit.title, hit.occurred_on);
+            println!("  {} ({})", clamp_title(&hit.title), hit.occurred_on);
             println!("      {}", hit.id);
         }
     }
