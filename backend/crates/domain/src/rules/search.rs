@@ -46,14 +46,19 @@ pub fn group_from(hits: Vec<SearchHit>, cap: usize) -> SearchGroup {
 /// memories and tasks alike.
 ///
 /// Checked live against real FTS5 (`unicode61 remove_diacritics 2`, sqlite3
-/// 3.53.4), this is at parity for: Latin-1 (French, German) and the Latin
-/// Extended-A letters that occur in Polish/Czech/Slovak/Hungarian names —
-/// the realistic carriers of a name this module would otherwise mis-fold.
-/// Ligatures (`œ`, `æ`, `ø`) and `ß` are folded by *neither* engine, so
-/// leaving them alone is correct parity, not a gap. Any character outside
-/// those two ranges is a real, unproven gap: it would match a query on
+/// 3.53.4) — ground truth is `fts5vocab`, which shows the stored token
+/// spellings; a `MATCH` query returning a row does *not* prove a character
+/// was folded, it can just as easily mean both sides matched unfolded.
+///
+/// At parity: the acute, caron, ogonek and ring accents (Latin-1 French/
+/// German, plus the Polish/Czech/Slovak/Hungarian marks in
+/// [`fold_diacritic`]) fold in both engines. The **stroke and ligature
+/// letters — `ł`, `ø`, `đ`, `æ`, `œ`, `ß` — fold in *neither*.** They must be
+/// typed as-is on both sides; do not add them to [`fold_diacritic`]. Any
+/// other character is a real, unproven gap: it would match a query on
 /// memories (FTS5-backed) but not on tasks or worklog (this function).
-/// Extend [`fold_diacritic`] if one turns up in this store's actual content.
+/// Extend [`fold_diacritic`] only after confirming the new letter folds in
+/// FTS5 via `fts5vocab`, not via a `MATCH` row-return.
 ///
 /// Two passes are needed, not one: lowercasing alone does not remove every
 /// diacritic. Turkish `İ` (U+0130) lowercases to `i` + COMBINING DOT ABOVE
@@ -75,9 +80,11 @@ fn is_combining_diacritic(c: char) -> bool {
     ('\u{0300}'..='\u{036F}').contains(&c)
 }
 
-/// Precomposed diacritics folded to their bare letter. Latin-1 (French,
-/// German) plus the Latin Extended-A letters a Polish, Czech, Slovak or
-/// Hungarian name would carry.
+/// Precomposed diacritics folded to their bare letter: Latin-1 (French,
+/// German) plus the acute/caron/ogonek/ring-accented Latin Extended-A
+/// letters that occur in Polish, Czech, Slovak and Hungarian names. Deliberately
+/// excludes the stroke and ligature letters (`ł`, `ø`, `đ`, `æ`, `œ`, `ß`) —
+/// see [`normalize`] for why those fold in neither engine.
 fn fold_diacritic(c: char) -> char {
     match c {
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ą' => 'a',
@@ -88,7 +95,6 @@ fn fold_diacritic(c: char) -> char {
         'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ő' => 'o',
         'ù' | 'ú' | 'û' | 'ü' | 'ů' | 'ű' => 'u',
         'ý' | 'ÿ' => 'y',
-        'ł' => 'l',
         'ź' | 'ż' | 'ž' => 'z',
         'ś' | 'š' => 's',
         'ť' => 't',
@@ -154,10 +160,11 @@ mod tests {
 
     #[test]
     fn normalize_folds_central_and_eastern_european_diacritics() {
-        // Proven live against real FTS5 (unicode61 remove_diacritics 2, sqlite3
-        // 3.53.4): these fold there, so they must fold here too, or a name
-        // would match on memories and miss on tasks/worklog.
-        assert_eq!(normalize("łódź"), "lodz");
+        // Confirmed via fts5vocab (ground truth for stored token spellings,
+        // unlike a MATCH row-return): the ó and ź fold under FTS5, so they
+        // must fold here too — but ł is a stroke letter, folded by neither
+        // engine, and must stay ł on both sides.
+        assert_eq!(normalize("łódź"), "łodz");
         assert_eq!(normalize("Košice"), "kosice");
     }
 
