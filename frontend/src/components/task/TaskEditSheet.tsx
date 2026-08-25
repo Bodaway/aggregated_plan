@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTaskEdit } from '@/hooks/use-task-edit';
 import { useDelegates } from '@/hooks/use-delegates';
 import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
@@ -71,6 +71,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const [status, setStatus] = useState('TODO');
   const [plannedDate, setPlannedDate] = useState('');
   const [delegatedTo, setDelegatedTo] = useState('');
+  const [titleCopied, setTitleCopied] = useState(false);
 
   // Sync form state when task loads
   useEffect(() => {
@@ -88,6 +89,30 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
       setDelegatedTo(task.delegatedTo ?? '');
     }
   }, [task]);
+
+  // Copy-title confirmation: reset when the panel switches task, and on unmount.
+  const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    setTitleCopied(false);
+    return () => {
+      if (copyResetRef.current) clearTimeout(copyResetRef.current);
+    };
+  }, [taskId]);
+
+  const handleCopyTitle = useCallback(async () => {
+    const title = task?.title;
+    if (!title) return;
+    try {
+      await navigator.clipboard.writeText(title);
+    } catch {
+      // Clipboard unavailable (insecure context) or permission denied — stay silent.
+      return;
+    }
+    setTitleCopied(true);
+    if (copyResetRef.current) clearTimeout(copyResetRef.current);
+    copyResetRef.current = setTimeout(() => setTitleCopied(false), 1500);
+  }, [task?.title]);
 
   const handleSkipOccurrence = useCallback(async () => {
     await skipOccurrence();
@@ -218,6 +243,30 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                 <h2 className="text-base font-semibold text-gray-900 truncate">
                   {task?.title ?? 'Loading...'}
                 </h2>
+                {task?.title && (
+                  <button
+                    type="button"
+                    onClick={handleCopyTitle}
+                    data-testid="task-sheet-copy-title"
+                    aria-label={titleCopied ? 'Copied' : 'Copy title'}
+                    title={titleCopied ? 'Copied' : 'Copy title'}
+                    className={`p-1.5 flex-shrink-0 rounded-md transition-colors ${
+                      titleCopied
+                        ? 'text-green-600'
+                        : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    {titleCopied ? (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" />
+                      </svg>
+                    )}
+                  </button>
+                )}
               </div>
               <button
                 onClick={onClose}

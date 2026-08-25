@@ -278,3 +278,45 @@ describe('delegation', () => {
     );
   });
 });
+
+// ── Tests: copy title ─────────────────────────────────────────────────────────
+
+describe('copy title', () => {
+  const writeText = vi.fn(async () => {});
+
+  beforeEach(() => {
+    mockTask = { ...BASE_TASK, title: 'Refactor the sync engine' };
+    writeText.mockReset();
+    writeText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  it('renders a copy-title button in the header', () => {
+    renderSheet();
+    expect(screen.getByRole('button', { name: /copy title/i })).toBeTruthy();
+  });
+
+  it('writes the task title to the clipboard on click', async () => {
+    renderSheet();
+    fireEvent.click(screen.getByTestId('task-sheet-copy-title'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('Refactor the sync engine'));
+  });
+
+  it('confirms the copy to the user', async () => {
+    renderSheet();
+    fireEvent.click(screen.getByTestId('task-sheet-copy-title'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /copied/i })).toBeTruthy());
+  });
+
+  it('shows no confirmation when the clipboard write fails', async () => {
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    renderSheet();
+    fireEvent.click(screen.getByTestId('task-sheet-copy-title'));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /copied/i })).toBeNull();
+  });
+});

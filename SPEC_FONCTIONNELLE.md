@@ -699,6 +699,7 @@ Ni `aplan flush` ni `aplan reattribute` ne pouvaient les atteindre : le premier 
 - Pour les tâches Jira/Excel : les champs temps Jira sont affichés en lecture seule, l'utilisateur peut définir des surcharges locales (remaining override, estimated override)
 - Pour les tâches personnelles : le champ « heures estimées » est directement éditable
 - Le panneau se ferme via bouton ×, touche Escape ou clic sur le backdrop
+- L'en-tête du panneau porte un bouton de copie qui place le titre de la tâche dans le presse-papiers ; l'icône passe à une coche pendant ~1,5 s pour confirmer. Si le presse-papiers est indisponible (contexte non sécurisé) ou refusé, aucune confirmation n'est affichée.
 - Le glisser-déposer reste fonctionnel : un clic ouvre le panneau, un drag (>8px) initie le déplacement
 
 **Priorité** : Must (MVP v1)
