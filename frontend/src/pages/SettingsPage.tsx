@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useSettings } from '@/hooks/use-settings';
 import type { SyncStatusData } from '@/hooks/use-settings';
+import { BreakRoutineSettings } from '@/components/breaks/BreakRoutineSettings';
 
 /** Configuration key constants following the dot-notation naming convention. */
 const CONFIG_KEYS = {
@@ -22,6 +23,10 @@ const CONFIG_KEYS = {
   GENERAL_WORKING_DAYS: 'general.working_days',
   GENERAL_CAPACITY: 'general.capacity',
   TIMESHEET_DAILY_TARGET: 'workday.daily_target_hours',
+  BREAKS_ENABLED: 'aplan.breaks.enabled',
+  BREAKS_GRACE: 'aplan.breaks.meeting_grace_minutes',
+  BREAKS_SNOOZE: 'aplan.breaks.snooze_minutes',
+  BREAKS_SHOW_AS: 'aplan.breaks.suppressing_show_as',
 } as const;
 
 /** Chevron icon for collapsible sections. */
@@ -195,6 +200,21 @@ function GearIcon() {
         strokeLinejoin="round"
         d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
       />
+    </svg>
+  );
+}
+
+/** Break routine icon. */
+function PauseIcon() {
+  return (
+    <svg
+      className="w-5 h-5 text-gray-600"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
     </svg>
   );
 }
@@ -797,6 +817,85 @@ export function SettingsPage() {
               onClick={() => saveConfigKeys([CONFIG_KEYS.TIMESHEET_DAILY_TARGET])}
               saving={saving}
             />
+          </div>
+        </div>
+      </SettingsSection>
+
+      {/* Section 7: Break Routine */}
+      <SettingsSection title="Pauses" icon={<PauseIcon />}>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between py-2">
+            <div>
+              <p className="text-sm font-medium text-gray-700">Activer les rappels de pause</p>
+              <p className="text-xs text-gray-400">
+                Coupe tous les rappels de pause sans toucher à la routine configurée ci-dessous
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={getConfigValue(CONFIG_KEYS.BREAKS_ENABLED, 'true') === 'true'}
+              onClick={() => {
+                const current = getConfigValue(CONFIG_KEYS.BREAKS_ENABLED, 'true');
+                setConfigValue(CONFIG_KEYS.BREAKS_ENABLED, current === 'true' ? 'false' : 'true');
+              }}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                getConfigValue(CONFIG_KEYS.BREAKS_ENABLED, 'true') === 'true'
+                  ? 'bg-blue-600'
+                  : 'bg-gray-200'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  getConfigValue(CONFIG_KEYS.BREAKS_ENABLED, 'true') === 'true'
+                    ? 'translate-x-6'
+                    : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          <SettingsInput
+            label="Délai de grâce autour des réunions (minutes)"
+            value={getConfigValue(CONFIG_KEYS.BREAKS_GRACE, '3')}
+            onChange={v => setConfigValue(CONFIG_KEYS.BREAKS_GRACE, v)}
+            type="number"
+            placeholder="3"
+            description="Aucune pause ne se déclenche dans cette fenêtre avant/après une réunion qui supprime les pauses"
+          />
+          <SettingsInput
+            label="Report par défaut (minutes)"
+            value={getConfigValue(CONFIG_KEYS.BREAKS_SNOOZE, '10')}
+            onChange={v => setConfigValue(CONFIG_KEYS.BREAKS_SNOOZE, v)}
+            type="number"
+            placeholder="10"
+            description="Délai avant qu'une pause reportée (snooze) soit proposée à nouveau"
+          />
+          <SettingsInput
+            label="Statuts de réunion qui suppriment les pauses"
+            value={getConfigValue(CONFIG_KEYS.BREAKS_SHOW_AS, 'busy,oof')}
+            onChange={v => setConfigValue(CONFIG_KEYS.BREAKS_SHOW_AS, v)}
+            placeholder="busy,oof"
+            description="Liste séparée par des virgules, parmi les statuts Outlook (busy, oof, tentative, workingElsewhere, free)"
+          />
+
+          <div className="pt-2">
+            <SaveButton
+              onClick={() =>
+                saveConfigKeys([
+                  CONFIG_KEYS.BREAKS_ENABLED,
+                  CONFIG_KEYS.BREAKS_GRACE,
+                  CONFIG_KEYS.BREAKS_SNOOZE,
+                  CONFIG_KEYS.BREAKS_SHOW_AS,
+                ])
+              }
+              saving={saving}
+            />
+          </div>
+
+          <div className="pt-4 border-t border-gray-100">
+            <h4 className="text-sm font-medium text-gray-600 mb-3">Routine</h4>
+            <BreakRoutineSettings />
           </div>
         </div>
       </SettingsSection>
