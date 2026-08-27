@@ -4,6 +4,7 @@ import { Provider } from 'urql';
 import { urqlClient } from '@/lib/urql-client';
 import { App } from '@/App';
 import { AuthGate } from '@/components/auth/AuthGate';
+import '@/styles/cybernord.css';
 import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

@@ -1,0 +1,16 @@
+/* Fichier généré par apply-theme.sh — NE PAS ÉDITER À LA MAIN.
+   Thème : CyberNord. Régénérer avec : ~/.config/theme/apply-theme.sh */
+:root {
+  --cn-bg:      #2e3440;
+  --cn-surface: #3b4252;
+  --cn-dim:     #4c566a;
+  --cn-fg:      #eceff4;
+  --cn-blue:    #88c0d0;
+  --cn-green:   #00ff9c;
+  --cn-yellow:  #ebcb8b;
+  --cn-red:     #ff2e63;
+  --cn-purple:  #d08fff;
+  --cn-teal:    #08f7fe;
+  --cn-orange:  #ff6e27;
+  --cn-font:    "JetBrainsMono Nerd Font", monospace;
+}
