@@ -5194,3 +5194,39 @@ async fn creating_an_interval_rule_without_an_interval_is_rejected() {
         .await;
     assert!(!res.errors.is_empty());
 }
+
+/// A zero duration must not reach the `as u32` cast: `to_cadence` and this check are
+/// the only place a bad shape is caught before the database's `CHECK` — which a
+/// negative value can slip past entirely (see the negative-duration test below).
+#[tokio::test]
+async fn creating_a_rule_with_a_zero_duration_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30,
+                 durationSeconds: 0, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
+/// A negative `durationSeconds` must be rejected, not silently wrapped: `-1 as u32` is
+/// 4_294_967_295, which passes the database's `CHECK (duration_seconds > 0)` and would
+/// leave a notification (and its `notify-send` process) that never expires.
+#[tokio::test]
+async fn creating_a_rule_with_a_negative_duration_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30,
+                 durationSeconds: -1, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}

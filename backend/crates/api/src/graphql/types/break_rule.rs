@@ -154,4 +154,18 @@ impl BreakRuleInput {
             (GqlBreakCadence::Daily, None, None) => Err("atTime est requis".into()),
         }
     }
+
+    /// Reject a non-positive duration before it ever reaches an `as u32` cast: a
+    /// negative `i32` wraps to a huge unsigned value that the database's
+    /// `CHECK (duration_seconds > 0)` cannot see, and `run_break_tick` would then
+    /// compute an `expire_after` that never fires — a notification, and its
+    /// `notify-send` child process, that never expire. Shared by both mutations so
+    /// neither can bypass it.
+    pub fn validated_duration_seconds(&self) -> Result<u32, String> {
+        if self.duration_seconds > 0 {
+            Ok(self.duration_seconds as u32)
+        } else {
+            Err("durationSeconds doit être positif".into())
+        }
+    }
 }

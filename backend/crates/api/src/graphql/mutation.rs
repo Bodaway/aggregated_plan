@@ -1818,6 +1818,9 @@ impl MutationRoot {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
         let cadence = input.to_cadence().map_err(async_graphql::Error::new)?;
+        let duration_seconds = input
+            .validated_duration_seconds()
+            .map_err(async_graphql::Error::new)?;
         let now = chrono::Utc::now();
         let rule = BreakRule {
             id: Uuid::new_v4(),
@@ -1826,7 +1829,7 @@ impl MutationRoot {
             label: input.label,
             body: input.body,
             cadence,
-            duration_seconds: input.duration_seconds as u32,
+            duration_seconds,
             priority: input.priority,
             enabled: input.enabled,
             urgency: input.urgency.into(),
@@ -1857,6 +1860,9 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?
             .ok_or_else(|| async_graphql::Error::new("Break rule not found"))?;
         let cadence = input.to_cadence().map_err(async_graphql::Error::new)?;
+        let duration_seconds = input
+            .validated_duration_seconds()
+            .map_err(async_graphql::Error::new)?;
         let rule = BreakRule {
             id: rule_id,
             user_id,
@@ -1864,7 +1870,7 @@ impl MutationRoot {
             label: input.label,
             body: input.body,
             cadence,
-            duration_seconds: input.duration_seconds as u32,
+            duration_seconds,
             priority: input.priority,
             enabled: input.enabled,
             urgency: input.urgency.into(),
