@@ -1532,6 +1532,17 @@ garde de joignabilité rende une panne visible au lieu d'être la panne.
 | **R61** | **La consolidation propose, elle n'applique jamais**. Tout ce qu'elle écrit est `PENDING` ; elle n'exécute aucun verbe de la file (`accept`, `merge`, `supersede`, `reject`) et n'emploie ni `--confirm` ni `--force`. Pour une décision qui contredit une décision active du même projet, elle **soumet une supersession en nommant l'ancien identifiant** et laisse l'utilisateur trancher entre supersession (le fait a changé) et fusion (même fait, mieux écrit) — cette distinction est un jugement sémantique, et le backend n'a aucun modèle (R50, R52). |
 | **R62** | **Code de sortie 4 pour une précondition refusée**. Un état que le magasin refuse de quitter — candidat déjà `ACTIVE` ou `REJECTED`, cible de fusion non active, souvenir déjà invalidé, cycle de supersession, saisie sans rien de recherchable — sort en **4**, jamais en 1. Le 1 est réservé à « l'appel n'a pas abouti » (réseau, base). Un appelant automatisé doit distinguer les deux : le premier se saute, le second impose de reprendre tout le passage sans poser de marqueur. |
 
+### 7.10 Routine de pauses
+
+| Règle | Description |
+|-------|-------------|
+| **R65** | **Routine composée de plusieurs cadences superposées, éditée par l'utilisateur** : une règle de pause (`break_rules`) porte son propre rythme — soit un **intervalle** en minutes, soit une **heure quotidienne** —, sa durée annoncée, son intitulé et le corps de la notification (ce qu'il faut faire concrètement) ; l'utilisateur les édite dans l'écran de réglages. La migration en seed quatre, issues des recommandations ergonomiques (INRS : 5 min par heure d'écran intensif, pause active toutes les 30 min, pause visuelle ~20 min ; Cornell 20-8-2 pour la charge posturale statique ; renfort actif ciblé — une étude EMG montre qu'une pause passive seule ne change rien à la charge musculaire de l'épaule, alors qu'un renfort actif bref, lui, la réduit) : (1) **Pause visuelle** — toutes les 20 min, 30 s, priorité 1 ; (2) **Changement de posture** — toutes les 30 min, 2 min, priorité 2 ; (3) **Pause franche** — toutes les 60 min, 5 min, priorité 3 ; (4) **Renfo épaule** — quotidienne à 14:00, 2 min, priorité 4. |
+| **R66** | **Horloge murale ancrée sur la fenêtre de travail, jamais sur le dernier déclenchement**. Les échéances d'une règle à intervalle sont `début_fenêtre + k × intervalle` : pour une fenêtre 08:00–12:00 et un intervalle de 20 min, cela donne 08:20, 08:40, 09:00… et la fenêtre de l'après-midi repart de son propre ancrage. Une pause manquée, reportée ou absorbée ne décale donc jamais la grille des suivantes. Aucune détection de présence ou d'inactivité : le moteur ne sait pas si l'utilisateur est au clavier, seulement quelle heure il est à l'intérieur des fenêtres `workday.*` configurées — un signal de présence a été explicitement écarté à la conception, hors du modèle d'aplan. |
+| **R67** | **Suppression pendant réunion, report à sa fin plus une grâce**. Une échéance qui tombe pendant une réunion (filtrée sur son `show_as` Outlook via `aplan.breaks.suppressing_show_as`, défaut `busy,oof`) est reportée à la fin de la réunion plus une grâce configurable (`aplan.breaks.meeting_grace_minutes`, défaut 3 min) plutôt que d'être perdue ou déclenchée en pleine réunion — une réunion d'une heure ne doit pas coûter deux pauses, et sortir d'une réunion est un bon moment pour bouger. Des réunions dos à dos re-reportent simplement le réveil sur la nouvelle réunion plutôt que de le déclencher par-dessus. Un report **expire** quand il ne peut plus battre la prochaine échéance naturelle de sa propre règle : après une réunion d'une heure, le report de la pause visuelle (20 min) s'efface parce que la prochaine échéance n'est qu'à 4 minutes, tandis que le report de la pause horaire survit et se déclenche. C'est ce qui empêche les reports de s'accumuler sans avoir à les compter. |
+| **R68** | **Une seule notification par passage ; le report par « Plus tard » n'est pas un cas particulier**. Les cadences se recoupent par construction : à la 60ᵉ minute, les trois règles à intervalle (20/30/60) arrivent à échéance ensemble. `priority` existe pour trancher cette collision : le moteur déclenche au plus une notification par passage — la priorité la plus haute — et marque le reste `absorbed` (l'utilisateur ne les voit jamais). Sans cette règle, l'utilisateur prendrait trois popups par heure et désactiverait toute la routine en deux jours. Une mise en veille de la machine entre deux passages se comporte pareil : plusieurs échéances manquées ne produisent jamais de rafale de rattrapage, une seule se déclenche et les autres sont absorbées. Cliquer *Plus tard* arme un report ordinaire, avec un autre motif que celui d'une réunion — il emprunte le même chemin que R67, expiration comprise, sans que le moteur de décision ait besoin de connaître la notion de snooze. |
+| **R69** | **Trois boutons, six issues, dont deux volontairement distinctes**. La notification porte trois boutons — *Pris*, *Plus tard*, *Passer* — et chaque pause aboutit à l'une des six issues suivantes : (1) `taken` — l'utilisateur a cliqué *Pris* ; (2) `snoozed` — l'utilisateur a cliqué *Plus tard*, un report de suivi est armé ; (3) `skipped` — l'utilisateur a cliqué *Passer*, refus délibéré de cette occurrence ; (4) `ignored` — la notification s'est fermée sans qu'un choix soit fait ; (5) `absorbed` — effacée par la fusion des collisions (R68), jamais vue par l'utilisateur ; (6) `expired` — ne pouvait plus utilement se déclencher (R67). `skipped` et `ignored` sont délibérément distincts : ignorer systématiquement la pause de 20 minutes signale une cadence mal réglée, alors que la passer explicitement signale un timing mal choisi pour cette occurrence précise — deux corrections différentes. |
+| **R70** | **Statistique d'adhérence, deux issues exclues des deux côtés**. Le taux d'adhérence par règle est `pris / vus`, où « vus » ne compte que les issues que l'utilisateur a effectivement pu voir (`taken` + `snoozed` + `skipped` + `ignored`) ; `absorbed` et `expired` sont exclus **du numérateur et du dénominateur** — la pause n'a jamais atteint un écran, la compter noierait un signal réel dans le bruit de planification. Le cas « rien de vu » rend un taux **absent**, jamais zéro, pour ne pas afficher une adhérence nulle là où la règle n'a simplement pas encore eu l'occasion de se manifester. |
+
 ---
 
 ## 8. Données et informations manipulées
@@ -1646,6 +1657,42 @@ Ce qu'il faut **savoir** : une décision, un engagement, un fait ou une préfér
 | tâche | Référence Tâche | Non | Rattachement. La suppression de la tâche **n'efface pas** le souvenir (mise à `null`). |
 | personnes | Liste de textes | Non | « Envers qui », « avec qui » — permet de répondre à « quels engagements ai-je pris envers X ? » |
 
+#### Règle de pause
+
+Un rythme de la routine. C'est ce que l'écran de réglages liste et édite. Voir R65 à R70.
+
+| Attribut | Type | Obligatoire | Description |
+|----------|------|-------------|-------------|
+| id | Identifiant unique | Oui | Généré par l'outil |
+| genre | Enum | Oui | `visual`, `posture`, `long`, `strength` — pilote l'icône et l'intitulé par défaut |
+| intitulé | Texte | Oui | Titre de la notification |
+| corps | Texte | Oui | Corps de la notification : ce qu'il faut faire concrètement |
+| cadence | Enum | Oui | `interval` \| `daily`, exclusifs entre eux |
+| intervalleMinutes | Entier | Non | Renseigné **seulement si** `cadence = interval` |
+| heure | Heure (HH:MM) | Non | Renseigné **seulement si** `cadence = daily`, lue dans `aplan.timezone` |
+| duréeSecondes | Entier | Oui | Durée annoncée de la pause |
+| priorité | Entier | Oui | Tranche les collisions de cadences (R68) et ordonne l'affichage |
+| actif | Booléen | Oui | Défaut : vrai |
+| urgence | Enum | Oui | `low`, `normal`, `critical` — transmise telle quelle à la notification système |
+| créé_le, modifié_le | Date/heure | Oui | ISO 8601 |
+
+#### Événement de pause
+
+Une échéance. C'est la trace de ce qui s'est passé, et ce qui permet à un report de survivre à un redémarrage de l'API. Voir R65 à R70.
+
+| Attribut | Type | Obligatoire | Description |
+|----------|------|-------------|-------------|
+| id | Identifiant unique | Oui | Généré par l'outil |
+| règle | Référence Règle de pause | Oui | Supprimée en cascade avec la règle |
+| échéance | Date/heure | Oui | L'instant que la cadence a désigné |
+| déclenchéLe | Date/heure | Non | Quand la notification est réellement partie ; `null` tant que reportée ou en échec de livraison |
+| reportéJusqu'à | Date/heure | Non | Fin de réunion + grâce, ou cible du « Plus tard » |
+| motifReport | Enum | Non | `meeting` \| `snooze` |
+| réunionResponsable | Texte | Non | Trace d'audit : pourquoi la pause ne s'est pas déclenchée |
+| issue | Enum | Oui | `pending`, `taken`, `snoozed`, `skipped`, `ignored`, `absorbed`, `expired` (R69) |
+| réponduLe | Date/heure | Non | |
+| créé_le | Date/heure | Oui | |
+
 ### 8.2 Données de configuration
 
 | Paramètre | Type | Défaut | Description |
@@ -1671,6 +1718,11 @@ Ce qu'il faut **savoir** : une décision, un engagement, un fait ou une préfér
 | excelMappingConfig | Objet | — | Mapping colonnes Excel → champs de l'outil |
 | obsidianVaultPath | Texte | — | Chemin du vault Obsidian (v2) |
 | obsidianTaskTags | Liste de textes | `['#task']` | Tags Obsidian identifiant les tâches (v2) |
+| aplan.breaks.enabled | Booléen | `true` | Interrupteur maître de la routine de pauses |
+| aplan.breaks.meeting_grace_minutes | Entier (minutes) | `3` | Délai après la fin d'une réunion avant qu'une pause reportée se déclenche |
+| aplan.breaks.snooze_minutes | Entier (minutes) | `10` | Horizon du bouton *Plus tard* |
+| aplan.breaks.suppressing_show_as | Liste de textes (CSV) | `busy,oof` | Valeurs Outlook `show_as` qui suppriment une pause |
+| aplan.breaks.last_tick | Texte (ISO 8601) | — | Écrit par le job de fond ; sert de borne de départ (`since`) au passage suivant |
 
 ---
 

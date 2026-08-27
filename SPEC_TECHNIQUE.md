@@ -5936,3 +5936,290 @@ The following are documented as future follow-ups:
 - Worklog re-attribution between sibling instances.
 - True user-local timezone recurrence (current anchor: 08:00 UTC ≈ 10:00 Paris; ~1h DST drift twice/year is acceptable for a single-user local tool).
 - Background cron materialization (currently lazy on read; no instance generated when the app is idle).
+
+---
+
+## 21. Break Routine
+
+### 21.1 Database Schema — Migration `019_create_break_rules.sql`
+
+Deux tables : une pour la routine elle-même, une pour la trace de chaque échéance.
+
+```sql
+CREATE TABLE break_rules (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL,
+    kind             TEXT NOT NULL CHECK (kind IN ('visual','posture','long','strength')),
+    label            TEXT NOT NULL,
+    body             TEXT NOT NULL,
+    cadence          TEXT NOT NULL CHECK (cadence IN ('interval','daily')),
+    interval_minutes INTEGER CHECK (interval_minutes IS NULL OR interval_minutes > 0),
+    at_time          TEXT,               -- 'HH:MM', lu dans aplan.timezone par l'application
+    duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+    priority         INTEGER NOT NULL DEFAULT 0,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    urgency          TEXT NOT NULL DEFAULT 'normal' CHECK (urgency IN ('low','normal','critical')),
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    -- L'exclusivité des deux formes de cadence est un invariant qu'on ne confie
+    -- pas au seul code applicatif : une règle qui porte les deux n'a aucune
+    -- échéance définie.
+    CHECK ((cadence = 'interval' AND interval_minutes IS NOT NULL AND at_time IS NULL)
+        OR (cadence = 'daily'    AND at_time         IS NOT NULL AND interval_minutes IS NULL))
+);
+CREATE INDEX idx_break_rules_user_enabled ON break_rules(user_id, enabled);
+
+CREATE TABLE break_events (
+    id                       TEXT PRIMARY KEY,
+    user_id                  TEXT NOT NULL,
+    rule_id                  TEXT NOT NULL REFERENCES break_rules(id) ON DELETE CASCADE,
+    due_at                   TEXT NOT NULL,
+    fired_at                 TEXT,
+    deferred_until           TEXT,
+    defer_reason             TEXT CHECK (defer_reason IS NULL OR defer_reason IN ('meeting','snooze')),
+    suppressed_by_meeting_id TEXT,
+    outcome                  TEXT NOT NULL
+        CHECK (outcome IN ('pending','taken','snoozed','skipped','ignored','absorbed','expired')),
+    responded_at             TEXT,
+    created_at               TEXT NOT NULL
+);
+CREATE INDEX idx_break_events_rule_due ON break_events(user_id, rule_id, due_at);
+CREATE INDEX idx_break_events_outcome  ON break_events(user_id, outcome);
+```
+
+La migration seed quatre règles contre l'identifiant local fixe (`api::state::DEFAULT_USER_ID_STR`)
+plutôt que via `SELECT ... FROM users` : aucune migration n'insère jamais dans `users`, un seed
+piloté par une ligne produirait donc silencieusement zéro règle sur une base fraîche. Le contenu
+seedé (intitulés et corps) est en français, puisque c'est ce que l'utilisateur lit dans une popup.
+
+### 21.2 Domain Rule — `domain/src/rules/breaks.rs`
+
+`domain` ne dépend que de chrono/serde/uuid/thiserror ; `chrono_tz` n'y entre pas. Le moteur pur
+reçoit donc des instants déjà résolus en UTC, jamais une notion de fuseau ou de jour local :
+
+```rust
+pub struct Window { pub start: DateTime<Utc>, pub end: DateTime<Utc> }
+pub struct BusyPeriod { pub meeting_id: String, pub start: DateTime<Utc>, pub end: DateTime<Utc> }
+
+pub enum Candidate {
+    New  { rule_id: BreakRuleId, due_at: DateTime<Utc> },
+    Wake { event_id: BreakEventId, rule_id: BreakRuleId, due_at: DateTime<Utc> },
+}
+
+pub struct BreakTickInput<'a> {
+    pub now: DateTime<Utc>,
+    pub since: DateTime<Utc>,                        // (since, now] est la fenêtre examinée
+    pub windows: &'a [Window],                        // fenêtres du jour, UTC ; vide un jour non travaillé
+    pub rules: &'a [BreakRule],                        // déjà filtrées sur enabled
+    pub daily_dues: &'a [(BreakRuleId, DateTime<Utc>)], // échéances du jour des règles `daily`, résolues par l'appelant
+    pub busy: &'a [BusyPeriod],                        // réunions déjà filtrées sur show_as
+    pub open: &'a [BreakEvent],                        // événements encore ouverts (reportés, ou déclenchés sans réponse)
+    pub grace: Duration,
+}
+
+pub struct BreakTick {
+    pub fire: Option<FireBreak>,     // au plus un
+    pub defer: Vec<DeferBreak>,
+    pub absorb: Vec<AbsorbBreak>,
+    pub expire: Vec<BreakEventId>,
+}
+
+pub fn decide(input: BreakTickInput<'_>) -> BreakTick
+```
+
+`decide` est pure et totale ; c'est `application` qui résout `windows`, `daily_dues` — et donc le
+fuseau, les jours ouvrés et les bornes de fenêtre — exactement le découpage que
+`use_cases/worklog.rs` applique déjà pour la projection en demi-journées.
+
+**Ordre de décision, tel qu'implémenté** (l'étape de purge des reports est faite avant la
+constitution des candidats, pour que « un report vivant par règle » reste vrai à l'étape de
+suppression-réunion sans avoir à compter) :
+
+1. **Hors de toute fenêtre de travail** : rien ne se déclenche, et tout ce qui restait ouvert
+   expire (nettoyage de fin de journée).
+2. **Purge des reports périmés** : un report qui ne peut plus battre la prochaine échéance
+   naturelle de sa propre règle expire, de même qu'un événement dont la règle a été supprimée
+   ou désactivée depuis. Un événement déclenché sans réponse n'est pas de ce ressort — c'est au
+   notifier de trancher son sort.
+3. **Constitution des candidats** : les reports vivants dont le réveil est arrivé, les échéances
+   naturelles des règles à intervalle tombant dans `(since, now]` (ancrées sur le début de chaque
+   fenêtre — `natural_dues`), puis les échéances quotidiennes résolues par l'appelant.
+4. **Suppression réunion** : un candidat dont l'instant tombe dans une période occupée est
+   reporté à la fin de la réunion plus la grâce. Une règle qui détient déjà un report vivant n'en
+   reçoit pas un second — le surplus est absorbé, sinon une réunion de deux heures armerait six
+   reports de la règle des 20 minutes et les viderait tous d'un coup à la fin. Un report calculé
+   dans le passé (la réunion bloquante est déjà terminée) se résout immédiatement sur ce même
+   passage plutôt que d'écrire une ligne déjà en retard.
+5. **Fusion (coalescing)** : parmi ce qui reste, la priorité la plus haute se déclenche — une
+   seule, toujours — le reste est absorbé. À égalité de priorité, l'échéance la plus ancienne
+   gagne, pour qu'un rattrapage se vide dans l'ordre.
+
+Deux propriétés en découlent sans code supplémentaire : une mise en veille ou un redémarrage qui
+fait sauter `(since, now]` de plusieurs heures ne produit jamais de rafale — les échéances
+manquées sont calculées, la plupart absorbées, une seule se déclenche ; et le « Plus tard » n'est
+pas un cas particulier — il écrit un report `now + snooze` avec `defer_reason = 'snooze'` et
+re-rentre dans le même chemin que R67, expiration comprise. `decide` ne reçoit donc aucun
+paramètre de snooze : c'est le cas d'usage qui écrit le report, `decide` ne le rencontre qu'ensuite
+comme un réveil ordinaire.
+
+### 21.3 Application Layer — `application/src/use_cases/breaks.rs`
+
+`resolve_windows` et `resolve_daily_dues` sont l'endroit où vit le fuseau : elles lisent
+`aplan.timezone` via `crate::time::{resolve_tz, local_to_utc, to_local}` (adossé à `chrono_tz`) et
+ne rendent que des instants UTC à `decide`. Les bornes de fenêtre par défaut (8/12/13/17) sont
+volontairement identiques à celles de `use_cases/timesheet.rs` — un moteur de pauses et une feuille
+de temps en désaccord sur l'heure de début de journée seraient chacun individuellement corrects et
+ensemble absurdes.
+
+#### Clés de configuration
+
+| Clé | Type | Défaut | Description |
+|---|---|---|---|
+| `aplan.breaks.enabled` | Booléen | `true` | Interrupteur maître |
+| `aplan.breaks.meeting_grace_minutes` | Entier | `3` | Délai après la fin d'une réunion avant qu'une pause reportée se déclenche |
+| `aplan.breaks.snooze_minutes` | Entier | `10` | Horizon du bouton *Plus tard* |
+| `aplan.breaks.suppressing_show_as` | Texte (CSV) | `busy,oof` | Valeurs Outlook `show_as` qui suppriment une pause |
+| `aplan.breaks.last_tick` | Texte (ISO 8601) | — | Écrit par le job ; sert de `since` au passage suivant |
+
+#### `run_break_tick`
+
+Charge la configuration, les règles actives, les réunions du jour et les événements ouverts ;
+résout les fenêtres via `time.rs` ; appelle `decide` ; persiste tout ce que le passage a produit
+(`expire` → `set_outcome(Expired)`, `absorb` → crée ou clôture en `Absorbed`, `defer` → crée ou
+met à jour `deferred_until`/`defer_reason`) ; puis, s'il y a un `fire`, construit la
+`Notification` et **attend en ligne** la réponse du notifier avant d'avancer le filigrane
+`aplan.breaks.last_tick`. Le filigrane avance **quoi qu'il arrive**, y compris quand
+l'interrupteur maître est désactivé — sans quoi une réactivation après une semaine rejouerait
+une semaine d'échéances fictives en un seul passage. Un échec de livraison ne fait jamais échouer
+le passage : `fired_at` reste `NULL` et la règle d'expiration nettoie la ligne à la prochaine
+échéance naturelle — le même mécanisme de nettoyage qu'un report de réunion, pas un second.
+
+### 21.4 Notifier — `application/src/services/notifier.rs`
+
+```rust
+pub struct Notification {
+    pub title: String,
+    pub body: String,
+    pub urgency: BreakUrgency,
+    pub icon: Option<String>,
+    pub expire_after: Duration,           // combien de temps attendre une réponse
+    pub actions: Vec<(String, String)>,   // (clé, libellé)
+}
+
+pub enum NotificationOutcome { Action(String), Dismissed, Expired }
+
+#[async_trait]
+pub trait Notifier: Send + Sync {
+    async fn notify(&self, n: Notification) -> Result<NotificationOutcome, AppError>;
+}
+```
+
+Deux implémentations :
+
+- **`NotifySendNotifier`** (`infrastructure/src/notify/notify_send.rs`) — lance
+  `notify-send --app-name=aplan --urgency=... --expire-time=... --icon=... -A taken=Pris
+  -A snoozed="Plus tard" -A skipped=Passer <titre> <corps>` via `tokio::process::Command`, et lit
+  la clé de l'action choisie sur stdout (vide = `Dismissed`). La construction des arguments
+  (`command_args`) et le parsing de stdout (`parse_outcome`) sont deux fonctions **pures**,
+  testées directement sans bus de session ; le `spawn` lui-même n'est qu'un enrobage de trois
+  lignes, non testé. Parce que `--action` met `notify-send` en mode `--wait`, l'appel reste
+  ouvert jusqu'à ce que l'utilisateur réponde ou que `expire_after` s'écoule.
+- **`NullNotifier`** (`application/src/services/notifier.rs`) — n'affiche rien, ne consigne rien
+  de plus, répond toujours `Dismissed`. Utilisé dans les tests, et choisi au démarrage quand
+  aucun bus de session n'est joignable : une API sans session graphique doit garder ses écritures
+  sans échouer toutes les 30 secondes sur un bus absent.
+
+La sélection se fait **une seule fois, au démarrage**, dans `api/src/main.rs` : si la variable
+d'environnement `DBUS_SESSION_BUS_ADDRESS` est présente, `NotifySendNotifier` ; sinon
+`NullNotifier`, avec une ligne de journal expliquant que les pauses seront enregistrées sans être
+montrées.
+
+### 21.5 API Job — `api/src/jobs.rs::run_break_scheduler`
+
+Jumeau de `run_eod_scheduler` : une boucle qui exécute un passage puis attend le délai que dicte
+`RetryPolicy::breaks()` — **base 30 s, plafond 5 min**, une cadence nettement plus réactive que
+les autres jobs de fond (`end_of_day()` : 5 min / 30 min ; `session_reaper()` : 15 min / 45 min)
+parce qu'une pause en retard de plusieurs minutes n'a plus de sens. Le passage **attend en ligne**
+la réponse du notifier plutôt que de la détacher : détacher signifierait qu'une tâche spawnée
+possède des clones de repository et écrit en concurrence du passage suivant, pour un bénéfice nul
+ici — `decide` s'ancre sur l'horloge murale, donc un passage en retard décale simplement les
+échéances suivantes sans en perdre aucune. `expire_after` (la durée de la règle plus cinq
+minutes) borne l'attente et referme le processus enfant, sans quoi une notification jamais
+touchée laisserait fuiter un processus jusqu'au soir.
+
+### 21.6 GraphQL API
+
+Les types suivent la convention `*Gql` de la base (les `input` en sont exemptés, comme
+`CreateTaskInput`, `TaskFilterInput`, etc. — `BreakRuleInput` s'y range) :
+
+```graphql
+enum BreakKindGql { VISUAL POSTURE LONG STRENGTH }
+enum BreakCadenceGql { INTERVAL DAILY }
+enum BreakUrgencyGql { LOW NORMAL CRITICAL }
+
+type BreakRuleGql {
+  id: ID!
+  kind: BreakKindGql!
+  label: String!
+  body: String!
+  cadence: BreakCadenceGql!
+  intervalMinutes: Int
+  atTime: String            # 'HH:MM' dans le fuseau utilisateur
+  durationSeconds: Int!
+  priority: Int!
+  enabled: Boolean!
+  urgency: BreakUrgencyGql!
+}
+
+input BreakRuleInput {
+  kind: BreakKindGql!
+  label: String!
+  body: String!
+  cadence: BreakCadenceGql!
+  intervalMinutes: Int
+  atTime: String
+  durationSeconds: Int!
+  priority: Int!
+  enabled: Boolean!
+  urgency: BreakUrgencyGql!
+}
+
+type BreakRuleStatsGql {
+  ruleId: ID!
+  label: String!
+  taken: Int!
+  snoozed: Int!
+  skipped: Int!
+  ignored: Int!
+  absorbed: Int!
+  expired: Int!
+  adherence: Float   # taken / seen, null si seen == 0 ; absorbed/expired exclus des deux côtés
+}
+
+type BreakStatsGql {
+  perRule: [BreakRuleStatsGql!]!
+}
+
+extend type Query {
+  breakRules: [BreakRuleGql!]!
+  breakStats(from: String!, to: String!): BreakStatsGql!
+}
+
+extend type Mutation {
+  createBreakRule(input: BreakRuleInput!): BreakRuleGql!
+  updateBreakRule(id: ID!, input: BreakRuleInput!): BreakRuleGql!
+  deleteBreakRule(id: ID!): Boolean!
+}
+```
+
+Les scalaires de configuration (§21.3) passent par la mutation `updateConfiguration` **existante**
+— `SettingsPage` a déjà `CONFIG_KEYS` et son bouton de sauvegarde, ce chemin n'est pas dupliqué.
+
+#### Frontend
+
+`SettingsPage.tsx` pesant déjà 29,6 Ko, le nouveau poids va dans ses propres fichiers plutôt que de
+la faire grossir davantage : `components/breaks/BreakRoutineSettings.tsx` (interrupteur maître, les
+quatre scalaires, la liste des règles, ajout/suppression, panneau d'adhérence), `components/breaks/
+BreakRuleRow.tsx` (une règle : activation, cadence, intervalle ou heure, durée, priorité, intitulé,
+corps) et `hooks/use-break-rules.ts` (requêtes/mutations urql), intégrés à `SettingsPage` via la
+section repliable existante.

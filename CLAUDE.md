@@ -140,7 +140,7 @@ Key mutations: `createTask`, `updateTask`, `deleteTask`, `updatePriority`, `star
 
 SQLite with migrations at `migrations/sqlite/`. All IDs are UUID strings (`TEXT`). Dates stored as ISO 8601 `TEXT`. Enums as lowercase `TEXT`. Booleans as `INTEGER` (0/1).
 
-23 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, timesheet_quarter_shares, signal_project_mappings, memories, memory_stakeholders, memories_fts, sessions.
+25 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, timesheet_quarter_shares, signal_project_mappings, memories, memory_stakeholders, memories_fts, sessions, break_rules, break_events.
 
 Timesheet quarter arbitration (migration `018`): the day is four two-hour quarters cut from
 the configured windows, and `timesheet_quarter_shares` holds one row per (draft, quarter,
@@ -160,6 +160,15 @@ carry authorship (NULL = the human), and `activity_slots.source` (`worklog` | `m
 read as `manual`) marks which slots the worklog projection owns and may therefore rebuild.
 
 Semantic memory (migration `012`): `memories` is bi-temporal (`occurred_at` / `invalidated_at` / `superseded_by`) with stakeholders in the junction table `memory_stakeholders`, and `memories_fts` is a **standalone** FTS5 index (no `content=`, no triggers) that the repository writes in the same transaction as the memory row.
+
+Break routine (migration `019`): `break_rules` holds the superposed cadences (interval or daily)
+and `break_events` the trace of every due slot. The engine (`domain/src/rules/breaks.rs`) is
+wall-clock anchored on the `workday.*` windows, never on the last fire — a break that was missed,
+snoozed or absorbed does not shift the grid. `break_rules.priority` exists because the built-in
+cadences overlap by construction (20/30/60 min all coincide at minute 60): the engine fires at
+most one notification per tick, the highest priority, and marks the rest `absorbed`. The
+adherence rate (`taken / seen`) excludes `absorbed` and `expired` from both sides — they never
+reached a screen, so counting them would drown a real signal in scheduling noise.
 
 ## Key Domain Concepts
 
