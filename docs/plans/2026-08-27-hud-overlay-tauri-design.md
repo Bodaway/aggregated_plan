@@ -170,10 +170,14 @@ Contraint par les mesures, pas par le goût.
 - `box-shadow` pour la lueur, `filter: drop-shadow / hue-rotate`
 - filtres SVG : `feTurbulence` et `feDisplacementMap` pour le glitch
 - `<canvas>` pour sparklines et jauges
+- **`backdrop-filter`** — mesuré (§10.2) : surcoût CPU moyen **×1,17** par rapport
+  au même bloc sans filtre (bornes des trois essais ×1,08–×1,25), largement sous
+  le seuil de bascule (×2). Reste soumis aux mêmes règles que les autres
+  effets : par bloc, jamais en passe plein écran.
 
 **Interdit en v1**
-- **`backdrop-filter`** — coûteux dans WebKitGTK, qui n'est pas Chromium. À
-  débloquer uniquement après mesure (§10.2).
+- *(aucun)* — `backdrop-filter` était le seul candidat de cette liste ; mesuré
+  (§10.2) et déplacé dans « Autorisé ».
 
 **Règles**
 - Les effets s'appliquent **par bloc, jamais en passe plein écran**. À 14,2 Mpx sur
@@ -294,9 +298,53 @@ besoin d'abonnement au socket IPC de Hyprland pour ce portillon d'animation.**
 
 Le harnais de mesure du banc est réutilisable tel quel pour trancher.
 
-### 10.2 Coût réel de `backdrop-filter` dans WebKitGTK
+### 10.2 Coût réel de `backdrop-filter` dans WebKitGTK — RÉSOLU
 
 Détermine si le flou d'arrière-plan entre dans le vocabulaire visuel ou non.
+
+**Mesuré le 2026-08-27.** Harnais : `scripts/hud-bench/measure.py`, qui lance une
+commande, laisse 10 s de stabilisation, échantillonne les ticks CPU de l'arbre de
+processus (`/proc/<pid>/stat`) sur une fenêtre de 20 s et relève le PSS
+(`smaps_rollup`). Avant d'échantillonner, il interroge `hyprctl -j clients` sur le
+pid lancé et exige `mapped && visible && !hidden` ; sans quoi il abandonne au lieu
+d'imprimer un chiffre — une fenêtre qui n'est jamais montée à l'écran rendrait le
+CPU mesuré sans rapport avec la variante testée. Même garde en fin de fenêtre, pour
+détecter un crash pendant la mesure.
+
+Sonde : `scripts/hud-bench/blur_probe.html`, une carte de 420×260 px en dérive
+horizontale animée (4 s, va-et-vient) au-dessus d'un dégradé conique plein écran,
+avec `backdrop-filter:blur(14px) saturate(1.4)` activé via `#blur` dans le
+fragment d'URL — seule différence entre les deux modes. Hôte :
+`scripts/hud-bench/webkit_host.py` (tâche 1) en plein écran, fenêtre bien visible
+à l'écran (aucune manœuvre de special workspace ici, contrairement à 10.1).
+
+Le premier essai donnait déjà un ratio confortablement sous le seuil (×1,25 contre
+×2), mais un seul échantillon reste un maigre argument face au bruit CPU d'un
+poste de travail en usage réel ; deux essais supplémentaires ont donc été pris
+pour vérifier que le résultat tient :
+
+```
+essai 1 — sans-blur : {"label": "sans-blur", "procs": 8, "cpu_pct": 15.15, "pss_mb": 249.6}
+essai 1 — avec-blur : {"label": "avec-blur", "procs": 8, "cpu_pct": 18.95, "pss_mb": 260.2}
+essai 2 — sans-blur : {"label": "sans-blur-2", "procs": 8, "cpu_pct": 18.2, "pss_mb": 249.7}
+essai 2 — avec-blur : {"label": "avec-blur-2", "procs": 8, "cpu_pct": 21.9, "pss_mb": 251.2}
+essai 3 — sans-blur : {"label": "sans-blur-3", "procs": 8, "cpu_pct": 20.6, "pss_mb": 250.2}
+essai 3 — avec-blur : {"label": "avec-blur-3", "procs": 8, "cpu_pct": 22.15, "pss_mb": 251.2}
+```
+
+Ratio `avec-blur / sans-blur` par essai : ×1,251, ×1,203, ×1,075 — étalement
+×1,08–×1,25, aucun ne s'approche du seuil de bascule ×2. Moyenne des `cpu_pct` :
+sans-blur 17,98 %, avec-blur 21,0 %, soit un ratio des moyennes de **×1,168**. Le
+PSS ne bouge quasiment pas (~250 Mo dans les six essais) : la mémoire n'est pas
+discriminante ici, seul le CPU l'est. Aucune fenêtre perdue ni processus mort
+pendant les six mesures (contrôle `hyprctl` systématiquement positif).
+
+**Verdict : le seuil de bascule (×2) n'est pas atteint, sur aucun des trois essais
+ni sur leur moyenne.** Règle du brief appliquée telle quelle : `backdrop-filter`
+quitte la liste « interdit » et rejoint « autorisé » (§7), avec le surcoût mesuré
+noté à côté (×1,17 en moyenne, jusqu'à ×1,25 au pire essai). Il reste soumis aux
+mêmes règles que les autres effets — par bloc, jamais en passe plein écran — la
+mesure ci-dessus porte sur un seul bloc animé, pas sur une passe globale.
 
 ### 10.3 Stabilité de l'`app_id`
 

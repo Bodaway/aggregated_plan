@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>blurprobe</title>
+<style>
+  body{margin:0;height:100vh;overflow:hidden;
+       background:conic-gradient(#2e3440,#3b4252,#08f7fe,#ff2e63,#2e3440);}
+  .card{position:absolute;left:60px;top:60px;width:420px;height:260px;
+        border:1px solid #08f7fe;border-radius:10px;background:rgba(59,66,82,.45);
+        animation:drift 4s ease-in-out infinite alternate;}
+  .blur{backdrop-filter:blur(14px) saturate(1.4);}
+  @keyframes drift{to{transform:translateX(340px)}}
+</style>
+<div class="card" id="c"></div>
+<script>
+  if (location.hash === "#blur") document.getElementById("c").classList.add("blur");
+</script>
