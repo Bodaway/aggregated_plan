@@ -12,16 +12,35 @@ set -euo pipefail
 
 WORKSPACE="aplan"
 BIN="${APLAN_HUD_BIN:-$HOME/appfactory/aggregated_plan/frontend/src-tauri/target/release/aplan-hud}"
-LOCKFILE="${APLAN_HUD_LOCKFILE:-${XDG_RUNTIME_DIR:-/tmp}/aplan-hud-toggle.lock}"
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    DEFAULT_LOCKFILE="$XDG_RUNTIME_DIR/aplan-hud-toggle.lock"
+else
+    # /tmp is shared across users; scope the fallback by uid so a lockfile
+    # left behind by another user can't make our `exec 9>` fail under set -e.
+    DEFAULT_LOCKFILE="/tmp/aplan-hud-toggle-$UID.lock"
+fi
+LOCKFILE="${APLAN_HUD_LOCKFILE:-$DEFAULT_LOCKFILE}"
 
 # Two rapid presses (e.g. keyboard auto-repeat) can both reach the pgrep
 # check before either is visible to the other; without a lock both would
 # see "absent" and both launch. Serialize the check-then-launch.
 exec 9>"$LOCKFILE"
-flock 9
+# Bounded: a `flock` guards an open file description, not a process, so if
+# the HUD ever ends up holding this fd (see the close below), an unbounded
+# wait here would hang every press for as long as the HUD runs. Give up
+# instead -- a missed toggle is recoverable, a wedged script isn't.
+flock -w 5 9 || exit 0
 
 if ! pgrep -x aplan-hud >/dev/null 2>&1; then
-    "$BIN" &
+    if [ ! -x "$BIN" ]; then
+        echo "aplan-hud-toggle: $BIN is missing or not executable -- not toggling (would show an empty overlay)" >&2
+        exit 1
+    fi
+    # Close the lock fd in the child: without CLOEXEC it would inherit fd 9,
+    # and since the lock belongs to the open file description (not to this
+    # script's process), the lock would then stay held for as long as the
+    # HUD runs -- wedging every press after the first on the `flock` above.
+    "$BIN" 9>&- &
     disown
 fi
 

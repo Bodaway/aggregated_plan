@@ -114,4 +114,93 @@ run_case "process absent -> also shows the special workspace" no "togglespecialw
 # auto-repeat) could both see "absent" and both launch, breaking the
 # single-instance invariant. The script must serialize on a lock.
 test_lock
+
+test_inherited_fd() {
+    local name="a still-running HUD does not block the next press on the lock"
+    local stub; stub="$(mktemp -d)"
+    # pgrep always says "not running" -- what matters here is that the
+    # launched "aplan-hud" itself never exits, so it keeps holding whatever
+    # file descriptors it inherited from the launching shell for as long as
+    # the test lets it run.
+    cat > "$stub/pgrep" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    cat > "$stub/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+echo "hyprctl $*" >> "$STUB_LOG"
+EOF
+    cat > "$stub/aplan-hud" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+    chmod +x "$stub"/*
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+    local lockfile="$stub/lock"
+
+    # Press 1: launches the long-lived stub, exactly like a real HUD binary
+    # that stays resident once shown.
+    PATH="$stub:$PATH" APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$lockfile" \
+        "$HERE/aplan-hud-toggle" >/dev/null 2>&1
+
+    # Give the backgrounded launch a moment to actually start (and, if the
+    # fd leak is present, to open the inherited lock fd) before press 2.
+    sleep 0.2
+
+    # Press 2: a `flock` guards an open file description, not a process. If
+    # press 1's child inherited the lock fd without CLOEXEC, that fd is still
+    # open (the child is still running), so this would block on the lock for
+    # as long as the child lives. Bound the wait generously above the
+    # script's own 5s bounded wait so a real hang still fails the test
+    # instead of wedging the suite.
+    timeout 8 env PATH="$stub:$PATH" APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$lockfile" \
+        "$HERE/aplan-hud-toggle" >/dev/null 2>&1
+    local rc=$?
+
+    pkill -f "$stub/aplan-hud" 2>/dev/null || true
+
+    if [ "$rc" -eq 124 ]; then
+        echo "  FAIL $name — press 2 hung on the lock inherited by press 1's child (timeout)"
+        FAILED=1
+    else
+        echo "  ok   $name (press 2 returned, rc=$rc)"
+    fi
+    rm -rf "$stub"
+}
+
+test_missing_binary() {
+    local name="missing binary fails loudly instead of toggling an empty overlay"
+    local stub; stub="$(mktemp -d)"
+    cat > "$stub/pgrep" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    cat > "$stub/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+echo "hyprctl $*" >> "$STUB_LOG"
+EOF
+    chmod +x "$stub/pgrep" "$stub/hyprctl"
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+
+    PATH="$stub:$PATH" APLAN_HUD_BIN="$stub/does-not-exist" APLAN_HUD_LOCKFILE="$stub/lock" \
+        "$HERE/aplan-hud-toggle" >/dev/null 2>"$stub/stderr"
+    local rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL $name — exited 0 with a missing binary"
+        FAILED=1
+    elif grep -q "togglespecialworkspace" "$STUB_LOG" 2>/dev/null; then
+        echo "  FAIL $name — toggled the workspace despite the missing binary:"; sed 's/^/       /' "$STUB_LOG"
+        FAILED=1
+    elif [ ! -s "$stub/stderr" ]; then
+        echo "  FAIL $name — failed silently, no message on stderr"
+        FAILED=1
+    else
+        echo "  ok   $name"
+    fi
+    rm -rf "$stub"
+}
+
+test_inherited_fd
+test_missing_binary
 exit $FAILED
