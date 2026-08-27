@@ -131,6 +131,29 @@ pub struct BreakRuleInput {
     pub urgency: GqlBreakUrgency,
 }
 
+/// One rule's adherence over a window — one row per rule in `breakStats`.
+#[derive(SimpleObject)]
+pub struct GqlBreakRuleStats {
+    pub rule_id: async_graphql::ID,
+    pub label: String,
+    pub taken: i32,
+    pub snoozed: i32,
+    pub skipped: i32,
+    pub ignored: i32,
+    pub absorbed: i32,
+    pub expired: i32,
+    /// `taken / seen`, or `null` when nothing was seen. Absorbed and expired slots are
+    /// excluded from both sides: the user never had the chance to answer them, so
+    /// counting them would drown a real signal in scheduling noise.
+    pub adherence: Option<f64>,
+}
+
+/// The adherence statistics panel, one row per rule, over the queried window.
+#[derive(SimpleObject)]
+pub struct GqlBreakStats {
+    pub per_rule: Vec<GqlBreakRuleStats>,
+}
+
 impl BreakRuleInput {
     /// Reject the shapes the database would reject anyway, but with a message a form
     /// can display. The CHECK stays as the backstop, not as the user experience.

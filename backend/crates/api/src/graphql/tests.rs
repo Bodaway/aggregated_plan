@@ -1646,6 +1646,63 @@ fn build_test_schema_with_breaks(
     )
 }
 
+/// Seed one break rule and, per `(outcome, count)` pair, that many events with that
+/// outcome, `due_at` inside August 2026 — through the repo handles directly, since no
+/// mutation can create a `break_event` (events come from the tick, never from a user).
+/// Returns the rule id so a test can match it against the stats response.
+async fn seed_break_events(
+    rules: &Arc<InMemoryBreakRuleRepository>,
+    events: &Arc<InMemoryBreakEventRepository>,
+    outcomes: &[(BreakOutcome, u32)],
+) -> BreakRuleId {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let now = chrono::Utc::now();
+    let rule_id: BreakRuleId = Uuid::new_v4();
+    rules
+        .create(&BreakRule {
+            id: rule_id,
+            user_id,
+            kind: BreakKind::Visual,
+            label: "Visuelle".to_string(),
+            body: "Regarde au loin".to_string(),
+            cadence: BreakCadence::Interval { minutes: 20 },
+            duration_seconds: 30,
+            priority: 1,
+            enabled: true,
+            urgency: BreakUrgency::Low,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("seed rule");
+
+    let due_at = chrono::DateTime::parse_from_rfc3339("2026-08-15T10:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    for (outcome, count) in outcomes {
+        for _ in 0..*count {
+            events
+                .create(&BreakEvent {
+                    id: Uuid::new_v4(),
+                    user_id,
+                    rule_id,
+                    due_at,
+                    fired_at: Some(due_at),
+                    deferred_until: None,
+                    defer_reason: None,
+                    suppressed_by_meeting_id: None,
+                    outcome: *outcome,
+                    responded_at: None,
+                    created_at: now,
+                })
+                .await
+                .expect("seed event");
+        }
+    }
+    rule_id
+}
+
 /// Default dependencies, plus one already-created task — for session-binding tests
 /// that need a real task id to point a session at.
 async fn schema_with_one_task() -> (TestSchema, Uuid) {
@@ -5229,4 +5286,55 @@ async fn creating_a_rule_with_a_negative_duration_is_rejected() {
         )
         .await;
     assert!(!res.errors.is_empty());
+}
+
+// ─── Break stats (Task 9) ───
+
+/// Adherence counts only what the user was actually shown: absorbed slots never
+/// reached a screen and must not dilute the rate.
+#[tokio::test]
+async fn break_stats_computes_adherence_over_seen_outcomes_only() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let rule_id = seed_break_events(
+        &rules,
+        &events,
+        &[
+            (BreakOutcome::Taken, 3),
+            (BreakOutcome::Ignored, 1),
+            (BreakOutcome::Absorbed, 10),
+            (BreakOutcome::Expired, 5),
+        ],
+    )
+    .await;
+
+    let res = schema
+        .execute(
+            r#"{ breakStats(from: "2026-08-01T00:00:00+00:00", to: "2026-09-01T00:00:00+00:00") {
+                   perRule { ruleId taken ignored absorbed expired adherence } } }"#,
+        )
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let per = res.data.into_json().unwrap()["breakStats"]["perRule"][0].clone();
+    assert_eq!(per["ruleId"], rule_id.to_string());
+    assert_eq!(per["taken"], 3);
+    assert_eq!(per["absorbed"], 10);
+    assert_eq!(per["expired"], 5);
+    assert_eq!(per["adherence"], 0.75, "3 taken out of 4 seen");
+}
+
+#[tokio::test]
+async fn break_stats_reports_null_adherence_when_nothing_was_seen() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    seed_break_events(&rules, &events, &[(BreakOutcome::Absorbed, 4)]).await;
+    let res = schema
+        .execute(
+            r#"{ breakStats(from: "2026-08-01T00:00:00+00:00", to: "2026-09-01T00:00:00+00:00") {
+                   perRule { adherence } } }"#,
+        )
+        .await;
+    assert!(res.data.into_json().unwrap()["breakStats"]["perRule"][0]["adherence"].is_null());
 }

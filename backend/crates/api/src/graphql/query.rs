@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, Object, Result, ID};
-use chrono::NaiveDate;
-use domain::types::UserId;
+use chrono::{DateTime, NaiveDate, Utc};
+use domain::types::{BreakOutcome, UserId};
 use uuid::Uuid;
 
 use application::repositories::*;
@@ -880,6 +880,70 @@ impl QueryRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(rules.into_iter().map(GqlBreakRule::from).collect())
+    }
+
+    /// Adherence per rule over `[from, to)` — `taken / seen`, where `seen` counts only
+    /// outcomes the user was actually shown. Absorbed and expired slots never reached
+    /// a screen, so they are excluded from both sides rather than diluting the rate.
+    async fn break_stats(
+        &self,
+        ctx: &Context<'_>,
+        from: String,
+        to: String,
+    ) -> Result<GqlBreakStats> {
+        let user_id = ctx.data::<UserId>()?;
+        let events = ctx.data::<Arc<dyn BreakEventRepository>>()?;
+        let rules_repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+        let parse = |s: &str| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|d| d.with_timezone(&Utc))
+                .map_err(|e| async_graphql::Error::new(format!("bad date '{s}': {e}")))
+        };
+        let counts = events
+            .counts_between(*user_id, parse(&from)?, parse(&to)?)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let rules = rules_repo
+            .list(*user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        let mut per_rule = Vec::new();
+        for rule in rules {
+            let mut row = GqlBreakRuleStats {
+                rule_id: rule.id.to_string().into(),
+                label: rule.label.clone(),
+                taken: 0,
+                snoozed: 0,
+                skipped: 0,
+                ignored: 0,
+                absorbed: 0,
+                expired: 0,
+                adherence: None,
+            };
+            let mut seen = 0;
+            for (rule_id, outcome, n) in counts.iter().filter(|(id, _, _)| *id == rule.id) {
+                let _ = rule_id;
+                let n = *n as i32;
+                match outcome {
+                    BreakOutcome::Taken => row.taken = n,
+                    BreakOutcome::Snoozed => row.snoozed = n,
+                    BreakOutcome::Skipped => row.skipped = n,
+                    BreakOutcome::Ignored => row.ignored = n,
+                    BreakOutcome::Absorbed => row.absorbed = n,
+                    BreakOutcome::Expired => row.expired = n,
+                    BreakOutcome::Pending => {}
+                }
+                if outcome.counts_towards_adherence() {
+                    seen += n;
+                }
+            }
+            if seen > 0 {
+                row.adherence = Some(f64::from(row.taken) / f64::from(seen));
+            }
+            per_rule.push(row);
+        }
+        Ok(GqlBreakStats { per_rule })
     }
 }
 
