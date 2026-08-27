@@ -37,7 +37,10 @@ export function BreakRoutineSettings() {
     createRule({ ...NEW_RULE_DEFAULTS, priority: maxPriority + 1 });
   };
 
-  if (loading) {
+  // Only the first load may take the screen. Every mutation refetches both queries
+  // `network-only`, and unmounting the list on each of those would take the user's
+  // focus with it — one keystroke, one lost cursor.
+  if (loading && rules.length === 0) {
     return <p className="text-sm text-gray-500">Chargement de la routine de pauses…</p>;
   }
 

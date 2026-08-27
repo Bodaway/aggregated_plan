@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { BreakCadence, BreakKind, BreakRule, BreakRuleInput, BreakUrgency } from '@/hooks/use-break-rules';
 
 const KIND_OPTIONS: ReadonlyArray<{ readonly value: BreakKind; readonly label: string }> = [
@@ -20,7 +20,33 @@ const DEFAULT_AT_TIME = '09:00';
 
 const AT_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/** Mirrors the server's `MAX_DURATION_SECONDS`: the break tick waits on its
+ * notification inline, so a slipped zero would park the scheduler for days. Checked
+ * here too, so the user learns before the round trip. */
+const MAX_DURATION_SECONDS = 3600;
+
 type EditableFields = Omit<BreakRule, 'id'>;
+
+/** The editable half of a rule — everything but its id. */
+function toFields(rule: BreakRule): EditableFields {
+  return {
+    kind: rule.kind,
+    label: rule.label,
+    body: rule.body,
+    cadence: rule.cadence,
+    intervalMinutes: rule.intervalMinutes,
+    atTime: rule.atTime,
+    durationSeconds: rule.durationSeconds,
+    priority: rule.priority,
+    enabled: rule.enabled,
+    urgency: rule.urgency,
+  };
+}
+
+/** Value equality over the editable fields, all of them primitives or null. */
+function sameFields(a: EditableFields, b: EditableFields): boolean {
+  return (Object.keys(a) as ReadonlyArray<keyof EditableFields>).every(k => a[k] === b[k]);
+}
 
 /** `null` when the shape satisfies the server's XOR; the French message to show and
  * block the save on, otherwise. */
@@ -35,6 +61,9 @@ function validate(fields: EditableFields): string | null {
   if (fields.durationSeconds <= 0) {
     return 'La durée doit être positive.';
   }
+  if (fields.durationSeconds > MAX_DURATION_SECONDS) {
+    return `La durée ne peut pas dépasser ${MAX_DURATION_SECONDS} secondes.`;
+  }
   return null;
 }
 
@@ -47,32 +76,51 @@ export interface BreakRuleRowProps {
   readonly onDelete: (id: string) => void;
 }
 
-/** One editable row: every field auto-saves through `onUpdate` as soon as it validates,
- * so there is no separate save button per rule. A field that would break the server's
- * INTERVAL/DAILY XOR is kept in local state and blocked instead of sent. */
+/** One editable row, saving through `onUpdate` without a save button. Two rhythms, on
+ * purpose: a toggle or a select is one gesture and one whole decision, so it saves at
+ * once; a typed field is only a decision once the user leaves it, so it saves on blur.
+ * Saving each keystroke sent a mutation per character, and the refetch each one
+ * triggered raced the next — the database could end up holding a prefix of what was
+ * typed. A field that would break the server's INTERVAL/DAILY XOR is kept in local
+ * state and blocked instead of sent. */
 export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
-  const [fields, setFields] = useState<EditableFields>(() => ({
-    kind: rule.kind,
-    label: rule.label,
-    body: rule.body,
-    cadence: rule.cadence,
-    intervalMinutes: rule.intervalMinutes,
-    atTime: rule.atTime,
-    durationSeconds: rule.durationSeconds,
-    priority: rule.priority,
-    enabled: rule.enabled,
-    urgency: rule.urgency,
-  }));
+  const [fields, setFields] = useState<EditableFields>(() => toFields(rule));
   const [error, setError] = useState<string | null>(null);
 
-  const commit = (patch: Partial<EditableFields>) => {
+  // The row now survives a refetch instead of being unmounted by it, so it has to
+  // follow the server: whatever normalisation came back replaces what is on screen.
+  // The dependency is the values, not the object — a `network-only` refetch hands back
+  // a fresh object every time, and resyncing on that would wipe a half-typed field.
+  const signature = JSON.stringify(toFields(rule));
+  useEffect(() => {
+    setFields(toFields(rule));
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature]);
+
+  /** Update what the row shows, and its error, without saving. */
+  const edit = (patch: Partial<EditableFields>): EditableFields => {
     const next = { ...fields, ...patch };
     setFields(next);
-    const problem = validate(next);
-    setError(problem);
-    if (!problem) {
+    setError(validate(next));
+    return next;
+  };
+
+  /** Update and save straight away: right for a toggle or a select. */
+  const commit = (patch: Partial<EditableFields>) => {
+    const next = edit(patch);
+    if (!validate(next)) {
       onUpdate(rule.id, next);
     }
+  };
+
+  /** Save what the row currently holds, if it differs from the server's copy and is
+   * valid. Bound to `onBlur` on every typed field. */
+  const commitEdits = () => {
+    if (sameFields(fields, toFields(rule)) || validate(fields)) {
+      return;
+    }
+    onUpdate(rule.id, fields);
   };
 
   const handleCadenceChange = (cadence: BreakCadence) => {
@@ -122,7 +170,8 @@ export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
         <input
           type="text"
           value={fields.label}
-          onChange={e => commit({ label: e.target.value })}
+          onChange={e => edit({ label: e.target.value })}
+          onBlur={commitEdits}
           className={fieldClass}
         />
       </label>
@@ -132,7 +181,8 @@ export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
         <input
           type="text"
           value={fields.body}
-          onChange={e => commit({ body: e.target.value })}
+          onChange={e => edit({ body: e.target.value })}
+          onBlur={commitEdits}
           className={fieldClass}
         />
       </label>
@@ -155,7 +205,8 @@ export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
           <input
             type="number"
             value={fields.intervalMinutes ?? ''}
-            onChange={e => commit({ intervalMinutes: Number(e.target.value) })}
+            onChange={e => edit({ intervalMinutes: Number(e.target.value) })}
+            onBlur={commitEdits}
             className={fieldClass}
           />
         </label>
@@ -165,7 +216,8 @@ export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
           <input
             type="time"
             value={fields.atTime ?? ''}
-            onChange={e => commit({ atTime: e.target.value })}
+            onChange={e => edit({ atTime: e.target.value })}
+            onBlur={commitEdits}
             className={fieldClass}
           />
         </label>
@@ -176,7 +228,8 @@ export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
         <input
           type="number"
           value={fields.durationSeconds}
-          onChange={e => commit({ durationSeconds: Number(e.target.value) })}
+          onChange={e => edit({ durationSeconds: Number(e.target.value) })}
+          onBlur={commitEdits}
           className={fieldClass}
         />
       </label>
@@ -186,7 +239,8 @@ export function BreakRuleRow({ rule, onUpdate, onDelete }: BreakRuleRowProps) {
         <input
           type="number"
           value={fields.priority}
-          onChange={e => commit({ priority: Number(e.target.value) })}
+          onChange={e => edit({ priority: Number(e.target.value) })}
+          onBlur={commitEdits}
           className={fieldClass}
         />
       </label>

@@ -6253,3 +6253,13 @@ quatre scalaires, la liste des règles, ajout/suppression, panneau d'adhérence)
 BreakRuleRow.tsx` (une règle : activation, cadence, intervalle ou heure, durée, priorité, intitulé,
 corps) et `hooks/use-break-rules.ts` (requêtes/mutations urql), intégrés à `SettingsPage` via la
 section repliable existante.
+
+Deux rythmes de sauvegarde dans `BreakRuleRow`, et pas un seul : l'interrupteur et les listes
+déroulantes enregistrent immédiatement (un geste = une décision entière), les champs saisis au
+clavier enregistrent **au `blur`**. Sauver chaque frappe envoyait une mutation par caractère, et le
+`refetch network-only` de chacune faisait basculer `loading`, ce qui démontait la liste et
+emportait le focus dès la première lettre ; les réponses arrivant dans le désordre pouvaient en
+outre laisser en base un préfixe de ce qui avait été tapé. En conséquence, `BreakRoutineSettings`
+n'affiche son message de chargement qu'au **premier** chargement (`loading && rules.length === 0`),
+et `BreakRuleRow` resynchronise son état local quand les valeurs de sa prop `rule` changent : la
+ligne survivant désormais au `refetch`, elle doit suivre ce que le serveur a normalisé.
