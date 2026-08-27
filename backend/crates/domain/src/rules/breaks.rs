@@ -173,8 +173,41 @@ pub fn decide(input: BreakTickInput<'_>) -> BreakTick {
         return tick;
     }
 
-    // 2. Candidates: natural dues in (since, now], plus today's daily dues.
+    let rule_of = |id: BreakRuleId| input.rules.iter().find(|r| r.id == id);
+
+    // 2. Cull deferrals that can no longer beat their own rule's next due, plus any
+    //    whose rule has since been disabled or deleted. Doing this before anything else
+    //    is what keeps "one live deferral per rule" true in step 4 without counting.
+    let mut live_deferrals: Vec<&BreakEvent> = Vec::new();
+    for event in input.open {
+        let Some(rule) = rule_of(event.rule_id) else {
+            tick.expire.push(event.id);
+            continue;
+        };
+        let Some(until) = event.deferred_until else {
+            // Fired and unanswered: the notifier owns its fate, not the tick.
+            continue;
+        };
+        match next_natural_due_after(rule, input.windows, event.due_at) {
+            Some(next) if until >= next => tick.expire.push(event.id),
+            _ => live_deferrals.push(event),
+        }
+    }
+
+    // 3. Candidates: woken deferrals, then natural dues in (since, now], then the daily
+    //    instants the caller resolved.
     let mut candidates: Vec<Candidate> = Vec::new();
+    for event in &live_deferrals {
+        if let Some(until) = event.deferred_until {
+            if until <= input.now {
+                candidates.push(Candidate::Wake {
+                    event_id: event.id,
+                    rule_id: event.rule_id,
+                    due_at: event.due_at,
+                });
+            }
+        }
+    }
     for rule in input.rules {
         for due_at in natural_dues(rule, input.windows, input.since, input.now) {
             candidates.push(Candidate::New { rule_id: rule.id, due_at });
@@ -187,9 +220,48 @@ pub fn decide(input: BreakTickInput<'_>) -> BreakTick {
         }
     }
 
-    // 3. Coalescing: the highest priority fires, the rest are absorbed. Ties go to the
+    // 4. Meeting suppression. A candidate is judged at the instant it wants the user's
+    //    attention: its due time for a fresh one, `now` for a wake-up.
+    //
+    //    Rules that already hold a live deferral do not get a second one — their extra
+    //    dues are absorbed. Without that, a two-hour meeting would arm six deferrals of
+    //    the 20-minute rule and empty them all at once when it ended.
+    let mut deferred_rules: Vec<BreakRuleId> = live_deferrals.iter().map(|e| e.rule_id).collect();
+    let mut runnable: Vec<Candidate> = Vec::new();
+    for candidate in candidates {
+        let judged_at = match &candidate {
+            Candidate::New { due_at, .. } => *due_at,
+            Candidate::Wake { .. } => input.now,
+        };
+        let Some(period) = input.busy.iter().find(|b| b.covers(judged_at)) else {
+            runnable.push(candidate);
+            continue;
+        };
+        let until = period.end + input.grace;
+        if until <= input.now {
+            // The blocking meeting is already over; resolve on this tick rather than
+            // writing a deferral that is born overdue.
+            runnable.push(candidate);
+            continue;
+        }
+        let already = deferred_rules.contains(&candidate.rule_id())
+            && matches!(candidate, Candidate::New { .. });
+        if already {
+            tick.absorb.push(AbsorbBreak { candidate });
+            continue;
+        }
+        deferred_rules.push(candidate.rule_id());
+        tick.defer.push(DeferBreak {
+            candidate,
+            until,
+            reason: DeferReason::Meeting,
+            meeting_id: Some(period.meeting_id.clone()),
+        });
+    }
+
+    // 5. Coalescing: the highest priority fires, the rest are absorbed. Ties go to the
     //    oldest due, so a backlog drains in order.
-    finish(&mut tick, candidates, input.rules);
+    finish(&mut tick, runnable, input.rules);
     tick
 }
 
@@ -212,7 +284,8 @@ fn finish(tick: &mut BreakTick, mut candidates: Vec<Candidate>, rules: &[BreakRu
     });
     let winner = candidates.remove(0);
     tick.fire = Some(FireBreak { candidate: winner });
-    tick.absorb = candidates.into_iter().map(|c| AbsorbBreak { candidate: c }).collect();
+    tick.absorb
+        .extend(candidates.into_iter().map(|c| AbsorbBreak { candidate: c }));
 }
 
 #[cfg(test)]
@@ -386,5 +459,213 @@ mod tests {
         ];
         assert_eq!(next_natural_due_after(&rule, &windows, at(12, 0)), Some(at(13, 20)));
         assert_eq!(next_natural_due_after(&rule, &w, at(12, 0)), None);
+    }
+
+    fn busy(id: &str, from: (u32, u32), to: (u32, u32)) -> BusyPeriod {
+        BusyPeriod {
+            meeting_id: id.into(),
+            start: at(from.0, from.1),
+            end: at(to.0, to.1),
+        }
+    }
+
+    fn open_event(rule_id: BreakRuleId, due: DateTime<Utc>, until: DateTime<Utc>) -> BreakEvent {
+        BreakEvent {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            rule_id,
+            due_at: due,
+            fired_at: None,
+            deferred_until: Some(until),
+            defer_reason: Some(DeferReason::Meeting),
+            suppressed_by_meeting_id: Some("m1".into()),
+            outcome: crate::types::BreakOutcome::Pending,
+            responded_at: None,
+            created_at: due,
+        }
+    }
+
+    #[test]
+    fn a_due_inside_a_meeting_is_deferred_to_its_end_plus_grace() {
+        let rules = vec![interval_rule(60, 3)];
+        let w = morning();
+        let busy = vec![busy("m1", (8, 50), (9, 50))];
+        let tick = decide(BreakTickInput {
+            now: at(9, 1),
+            since: at(8, 59),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &busy,
+            open: &[],
+            grace: Duration::minutes(3),
+        });
+        assert!(tick.fire.is_none(), "nothing fires during the meeting");
+        assert_eq!(tick.defer.len(), 1);
+        assert_eq!(tick.defer[0].until, at(9, 53));
+        assert_eq!(tick.defer[0].reason, DeferReason::Meeting);
+        assert_eq!(tick.defer[0].meeting_id.as_deref(), Some("m1"));
+    }
+
+    /// The point of deferring rather than skipping: an hour of meeting must not cost
+    /// the hourly break.
+    #[test]
+    fn a_deferred_break_fires_when_its_wait_is_over() {
+        let rules = vec![interval_rule(60, 3)];
+        let w = morning();
+        let ev = open_event(rules[0].id, at(9, 0), at(9, 53));
+        let open = vec![ev.clone()];
+        let tick = decide(BreakTickInput {
+            now: at(9, 53),
+            since: at(9, 52),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &[],
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.fire.expect("fires").candidate.event_id(), Some(ev.id));
+        assert!(tick.expire.is_empty());
+    }
+
+    /// Back-to-back calls: the wake-up lands inside the next meeting and is re-deferred
+    /// onto it rather than firing over it.
+    #[test]
+    fn a_wake_up_inside_another_meeting_is_re_deferred() {
+        let rules = vec![interval_rule(60, 3)];
+        let w = morning();
+        let ev = open_event(rules[0].id, at(9, 0), at(9, 53));
+        let open = vec![ev.clone()];
+        let busy = vec![busy("m2", (9, 50), (10, 30))];
+        let tick = decide(BreakTickInput {
+            now: at(9, 53),
+            since: at(9, 52),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &busy,
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert!(tick.fire.is_none());
+        assert_eq!(tick.defer.len(), 1);
+        assert_eq!(tick.defer[0].until, at(10, 33));
+        assert_eq!(tick.defer[0].meeting_id.as_deref(), Some("m2"));
+    }
+
+    /// A deferral that can no longer beat its own rule's next due is pointless: the
+    /// fresh one is 4 minutes away. This is what stops deferrals piling up without
+    /// having to count them.
+    #[test]
+    fn a_deferral_overtaken_by_the_next_natural_due_expires() {
+        let rules = vec![interval_rule(20, 1)];
+        let w = morning();
+        // Due at 09:00, meeting ran to 10:50, so the wait ends at 10:53 — long past
+        // the 09:20 that would have replaced it.
+        let ev = open_event(rules[0].id, at(9, 0), at(10, 53));
+        let open = vec![ev.clone()];
+        let tick = decide(BreakTickInput {
+            now: at(10, 53),
+            since: at(10, 52),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &[],
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.expire, vec![ev.id]);
+        assert!(tick.fire.is_none() || tick.fire.as_ref().unwrap().candidate.event_id() != Some(ev.id));
+    }
+
+    /// Only one deferral per rule may be alive. The case that needs the guard is a
+    /// single tick carrying several dues of the same rule — after a suspend, or simply
+    /// a long meeting — which must arm one deferral, not three.
+    ///
+    /// (Across *separate* ticks the expiry rule already does this on its own: each new
+    /// due overtakes the previous deferral and replaces it. The guard is what covers
+    /// several dues arriving at once.)
+    #[test]
+    fn several_dues_inside_one_meeting_arm_only_one_deferral() {
+        let rules = vec![interval_rule(20, 1)];
+        let w = morning();
+        let busy = vec![busy("m1", (8, 55), (11, 30))];
+        let tick = decide(BreakTickInput {
+            now: at(10, 0),
+            since: at(9, 0),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &busy,
+            open: &[],
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.defer.len(), 1, "one deferral for the rule");
+        assert_eq!(tick.defer[0].until, at(11, 33));
+        assert_eq!(tick.absorb.len(), 2, "the 09:40 and 10:00 dues are absorbed");
+    }
+
+    /// A deferral computed into the past resolves on this very tick instead of writing
+    /// a row that is already overdue.
+    #[test]
+    fn a_due_inside_a_meeting_that_has_since_ended_fires_now() {
+        let rules = vec![interval_rule(60, 3)];
+        let w = morning();
+        let busy = vec![busy("m1", (8, 50), (9, 50))];
+        let tick = decide(BreakTickInput {
+            now: at(10, 30),
+            since: at(8, 30),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &busy,
+            open: &[],
+            grace: Duration::minutes(3),
+        });
+        assert!(tick.fire.is_some(), "the 09:00 due, unblocked, resolves immediately");
+        assert!(tick.defer.is_empty());
+    }
+
+    #[test]
+    fn the_end_of_the_day_expires_everything_still_waiting() {
+        let rules = vec![interval_rule(20, 1)];
+        let w = morning();
+        let ev = open_event(rules[0].id, at(11, 40), at(11, 58));
+        let open = vec![ev.clone()];
+        let tick = decide(BreakTickInput {
+            now: at(12, 30),
+            since: at(12, 29),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &[],
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.expire, vec![ev.id]);
+    }
+
+    /// A snooze is not a special case: it is a deferral with another reason, and it
+    /// takes the same path — expiry included.
+    #[test]
+    fn a_snoozed_event_wakes_like_any_other_deferral() {
+        let rules = vec![interval_rule(60, 3)];
+        let w = morning();
+        let mut ev = open_event(rules[0].id, at(9, 0), at(9, 10));
+        ev.defer_reason = Some(DeferReason::Snooze);
+        ev.suppressed_by_meeting_id = None;
+        let open = vec![ev.clone()];
+        let tick = decide(BreakTickInput {
+            now: at(9, 10),
+            since: at(9, 9),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &[],
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.fire.expect("fires").candidate.event_id(), Some(ev.id));
     }
 }
