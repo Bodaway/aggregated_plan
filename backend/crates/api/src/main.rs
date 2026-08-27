@@ -15,10 +15,13 @@ mod state;
 
 use uuid::Uuid;
 
+use application::repositories::{BreakEventRepository, BreakRuleRepository};
+use application::services::{NullNotifier, Notifier};
 use graphql::schema::SchemaDeps;
 use infrastructure::database::*;
 use infrastructure::connectors::microsoft::oauth::{MicrosoftOAuth, MicrosoftOAuthConfig};
 use infrastructure::connectors::microsoft::token_provider::RefreshingGraphTokenProvider;
+use infrastructure::notify::NotifySendNotifier;
 
 #[derive(Parser)]
 #[command(name = "api", about = "Aggregated Plan API server")]
@@ -100,6 +103,13 @@ async fn main() {
     let graph_token_provider: std::sync::Arc<dyn application::services::GraphTokenProvider> =
         std::sync::Arc::new(RefreshingGraphTokenProvider::new(config_repo.clone(), oauth.clone()));
 
+    // Built once in main.rs and handed to both consumers: the background job below and
+    // the GraphQL `SchemaDeps` of Tasks 8-9, so there is one instance, not two.
+    let break_rule_repo: Arc<dyn BreakRuleRepository> =
+        Arc::new(SqliteBreakRuleRepository::new(db_pool.clone()));
+    let break_event_repo: Arc<dyn BreakEventRepository> =
+        Arc::new(SqliteBreakEventRepository::new(db_pool.clone()));
+
     let eod_deps = jobs::EodDeps {
         worklog_repo: worklog_repo.clone(),
         meeting_repo: meeting_repo.clone(),
@@ -115,7 +125,8 @@ async fn main() {
 
     let deps = SchemaDeps {
         task_repo,
-        meeting_repo,
+        // Cloned, not moved: the break scheduler spawned below also needs it.
+        meeting_repo: meeting_repo.clone(),
         project_repo,
         activity_repo: activity_repo.clone(),
         alert_repo,
@@ -202,6 +213,25 @@ async fn main() {
         });
 
     tokio::spawn(jobs::run_eod_scheduler(eod_deps, default_user_id));
+
+    // The notifier is chosen once, at startup: a headless run keeps its books silently
+    // rather than failing every 30 seconds on a bus that is not there.
+    let notifier: Arc<dyn Notifier> = if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok() {
+        Arc::new(NotifySendNotifier::new())
+    } else {
+        tracing::info!("no session bus: break notifications will be recorded, not shown");
+        Arc::new(NullNotifier)
+    };
+    tokio::spawn(jobs::run_break_scheduler(
+        jobs::BreakDeps {
+            rule_repo: break_rule_repo.clone(),
+            event_repo: break_event_repo.clone(),
+            meeting_repo: meeting_repo.clone(),
+            config_repo: config_repo.clone(),
+            notifier,
+        },
+        default_user_id,
+    ));
 
     let session_reaper_deps = jobs::SessionReaperDeps {
         session_repo,
