@@ -18,11 +18,19 @@ def hyprctl_json(*args):
     return json.loads(out.stdout)
 
 
-def find_client(pid):
-    for c in hyprctl_json("clients"):
-        if c.get("pid") == pid or c.get("class") == CLASS:
-            return c
-    return None
+def find_client(pid, proc):
+    # Match on pid only. Matching on `class` too (as an earlier version did) can
+    # return a stale same-class orphan instead of the freshly-spawned window —
+    # e.g. one left behind by a Ctrl+C or crash that bypassed abort()'s cleanup —
+    # which would silently make the workspace check below trust the wrong window.
+    matches = [c for c in hyprctl_json("clients") if c.get("pid") == pid]
+    if len(matches) > 1:
+        abort(
+            f"{len(matches)} windows share pid {pid} in `hyprctl -j clients` — "
+            "ambiguous, refusing to guess which one is the probe",
+            proc,
+        )
+    return matches[0] if matches else None
 
 
 def kill_proc(proc):
@@ -33,9 +41,9 @@ def kill_proc(proc):
 
 
 def abort(msg, proc):
-    # Un abandon ne doit jamais laisser trainer l'hote WebKit : un precedent
-    # test manuel en a laisse un vivant, qui a ensuite fausse une mesure en
-    # gardant le nom D-Bus "dev.hudbench.webkit" et en cumulant les fenetres.
+    # An abort must never leave the WebKit host running: a previous manual test
+    # left one alive, which then skewed a later measurement by keeping the
+    # "dev.hudbench.webkit" D-Bus name and accumulating extra windows.
     kill_proc(proc)
     print(f"ABORT : {msg}")
     sys.exit(1)
@@ -47,14 +55,15 @@ proc = subprocess.Popen(
     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 time.sleep(6)
 
-if find_client(proc.pid) is None:
-    abort("fenetre WebKit introuvable dans `hyprctl -j clients` apres 6 s", proc)
+if find_client(proc.pid, proc) is None:
+    abort("WebKit window not found in `hyprctl -j clients` after 6 s", proc)
 
-# Le brief dispatchait `movetoworkspacesilent special:visprobe` seul, qui agit sur
-# la fenetre ACTIVE. Sur cette machine cette forme a rate sa cible deux fois de
-# suite (fenetre restee sur 'dev1', puis deplacee sur 'witivio' au lieu du special
-# workspace) — corrobore par la sonde: hyprctl dispatch accepte un selecteur de
-# fenetre explicite en 2e argument, qui elimine l'hypothese "fenetre active".
+# The brief dispatched `movetoworkspacesilent special:visprobe` alone, which acts
+# on the ACTIVE window. On this machine that form missed its target twice in a
+# row (window stayed on 'dev1', then landed on 'witivio' instead of the special
+# workspace) — confirmed by the probe itself: hyprctl dispatch accepts an
+# explicit window selector as a 2nd argument, which removes the "active window"
+# assumption entirely.
 subprocess.run([
     "hyprctl", "dispatch", "movetoworkspacesilent",
     f"{WORKSPACE},class:^({CLASS})$",
@@ -67,18 +76,18 @@ time.sleep(8)
 subprocess.run(["hyprctl", "dispatch", "togglespecialworkspace", "visprobe"])
 time.sleep(1)
 
-# Ruling (controleur) : movetoworkspacesilent agit sur la fenetre active. S'il a
-# rate sa cible, la phase "masquee" n'a jamais ete masquee et le verdict serait
-# un faux negatif. On verifie donc avant d'echantillonner cette phase :
-#   1. la fenetre sondee est bien assignee au special workspace ;
-#   2. aucun moniteur n'affiche plus ce special workspace.
-client = find_client(proc.pid)
+# Ruling (controller): movetoworkspacesilent acts on the active window. If it
+# missed its target, the "hidden" phase was never actually hidden and the
+# verdict would be a false negative. So before sampling that phase, verify:
+#   1. the probed window really is assigned to the special workspace;
+#   2. no monitor is still displaying that special workspace.
+client = find_client(proc.pid, proc)
 observed_ws = (client or {}).get("workspace", {}).get("name")
 if client is None or observed_ws != WORKSPACE:
     abort(
-        f"la fenetre WebKit n'est pas assignee a {WORKSPACE!r} "
-        f"(observe : {observed_ws!r}) — movetoworkspacesilent a rate sa cible, "
-        "la phase 'masquee' n'est pas fiable, verdict abandonne",
+        f"WebKit window is not assigned to {WORKSPACE!r} "
+        f"(observed: {observed_ws!r}) — movetoworkspacesilent missed its "
+        "target, the 'hidden' phase is not trustworthy, verdict abandoned",
         proc,
     )
 
@@ -89,9 +98,9 @@ still_showing = [
 ]
 if still_showing:
     abort(
-        f"le special workspace {WORKSPACE!r} est encore affiche sur {still_showing} "
-        "apres togglespecialworkspace — la phase 'masquee' n'est pas fiable, "
-        "verdict abandonne",
+        f"special workspace {WORKSPACE!r} is still shown on {still_showing} "
+        "after togglespecialworkspace — the 'hidden' phase is not "
+        "trustworthy, verdict abandoned",
         proc,
     )
 
