@@ -1117,7 +1117,21 @@ suspendre ses animations."
 ## Définition de terminé
 
 `SUPER+B` ouvre une fenêtre transparente et sans décorations sur le special
-workspace `aplan`, affichant une séquence de boot puis une grille vide aux couleurs
-CyberNord. Une seconde pression la masque, une troisième la rappelle sans relancer
-de processus. `pnpm test` et `pnpm type-check` passent. La spec porte les verdicts
-mesurés des deux spikes.
+workspace `aplan`, affichant une grille vide aux couleurs CyberNord. Une seconde
+pression la masque, une troisième la rappelle sans relancer de processus.
+`pnpm type-check` passe. La spec porte les verdicts mesurés des deux spikes.
+
+**Séquence de boot — partiellement tenue.** `HudPage.tsx` l'affiche bien 1500 ms
+au montage, mais ce montage a lieu dès le chargement de la page, pendant que la
+fenêtre est encore sur le special workspace masqué (le lancement du binaire
+précède le `togglespecialworkspace` qui la montre) : à l'ouverture, l'utilisateur
+ne voit donc pas la séquence défiler, seulement la grille déjà stabilisée. Le
+séquencement montage/affichage n'est pas corrigé par ce plan et est renvoyé à un
+plan ultérieur.
+
+**`pnpm test` — condition réelle, pas celle promise ci-dessus.** 306/306 tests
+passent, mais la commande sort en échec quand même : `src/presentation/app.test.tsx`,
+une suite préexistante et morte (exclue de `tsconfig`, sans rapport avec ce plan),
+échoue dès la *collecte* sur un import non résolu (`@application/index`). Cette
+suite n'est pas corrigée ici — la condition vérifiable et tenue par ce plan est
+« 306/306 tests passent », pas « `pnpm test` sort en succès ».

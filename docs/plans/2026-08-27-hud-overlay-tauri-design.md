@@ -139,15 +139,43 @@ de surveillance.
 
 ## 6. Intégration Hyprland
 
+`windowrulev2` (la syntaxe envisagée ci-dessous à l'origine) est **deprecated sur
+Hyprland 0.56.2 et n'a silencieusement aucun effet** (`hyprctl configerrors` le
+confirme) : la règle ne s'applique jamais et la fenêtre atterrit sur le workspace
+courant, pas sur le special workspace. Syntaxe réellement chargée par le
+compositeur, retranscrite depuis `~/.config/hypr/hyprland.conf:482-499` (fichier
+hors dépôt, non versionné — cette section du présent document en est la seule
+trace durable) :
+
 ```
-# fenêtre
-windowrulev2 = float,       class:^(aplan-hud)$
-windowrulev2 = noborder,    class:^(aplan-hud)$
-windowrulev2 = workspace special:aplan, class:^(aplan-hud)$
+# --- aplan HUD ---------------------------------------------------------
+# windowrulev2 (brief's original syntax) is deprecated on this Hyprland
+# build (0.56.2) and is silently rejected -- `hyprctl configerrors` flags
+# it and the rule never applies. Using the block syntax already in use
+# above for pcloud-to-tray etc., which is this config's live hyprlang
+# window-rule syntax.
+windowrule {
+    name = aplan-hud
+    match:class = ^(aplan-hud)$
+
+    float = true
+    border_size = 0
+    no_shadow = true
+    workspace = special:aplan silent
+    size = monitor_w*0.9 monitor_h*0.9
+    center = true
+}
 
 # raccourci
-bind = $mainMod, B, exec, aplan-hud-toggle
+bind = $mainMod, B, exec, ~/appfactory/aggregated_plan/scripts/aplan-hud-toggle
 ```
+
+Deux autres pièges de syntaxe, vérifiés empiriquement lors de l'écriture de cette
+règle : une virgule avant `silent` (`workspace special:aplan, class:...`) finit
+dans le **nom du workspace** au lieu de servir de séparateur, et `size 90%` est
+un no-op — il faut l'expression `monitor_w*0.9 monitor_h*0.9`. Le raccourci
+utilise le **chemin absolu** du script : `exec` le résout via `$PATH`, et
+`aplan-hud-toggle` n'y figure pas.
 
 - La fenêtre Tauri déclare `transparent: true`, `decorations: false`, et un
   **`app_id` stable `aplan-hud`** — c'est lui que matchent les windowrules.
@@ -170,10 +198,11 @@ Contraint par les mesures, pas par le goût.
 - `box-shadow` pour la lueur, `filter: drop-shadow / hue-rotate`
 - filtres SVG : `feTurbulence` et `feDisplacementMap` pour le glitch
 - `<canvas>` pour sparklines et jauges
-- **`backdrop-filter`** — mesuré (§10.2) : surcoût CPU moyen **×1,09** par rapport
-  au même bloc sans filtre (bornes des trois essais ×1,02–×1,14), largement sous
-  le seuil de bascule (×2). Reste soumis aux mêmes règles que les autres
-  effets : par bloc, jamais en passe plein écran.
+- **`backdrop-filter`** — mesuré (§10.2) : le surcoût CPU (bornes des trois
+  essais ×1,02–×1,14) n'est pas séparable du bruit inter-essais sur ce poste,
+  mais reste dans tous les cas **loin du seuil de bascule (×2)**. Reste soumis
+  aux mêmes règles que les autres effets : par bloc, jamais en passe plein
+  écran.
 
 **Interdit en v1**
 - *(aucun)* — `backdrop-filter` était le seul candidat de cette liste ; mesuré
@@ -281,14 +310,26 @@ au moment du dispatch. Le correctif est un sélecteur de fenêtre explicite dans
 dispatch (`movetoworkspacesilent special:visprobe,class:^(dev.hudbench.webkit)$`),
 après quoi les deux contrôles passent et la mesure est fiable.
 
-Compteurs bruts de la mesure retenue (images par tranche de 2 s, dans l'ordre) :
+Compteurs bruts de la mesure retenue (images par tranche de 2 s **depuis le
+chargement de la page**, dans l'ordre) :
 `[121, 120, 101, 80, 120, 120, 120, 120, 40, 0, 0]`, avec les événements
 `visibilitychange` observés dans l'ordre `hidden, visible, hidden` — trois
 transitions qui correspondent exactement aux trois dispatches Hyprland
-(déplacement silencieux, bascule visible, bascule masquée). Moyenne sur les 4
-premières tranches (phase visible) : 106 images/2 s. Moyenne sur les 3 dernières
-tranches de la phase masquée **vérifiée** : 13 images/2 s, dont les deux
-dernières tranches à **0**.
+(déplacement silencieux, bascule visible, bascule masquée).
+
+**Correction (relecture finale) — la moyenne « phase visible » était mal
+étiquetée.** Le chiffre de 106 images/2 s prenait les 4 premières tranches
+(indices 0–3, `[121, 120, 101, 80]`), qui couvrent t≈0–8 s : c'est la période
+*avant* le déplacement sur le special workspace (`movetoworkspacesilent`, t≈6 s,
+puis bascule visible, t≈7 s), où la fenêtre rend normalement sur un workspace
+ordinaire — pas la phase où le special workspace est effectivement montré. La
+phase special-workspace-visible propre correspond aux tranches d'indices 4–7
+(les 5ᵉ à 8ᵉ), toutes à **120** images/2 s. Le chiffre exact de la phase visible
+est donc **120 images/2 s**, pas 106 — un écart plus net avec la phase masquée,
+pas moins ; le verdict ci-dessous est inchangé (et le serait resté, en plus
+favorable, avec le chiffre corrigé). Moyenne sur les 3 dernières tranches de la
+phase masquée **vérifiée** : 13 images/2 s, dont les deux dernières tranches à
+**0**.
 
 **Verdict : WebKit s'endort.** Une fenêtre WebKitGTK sur un special workspace
 masqué reçoit `visibilitychange` (état `hidden`) et cesse de produire des images
@@ -334,29 +375,58 @@ seul un résumé en est donné ici :
 
 Ratio `avec-blur / sans-blur` par essai : ×1,110, ×1,023, ×1,138 — étalement
 ×1,02–×1,14, aucun ne s'approche du seuil de bascule ×2. Moyenne des `cpu_pct` :
-sans-blur 17,98 %, avec-blur 19,55 %, soit un ratio des moyennes de **×1,087**. Le
+sans-blur 17,98 %, avec-blur 19,55 %, soit un ratio des moyennes de ×1,087. Le
 PSS ne bouge quasiment pas (~250 Mo dans les six essais) : la mémoire n'est pas
 discriminante ici, seul le CPU l'est. Aucune fenêtre perdue ni processus mort
 pendant les six mesures (contrôle `hyprctl` systématiquement positif).
 
-**Verdict : le seuil de bascule (×2) n'est pas atteint, sur aucun des trois essais
-ni sur leur moyenne.** Règle du brief appliquée telle quelle : `backdrop-filter`
-quitte la liste « interdit » et rejoint « autorisé » (§7), avec le surcoût mesuré
-noté à côté (×1,09 en moyenne, jusqu'à ×1,14 au pire essai). Il reste soumis aux
-mêmes règles que les autres effets — par bloc, jamais en passe plein écran — la
-mesure ci-dessus porte sur un seul bloc animé, pas sur une passe globale.
+**Correction (relecture finale) — la précision ×1,09 est surinterprétée.** Les
+trois essais *sans-blur* s'étalent eux-mêmes sur 17,05–19,55 % (écart de 2,50
+point), plus large que l'effet revendiqué (1,57 point entre les deux moyennes) :
+le *sans-blur* de l'essai 2 (19,55 %) dépasse même l'*avec-blur* de l'essai 1
+(19,25 %). Un ratio moyen à trois essais, sur un poste en usage réel, n'isole
+donc pas de façon fiable une constante à ×1,09 — il est **indissociable du bruit
+inter-essais**.
 
-### 10.3 Stabilité de l'`app_id`
+**Verdict : quel que soit le surcoût exact, il est loin du seuil de bascule
+(×2)** — c'est l'affirmation qui porte la décision, et elle tient aussi bien sur
+chacun des trois essais que sur leur moyenne. Règle du brief appliquée telle
+quelle : `backdrop-filter` quitte la liste « interdit » et rejoint « autorisé »
+(§7). Il reste soumis aux mêmes règles que les autres effets — par bloc, jamais
+en passe plein écran — la mesure ci-dessus porte sur un seul bloc animé, pas sur
+une passe globale.
+
+### 10.3 Stabilité de l'`app_id` — RÉSOLU
 
 Vérifier que Tauri v2 pose bien `aplan-hud` comme app_id Wayland. Constat annexe du
 banc : **Chromium en mode `--app=` ignore `--class`** et dérive son app_id de l'URL —
 piège classique dont Tauri doit être exempt pour que les windowrules tiennent.
 
-### 10.4 Format du socket Hyprland
+**Vérifié empiriquement à la tâche 4** (`task-4-report.md`, étape 6) : binaire
+lancé directement, `hyprctl -j clients` interrogé ~4 s après, sortie brute
+filtrée sur `class`/`title` contenant `aplan` :
+
+```
+class = 'aplan-hud' | xwayland = False
+```
+
+confirmé par le bloc JSON complet de l'entrée (`"class": "aplan-hud"`,
+`"initialClass": "aplan-hud"`, `"xwayland": false`). **Résultat : `aplan-hud` est
+bien posé comme app_id Wayland natif et stable**, sans le piège Chromium
+`--app=` évoqué ci-dessus. C'est cette valeur que matchent les windowrules de la
+§6 (`match:class = ^(aplan-hud)$`), en usage réel depuis la tâche 5.
+
+### 10.4 Format du socket Hyprland — RÉSOLU
 
 Si 10.1 impose l'écoute IPC : le format d'événements de `socket2` **n'est pas une API
 stable** et bouge entre versions de Hyprland. À isoler derrière un trait dans
 `infrastructure`, jamais laissé fuiter vers le domaine.
+
+**Sans objet.** §10.1 a conclu que WebKit s'endort de lui-même sur le special
+workspace masqué (`visibilitychange` puis chute à 0 image/2 s) : le portillon
+d'animation s'appuie sur `document.visibilityState` côté frontend, sans
+abonnement au socket Hyprland. La question du format de `socket2` ne se pose
+donc pas pour ce plan.
 
 ---
 

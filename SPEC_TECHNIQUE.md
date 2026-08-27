@@ -276,6 +276,7 @@ The CLI is a third client alongside the React frontend and the existing `aggrega
 | Type Generation | @graphql-codegen/cli | latest | Generate TypeScript types from GraphQL schema |
 | Testing | vitest + @testing-library/react | latest | Unit and component tests |
 | E2E Testing | Playwright | latest | End-to-end browser tests |
+| Desktop Shell | Tauri | v2 | Transparent, undecorated HUD overlay window (`src-tauri/`); separate Cargo project, not part of the backend workspace |
 
 ### 3.3 Database
 
@@ -461,6 +462,14 @@ aggregated-plan/
 |   +-- codegen.ts                    # GraphQL codegen configuration
 |   +-- index.html
 |   |
+|   +-- src-tauri/                    # Tauri v2 shell for the desktop HUD overlay
+|   |   +-- Cargo.toml                # Separate Cargo project, outside the backend workspace
+|   |   +-- tauri.conf.json           # Window config (transparent, undecorated), CSP
+|   |   +-- build.rs
+|   |   +-- icons/
+|   |   +-- src/
+|   |       +-- main.rs               # Minimal shell; app_id comes from productName
+|   |
 |   +-- src/
 |       +-- main.tsx                  # Entry point
 |       +-- App.tsx                   # Router setup
@@ -469,6 +478,10 @@ aggregated-plan/
 |       |   +-- urql-client.ts        # urql client configuration
 |       |   +-- date-utils.ts         # Date formatting helpers
 |       |   +-- constants.ts          # Application constants
+|       |   +-- landing-route.ts      # `/` and catch-all target: `/hud` in Tauri, `/dashboard` in browser
+|       |
+|       +-- styles/
+|       |   +-- cybernord.css         # CyberNord palette as CSS custom properties (`--cn-*`)
 |       |
 |       +-- generated/                # Auto-generated (graphql-codegen)
 |       |   +-- graphql.ts            # TypeScript types + operation hooks
@@ -514,6 +527,9 @@ aggregated-plan/
 |       |   +-- TeamPage.tsx          # v2
 |       |   +-- ProjectPage.tsx       # v2
 |       |   +-- RetrospectivePage.tsx  # v2
+|       |   +-- hud/                  # Desktop HUD overlay, served only inside the Tauri window
+|       |       +-- HudPage.tsx               # Route `/hud`: boot sequence, CyberNord grid
+|       |       +-- useSurfaceVisibility.ts   # `document.visibilityState` animation gate
 |       |
 |       +-- components/               # Reusable UI components
 |           +-- layout/
@@ -2624,6 +2640,14 @@ const router = createBrowserRouter([
   },
 ])
 ```
+
+Two routes sit outside this tree, defined directly in `App.tsx`: `/hud` renders
+`HudPage` unconditionally, and a catch-all (`path="*"`) redirects to
+`landingRoute()` (`src/lib/landing-route.ts`) instead of rendering blank.
+`landingRoute()` returns `/hud` when `@tauri-apps/api/core`'s `isTauri()` is
+true, `/dashboard` otherwise — so the Tauri HUD window lands on its overlay
+while the plain browser app at `:3000` (and any mistyped path there) still
+lands on the dashboard.
 
 ### 6.4 Page Specifications
 
@@ -5473,6 +5497,14 @@ pnpm dev                # Starts on port 3000 (Vite dev server)
 ```
 
 The frontend proxies `/graphql` requests to `http://localhost:3001` via Vite's proxy configuration.
+
+Three additional `pnpm` scripts drive the desktop HUD shell (`src-tauri/`):
+`tauri` (raw Tauri CLI passthrough), `hud:dev` (`tauri dev`, live-reloading
+overlay window against the Vite dev server) and `hud:build` (`tauri build
+--no-bundle`, release binary only — no installer). On Hyprland, `SUPER+B` runs
+`scripts/aplan-hud-toggle`, which launches the built binary on first press and
+toggles the `special:aplan` workspace on every press after (see §6 of
+`docs/plans/2026-08-27-hud-overlay-tauri-design.md` for the windowrule).
 
 ### 17.2 Production Build (Local)
 
