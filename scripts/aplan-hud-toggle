@@ -12,6 +12,13 @@ set -euo pipefail
 
 WORKSPACE="aplan"
 BIN="${APLAN_HUD_BIN:-$HOME/appfactory/aggregated_plan/frontend/src-tauri/target/release/aplan-hud}"
+LOCKFILE="${APLAN_HUD_LOCKFILE:-${XDG_RUNTIME_DIR:-/tmp}/aplan-hud-toggle.lock}"
+
+# Two rapid presses (e.g. keyboard auto-repeat) can both reach the pgrep
+# check before either is visible to the other; without a lock both would
+# see "absent" and both launch. Serialize the check-then-launch.
+exec 9>"$LOCKFILE"
+flock 9
 
 if ! pgrep -x aplan-hud >/dev/null 2>&1; then
     "$BIN" &
