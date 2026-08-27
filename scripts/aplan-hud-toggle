@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Opens the aplan HUD, or hides it if already there.
+#
+# The HUD is not resident: the first invocation launches the binary, later
+# ones just toggle the special workspace. Cost at rest: zero.
+#
+# The windowrule assigns a freshly-created window to the special workspace
+# with `silent`, which places it there WITHOUT showing it (the workspace
+# starts hidden either way). So even on first launch we still need the
+# explicit toggle below, or the app would start with nothing on screen.
+set -euo pipefail
+
+WORKSPACE="aplan"
+BIN="${APLAN_HUD_BIN:-$HOME/appfactory/aggregated_plan/frontend/src-tauri/target/release/aplan-hud}"
+
+if ! pgrep -x aplan-hud >/dev/null 2>&1; then
+    "$BIN" &
+    disown
+fi
+
+hyprctl dispatch togglespecialworkspace "$WORKSPACE"
