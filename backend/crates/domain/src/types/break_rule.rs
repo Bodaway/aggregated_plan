@@ -111,9 +111,51 @@ pub struct BreakRule {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A cadence at or above the hour may be deferred; anything faster may not.
+///
+/// Below the hour, a deferral does not move a break out of the way — it drops a
+/// second due on a grid that is already ringing, and the two compound. That is what
+/// turned one hourly break into four notifications, and the routine into nine in
+/// sixty-four minutes, on its first afternoon. A `Daily` rule has a single due in
+/// the whole day and nothing to compound with, so it always keeps the button.
+const MIN_SNOOZABLE_INTERVAL_MINUTES: u32 = 60;
+
+impl BreakRule {
+    /// Whether this rule's notification may offer *Plus tard*.
+    ///
+    /// The notification is built from this predicate, and `apply_outcome` checks it
+    /// again before honouring a `snoozed` action: a button we no longer draw must
+    /// also be a button a replayed daemon action cannot press.
+    pub fn allows_snooze(&self) -> bool {
+        match self.cadence {
+            BreakCadence::Interval { minutes } => minutes >= MIN_SNOOZABLE_INTERVAL_MINUTES,
+            BreakCadence::Daily { .. } => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
+
+    fn rule(cadence: BreakCadence) -> BreakRule {
+        let now = DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default();
+        BreakRule {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            kind: BreakKind::Visual,
+            label: "Pause visuelle".into(),
+            body: "Regarde au loin.".into(),
+            cadence,
+            duration_seconds: 30,
+            priority: 1,
+            enabled: true,
+            urgency: BreakUrgency::Low,
+            created_at: now,
+            updated_at: now,
+        }
+    }
 
     #[test]
     fn kind_round_trips_through_its_storage_string() {
@@ -141,5 +183,26 @@ mod tests {
         assert_eq!(i.at_time(), None);
         assert_eq!(d.interval_minutes(), None);
         assert_eq!(d.at_time(), Some(NaiveTime::from_hms_opt(14, 0, 0).unwrap()));
+    }
+
+    /// The boundary is the whole rule, so it is asserted on both sides of itself.
+    /// One hour is the first cadence with room for a deferral: the default ten-minute
+    /// snooze leaves fifty minutes of margin before the rule's own next due, where on
+    /// a quarter-hour rule it lands five minutes short of it.
+    #[test]
+    fn snoozing_stops_exactly_at_the_hour() {
+        assert!(!rule(BreakCadence::Interval { minutes: 59 }).allows_snooze());
+        assert!(rule(BreakCadence::Interval { minutes: 60 }).allows_snooze());
+        assert!(rule(BreakCadence::Interval { minutes: 61 }).allows_snooze());
+    }
+
+    /// A daily rule has one due in the whole day: deferring it cannot compound with
+    /// anything, so it keeps the third button whatever hour it is set to.
+    #[test]
+    fn a_daily_rule_always_allows_snoozing() {
+        let early = NaiveTime::from_hms_opt(0, 5, 0).unwrap_or_default();
+        let late = NaiveTime::from_hms_opt(23, 55, 0).unwrap_or_default();
+        assert!(rule(BreakCadence::Daily { at: early }).allows_snooze());
+        assert!(rule(BreakCadence::Daily { at: late }).allows_snooze());
     }
 }

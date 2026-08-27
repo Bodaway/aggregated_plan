@@ -5992,6 +5992,15 @@ plutôt que via `SELECT ... FROM users` : aucune migration n'insère jamais dans
 piloté par une ligne produirait donc silencieusement zéro règle sur une base fraîche. Le contenu
 seedé (intitulés et corps) est en français, puisque c'est ce que l'utilisateur lit dans une popup.
 
+**Migration `020_break_visual_cadence_15min.sql`** — la pause visuelle seedée passe de 20 à
+15 minutes. 20/30/60 s'entrelacent (:20, :30, :40, :00 — 10, 10 puis 20 minutes d'écart) là où
+15/30/60 coïncident à :30 et à :00, où la fusion des collisions n'en laisse qu'une : le rythme
+perçu devient un quart d'heure régulier. C'est une migration séparée et non une retouche de 019,
+parce que 019 est déjà appliquée sur la base vive et que sqlx valide les sommes de contrôle des
+migrations — l'éditer sur place ferait échouer le démarrage. L'`UPDATE` est ciblé sur l'identifiant
+seedé `11111111-1111-4111-8111-000000000001` **et** conditionné à la valeur seedée de 20, pour
+qu'un utilisateur ayant délibérément réglé cette règle dans l'écran de réglages garde son chiffre.
+
 ### 21.2 Domain Rule — `domain/src/rules/breaks.rs`
 
 `domain` ne dépend que de chrono/serde/uuid/thiserror ; `chrono_tz` n'y entre pas. Le moteur pur
@@ -6052,7 +6061,7 @@ suppression-réunion sans avoir à compter) :
 4. **Suppression réunion** : un candidat dont l'instant tombe dans une période occupée est
    reporté à la fin de la réunion plus la grâce. Une règle qui détient déjà un report vivant n'en
    reçoit pas un second — le surplus est absorbé, sinon une réunion de deux heures armerait six
-   reports de la règle des 20 minutes et les viderait tous d'un coup à la fin. Un report calculé
+   reports de la règle des 15 minutes et les viderait tous d'un coup à la fin. Un report calculé
    dans le passé (la réunion bloquante est déjà terminée) se résout immédiatement sur ce même
    passage plutôt que d'écrire une ligne déjà en retard.
 5. **Fusion (coalescing)** : parmi ce qui reste, la priorité la plus haute se déclenche — une
@@ -6062,8 +6071,8 @@ suppression-réunion sans avoir à compter) :
 Deux propriétés en découlent sans code supplémentaire : une mise en veille ou un redémarrage qui
 fait sauter `(since, now]` de plusieurs heures ne produit jamais de rafale — les échéances
 manquées sont calculées, la plupart absorbées, une seule se déclenche ; et le « Plus tard » n'est
-pas un cas particulier — il écrit un report `now + snooze` avec `defer_reason = 'snooze'` et
-re-rentre dans le même chemin que R67, expiration comprise. `decide` ne reçoit donc aucun
+pas un cas particulier — là où il est proposé (R71), il écrit un report `now + snooze` avec
+`defer_reason = 'snooze'` et re-rentre dans le même chemin que R67, expiration comprise. `decide` ne reçoit donc aucun
 paramètre de snooze : c'est le cas d'usage qui écrit le report, `decide` ne le rencontre qu'ensuite
 comme un réveil ordinaire.
 
@@ -6089,7 +6098,7 @@ ensemble absurdes.
 |---|---|---|---|
 | `aplan.breaks.enabled` | Booléen | `true` | Interrupteur maître |
 | `aplan.breaks.meeting_grace_minutes` | Entier | `3` | Délai après la fin d'une réunion avant qu'une pause reportée se déclenche |
-| `aplan.breaks.snooze_minutes` | Entier | `10` | Horizon du bouton *Plus tard* |
+| `aplan.breaks.snooze_minutes` | Entier | `10` | Horizon du bouton *Plus tard* (règles à 60 min et plus, et règles quotidiennes — les seules à le porter) |
 | `aplan.breaks.suppressing_show_as` | Texte (CSV) | `busy,oof` | Valeurs Outlook `show_as` qui suppriment une pause |
 | `aplan.breaks.last_tick` | Texte (ISO 8601) | — | Écrit par le job ; sert de `since` au passage suivant |
 
@@ -6107,6 +6116,23 @@ le passage : `fired_at` reste `NULL` et la ligne reste `pending` sans `deferred_
 règle d'expiration de `decide` — qui ne juge que les reports — l'ignore ; c'est le balayage de fin
 de journée, à la fermeture de la dernière fenêtre, qui la clôture. Sans conséquence : une ligne
 jamais affichée est invisible pour l'utilisateur et ne compte d'aucun côté de l'adhérence.
+
+#### Boutons et report — `BreakRule::allows_snooze`
+
+Le prédicat vit dans `domain/src/types/break_rule.rs` : faux pour `Interval { minutes }` quand
+`minutes < 60`, vrai partout ailleurs, `Daily` comprise. Il est lu à **deux** endroits, et c'est
+délibéré :
+
+- `actions_for(rule)` — fonction pure — construit la liste des boutons : `taken` et `skipped`
+  toujours, `snoozed` intercalé entre les deux seulement si la règle l'autorise ;
+- `apply_outcome` re-teste le prédicat avant d'honorer une issue `snoozed` : si la règle ne
+  l'autorise pas, l'issue est enregistrée en `skipped` et **aucun** report de suivi n'est créé.
+
+Le second contrôle n'est pas redondant : un démon de notification qui rejoue une action périmée
+(ligne écrite avant la restriction, notification restée ouverte au moment de la mise à jour)
+enverrait une clé `snoozed` que plus aucune notification ne dessine, et ressusciterait le cumul
+que R71 supprime. Un bouton qu'on ne dessine plus doit aussi être un bouton qu'on ne peut plus
+presser.
 
 Quand le notifier répond `NotShown` — aucun moyen d'afficher quoi que ce soit, typiquement
 `NullNotifier` sur une API sans session graphique — le passage **n'écrit pas** `fired_at` et
@@ -6138,9 +6164,11 @@ Deux implémentations :
 
 - **`NotifySendNotifier`** (`infrastructure/src/notify/notify_send.rs`) — lance
   `notify-send --app-name=aplan --urgency=... --expire-time=... --icon=... -A taken=Pris
-  -A snoozed="Plus tard" -A skipped=Passer -- <titre> <corps>` via `tokio::process::Command`
-  — le `--` ferme l'analyse des options, sans quoi un libellé commençant par `--` serait lu
-  comme un drapeau — et lit
+  [-A snoozed="Plus tard"] -A skipped=Passer -- <titre> <corps>` via `tokio::process::Command`
+  — `-A snoozed` n'est présent que si la règle autorise le report (R71) : `command_args` ne
+  décide de rien, elle transcrit la liste `actions` que l'appelant lui a donnée. Le `--` ferme
+  l'analyse des options, sans quoi un libellé commençant par `--` serait lu comme un drapeau.
+  L'implémentation lit ensuite
   la clé de l'action choisie sur stdout (vide = `Dismissed`). La construction des arguments
   (`command_args`) et le parsing de stdout (`parse_outcome`) sont deux fonctions **pures**,
   testées directement sans bus de session ; le `spawn` lui-même n'est qu'un enrobage de trois

@@ -324,11 +324,7 @@ pub async fn run_break_tick(
         urgency: rule.urgency,
         icon: Some(icon_for(rule.kind).to_string()),
         expire_after: std::time::Duration::from_secs(rule.duration_seconds as u64 + 300),
-        actions: vec![
-            ("taken".to_string(), "Pris".to_string()),
-            ("snoozed".to_string(), "Plus tard".to_string()),
-            ("skipped".to_string(), "Passer".to_string()),
-        ],
+        actions: actions_for(rule),
     };
 
     match deps.notifier.notify(notification).await {
@@ -358,6 +354,20 @@ pub async fn run_break_tick(
 
     advance().await?;
     Ok(report)
+}
+
+/// The notification's buttons, in the order the user reads them.
+///
+/// *Plus tard* is offered only where the rule can carry it (`BreakRule::allows_snooze`):
+/// below the hour a deferral re-queues on top of a grid that is already firing, so the
+/// break is taken or it is not.
+fn actions_for(rule: &BreakRule) -> Vec<(String, String)> {
+    let mut actions = vec![("taken".to_string(), "Pris".to_string())];
+    if rule.allows_snooze() {
+        actions.push(("snoozed".to_string(), "Plus tard".to_string()));
+    }
+    actions.push(("skipped".to_string(), "Passer".to_string()));
+    actions
 }
 
 fn icon_for(kind: BreakKind) -> &'static str {
@@ -394,7 +404,9 @@ fn new_event(
 /// Translate what the user pressed into stored state.
 ///
 /// A snooze resolves the current slot and arms a fresh deferral, which is how it
-/// re-enters `decide` without `decide` knowing snoozes exist.
+/// re-enters `decide` without `decide` knowing snoozes exist — but only for a rule that
+/// still offers the button. `actions_for` stopped drawing it below the hour; a
+/// notification daemon replaying a stale action must not be able to press it anyway.
 async fn apply_outcome(
     deps: &BreakTickDeps<'_>,
     user_id: UserId,
@@ -412,6 +424,15 @@ async fn apply_outcome(
         // The caller intercepts this one before calling us, and records exactly this.
         // Kept here so the match stays exhaustive and cannot drift from that decision.
         NotificationOutcome::NotShown => BreakOutcome::Expired,
+    };
+    // Recorded as a deliberate refusal rather than dropped, because the user did answer;
+    // what they cannot do on this cadence is defer. Falling through would arm the
+    // follow-up below and resurrect the compounding the restriction exists to remove.
+    let resolved = if resolved == BreakOutcome::Snoozed && !rule.allows_snooze() {
+        tracing::debug!(rule = %rule.label, "snooze action on a rule that does not offer it: recorded as skipped");
+        BreakOutcome::Skipped
+    } else {
+        resolved
     };
     deps.events.set_outcome(event_id, resolved, Some(now)).await?;
 
@@ -857,6 +878,39 @@ mod tests {
             resolve_windows(&self.config, self.user_id, now).await
         }
 
+        /// Swap the seeded 30-minute rule for one of a chosen cadence, so a test can
+        /// pick which side of the snooze boundary (`BreakRule::allows_snooze`) it
+        /// exercises without re-wiring the four fakes.
+        fn replace_rule(&self, cadence: BreakCadence) -> BreakRuleId {
+            let id = Uuid::new_v4();
+            let now = Utc::now();
+            *self.rules.rules.lock().unwrap() = vec![BreakRule {
+                id,
+                user_id: self.user_id,
+                kind: BreakKind::Posture,
+                label: "Pause posture".into(),
+                body: "Leve-toi et bouge un peu.".into(),
+                cadence,
+                duration_seconds: 60,
+                priority: 2,
+                enabled: true,
+                urgency: BreakUrgency::Normal,
+                created_at: now,
+                updated_at: now,
+            }];
+            id
+        }
+
+        fn action_keys(&self) -> Vec<String> {
+            self.notifier
+                .sent
+                .lock()
+                .unwrap()
+                .last()
+                .map(|n| n.actions.iter().map(|(key, _)| key.clone()).collect())
+                .unwrap_or_default()
+        }
+
         async fn set_config(&self, key: &str, value: &str) {
             self.config.set(self.user_id, key, value).await.unwrap();
         }
@@ -944,17 +998,65 @@ mod tests {
 
     /// "Plus tard" resolves the current slot and arms a fresh deferral, which is how a
     /// snooze re-enters `decide` without being a special case there.
+    ///
+    /// On an hourly rule, because that is now the only kind that offers the button: a
+    /// ten-minute deferral off an hourly grid still lands fifty minutes clear of the
+    /// rule's own next due.
     #[tokio::test]
     async fn a_snooze_resolves_the_slot_and_arms_a_new_deferral() {
         let fixture = Fixture::new().await;
+        fixture.replace_rule(BreakCadence::Interval { minutes: 60 });
         *fixture.notifier.answer.lock().unwrap() = Some(NotificationOutcome::Action("snoozed".into()));
-        fixture.set_last_tick(at(8, 29)).await;
-        fixture.tick(at(8, 30)).await.unwrap();
+        fixture.set_last_tick(at(7, 59)).await;
+        fixture.tick(at(8, 0)).await.unwrap();
         let events = fixture.all_events().await;
         assert_eq!(events.len(), 2, "the snoozed slot plus its follow-up");
         let follow_up = events.iter().find(|e| e.outcome == BreakOutcome::Pending).unwrap();
         assert_eq!(follow_up.defer_reason, Some(DeferReason::Snooze));
-        assert_eq!(follow_up.deferred_until, Some(at(8, 40)));   // snooze_minutes = 10
+        assert_eq!(follow_up.deferred_until, Some(at(8, 10)));   // snooze_minutes = 10
+    }
+
+    /// A break that repeats more often than hourly is taken or skipped, nothing else:
+    /// the deferral it used to offer re-queued on top of a grid already firing, and
+    /// that compounding is what made the routine unusable on its first afternoon.
+    #[tokio::test]
+    async fn a_sub_hourly_rule_offers_no_deferral_button() {
+        let fixture = Fixture::new().await;
+        fixture.replace_rule(BreakCadence::Interval { minutes: 15 });
+        fixture.set_last_tick(at(8, 29)).await;
+        fixture.tick(at(8, 30)).await.unwrap();
+        assert_eq!(fixture.action_keys(), vec!["taken", "skipped"]);
+    }
+
+    #[tokio::test]
+    async fn an_hourly_rule_still_offers_all_three_buttons() {
+        let fixture = Fixture::new().await;
+        fixture.replace_rule(BreakCadence::Interval { minutes: 60 });
+        fixture.set_last_tick(at(7, 59)).await;
+        fixture.tick(at(8, 0)).await.unwrap();
+        assert_eq!(fixture.action_keys(), vec!["taken", "snoozed", "skipped"]);
+    }
+
+    /// The button is gone from the notification, but a notification daemon replaying a
+    /// stale action can still send its key. Honouring it would resurrect exactly the
+    /// behaviour just removed, so the answer is recorded as a deliberate skip and no
+    /// follow-up is armed.
+    #[tokio::test]
+    async fn a_stale_snooze_action_on_a_short_cadence_is_recorded_as_skipped() {
+        let fixture = Fixture::new().await;
+        fixture.replace_rule(BreakCadence::Interval { minutes: 15 });
+        *fixture.notifier.answer.lock().unwrap() = Some(NotificationOutcome::Action("snoozed".into()));
+        fixture.set_last_tick(at(8, 29)).await;
+        fixture.tick(at(8, 30)).await.unwrap();
+
+        let events = fixture.all_events().await;
+        assert_eq!(events.len(), 1, "no follow-up deferral may be created");
+        assert_eq!(events[0].outcome, BreakOutcome::Skipped);
+        assert!(events[0].responded_at.is_some());
+        assert!(
+            !events.iter().any(|e| e.defer_reason == Some(DeferReason::Snooze)),
+            "a snooze deferral must not survive the restriction"
+        );
     }
 
     /// The tick is the only writer of `last_tick`, and it must advance it even when it
