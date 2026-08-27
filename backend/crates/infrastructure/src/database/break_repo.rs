@@ -543,4 +543,28 @@ mod tests {
         assert!(counts.contains(&(r.id, BreakOutcome::Taken, 2)));
         assert!(counts.contains(&(r.id, BreakOutcome::Ignored, 1)));
     }
+
+    /// Migration 019 seeds the default routine, but nothing else verifies it: the
+    /// GraphQL tests build their schema over in-memory repository fakes and never run a
+    /// migration, so a real SQLite pool running the real migration is the only place
+    /// this seed can be checked at all.
+    #[tokio::test]
+    async fn migration_seeds_the_default_break_routine() {
+        let pool = pool().await;
+        let repo = SqliteBreakRuleRepository::new(pool);
+        let user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let rules = repo.list(user_id).await.unwrap();
+        assert_eq!(rules.len(), 4);
+        assert!(rules.iter().all(|r| r.enabled));
+        assert_eq!(
+            rules.iter().map(|r| r.cadence).collect::<Vec<_>>(),
+            vec![
+                BreakCadence::Interval { minutes: 20 },
+                BreakCadence::Interval { minutes: 30 },
+                BreakCadence::Interval { minutes: 60 },
+                BreakCadence::Daily { at: NaiveTime::from_hms_opt(14, 0, 0).unwrap() },
+            ]
+        );
+        assert_eq!(rules[3].kind, BreakKind::Strength);
+    }
 }
