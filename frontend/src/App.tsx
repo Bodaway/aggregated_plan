@@ -110,6 +110,7 @@ export function App() {
             </PageLayout>
           }
         />
+        <Route path="*" element={<Navigate to={landingRoute()} replace />} />
         </Routes>
       </SearchProvider>
     </BrowserRouter>
