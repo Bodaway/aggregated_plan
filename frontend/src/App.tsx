@@ -12,12 +12,14 @@ import { SettingsPage } from '@/pages/SettingsPage';
 import { TriagePage } from '@/pages/TriagePage';
 import { MemoryPage } from '@/pages/MemoryPage';
 import { SearchProvider } from '@/lib/search/SearchProvider';
+import { HudPage } from '@/pages/hud/HudPage';
 
 export function App() {
   return (
     <BrowserRouter>
       <SearchProvider>
         <Routes>
+          <Route path="/hud" element={<HudPage />} />
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route
           path="/dashboard"
