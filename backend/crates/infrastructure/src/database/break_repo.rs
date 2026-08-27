@@ -544,10 +544,14 @@ mod tests {
         assert!(counts.contains(&(r.id, BreakOutcome::Ignored, 1)));
     }
 
-    /// Migration 019 seeds the default routine, but nothing else verifies it: the
-    /// GraphQL tests build their schema over in-memory repository fakes and never run a
-    /// migration, so a real SQLite pool running the real migration is the only place
-    /// this seed can be checked at all.
+    /// Migration 019 seeds the default routine and 020 retunes the visual cadence, but
+    /// nothing else verifies either: the GraphQL tests build their schema over in-memory
+    /// repository fakes and never run a migration, so a real SQLite pool running the real
+    /// migrations is the only place this seed can be checked at all.
+    ///
+    /// The visual rule is asserted at 15 rather than the 20 that 019 seeded: 20/30/60
+    /// interleave (dues at :20, :30, :40, :00), where 15/30/60 coincide at :30 and :00
+    /// and give an even quarter-hour rhythm.
     #[tokio::test]
     async fn migration_seeds_the_default_break_routine() {
         let pool = pool().await;
@@ -559,12 +563,23 @@ mod tests {
         assert_eq!(
             rules.iter().map(|r| r.cadence).collect::<Vec<_>>(),
             vec![
-                BreakCadence::Interval { minutes: 20 },
+                BreakCadence::Interval { minutes: 15 },
                 BreakCadence::Interval { minutes: 30 },
                 BreakCadence::Interval { minutes: 60 },
                 BreakCadence::Daily { at: NaiveTime::from_hms_opt(14, 0, 0).unwrap() },
             ]
         );
         assert_eq!(rules[3].kind, BreakKind::Strength);
+
+        // 020 is targeted at the seeded id and must leave the rest of the row alone;
+        // it also bumps `updated_at`, which is how a retune is distinguishable from
+        // the untouched seed.
+        let visual = &rules[0];
+        assert_eq!(visual.id, Uuid::parse_str("11111111-1111-4111-8111-000000000001").unwrap());
+        assert_eq!(visual.kind, BreakKind::Visual);
+        assert_eq!(visual.duration_seconds, 30);
+        assert_eq!(visual.priority, 1);
+        assert!(visual.updated_at > visual.created_at);
+        assert!(!visual.allows_snooze(), "a quarter-hour cadence offers no deferral");
     }
 }
