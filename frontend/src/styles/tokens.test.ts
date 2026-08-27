@@ -9,18 +9,18 @@ const REQUIRED = [
   '--cn-yellow', '--cn-red', '--cn-purple', '--cn-teal', '--cn-orange', '--cn-font',
 ] as const;
 
-describe('tokens CyberNord', () => {
-  it('déclare toutes les custom properties sur :root', () => {
+describe('CyberNord tokens', () => {
+  it('declares all custom properties on :root', () => {
     for (const token of REQUIRED) {
       expect(CSS).toContain(`${token}:`);
     }
   });
 
-  it('porte un avertissement de non-édition', () => {
+  it('carries a do-not-edit warning', () => {
     expect(CSS).toMatch(/généré par apply-theme\.sh/i);
   });
 
-  it('utilise des couleurs hexadécimales à 6 chiffres', () => {
+  it('uses 6-digit hexadecimal colors', () => {
     const colors = CSS.match(/--cn-(?!font)[a-z]+:\s*([^;]+);/g) ?? [];
     expect(colors.length).toBeGreaterThanOrEqual(11);
     for (const decl of colors) {
