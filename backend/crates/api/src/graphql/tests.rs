@@ -5288,6 +5288,24 @@ async fn creating_a_rule_with_a_negative_duration_is_rejected() {
     assert!(!res.errors.is_empty());
 }
 
+/// An absurdly large `durationSeconds` passes the database's `CHECK` just as happily as
+/// a sane one, and the tick awaits its notification inline: a slipped zero would hold
+/// the scheduler on a single popup for days, with no further break and no error.
+#[tokio::test]
+async fn creating_a_rule_with_an_out_of_range_duration_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30,
+                 durationSeconds: 100000000, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
 // ─── Break stats (Task 9) ───
 
 /// Adherence counts only what the user was actually shown: absorbed slots never

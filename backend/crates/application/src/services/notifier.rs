@@ -25,6 +25,11 @@ pub enum NotificationOutcome {
     Dismissed,
     /// Never answered within `expire_after`.
     Expired,
+    /// There was no way to display this at all — no screen, no session bus. Distinct
+    /// from `Dismissed` on purpose: a slot the user was never shown must count on
+    /// neither side of the adherence statistic, and calling it a dismissal would file
+    /// it as `ignored`, which does count.
+    NotShown,
 }
 
 /// Delivers a notification and waits for what the user does about it.
@@ -36,16 +41,17 @@ pub trait Notifier: Send + Sync {
     async fn notify(&self, n: Notification) -> Result<NotificationOutcome, AppError>;
 }
 
-/// Records nothing, shows nothing, always reports a dismissal.
+/// Records nothing, shows nothing, always reports `NotShown`.
 ///
-/// Used in tests, and selected at wiring time when no session bus is reachable: a
-/// headless API must still keep its books, and must not spam the log every 30 seconds
-/// with a failure it cannot fix.
+/// Selected at wiring time when no session bus is reachable: a headless API must still
+/// keep its books, and must not spam the log every 30 seconds with a failure it cannot
+/// fix. It answers `NotShown` rather than `Dismissed` so a headless run cannot invent
+/// user behaviour — a break nobody could see is not a break somebody ignored.
 pub struct NullNotifier;
 
 #[async_trait]
 impl Notifier for NullNotifier {
     async fn notify(&self, _n: Notification) -> Result<NotificationOutcome, AppError> {
-        Ok(NotificationOutcome::Dismissed)
+        Ok(NotificationOutcome::NotShown)
     }
 }

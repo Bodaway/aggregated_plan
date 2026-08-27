@@ -2,6 +2,11 @@ use async_graphql::{Enum, InputObject, SimpleObject, ID};
 
 use domain::types::{BreakCadence, BreakKind, BreakRule, BreakUrgency};
 
+/// Longest break a rule may ask for, in seconds. One hour: past any break worth the
+/// name, and short enough that a mistyped value cannot park the break scheduler — the
+/// tick waits on the notification inline, for `duration_seconds + 300`.
+pub const MAX_DURATION_SECONDS: i32 = 3600;
+
 /// GraphQL enum mirroring `domain::types::BreakKind`. Drives which icon and seeded
 /// copy the notification daemon and the settings screen render.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
@@ -178,17 +183,24 @@ impl BreakRuleInput {
         }
     }
 
-    /// Reject a non-positive duration before it ever reaches an `as u32` cast: a
-    /// negative `i32` wraps to a huge unsigned value that the database's
-    /// `CHECK (duration_seconds > 0)` cannot see, and `run_break_tick` would then
-    /// compute an `expire_after` that never fires — a notification, and its
-    /// `notify-send` child process, that never expire. Shared by both mutations so
-    /// neither can bypass it.
+    /// Reject a duration outside `1..=MAX_DURATION_SECONDS` before it ever reaches an
+    /// `as u32` cast: a negative `i32` wraps to a huge unsigned value that the
+    /// database's `CHECK (duration_seconds > 0)` cannot see, and `run_break_tick` would
+    /// then compute an `expire_after` that never fires — a notification, and its
+    /// `notify-send` child process, that never expire.
+    ///
+    /// The upper bound closes the same hole from the other side, and the database has
+    /// no opinion on it either: the tick awaits `notify` inline, so a slipped zero on
+    /// an otherwise valid duration would park the scheduler on one notification for
+    /// days — no further breaks, no error. An hour is far past any plausible break and
+    /// well short of that. Shared by both mutations so neither can bypass it.
     pub fn validated_duration_seconds(&self) -> Result<u32, String> {
-        if self.duration_seconds > 0 {
-            Ok(self.duration_seconds as u32)
-        } else {
-            Err("durationSeconds doit être positif".into())
+        match self.duration_seconds {
+            d if d <= 0 => Err("durationSeconds doit être positif".into()),
+            d if d > MAX_DURATION_SECONDS => Err(format!(
+                "durationSeconds ne peut pas dépasser {MAX_DURATION_SECONDS} secondes"
+            )),
+            d => Ok(d as u32),
         }
     }
 }

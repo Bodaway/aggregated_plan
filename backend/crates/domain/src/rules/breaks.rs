@@ -10,8 +10,12 @@ pub struct Window {
 }
 
 impl Window {
+    /// Both bounds included. The start has to be: a `Daily` rule set to 13:00 is a rule
+    /// about the instant the afternoon opens, and an exclusive start would make it —
+    /// and only it — silently unfireable. Step 1 of `decide` reads it the same way, so a
+    /// tick landing exactly on 08:00 is inside the working day rather than after it.
     fn contains(&self, t: DateTime<Utc>) -> bool {
-        self.start < t && t <= self.end
+        self.start <= t && t <= self.end
     }
 }
 
@@ -443,6 +447,42 @@ mod tests {
             grace: Duration::minutes(3),
         });
         assert_eq!(tick.fire.expect("fires").candidate.rule_id(), rule.id);
+    }
+
+    /// A daily rule set to the exact minute a window opens is the ordinary way to ask
+    /// for "first thing this morning" or "when I get back from lunch". An exclusive
+    /// window start would drop it, and only it, without a trace.
+    #[test]
+    fn a_daily_due_at_the_window_start_fires() {
+        let rule = BreakRule {
+            cadence: BreakCadence::Daily {
+                at: chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            },
+            ..interval_rule(0, 9)
+        };
+        let rules = vec![rule.clone()];
+        let w = morning();                       // 08:00 → 12:00
+        let daily = vec![(rule.id, at(8, 0))];
+        let tick = decide(BreakTickInput {
+            now: at(8, 1),
+            since: at(7, 59),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &daily,
+            busy: &[],
+            open: &[],
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.fire.expect("fires").candidate.rule_id(), rule.id);
+    }
+
+    /// The same inclusiveness on step 1: a tick landing exactly on the window's opening
+    /// instant is inside the working day, not outside every window.
+    #[test]
+    fn a_tick_at_the_window_start_is_inside_the_working_day() {
+        let rules = vec![interval_rule(20, 1)];
+        let tick = decide(input(at(8, 0), at(7, 55), &morning(), &rules));
+        assert!(tick.expire.is_empty(), "nothing is cleaned up at the opening instant");
     }
 
     #[test]

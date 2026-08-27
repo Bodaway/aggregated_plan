@@ -6031,6 +6031,11 @@ pub fn decide(input: BreakTickInput<'_>) -> BreakTick
 fuseau, les jours ouvrés et les bornes de fenêtre — exactement le découpage que
 `use_cases/worklog.rs` applique déjà pour la projection en demi-journées.
 
+`Window::contains` est **inclusif aux deux bornes** : une règle quotidienne réglée sur 13:00, soit
+l'instant même où la fenêtre de l'après-midi s'ouvre, est une demande parfaitement ordinaire, et
+une borne de début exclusive l'aurait rendue — elle seule — indéclenchable sans le dire. L'étape 1
+lit la même règle : un passage tombant pile à 08:00 est dans la journée de travail, pas après.
+
 **Ordre de décision, tel qu'implémenté** (l'étape de purge des reports est faite avant la
 constitution des candidats, pour que « un report vivant par règle » reste vrai à l'étape de
 suppression-réunion sans avoir à compter) :
@@ -6066,7 +6071,14 @@ comme un réveil ordinaire.
 
 `resolve_windows` et `resolve_daily_dues` sont l'endroit où vit le fuseau : elles lisent
 `aplan.timezone` via `crate::time::{resolve_tz, local_to_utc, to_local}` (adossé à `chrono_tz`) et
-ne rendent que des instants UTC à `decide`. Les bornes de fenêtre par défaut (8/12/13/17) sont
+ne rendent que des instants UTC à `decide`. `general.working_days` se lit dans la
+**graphie du système** — les numéros ISO, lundi = 1 — celle qu'écrit `SettingsPage` et que lit
+`use_cases/dashboard.rs` ; les noms de jours (`mon`, `lundi`, …) restent acceptés comme alias pour
+une configuration éditée à la main, mais rien dans le cockpit n'en produit. Une liste de fenêtres
+vide n'est jamais silencieuse : une valeur qu'aucune graphie ne permet de lire, ou des bornes
+horaires qui ne produisent aucune fenêtre un jour ouvré, sont journalisées en `warn` avec la valeur
+brute — sans quoi « aucune fenêtre » (routine morte) ressemble trait pour trait à « rien à faire »
+(passage réussi). Les bornes de fenêtre par défaut (8/12/13/17) sont
 volontairement identiques à celles de `use_cases/timesheet.rs` — un moteur de pauses et une feuille
 de temps en désaccord sur l'heure de début de journée seraient chacun individuellement corrects et
 ensemble absurdes.
@@ -6091,8 +6103,16 @@ met à jour `deferred_until`/`defer_reason`) ; puis, s'il y a un `fire`, constru
 `aplan.breaks.last_tick`. Le filigrane avance **quoi qu'il arrive**, y compris quand
 l'interrupteur maître est désactivé — sans quoi une réactivation après une semaine rejouerait
 une semaine d'échéances fictives en un seul passage. Un échec de livraison ne fait jamais échouer
-le passage : `fired_at` reste `NULL` et la règle d'expiration nettoie la ligne à la prochaine
-échéance naturelle — le même mécanisme de nettoyage qu'un report de réunion, pas un second.
+le passage : `fired_at` reste `NULL` et la ligne reste `pending` sans `deferred_until`, donc la
+règle d'expiration de `decide` — qui ne juge que les reports — l'ignore ; c'est le balayage de fin
+de journée, à la fermeture de la dernière fenêtre, qui la clôture. Sans conséquence : une ligne
+jamais affichée est invisible pour l'utilisateur et ne compte d'aucun côté de l'adhérence.
+
+Quand le notifier répond `NotShown` — aucun moyen d'afficher quoi que ce soit, typiquement
+`NullNotifier` sur une API sans session graphique — le passage **n'écrit pas** `fired_at` et
+clôture la ligne en `expired`, la seule issue exclue des deux côtés de l'adhérence (R70). La
+compter comme `ignored` ferait dire à la statistique que l'utilisateur ignore des pauses qu'il n'a
+jamais pu voir.
 
 ### 21.4 Notifier — `application/src/services/notifier.rs`
 
@@ -6106,7 +6126,7 @@ pub struct Notification {
     pub actions: Vec<(String, String)>,   // (clé, libellé)
 }
 
-pub enum NotificationOutcome { Action(String), Dismissed, Expired }
+pub enum NotificationOutcome { Action(String), Dismissed, Expired, NotShown }
 
 #[async_trait]
 pub trait Notifier: Send + Sync {
@@ -6118,16 +6138,19 @@ Deux implémentations :
 
 - **`NotifySendNotifier`** (`infrastructure/src/notify/notify_send.rs`) — lance
   `notify-send --app-name=aplan --urgency=... --expire-time=... --icon=... -A taken=Pris
-  -A snoozed="Plus tard" -A skipped=Passer <titre> <corps>` via `tokio::process::Command`, et lit
+  -A snoozed="Plus tard" -A skipped=Passer -- <titre> <corps>` via `tokio::process::Command`
+  — le `--` ferme l'analyse des options, sans quoi un libellé commençant par `--` serait lu
+  comme un drapeau — et lit
   la clé de l'action choisie sur stdout (vide = `Dismissed`). La construction des arguments
   (`command_args`) et le parsing de stdout (`parse_outcome`) sont deux fonctions **pures**,
   testées directement sans bus de session ; le `spawn` lui-même n'est qu'un enrobage de trois
   lignes, non testé. Parce que `--action` met `notify-send` en mode `--wait`, l'appel reste
   ouvert jusqu'à ce que l'utilisateur réponde ou que `expire_after` s'écoule.
 - **`NullNotifier`** (`application/src/services/notifier.rs`) — n'affiche rien, ne consigne rien
-  de plus, répond toujours `Dismissed`. Utilisé dans les tests, et choisi au démarrage quand
-  aucun bus de session n'est joignable : une API sans session graphique doit garder ses écritures
-  sans échouer toutes les 30 secondes sur un bus absent.
+  de plus, répond toujours `NotShown`. Choisi au démarrage quand aucun bus de session n'est
+  joignable : une API sans session graphique doit garder ses écritures sans échouer toutes les
+  30 secondes sur un bus absent. `NotShown` et non `Dismissed`, parce qu'un `Dismissed` serait
+  enregistré en `ignored` et fabriquerait un comportement utilisateur qui n'a pas eu lieu.
 
 La sélection se fait **une seule fois, au démarrage**, dans `api/src/main.rs` : si la variable
 d'environnement `DBUS_SESSION_BUS_ADDRESS` est présente, `NotifySendNotifier` ; sinon
@@ -6214,6 +6237,13 @@ extend type Mutation {
 
 Les scalaires de configuration (§21.3) passent par la mutation `updateConfiguration` **existante**
 — `SettingsPage` a déjà `CONFIG_KEYS` et son bouton de sauvegarde, ce chemin n'est pas dupliqué.
+
+`durationSeconds` est validé **dans les deux sens** avant tout `as u32`, par
+`BreakRuleInput::validated_duration_seconds` que partagent les deux mutations : `1..=3600`
+secondes. En bas, un entier négatif casté vers `u32` passerait le `CHECK (duration_seconds > 0)`
+de la base ; en haut, le passage attend la notification **en ligne** (`expire_after` = durée + 5
+min), donc une valeur absurde immobiliserait l'ordonnanceur de pauses pendant des jours, sans
+erreur. Le formulaire applique la même borne côté React, pour l'apprendre avant l'aller-retour.
 
 #### Frontend
 

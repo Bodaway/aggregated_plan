@@ -20,6 +20,10 @@ pub fn command_args(n: &Notification) -> Vec<String> {
     for (key, label) in &n.actions {
         args.push(format!("--action={key}={label}"));
     }
+    // End of options: a label the user typed starting with `--` is a title, never a
+    // flag. Without this, "--force" as a rule's label makes `notify-send` fail, or
+    // worse, obey.
+    args.push("--".to_string());
     args.push(n.title.clone());
     args.push(n.body.clone());
     args
@@ -100,9 +104,23 @@ mod tests {
         assert!(args.contains(&"--action=taken=Pris".to_string()));
         assert!(args.contains(&"--action=snoozed=Plus tard".to_string()));
         assert!(args.contains(&"--action=skipped=Passer".to_string()));
-        // Title and body are positional and must come last, in that order.
+        // Title and body are positional and must come last, in that order, behind the
+        // `--` that stops option parsing.
+        assert_eq!(args[args.len() - 3], "--");
         assert_eq!(args[args.len() - 2], "Pause visuelle");
         assert_eq!(args[args.len() - 1], "Regarde au loin 20 s.");
+    }
+
+    /// A label that looks like an option is a label. `--` is what makes that true.
+    #[test]
+    fn an_option_looking_label_stays_positional() {
+        let mut n = sample();
+        n.title = "--urgency=critical".into();
+        let args = command_args(&n);
+        let separator = args.iter().position(|a| a == "--").expect("`--` is present");
+        assert_eq!(args[separator + 1], "--urgency=critical");
+        // Still exactly one real urgency flag: the label did not become a second one.
+        assert_eq!(args[..separator].iter().filter(|a| a.starts_with("--urgency=")).count(), 1);
     }
 
     #[test]

@@ -56,8 +56,26 @@ async fn config_i64(
         .unwrap_or(default))
 }
 
+/// One entry of `general.working_days`.
+///
+/// The system's own spelling is the ISO number — Monday = 1 — written by the settings
+/// screen and read by `use_cases/dashboard.rs`. Names are accepted as a tolerated alias
+/// so a hand-edited configuration still works; nothing in the cockpit writes them.
 fn parse_weekday(s: &str) -> Option<Weekday> {
-    match s.trim().to_lowercase().as_str() {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<u8>() {
+        return match n {
+            1 => Some(Weekday::Mon),
+            2 => Some(Weekday::Tue),
+            3 => Some(Weekday::Wed),
+            4 => Some(Weekday::Thu),
+            5 => Some(Weekday::Fri),
+            6 => Some(Weekday::Sat),
+            7 => Some(Weekday::Sun),
+            _ => None,
+        };
+    }
+    match s.to_lowercase().as_str() {
         "mon" | "monday" | "lundi" => Some(Weekday::Mon),
         "tue" | "tuesday" | "mardi" => Some(Weekday::Tue),
         "wed" | "wednesday" | "mercredi" => Some(Weekday::Wed),
@@ -86,9 +104,20 @@ pub async fn resolve_windows(
     let days = config
         .get(user_id, "general.working_days")
         .await?
-        .unwrap_or_else(|| "mon,tue,wed,thu,fri".to_string());
+        .unwrap_or_else(|| "1,2,3,4,5".to_string());
     let working: Vec<Weekday> = days.split(',').filter_map(parse_weekday).collect();
+    if working.is_empty() {
+        // No window means no break can ever fire, and a tick with no window reports
+        // success — which is exactly how a configuration this engine could not read
+        // once passed for a quiet routine. Say the raw value out loud.
+        tracing::warn!(
+            configured = %days,
+            "general.working_days yielded no recognised day: the break routine cannot fire"
+        );
+        return Ok(Vec::new());
+    }
     if !working.contains(&today.weekday()) {
+        tracing::debug!(configured = %days, "not a working day: no break windows today");
         return Ok(Vec::new());
     }
 
@@ -113,6 +142,14 @@ pub async fn resolve_windows(
             end: local_to_utc(tz, today.and_time(end_t)),
         });
     }
+    if windows.is_empty() {
+        // Today is a working day and still nothing came out: the hour keys are the
+        // culprit. Same reason as above — an empty window list must never be quiet.
+        tracing::warn!(
+            configured = %days,
+            "workday hours yielded no break window on a working day"
+        );
+    }
     Ok(windows)
 }
 
@@ -134,9 +171,10 @@ async fn resolve_daily_dues(
 /// One pass of the break engine.
 ///
 /// Never fails on a delivery problem: a notification that could not be shown leaves its
-/// row unfired, and the engine's own expiry rule clears it at the next natural due. That
-/// is deliberately the same path a meeting-deferred break takes — one cleanup mechanism,
-/// not two.
+/// row unfired and pending. Such a row carries no `deferred_until`, so the expiry rule
+/// in `decide` steps over it — it is the end-of-day sweep, when the last window closes,
+/// that clears it. Harmless: an unfired pending row is invisible to the user and counts
+/// on neither side of adherence until then.
 pub async fn run_break_tick(
     deps: BreakTickDeps<'_>,
     user_id: UserId,
@@ -274,7 +312,6 @@ pub async fn run_break_tick(
             id
         }
     };
-    report.fired = Some(event_id);
 
     let Some(rule) = rules.iter().find(|r| r.id == fire.candidate.rule_id()) else {
         advance().await?;
@@ -295,8 +332,18 @@ pub async fn run_break_tick(
     };
 
     match deps.notifier.notify(notification).await {
+        Ok(NotificationOutcome::NotShown) => {
+            // Nothing reached a screen, so nothing fired: `fired_at` stays NULL and the
+            // slot closes as `expired`, the one outcome excluded from both sides of
+            // adherence. Calling it a dismissal — and therefore `ignored` — would let a
+            // headless API report a user who ignores breaks they were never shown.
+            deps.events.set_outcome(event_id, BreakOutcome::Expired, None).await?;
+            report.expired += 1;
+            tracing::info!(rule = %rule.label, "break not shown: no display available");
+        }
         Ok(outcome) => {
             deps.events.mark_fired(event_id, now).await?;
+            report.fired = Some(event_id);
             apply_outcome(&deps, user_id, event_id, rule, outcome, now).await?;
         }
         Err(e) => {
@@ -362,6 +409,9 @@ async fn apply_outcome(
         }
         NotificationOutcome::Dismissed => BreakOutcome::Ignored,
         NotificationOutcome::Expired => BreakOutcome::Ignored,
+        // The caller intercepts this one before calling us, and records exactly this.
+        // Kept here so the match stays exhaustive and cannot drift from that decision.
+        NotificationOutcome::NotShown => BreakOutcome::Expired,
     };
     deps.events.set_outcome(event_id, resolved, Some(now)).await?;
 
@@ -392,6 +442,7 @@ async fn apply_outcome(
 mod tests {
     use super::*;
     use crate::errors::RepositoryError;
+    use crate::services::NullNotifier;
     use chrono::{NaiveDate, TimeZone};
     use std::sync::Mutex;
 
@@ -735,7 +786,11 @@ mod tests {
             let config = InMemoryConfigRepository::default();
             for (key, value) in [
                 ("aplan.timezone", "Europe/Paris"),
-                ("general.working_days", "mon,tue,wed,thu,fri"),
+                // ISO numbers, Monday = 1 — what the settings screen writes and what
+                // the live database holds. The fixture used to seed day names, which
+                // no part of the cockpit produces, and that is precisely how a
+                // configuration the engine could not read went unnoticed.
+                ("general.working_days", "1,2,3,4,5"),
                 ("workday.morning_start_hour", "8"),
                 ("workday.morning_end_hour", "12"),
                 ("workday.afternoon_start_hour", "13"),
@@ -779,12 +834,18 @@ mod tests {
         }
 
         fn deps(&self) -> BreakTickDeps<'_> {
+            self.deps_with(&self.notifier)
+        }
+
+        /// Same wiring with someone else's notifier, so a test can run the tick against
+        /// the real `NullNotifier` rather than a fake that imitates it.
+        fn deps_with<'a>(&'a self, notifier: &'a dyn Notifier) -> BreakTickDeps<'a> {
             BreakTickDeps {
                 rules: &self.rules,
                 events: &self.events,
                 meetings: &self.meetings,
                 config: &self.config,
-                notifier: &self.notifier,
+                notifier,
             }
         }
 
@@ -979,13 +1040,66 @@ mod tests {
         assert_eq!(windows[1].end, at(15, 0));
     }
 
+    /// The number form is the real one: it is what the settings screen writes and what
+    /// the database holds. Read it wrong and there are no windows, nothing fires, and
+    /// the tick still reports success — the whole routine dead and looking healthy.
+    #[tokio::test]
+    async fn iso_numbered_working_days_yield_windows_on_a_working_day() {
+        let fixture = Fixture::new().await;
+        // 2026-08-27 is a Thursday: ISO 4.
+        fixture.set_config("general.working_days", "1,2,4").await;
+        assert_eq!(fixture.windows(at(10, 0)).await.unwrap().len(), 2);
+
+        fixture.set_config("general.working_days", "1,2,5").await;
+        assert!(fixture.windows(at(10, 0)).await.unwrap().is_empty());
+    }
+
+    /// Day names are a tolerated alias for a hand-edited configuration. Nothing in the
+    /// cockpit writes them, so this is the compatibility path, not the main one.
+    #[tokio::test]
+    async fn day_names_are_accepted_as_an_alias() {
+        let fixture = Fixture::new().await;
+        fixture.set_config("general.working_days", "mon,tue,wed,thu,fri").await;
+        assert_eq!(fixture.windows(at(10, 0)).await.unwrap().len(), 2);
+    }
+
     /// A day not in `general.working_days` has no windows, so nothing can fire.
     #[tokio::test]
     async fn a_non_working_day_yields_no_windows() {
         let fixture = Fixture::new().await;
-        fixture.set_config("general.working_days", "mon,tue,wed,thu").await;
-        // 2026-08-27 is a Thursday; make it a Friday-only config instead.
-        fixture.set_config("general.working_days", "fri").await;
+        // 2026-08-27 is a Thursday (4); make it a Friday-only config instead.
+        fixture.set_config("general.working_days", "5").await;
         assert!(fixture.windows(at(10, 0)).await.unwrap().is_empty());
+    }
+
+    /// A value in no recognised spelling parses to nothing, which is indistinguishable
+    /// from a day off — except that it is never right. It yields no windows, and the
+    /// `warn` beside this branch is what keeps that from passing for a quiet routine.
+    #[tokio::test]
+    async fn an_unreadable_working_days_value_yields_no_windows() {
+        let fixture = Fixture::new().await;
+        fixture.set_config("general.working_days", "lun;mar;jeu").await;
+        assert!(fixture.windows(at(10, 0)).await.unwrap().is_empty());
+    }
+
+    /// A headless run must not invent user behaviour. `NullNotifier` shows nothing, so
+    /// the slot was never seen: it stays unfired and closes as `expired`, the one
+    /// outcome counted on neither side of adherence. `ignored` would count.
+    #[tokio::test]
+    async fn a_break_that_could_not_be_shown_is_expired_not_ignored() {
+        let fixture = Fixture::new().await;
+        fixture.set_last_tick(at(8, 29)).await;
+
+        let report = run_break_tick(fixture.deps_with(&NullNotifier), fixture.user_id, at(8, 30))
+            .await
+            .unwrap();
+
+        assert!(report.fired.is_none(), "nothing reached a screen, so nothing fired");
+        assert_eq!(report.expired, 1);
+        let events = fixture.all_events().await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].fired_at.is_none(), "fired_at must stay NULL");
+        assert_eq!(events[0].outcome, BreakOutcome::Expired);
+        assert!(!events[0].outcome.counts_towards_adherence());
     }
 }
