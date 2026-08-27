@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Le special workspace masque-t-il vraiment WebKit, de son point de vue ?"""
+"""Does the special workspace really hide WebKit, from its own point of view?"""
 import json
 import os
 import re
@@ -104,7 +104,7 @@ if still_showing:
         proc,
     )
 
-print("--- special workspace MASQUE (verifie via clients+monitors), 8 s ---")
+print("--- special workspace HIDDEN (verified via clients+monitors), 8 s ---")
 time.sleep(8)
 
 kill_proc(proc)
@@ -117,7 +117,7 @@ visible = frames[:4] or [0]
 hidden = frames[-3:] or [0]
 avg_v = sum(visible) / len(visible)
 avg_h = sum(hidden) / len(hidden)
-print(f"evenements visibilitychange : {events or 'AUCUN'}")
-print(f"images par tranche de 2 s   : {frames}")
-print(f"moyenne visible={avg_v:.0f}  moyenne masque={avg_h:.0f}")
-print("VERDICT :", "WebKit S'ENDORT" if avg_h < avg_v * 0.25 else "WebKit CONTINUE A RENDRE")
+print(f"visibilitychange events : {events or 'NONE'}")
+print(f"frames per 2 s slice    : {frames}")
+print(f"avg visible={avg_v:.0f}  avg hidden={avg_h:.0f}")
+print("VERDICT:", "WebKit SLEEPS" if avg_h < avg_v * 0.25 else "WebKit KEEPS RENDERING")

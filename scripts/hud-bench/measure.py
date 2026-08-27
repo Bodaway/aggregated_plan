@@ -95,11 +95,16 @@ def main():
         time.sleep(a.settle)
         pids = descendants(proc.pid)
         visible = window_visible(proc.pid)
-        if proc.poll() is not None or len(pids) <= 1 or visible is False:
+        if proc.poll() is not None or len(pids) <= 1 or visible is not True:
             # Either the tree collapsed to just the launcher (or the launcher
-            # itself exited), or Hyprland confirms the window never mapped.
-            # Either way the surface never rendered, so a CPU figure here
-            # would describe an idle process, not the variant under test.
+            # itself exited), or Hyprland confirms the window never mapped, or
+            # Hyprland itself couldn't be asked (`visible is None`). Treating
+            # "unconfirmed" the same as "confirmed absent" matters: `is False`
+            # would silently disarm this guard exactly when `hyprctl` breaks,
+            # letting an unverified surface through as if it had been checked.
+            # Either way the surface is not confirmed on screen, so a CPU
+            # figure here would describe an idle process, not the variant
+            # under test.
             sys.exit(
                 f"surface not confirmed on screen after settle ({a.settle}s): "
                 f"alive={proc.poll() is None} pids={pids} "
@@ -109,7 +114,10 @@ def main():
         time.sleep(a.phase)
         t1, c1 = time.monotonic(), cpu_ticks(pids)
         pids = descendants(proc.pid)
-        if proc.poll() is not None or window_visible(proc.pid) is False:
+        if proc.poll() is not None or window_visible(proc.pid) is not True:
+            # Same reasoning as the settle check above: a `hyprctl` failure
+            # here (None) must abort too, not be waved through as if the
+            # window had been reconfirmed visible.
             sys.exit(
                 "process tree died or window disappeared during the measured "
                 "phase — figures above would describe a crash, not the "

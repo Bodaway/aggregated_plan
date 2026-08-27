@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hote GTK4 + WebKitGTK — banc de mesure du HUD."""
+"""GTK4 + WebKitGTK host -- HUD measurement bench."""
 import sys
 
 import gi
