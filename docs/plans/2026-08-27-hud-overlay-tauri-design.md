@@ -170,8 +170,8 @@ Contraint par les mesures, pas par le goût.
 - `box-shadow` pour la lueur, `filter: drop-shadow / hue-rotate`
 - filtres SVG : `feTurbulence` et `feDisplacementMap` pour le glitch
 - `<canvas>` pour sparklines et jauges
-- **`backdrop-filter`** — mesuré (§10.2) : surcoût CPU moyen **×1,17** par rapport
-  au même bloc sans filtre (bornes des trois essais ×1,08–×1,25), largement sous
+- **`backdrop-filter`** — mesuré (§10.2) : surcoût CPU moyen **×1,09** par rapport
+  au même bloc sans filtre (bornes des trois essais ×1,02–×1,14), largement sous
   le seuil de bascule (×2). Reste soumis aux mêmes règles que les autres
   effets : par bloc, jamais en passe plein écran.
 
@@ -318,23 +318,23 @@ fragment d'URL — seule différence entre les deux modes. Hôte :
 `scripts/hud-bench/webkit_host.py` (tâche 1) en plein écran, fenêtre bien visible
 à l'écran (aucune manœuvre de special workspace ici, contrairement à 10.1).
 
-Le premier essai donnait déjà un ratio confortablement sous le seuil (×1,25 contre
-×2), mais un seul échantillon reste un maigre argument face au bruit CPU d'un
-poste de travail en usage réel ; deux essais supplémentaires ont donc été pris
-pour vérifier que le résultat tient :
+Un seul échantillon est un maigre argument face au bruit CPU d'un poste de
+travail en usage réel : trois essais ont été pris de chaque côté. La sortie
+brute des six invocations (JSON multi-lignes tel qu'imprimé par
+`measure.py`, capturée via `tee` au moment de l'exécution, pas retranscrite à la
+main) est commitée telle quelle dans
+`scripts/hud-bench/backdrop-filter-runs.txt` — c'est la pièce de référence ;
+seul un résumé en est donné ici :
 
-```
-essai 1 — sans-blur : {"label": "sans-blur", "procs": 8, "cpu_pct": 15.15, "pss_mb": 249.6}
-essai 1 — avec-blur : {"label": "avec-blur", "procs": 8, "cpu_pct": 18.95, "pss_mb": 260.2}
-essai 2 — sans-blur : {"label": "sans-blur-2", "procs": 8, "cpu_pct": 18.2, "pss_mb": 249.7}
-essai 2 — avec-blur : {"label": "avec-blur-2", "procs": 8, "cpu_pct": 21.9, "pss_mb": 251.2}
-essai 3 — sans-blur : {"label": "sans-blur-3", "procs": 8, "cpu_pct": 20.6, "pss_mb": 250.2}
-essai 3 — avec-blur : {"label": "avec-blur-3", "procs": 8, "cpu_pct": 22.15, "pss_mb": 251.2}
-```
+| essai | sans-blur `cpu_pct` | avec-blur `cpu_pct` | ratio |
+|---|---|---|---|
+| 1 | 17,35 % | 19,25 % | ×1,110 |
+| 2 | 19,55 % | 20,0 % | ×1,023 |
+| 3 | 17,05 % | 19,4 % | ×1,138 |
 
-Ratio `avec-blur / sans-blur` par essai : ×1,251, ×1,203, ×1,075 — étalement
-×1,08–×1,25, aucun ne s'approche du seuil de bascule ×2. Moyenne des `cpu_pct` :
-sans-blur 17,98 %, avec-blur 21,0 %, soit un ratio des moyennes de **×1,168**. Le
+Ratio `avec-blur / sans-blur` par essai : ×1,110, ×1,023, ×1,138 — étalement
+×1,02–×1,14, aucun ne s'approche du seuil de bascule ×2. Moyenne des `cpu_pct` :
+sans-blur 17,98 %, avec-blur 19,55 %, soit un ratio des moyennes de **×1,087**. Le
 PSS ne bouge quasiment pas (~250 Mo dans les six essais) : la mémoire n'est pas
 discriminante ici, seul le CPU l'est. Aucune fenêtre perdue ni processus mort
 pendant les six mesures (contrôle `hyprctl` systématiquement positif).
@@ -342,7 +342,7 @@ pendant les six mesures (contrôle `hyprctl` systématiquement positif).
 **Verdict : le seuil de bascule (×2) n'est pas atteint, sur aucun des trois essais
 ni sur leur moyenne.** Règle du brief appliquée telle quelle : `backdrop-filter`
 quitte la liste « interdit » et rejoint « autorisé » (§7), avec le surcoût mesuré
-noté à côté (×1,17 en moyenne, jusqu'à ×1,25 au pire essai). Il reste soumis aux
+noté à côté (×1,09 en moyenne, jusqu'à ×1,14 au pire essai). Il reste soumis aux
 mêmes règles que les autres effets — par bloc, jamais en passe plein écran — la
 mesure ci-dessus porte sur un seul bloc animé, pas sur une passe globale.
 

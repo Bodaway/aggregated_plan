@@ -1,0 +1,60 @@
+$ python3 scripts/hud-bench/measure.py --label sans-blur -- \
+  python3 scripts/hud-bench/webkit_host.py \
+  "file://$PWD/scripts/hud-bench/blur_probe.html" --fullscreen
+{
+  "label": "sans-blur",
+  "procs": 8,
+  "cpu_pct": 17.35,
+  "pss_mb": 250.5
+}
+
+$ python3 scripts/hud-bench/measure.py --label avec-blur -- \
+  python3 scripts/hud-bench/webkit_host.py \
+  "file://$PWD/scripts/hud-bench/blur_probe.html#blur" --fullscreen
+{
+  "label": "avec-blur",
+  "procs": 8,
+  "cpu_pct": 19.25,
+  "pss_mb": 251.6
+}
+
+$ python3 scripts/hud-bench/measure.py --label sans-blur-2 -- \
+  python3 scripts/hud-bench/webkit_host.py \
+  "file://$PWD/scripts/hud-bench/blur_probe.html" --fullscreen
+{
+  "label": "sans-blur-2",
+  "procs": 8,
+  "cpu_pct": 19.55,
+  "pss_mb": 250.0
+}
+
+$ python3 scripts/hud-bench/measure.py --label avec-blur-2 -- \
+  python3 scripts/hud-bench/webkit_host.py \
+  "file://$PWD/scripts/hud-bench/blur_probe.html#blur" --fullscreen
+{
+  "label": "avec-blur-2",
+  "procs": 8,
+  "cpu_pct": 20.0,
+  "pss_mb": 251.6
+}
+
+$ python3 scripts/hud-bench/measure.py --label sans-blur-3 -- \
+  python3 scripts/hud-bench/webkit_host.py \
+  "file://$PWD/scripts/hud-bench/blur_probe.html" --fullscreen
+{
+  "label": "sans-blur-3",
+  "procs": 8,
+  "cpu_pct": 17.05,
+  "pss_mb": 250.0
+}
+
+$ python3 scripts/hud-bench/measure.py --label avec-blur-3 -- \
+  python3 scripts/hud-bench/webkit_host.py \
+  "file://$PWD/scripts/hud-bench/blur_probe.html#blur" --fullscreen
+{
+  "label": "avec-blur-3",
+  "procs": 8,
+  "cpu_pct": 19.4,
+  "pss_mb": 251.3
+}
+
