@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "aplan-hud",
+  "version": "0.1.0",
+  "identifier": "dev.aplan.hud",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "hud",
+        "title": "aplan",
+        "url": "/hud",
+        "width": 1600,
+        "height": 1000,
+        "transparent": true,
+        "decorations": false,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false }
+}
