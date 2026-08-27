@@ -145,6 +145,8 @@ async fn main() {
         git_connector,
         graph_token_provider: graph_token_provider.clone(),
         session_repo: session_repo.clone(),
+        break_rule_repo: break_rule_repo.clone(),
+        break_event_repo: break_event_repo.clone(),
     };
     let schema = graphql::schema::build_schema(deps);
 

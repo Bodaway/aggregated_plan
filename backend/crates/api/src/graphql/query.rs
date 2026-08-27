@@ -870,6 +870,17 @@ impl QueryRoot {
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(rows.into_iter().map(MemoryGql::from).collect())
     }
+
+    /// The routine, ordered by priority — what the settings screen lists.
+    async fn break_rules(&self, ctx: &Context<'_>) -> Result<Vec<GqlBreakRule>> {
+        let user_id = ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+        let rules = repo
+            .list(*user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(rules.into_iter().map(GqlBreakRule::from).collect())
+    }
 }
 
 /// Parse an optional GraphQL `ID` into a UUID, naming the field in the error.

@@ -46,6 +46,8 @@ pub struct SchemaDeps {
     pub git_connector: Arc<dyn application::services::git_connector::GitConnector>,
     pub graph_token_provider: Arc<dyn application::services::GraphTokenProvider>,
     pub session_repo: Arc<dyn SessionRepository>,
+    pub break_rule_repo: Arc<dyn BreakRuleRepository>,
+    pub break_event_repo: Arc<dyn BreakEventRepository>,
 }
 
 /// Build the async-graphql schema with all repository instances injected as data.
@@ -71,6 +73,8 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
         git_connector,
         graph_token_provider,
         session_repo,
+        break_rule_repo,
+        break_event_repo,
     } = deps;
     // Default user for local development
     let default_user_id: UserId =
@@ -101,6 +105,8 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     .data(git_connector)
     .data(graph_token_provider)
     .data(session_repo)
+    .data(break_rule_repo)
+    .data(break_event_repo)
     .data(default_user_id)
     .finish()
 }
