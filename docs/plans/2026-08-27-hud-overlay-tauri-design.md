@@ -245,7 +245,7 @@ sur son dénominateur, et ce point doit être visible dans l'interface.
 
 ## 10. Risques ouverts — spikes à mener avant de coder
 
-### 10.1 Visibilité sur special workspace *(bloquant)*
+### 10.1 Visibilité sur special workspace *(bloquant)* — RÉSOLU
 
 Le banc a établi qu'aucun toolkit natif n'est prévenu de son occultation. **Une
 fenêtre WebKit sur un special workspace masqué reçoit-elle un changement de
@@ -255,6 +255,42 @@ visibilité** (`document.visibilityState`, événements de fenêtre Tauri) ?
 - Si non : le HUD doit s'abonner au socket IPC de Hyprland
   (`$XDG_RUNTIME_DIR/hypr/$HIS/.socket2.sock`) et couper ses animations lui-même,
   sans quoi 3,8 % de CPU tournent en permanence.
+
+**Mesuré le 2026-08-27**, `hyprctl version` : Hyprland 0.56.2 (branche v0.56.2,
+commit `efb50993780079460b0cbed1363e2166a2de1d9f`).
+
+Sonde : `scripts/hud-bench/visibility_probe.py`, hôte GTK4 + WebKitGTK 6.0
+(`scripts/hud-bench/webkit_host.py`) chargeant `scripts/hud-bench/probe.html`, qui
+compte les `requestAnimationFrame` par tranche de 2 s et journalise chaque
+`visibilitychange`. La fenêtre est déplacée sur `special:visprobe` puis basculée
+visible (8 s) → masquée (8 s) via `hyprctl dispatch togglespecialworkspace`.
+
+Avant d'échantillonner la phase masquée, la sonde vérifie — via `hyprctl -j
+clients` (le `workspace.name` de la fenêtre) et `hyprctl -j monitors` (le champ
+`specialWorkspace` de chaque moniteur) — que la fenêtre est bien sur le special
+workspace et qu'aucun moniteur ne l'affiche encore ; sans quoi elle abandonne au
+lieu d'imprimer un verdict. Deux essais avec le dispatch initial du brief
+(`movetoworkspacesilent special:visprobe`, sans sélecteur de fenêtre — qui agit
+sur la fenêtre *active*) ont ainsi été abandonnés : la fenêtre est restée sur
+`dev1` puis a atterri sur `witivio` au lieu du special workspace, un focus perdu
+au moment du dispatch. Le correctif est un sélecteur de fenêtre explicite dans le
+dispatch (`movetoworkspacesilent special:visprobe,class:^(dev.hudbench.webkit)$`),
+après quoi les deux contrôles passent et la mesure est fiable.
+
+Compteurs bruts de la mesure retenue (images par tranche de 2 s, dans l'ordre) :
+`[121, 120, 101, 80, 120, 120, 120, 120, 40, 0, 0]`, avec les événements
+`visibilitychange` observés dans l'ordre `hidden, visible, hidden` — trois
+transitions qui correspondent exactement aux trois dispatches Hyprland
+(déplacement silencieux, bascule visible, bascule masquée). Moyenne sur les 4
+premières tranches (phase visible) : 106 images/2 s. Moyenne sur les 3 dernières
+tranches de la phase masquée **vérifiée** : 13 images/2 s, dont les deux
+dernières tranches à **0**.
+
+**Verdict : WebKit s'endort.** Une fenêtre WebKitGTK sur un special workspace
+masqué reçoit `visibilitychange` (état `hidden`) et cesse de produire des images
+— le rendu tombe à 0 image/2 s en régime établi. **La branche « Si oui » s'applique :
+la tâche 6 se contente d'écouter `document.visibilityState` côté frontend ; pas
+besoin d'abonnement au socket IPC de Hyprland pour ce portillon d'animation.**
 
 Le harnais de mesure du banc est réutilisable tel quel pour trancher.
 

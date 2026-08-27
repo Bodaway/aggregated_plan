@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>visprobe</title>
+<style>body{margin:0;background:#2e3440;color:#eceff4;font:14px monospace;padding:12px}</style>
+<div id="out">init</div>
+<script>
+  let frames = 0;
+  const out = document.getElementById("out");
+  function loop() { frames++; requestAnimationFrame(loop); }
+  requestAnimationFrame(loop);
+  document.addEventListener("visibilitychange", () => {
+    console.log("VISPROBE_EVENT " + document.visibilityState);
+  });
+  setInterval(() => {
+    console.log(`VISPROBE_FRAMES ${frames} state=${document.visibilityState}`);
+    out.textContent = `frames=${frames} state=${document.visibilityState}`;
+    frames = 0;
+  }, 2000);
+</script>
