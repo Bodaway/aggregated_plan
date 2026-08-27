@@ -29,6 +29,9 @@ pub enum AppError {
 
     #[error("Validation error: {0}")]
     Validation(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 /// Error type for repository operations (database, serialization).
