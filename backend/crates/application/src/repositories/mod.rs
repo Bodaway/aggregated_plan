@@ -14,6 +14,7 @@ pub mod timesheet_draft_repository;
 pub mod signal_mapping_repository;
 pub mod memory_repository;
 pub mod session_repository;
+pub mod break_repository;
 
 pub use task_repository::*;
 pub use meeting_repository::*;
@@ -31,3 +32,4 @@ pub use timesheet_draft_repository::*;
 pub use signal_mapping_repository::*;
 pub use memory_repository::*;
 pub use session_repository::*;
+pub use break_repository::{BreakEventRepository, BreakRuleRepository};

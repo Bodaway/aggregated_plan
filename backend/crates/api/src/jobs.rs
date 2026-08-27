@@ -8,11 +8,13 @@ use application::jobs::{
     humanize_duration, AttemptOutcome, JobHealth, LogEntry, LogLevel, RetryPolicy,
 };
 use application::repositories::{
-    ActivitySlotRepository, AlertRepository, ConfigRepository, GryzzlyCatalogRepository,
-    MeetingRepository, SessionRepository, SignalMappingRepository, TaskRepository,
-    TimesheetDraftRepository, WorklogRepository,
+    ActivitySlotRepository, AlertRepository, BreakEventRepository, BreakRuleRepository,
+    ConfigRepository, GryzzlyCatalogRepository, MeetingRepository, SessionRepository,
+    SignalMappingRepository, TaskRepository, TimesheetDraftRepository, WorklogRepository,
 };
 use application::services::git_connector::GitConnector;
+use application::services::Notifier;
+use application::use_cases::breaks::{run_break_tick, BreakTickDeps};
 use application::use_cases::session_reaper::{reap_idle_sessions, ReapOutcome};
 use application::use_cases::timesheet::run_eod_pass;
 use domain::types::UserId;
@@ -84,6 +86,72 @@ pub async fn run_eod_scheduler(deps: EodDeps, user_id: UserId) {
         let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
         health = next_health;
         report("end-of-day timesheet reconstruction", decision.log, failure.as_deref(), decision.retry_in);
+
+        tokio::time::sleep(decision.retry_in).await;
+    }
+}
+
+/// Dependencies the break scheduler needs.
+pub struct BreakDeps {
+    pub rule_repo: Arc<dyn BreakRuleRepository>,
+    pub event_repo: Arc<dyn BreakEventRepository>,
+    pub meeting_repo: Arc<dyn MeetingRepository>,
+    pub config_repo: Arc<dyn ConfigRepository>,
+    pub notifier: Arc<dyn Notifier>,
+}
+
+/// Long-lived background task: run one break tick for `user_id`, then wait as long as
+/// `RetryPolicy::breaks()` says to — 30 s while healthy, 5 minutes while not.
+///
+/// The tick itself is what owns the notification, including the wait for the user's
+/// answer: `notify-send --action` implies `--wait`, so a tick that fired a break can
+/// stay open for minutes. That is fine and deliberate — the next tick simply starts
+/// late, and the wall-clock anchoring in `decide` means a late tick loses no dues.
+pub async fn run_break_scheduler(deps: BreakDeps, user_id: UserId) {
+    let policy = RetryPolicy::breaks();
+    let mut health = JobHealth::default();
+    loop {
+        let attempt = run_break_tick(
+            BreakTickDeps {
+                rules: deps.rule_repo.as_ref(),
+                events: deps.event_repo.as_ref(),
+                meetings: deps.meeting_repo.as_ref(),
+                config: deps.config_repo.as_ref(),
+                notifier: deps.notifier.as_ref(),
+            },
+            user_id,
+            Utc::now(),
+        )
+        .await;
+
+        let failure = match &attempt {
+            Ok(report) => {
+                if report.fired.is_some() || report.deferred > 0 {
+                    tracing::info!(
+                        fired = ?report.fired,
+                        deferred = report.deferred,
+                        absorbed = report.absorbed,
+                        expired = report.expired,
+                        "break tick"
+                    );
+                }
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "break tick failed");
+                Some(e.to_string())
+            }
+        };
+
+        // Identical to `run_eod_scheduler`'s block, so both jobs age their health the
+        // same way and print through the same journal helper.
+        let observed = match &failure {
+            Some(signature) => AttemptOutcome::Failed { signature },
+            None => AttemptOutcome::Succeeded,
+        };
+        let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
+        health = next_health;
+        report("break routine", decision.log, failure.as_deref(), decision.retry_in);
 
         tokio::time::sleep(decision.retry_in).await;
     }

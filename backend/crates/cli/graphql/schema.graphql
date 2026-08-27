@@ -147,6 +147,101 @@ type BindSessionResultGql {
 }
 
 """
+Which of the two `BreakCadence` shapes a rule carries. Exposed only so the
+settings form knows which of `intervalMinutes` / `atTime` to show; the actual
+XOR is enforced by the sum type on the way back in, not by this enum.
+"""
+enum BreakCadenceGql {
+	INTERVAL
+	DAILY
+}
+
+"""
+GraphQL enum mirroring `domain::types::BreakKind`. Drives which icon and seeded
+copy the notification daemon and the settings screen render.
+"""
+enum BreakKindGql {
+	VISUAL
+	POSTURE
+	LONG
+	STRENGTH
+}
+
+"""
+GraphQL projection of one break rule. This is what the settings screen lists.
+"""
+type BreakRuleGql {
+	id: ID!
+	kind: BreakKindGql!
+	label: String!
+	body: String!
+	cadence: BreakCadenceGql!
+	intervalMinutes: Int
+	"""
+	`HH:MM` in the user's timezone.
+	"""
+	atTime: String
+	durationSeconds: Int!
+	priority: Int!
+	enabled: Boolean!
+	urgency: BreakUrgencyGql!
+}
+
+"""
+Input carried by `createBreakRule` / `updateBreakRule`: the same fields as
+`BreakRuleGql` minus `id`, which the mutation resolves on its own.
+"""
+input BreakRuleInput {
+	kind: BreakKindGql!
+	label: String!
+	body: String!
+	cadence: BreakCadenceGql!
+	intervalMinutes: Int
+	atTime: String
+	durationSeconds: Int!
+	priority: Int!
+	enabled: Boolean!
+	urgency: BreakUrgencyGql!
+}
+
+"""
+One rule's adherence over a window — one row per rule in `breakStats`.
+"""
+type BreakRuleStatsGql {
+	ruleId: ID!
+	label: String!
+	taken: Int!
+	snoozed: Int!
+	skipped: Int!
+	ignored: Int!
+	absorbed: Int!
+	expired: Int!
+	"""
+	`taken / seen`, or `null` when nothing was seen. Absorbed and expired slots are
+	excluded from both sides: the user never had the chance to answer them, so
+	counting them would drown a real signal in scheduling noise.
+	"""
+	adherence: Float
+}
+
+"""
+The adherence statistics panel, one row per rule, over the queried window.
+"""
+type BreakStatsGql {
+	perRule: [BreakRuleStatsGql!]!
+}
+
+"""
+GraphQL enum mirroring `domain::types::BreakUrgency`. Passed straight through to
+the notification daemon.
+"""
+enum BreakUrgencyGql {
+	LOW
+	NORMAL
+	CRITICAL
+}
+
+"""
 How long since the consolidation job last ran.
 """
 type BriefConsolidationGql {
@@ -620,6 +715,19 @@ type CombinedMutation {
 	stamp its own start rather than the clock of whichever call came last.
 	"""
 	recordConsolidationRun(at: DateTime): ConsolidationRunGql!
+	"""
+	Create a new break rule.
+	"""
+	createBreakRule(input: BreakRuleInput!): BreakRuleGql!
+	"""
+	Update an existing break rule. `createdAt` is carried over from the row it
+	replaces; `updatedAt` is stamped with the current instant.
+	"""
+	updateBreakRule(id: ID!, input: BreakRuleInput!): BreakRuleGql!
+	"""
+	Delete a break rule by ID. Returns true on success.
+	"""
+	deleteBreakRule(id: ID!): Boolean!
 }
 
 """
@@ -807,6 +915,16 @@ type CombinedQuery {
 	Memory candidates awaiting validation (`status = PENDING`).
 	"""
 	pendingMemories(limit: Int! = 50, offset: Int! = 0): [MemoryGql!]!
+	"""
+	The routine, ordered by priority — what the settings screen lists.
+	"""
+	breakRules: [BreakRuleGql!]!
+	"""
+	Adherence per rule over `[from, to)` — `taken / seen`, where `seen` counts only
+	outcomes the user was actually shown. Absorbed and expired slots never reached
+	a screen, so they are excluded from both sides rather than diluting the rate.
+	"""
+	breakStats(from: String!, to: String!): BreakStatsGql!
 }
 
 enum ConfidenceGql {

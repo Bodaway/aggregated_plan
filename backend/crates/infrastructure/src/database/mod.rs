@@ -15,6 +15,7 @@ pub mod gryzzly_catalog_repo;
 pub mod signal_mapping_repo;
 pub mod timesheet_draft_repo;
 pub mod memory_repo;
+pub mod break_repo;
 
 mod conversions;
 
@@ -35,3 +36,4 @@ pub use gryzzly_catalog_repo::SqliteGryzzlyCatalogRepository;
 pub use signal_mapping_repo::SqliteSignalMappingRepository;
 pub use timesheet_draft_repo::SqliteTimesheetDraftRepository;
 pub use memory_repo::{SqliteMemoryRepository, SqliteMemoryRetriever};
+pub use break_repo::{SqliteBreakEventRepository, SqliteBreakRuleRepository};

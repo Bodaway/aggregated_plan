@@ -1,3 +1,4 @@
+pub mod breaks;
 pub mod urgency;
 pub mod priority;
 pub mod workload;

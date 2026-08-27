@@ -61,6 +61,22 @@ impl RetryPolicy {
             reminder_every: 12,
         }
     }
+
+    /// The break engine: a tick every 30 seconds while healthy, backing off to 5
+    /// minutes.
+    ///
+    /// Far finer than `end_of_day()`'s 5-minute base because here the granularity of
+    /// the tick is the granularity of every break: at a 5-minute tick a deferral armed
+    /// for 09:53 lands somewhere in 09:53–09:58, which is exactly the sloppiness that
+    /// makes a reminder feel arbitrary.
+    pub const fn breaks() -> Self {
+        Self {
+            base: Duration::from_secs(30),
+            ceiling: Duration::from_secs(5 * 60),
+            escalate_after: 3,
+            reminder_every: 12,
+        }
+    }
 }
 
 /// What one attempt produced, as far as the policy is concerned.
@@ -383,6 +399,24 @@ mod tests {
         assert!(attempts <= 50, "backoff must cut 1440 attempts/day down to dozens, got {attempts}");
         assert!(lines <= 6, "suppression must keep the journal readable, got {lines} lines");
         assert!(lines >= 2, "but it must never go completely silent, got {lines} lines");
+    }
+
+    /// Breaks need a much finer tick than the end-of-day pass: a 5-minute tick would
+    /// place a 20-minute break anywhere in a 5-minute band, and the deferral wake-up
+    /// would inherit the same slop.
+    #[test]
+    fn break_policy_ticks_every_thirty_seconds_while_healthy() {
+        assert_eq!(backoff_delay(0, &RetryPolicy::breaks()), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn break_policy_backs_off_to_five_minutes() {
+        let p = RetryPolicy::breaks();
+        assert_eq!(backoff_delay(1, &p), Duration::from_secs(30));
+        assert_eq!(backoff_delay(3, &p), Duration::from_secs(120));
+        // base * 2^(n-1) saturates at the ceiling from the fifth failure on.
+        assert_eq!(backoff_delay(5, &p), Duration::from_secs(300));
+        assert_eq!(backoff_delay(50, &p), Duration::from_secs(300));
     }
 
     #[test]

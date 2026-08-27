@@ -1322,6 +1322,171 @@ impl application::services::MemoryFileSource for StubMemoryFileSource {
     }
 }
 
+// ---- Break-rule in-memory repo ----
+#[derive(Default)]
+struct InMemoryBreakRuleRepository {
+    rules: Mutex<Vec<BreakRule>>,
+}
+
+#[async_trait]
+impl application::repositories::BreakRuleRepository for InMemoryBreakRuleRepository {
+    async fn list(&self, user_id: UserId) -> Result<Vec<BreakRule>, RepositoryError> {
+        let mut rules: Vec<BreakRule> = self
+            .rules
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.user_id == user_id)
+            .cloned()
+            .collect();
+        rules.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.created_at.cmp(&b.created_at)));
+        Ok(rules)
+    }
+
+    async fn list_enabled(&self, user_id: UserId) -> Result<Vec<BreakRule>, RepositoryError> {
+        let mut rules: Vec<BreakRule> = self
+            .rules
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.user_id == user_id && r.enabled)
+            .cloned()
+            .collect();
+        rules.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.created_at.cmp(&b.created_at)));
+        Ok(rules)
+    }
+
+    async fn get(
+        &self,
+        user_id: UserId,
+        id: BreakRuleId,
+    ) -> Result<Option<BreakRule>, RepositoryError> {
+        Ok(self
+            .rules
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.user_id == user_id && r.id == id)
+            .cloned())
+    }
+
+    async fn create(&self, rule: &BreakRule) -> Result<(), RepositoryError> {
+        self.rules.lock().unwrap().push(rule.clone());
+        Ok(())
+    }
+
+    async fn update(&self, rule: &BreakRule) -> Result<(), RepositoryError> {
+        let mut rules = self.rules.lock().unwrap();
+        if let Some(existing) = rules.iter_mut().find(|r| r.id == rule.id) {
+            *existing = rule.clone();
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, user_id: UserId, id: BreakRuleId) -> Result<(), RepositoryError> {
+        self.rules
+            .lock()
+            .unwrap()
+            .retain(|r| !(r.user_id == user_id && r.id == id));
+        Ok(())
+    }
+}
+
+// ---- Break-event in-memory repo ----
+#[derive(Default)]
+struct InMemoryBreakEventRepository {
+    events: Mutex<Vec<BreakEvent>>,
+}
+
+#[async_trait]
+impl application::repositories::BreakEventRepository for InMemoryBreakEventRepository {
+    async fn list_open(&self, user_id: UserId) -> Result<Vec<BreakEvent>, RepositoryError> {
+        let mut events: Vec<BreakEvent> = self
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.user_id == user_id && e.outcome == BreakOutcome::Pending)
+            .cloned()
+            .collect();
+        events.sort_by(|a, b| a.due_at.cmp(&b.due_at));
+        Ok(events)
+    }
+
+    async fn create(&self, event: &BreakEvent) -> Result<(), RepositoryError> {
+        self.events.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+
+    async fn set_outcome(
+        &self,
+        id: BreakEventId,
+        outcome: BreakOutcome,
+        responded_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), RepositoryError> {
+        let mut events = self.events.lock().unwrap();
+        if let Some(event) = events.iter_mut().find(|e| e.id == id) {
+            event.outcome = outcome;
+            event.responded_at = responded_at;
+        }
+        Ok(())
+    }
+
+    async fn set_deferral(
+        &self,
+        id: BreakEventId,
+        until: chrono::DateTime<chrono::Utc>,
+        reason: DeferReason,
+        meeting_id: Option<&str>,
+    ) -> Result<(), RepositoryError> {
+        let mut events = self.events.lock().unwrap();
+        if let Some(event) = events.iter_mut().find(|e| e.id == id) {
+            event.deferred_until = Some(until);
+            event.defer_reason = Some(reason);
+            event.suppressed_by_meeting_id = meeting_id.map(String::from);
+        }
+        Ok(())
+    }
+
+    async fn mark_fired(
+        &self,
+        id: BreakEventId,
+        fired_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), RepositoryError> {
+        let mut events = self.events.lock().unwrap();
+        if let Some(event) = events.iter_mut().find(|e| e.id == id) {
+            event.fired_at = Some(fired_at);
+            event.deferred_until = None;
+            event.defer_reason = None;
+        }
+        Ok(())
+    }
+
+    async fn counts_between(
+        &self,
+        user_id: UserId,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<(BreakRuleId, BreakOutcome, i64)>, RepositoryError> {
+        let events = self.events.lock().unwrap();
+        // `BreakOutcome` has no `Hash`, so group by hand rather than through a HashMap key.
+        let mut counts: Vec<(BreakRuleId, BreakOutcome, i64)> = Vec::new();
+        for e in events
+            .iter()
+            .filter(|e| e.user_id == user_id && e.due_at >= from && e.due_at < to)
+        {
+            match counts
+                .iter_mut()
+                .find(|(rule_id, outcome, _)| *rule_id == e.rule_id && *outcome == e.outcome)
+            {
+                Some((_, _, n)) => *n += 1,
+                None => counts.push((e.rule_id, e.outcome, 1)),
+            }
+        }
+        Ok(counts)
+    }
+}
+
 // ─── Test schema builder ───
 
 type TestSchema = Schema<CombinedQuery, CombinedMutation, EmptySubscription>;
@@ -1342,13 +1507,17 @@ fn build_test_schema_with(
         timesheet_draft_repo,
         Arc::new(InMemoryMemoryStore::default()),
         Arc::new(InMemorySessionRepository::default()),
+        Arc::new(InMemoryBreakRuleRepository::default()),
+        Arc::new(InMemoryBreakEventRepository::default()),
     )
 }
 
 /// Same as `build_test_schema_with`, plus an explicit semantic-memory store, so a
 /// memory test can keep a handle on it and seed rows the resolvers cannot produce
-/// (already invalidated, already rejected), and an explicit session repo, so an
-/// I2 test can swap in one that fails on `touch`.
+/// (already invalidated, already rejected), an explicit session repo, so an
+/// I2 test can swap in one that fails on `touch`, and the two break-routine repos,
+/// so a Task 9 stats test can keep a handle on the event store — exactly why this
+/// builder exists at all rather than `build_test_schema_with` alone.
 fn build_test_schema_with_memory(
     worklog_repo: Arc<dyn application::repositories::WorklogRepository>,
     task_repo: Arc<dyn TaskRepository>,
@@ -1356,6 +1525,8 @@ fn build_test_schema_with_memory(
     timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository>,
     memory_store: Arc<InMemoryMemoryStore>,
     session_repo: Arc<dyn application::repositories::SessionRepository>,
+    break_rule_repo: Arc<dyn application::repositories::BreakRuleRepository>,
+    break_event_repo: Arc<dyn application::repositories::BreakEventRepository>,
 ) -> TestSchema {
     let default_user_id: UserId =
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
@@ -1408,6 +1579,8 @@ fn build_test_schema_with_memory(
     .data(git_connector)
     .data(graph_token_provider)
     .data(session_repo)
+    .data(break_rule_repo)
+    .data(break_event_repo)
     .data(default_user_id)
     .finish()
 }
@@ -1431,6 +1604,8 @@ fn build_memory_test_schema() -> (TestSchema, Arc<InMemoryMemoryStore>) {
         Arc::new(InMemoryTimesheetDraftRepository::new()),
         memory_store.clone(),
         Arc::new(InMemorySessionRepository::default()),
+        Arc::new(InMemoryBreakRuleRepository::default()),
+        Arc::new(InMemoryBreakEventRepository::default()),
     );
     (schema, memory_store)
 }
@@ -1446,7 +1621,86 @@ fn build_test_schema_with_failing_session_touch() -> TestSchema {
         Arc::new(InMemoryTimesheetDraftRepository::new()),
         Arc::new(InMemoryMemoryStore::default()),
         Arc::new(FailingTouchSessionRepository::new()),
+        Arc::new(InMemoryBreakRuleRepository::default()),
+        Arc::new(InMemoryBreakEventRepository::default()),
     )
+}
+
+/// Default dependencies, with the break-rule and break-event repos handed back for
+/// seeding — a stats test needs a handle on the event store the resolvers alone
+/// cannot produce (fired-and-ignored, expired), exactly as `build_memory_test_schema`
+/// needed one on `InMemoryMemoryStore`.
+fn build_test_schema_with_breaks(
+    break_rules: Arc<InMemoryBreakRuleRepository>,
+    break_events: Arc<InMemoryBreakEventRepository>,
+) -> TestSchema {
+    build_test_schema_with_memory(
+        Arc::new(InMemoryWorklogRepository::new()),
+        Arc::new(InMemoryTaskRepository::new()),
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+        Arc::new(InMemoryMemoryStore::default()),
+        Arc::new(InMemorySessionRepository::default()),
+        break_rules,
+        break_events,
+    )
+}
+
+/// Seed one break rule and, per `(outcome, count)` pair, that many events with that
+/// outcome, `due_at` inside August 2026 — through the repo handles directly, since no
+/// mutation can create a `break_event` (events come from the tick, never from a user).
+/// Returns the rule id so a test can match it against the stats response.
+async fn seed_break_events(
+    rules: &Arc<InMemoryBreakRuleRepository>,
+    events: &Arc<InMemoryBreakEventRepository>,
+    outcomes: &[(BreakOutcome, u32)],
+) -> BreakRuleId {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let now = chrono::Utc::now();
+    let rule_id: BreakRuleId = Uuid::new_v4();
+    rules
+        .create(&BreakRule {
+            id: rule_id,
+            user_id,
+            kind: BreakKind::Visual,
+            label: "Visuelle".to_string(),
+            body: "Regarde au loin".to_string(),
+            cadence: BreakCadence::Interval { minutes: 20 },
+            duration_seconds: 30,
+            priority: 1,
+            enabled: true,
+            urgency: BreakUrgency::Low,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("seed rule");
+
+    let due_at = chrono::DateTime::parse_from_rfc3339("2026-08-15T10:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    for (outcome, count) in outcomes {
+        for _ in 0..*count {
+            events
+                .create(&BreakEvent {
+                    id: Uuid::new_v4(),
+                    user_id,
+                    rule_id,
+                    due_at,
+                    fired_at: Some(due_at),
+                    deferred_until: None,
+                    defer_reason: None,
+                    suppressed_by_meeting_id: None,
+                    outcome: *outcome,
+                    responded_at: None,
+                    created_at: now,
+                })
+                .await
+                .expect("seed event");
+        }
+    }
+    rule_id
 }
 
 /// Default dependencies, plus one already-created task — for session-binding tests
@@ -4284,6 +4538,8 @@ async fn set_session_mode_off_flushes_the_bound_task_before_clearing_it() {
         Arc::new(InMemoryTimesheetDraftRepository::new()),
         Arc::new(InMemoryMemoryStore::default()),
         Arc::new(OrderRecordingSessionRepository::new(order.clone())),
+        Arc::new(InMemoryBreakRuleRepository::default()),
+        Arc::new(InMemoryBreakEventRepository::default()),
     );
 
     let created = schema
@@ -4883,4 +5139,220 @@ async fn search_with_a_blank_query_returns_nothing_rather_than_everything() {
     assert_eq!(data["search"]["taskTotal"], 0, "a blank query must not become a task dump");
     assert_eq!(data["search"]["worklogTotal"], 0, "a blank query must not become a worklog dump");
     assert_eq!(data["search"]["memoryTotal"], 0, "a blank query must not become a memory dump");
+}
+
+// ─── Break rules (Task 8) ───
+
+/// Both cadence shapes must survive the round trip to GraphQL: an interval rule reports
+/// `intervalMinutes` and a null `atTime`, a daily rule the reverse. Collapsing them into
+/// one nullable pair is how a rule with no defined due time would reach the database.
+#[tokio::test]
+async fn break_rules_query_renders_each_cadence_in_its_own_shape() {
+    let schema = build_test_schema();
+    // Seeded through the mutation, not through a repository handle: this test is about
+    // the query, and going in the front door proves both halves agree on the shape.
+    for input in [
+        r#"kind: VISUAL, label: "Visuelle", body: "Regarde au loin",
+           cadence: INTERVAL, intervalMinutes: 20,
+           durationSeconds: 30, priority: 1, enabled: true, urgency: LOW"#,
+        r#"kind: STRENGTH, label: "Renfo", body: "Élastique",
+           cadence: DAILY, atTime: "14:00",
+           durationSeconds: 120, priority: 4, enabled: true, urgency: NORMAL"#,
+    ] {
+        let created = schema
+            .execute(format!("mutation {{ createBreakRule(input: {{ {input} }}) {{ id }} }}"))
+            .await;
+        assert!(created.errors.is_empty(), "{:?}", created.errors);
+    }
+
+    let res = schema
+        .execute("{ breakRules { kind label intervalMinutes atTime priority enabled } }")
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let rules = res.data.into_json().unwrap()["breakRules"].as_array().unwrap().clone();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["kind"], "VISUAL");
+    assert_eq!(rules[0]["intervalMinutes"], 20);
+    assert!(rules[0]["atTime"].is_null());
+    assert_eq!(rules[1]["kind"], "STRENGTH");
+    assert_eq!(rules[1]["atTime"], "14:00");
+    assert!(rules[1]["intervalMinutes"].is_null());
+}
+
+#[tokio::test]
+async fn create_update_delete_round_trips_a_rule() {
+    let schema = build_test_schema();
+    let created = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Test", body: "Bouge",
+                 cadence: INTERVAL, intervalMinutes: 45,
+                 durationSeconds: 90, priority: 7, enabled: true, urgency: NORMAL
+               }) { id label priority } }"#,
+        )
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+    let id = created.data.into_json().unwrap()["createBreakRule"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let updated = schema
+        .execute(&format!(
+            r#"mutation {{ updateBreakRule(id: "{id}", input: {{
+                 kind: POSTURE, label: "Renommé", body: "Bouge",
+                 cadence: INTERVAL, intervalMinutes: 45,
+                 durationSeconds: 90, priority: 7, enabled: false, urgency: NORMAL
+               }}) {{ label enabled }} }}"#
+        ))
+        .await;
+    assert!(updated.errors.is_empty(), "{:?}", updated.errors);
+    let u = updated.data.into_json().unwrap();
+    assert_eq!(u["updateBreakRule"]["label"], "Renommé");
+    assert_eq!(u["updateBreakRule"]["enabled"], false);
+
+    let deleted = schema
+        .execute(&format!(r#"mutation {{ deleteBreakRule(id: "{id}") }}"#))
+        .await;
+    assert!(deleted.errors.is_empty(), "{:?}", deleted.errors);
+    let listed = schema.execute("{ breakRules { id } }").await;
+    let n = listed.data.into_json().unwrap()["breakRules"].as_array().unwrap().len();
+    assert_eq!(n, 0, "the fake started empty and the rule is gone");
+}
+
+/// The XOR the database enforces must be refused at the edge too, with a message the
+/// settings screen can show.
+#[tokio::test]
+async fn creating_a_rule_with_both_cadence_shapes_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30, atTime: "14:00",
+                 durationSeconds: 90, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
+#[tokio::test]
+async fn creating_an_interval_rule_without_an_interval_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL,
+                 durationSeconds: 90, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
+/// A zero duration must not reach the `as u32` cast: `to_cadence` and this check are
+/// the only place a bad shape is caught before the database's `CHECK` — which a
+/// negative value can slip past entirely (see the negative-duration test below).
+#[tokio::test]
+async fn creating_a_rule_with_a_zero_duration_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30,
+                 durationSeconds: 0, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
+/// A negative `durationSeconds` must be rejected, not silently wrapped: `-1 as u32` is
+/// 4_294_967_295, which passes the database's `CHECK (duration_seconds > 0)` and would
+/// leave a notification (and its `notify-send` process) that never expires.
+#[tokio::test]
+async fn creating_a_rule_with_a_negative_duration_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30,
+                 durationSeconds: -1, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
+/// An absurdly large `durationSeconds` passes the database's `CHECK` just as happily as
+/// a sane one, and the tick awaits its notification inline: a slipped zero would hold
+/// the scheduler on a single popup for days, with no further break and no error.
+#[tokio::test]
+async fn creating_a_rule_with_an_out_of_range_duration_is_rejected() {
+    let schema = build_test_schema();
+    let res = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Bad", body: "b",
+                 cadence: INTERVAL, intervalMinutes: 30,
+                 durationSeconds: 100000000, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(!res.errors.is_empty());
+}
+
+// ─── Break stats (Task 9) ───
+
+/// Adherence counts only what the user was actually shown: absorbed slots never
+/// reached a screen and must not dilute the rate.
+#[tokio::test]
+async fn break_stats_computes_adherence_over_seen_outcomes_only() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let rule_id = seed_break_events(
+        &rules,
+        &events,
+        &[
+            (BreakOutcome::Taken, 3),
+            (BreakOutcome::Ignored, 1),
+            (BreakOutcome::Absorbed, 10),
+            (BreakOutcome::Expired, 5),
+        ],
+    )
+    .await;
+
+    let res = schema
+        .execute(
+            r#"{ breakStats(from: "2026-08-01T00:00:00+00:00", to: "2026-09-01T00:00:00+00:00") {
+                   perRule { ruleId taken ignored absorbed expired adherence } } }"#,
+        )
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let per = res.data.into_json().unwrap()["breakStats"]["perRule"][0].clone();
+    assert_eq!(per["ruleId"], rule_id.to_string());
+    assert_eq!(per["taken"], 3);
+    assert_eq!(per["absorbed"], 10);
+    assert_eq!(per["expired"], 5);
+    assert_eq!(per["adherence"], 0.75, "3 taken out of 4 seen");
+}
+
+#[tokio::test]
+async fn break_stats_reports_null_adherence_when_nothing_was_seen() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    seed_break_events(&rules, &events, &[(BreakOutcome::Absorbed, 4)]).await;
+    let res = schema
+        .execute(
+            r#"{ breakStats(from: "2026-08-01T00:00:00+00:00", to: "2026-09-01T00:00:00+00:00") {
+                   perRule { adherence } } }"#,
+        )
+        .await;
+    assert!(res.data.into_json().unwrap()["breakStats"]["perRule"][0]["adherence"].is_null());
 }

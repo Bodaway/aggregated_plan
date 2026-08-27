@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_graphql::{Context, MaybeUndefined, Object, Result, ID};
 use chrono::{Datelike, NaiveDate};
 use domain::types::common::{ImpactLevel, UrgencyLevel};
-use domain::types::{TimesheetStatus, UserId};
+use domain::types::{BreakRule, TimesheetStatus, UserId};
 use uuid::Uuid;
 
 use application::repositories::*;
@@ -1805,6 +1805,94 @@ impl MutationRoot {
             key: consolidation_uc::CONSOLIDATION_LAST_RUN_KEY.to_string(),
             ran_at,
         })
+    }
+
+    // ─── Break-rule mutations (Task 8) ───
+
+    /// Create a new break rule.
+    async fn create_break_rule(
+        &self,
+        ctx: &Context<'_>,
+        input: BreakRuleInput,
+    ) -> Result<BreakRuleGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+        let cadence = input.to_cadence().map_err(async_graphql::Error::new)?;
+        let duration_seconds = input
+            .validated_duration_seconds()
+            .map_err(async_graphql::Error::new)?;
+        let now = chrono::Utc::now();
+        let rule = BreakRule {
+            id: Uuid::new_v4(),
+            user_id,
+            kind: input.kind.into(),
+            label: input.label,
+            body: input.body,
+            cadence,
+            duration_seconds,
+            priority: input.priority,
+            enabled: input.enabled,
+            urgency: input.urgency.into(),
+            created_at: now,
+            updated_at: now,
+        };
+        repo.create(&rule)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(BreakRuleGql::from(rule))
+    }
+
+    /// Update an existing break rule. `createdAt` is carried over from the row it
+    /// replaces; `updatedAt` is stamped with the current instant.
+    async fn update_break_rule(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        input: BreakRuleInput,
+    ) -> Result<BreakRuleGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+        let rule_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid break rule ID: {}", e)))?;
+        let existing = repo
+            .get(user_id, rule_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+            .ok_or_else(|| async_graphql::Error::new("Break rule not found"))?;
+        let cadence = input.to_cadence().map_err(async_graphql::Error::new)?;
+        let duration_seconds = input
+            .validated_duration_seconds()
+            .map_err(async_graphql::Error::new)?;
+        let rule = BreakRule {
+            id: rule_id,
+            user_id,
+            kind: input.kind.into(),
+            label: input.label,
+            body: input.body,
+            cadence,
+            duration_seconds,
+            priority: input.priority,
+            enabled: input.enabled,
+            urgency: input.urgency.into(),
+            created_at: existing.created_at,
+            updated_at: chrono::Utc::now(),
+        };
+        repo.update(&rule)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(BreakRuleGql::from(rule))
+    }
+
+    /// Delete a break rule by ID. Returns true on success.
+    async fn delete_break_rule(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+        let rule_id = Uuid::parse_str(&id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid break rule ID: {}", e)))?;
+        repo.delete(user_id, rule_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(true)
     }
 }
 
