@@ -9,6 +9,8 @@ pub type ActivitySlotId = Uuid;
 pub type AlertId = Uuid;
 pub type TagId = Uuid;
 pub type TaskLinkId = Uuid;
+pub type BreakRuleId = Uuid;
+pub type BreakEventId = Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Source {

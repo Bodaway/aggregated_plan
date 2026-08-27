@@ -14,6 +14,8 @@ pub mod signal_mapping;
 pub mod timesheet;
 pub mod memory;
 pub mod session;
+pub mod break_event;
+pub mod break_rule;
 
 pub use common::*;
 pub use task::*;
@@ -31,3 +33,5 @@ pub use signal_mapping::*;
 pub use timesheet::*;
 pub use memory::*;
 pub use session::*;
+pub use break_event::*;
+pub use break_rule::*;
