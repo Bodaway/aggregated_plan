@@ -2,10 +2,10 @@
 name = "aplan-hud"
 version = "0.1.0"
 edition = "2021"
-description = "Coque Tauri du HUD aplan"
+description = "Tauri shell for the aplan HUD"
 
-# NE PAS rattacher ce crate au workspace backend/ : il tirerait WebKit dans
-# chaque `cargo test` de l'API. La cle [workspace] vide l'en isole.
+# DO NOT attach this crate to the backend/ workspace: it would pull WebKit
+# into every `cargo test` of the API. The empty [workspace] key isolates it.
 [workspace]
 
 [build-dependencies]
