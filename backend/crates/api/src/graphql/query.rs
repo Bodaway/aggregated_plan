@@ -872,14 +872,14 @@ impl QueryRoot {
     }
 
     /// The routine, ordered by priority — what the settings screen lists.
-    async fn break_rules(&self, ctx: &Context<'_>) -> Result<Vec<GqlBreakRule>> {
+    async fn break_rules(&self, ctx: &Context<'_>) -> Result<Vec<BreakRuleGql>> {
         let user_id = ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
         let rules = repo
             .list(*user_id)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(rules.into_iter().map(GqlBreakRule::from).collect())
+        Ok(rules.into_iter().map(BreakRuleGql::from).collect())
     }
 
     /// Adherence per rule over `[from, to)` — `taken / seen`, where `seen` counts only
@@ -890,7 +890,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         from: String,
         to: String,
-    ) -> Result<GqlBreakStats> {
+    ) -> Result<BreakStatsGql> {
         let user_id = ctx.data::<UserId>()?;
         let events = ctx.data::<Arc<dyn BreakEventRepository>>()?;
         let rules_repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
@@ -910,7 +910,7 @@ impl QueryRoot {
 
         let mut per_rule = Vec::new();
         for rule in rules {
-            let mut row = GqlBreakRuleStats {
+            let mut row = BreakRuleStatsGql {
                 rule_id: rule.id.to_string().into(),
                 label: rule.label.clone(),
                 taken: 0,
@@ -943,7 +943,7 @@ impl QueryRoot {
             }
             per_rule.push(row);
         }
-        Ok(GqlBreakStats { per_rule })
+        Ok(BreakStatsGql { per_rule })
     }
 }
 

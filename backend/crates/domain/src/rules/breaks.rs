@@ -1,9 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 
-use crate::types::{
-    BreakCadence, BreakEvent, BreakEventId, BreakKind, BreakRule, BreakRuleId, BreakUrgency,
-    DeferReason,
-};
+use crate::types::{BreakEvent, BreakEventId, BreakRule, BreakRuleId, DeferReason};
 
 /// A stretch of working time, already resolved to UTC by the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,6 +288,7 @@ fn finish(tick: &mut BreakTick, mut candidates: Vec<Candidate>, rules: &[BreakRu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{BreakCadence, BreakKind, BreakUrgency};
     use chrono::TimeZone;
     use uuid::Uuid;
 

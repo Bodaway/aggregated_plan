@@ -5,31 +5,31 @@ use domain::types::{BreakCadence, BreakKind, BreakRule, BreakUrgency};
 /// GraphQL enum mirroring `domain::types::BreakKind`. Drives which icon and seeded
 /// copy the notification daemon and the settings screen render.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
-pub enum GqlBreakKind {
+pub enum BreakKindGql {
     Visual,
     Posture,
     Long,
     Strength,
 }
 
-impl From<BreakKind> for GqlBreakKind {
+impl From<BreakKind> for BreakKindGql {
     fn from(k: BreakKind) -> Self {
         match k {
-            BreakKind::Visual => GqlBreakKind::Visual,
-            BreakKind::Posture => GqlBreakKind::Posture,
-            BreakKind::Long => GqlBreakKind::Long,
-            BreakKind::Strength => GqlBreakKind::Strength,
+            BreakKind::Visual => BreakKindGql::Visual,
+            BreakKind::Posture => BreakKindGql::Posture,
+            BreakKind::Long => BreakKindGql::Long,
+            BreakKind::Strength => BreakKindGql::Strength,
         }
     }
 }
 
-impl From<GqlBreakKind> for BreakKind {
-    fn from(k: GqlBreakKind) -> Self {
+impl From<BreakKindGql> for BreakKind {
+    fn from(k: BreakKindGql) -> Self {
         match k {
-            GqlBreakKind::Visual => BreakKind::Visual,
-            GqlBreakKind::Posture => BreakKind::Posture,
-            GqlBreakKind::Long => BreakKind::Long,
-            GqlBreakKind::Strength => BreakKind::Strength,
+            BreakKindGql::Visual => BreakKind::Visual,
+            BreakKindGql::Posture => BreakKind::Posture,
+            BreakKindGql::Long => BreakKind::Long,
+            BreakKindGql::Strength => BreakKind::Strength,
         }
     }
 }
@@ -37,28 +37,28 @@ impl From<GqlBreakKind> for BreakKind {
 /// GraphQL enum mirroring `domain::types::BreakUrgency`. Passed straight through to
 /// the notification daemon.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
-pub enum GqlBreakUrgency {
+pub enum BreakUrgencyGql {
     Low,
     Normal,
     Critical,
 }
 
-impl From<BreakUrgency> for GqlBreakUrgency {
+impl From<BreakUrgency> for BreakUrgencyGql {
     fn from(u: BreakUrgency) -> Self {
         match u {
-            BreakUrgency::Low => GqlBreakUrgency::Low,
-            BreakUrgency::Normal => GqlBreakUrgency::Normal,
-            BreakUrgency::Critical => GqlBreakUrgency::Critical,
+            BreakUrgency::Low => BreakUrgencyGql::Low,
+            BreakUrgency::Normal => BreakUrgencyGql::Normal,
+            BreakUrgency::Critical => BreakUrgencyGql::Critical,
         }
     }
 }
 
-impl From<GqlBreakUrgency> for BreakUrgency {
-    fn from(u: GqlBreakUrgency) -> Self {
+impl From<BreakUrgencyGql> for BreakUrgency {
+    fn from(u: BreakUrgencyGql) -> Self {
         match u {
-            GqlBreakUrgency::Low => BreakUrgency::Low,
-            GqlBreakUrgency::Normal => BreakUrgency::Normal,
-            GqlBreakUrgency::Critical => BreakUrgency::Critical,
+            BreakUrgencyGql::Low => BreakUrgency::Low,
+            BreakUrgencyGql::Normal => BreakUrgency::Normal,
+            BreakUrgencyGql::Critical => BreakUrgency::Critical,
         }
     }
 }
@@ -67,39 +67,39 @@ impl From<GqlBreakUrgency> for BreakUrgency {
 /// settings form knows which of `intervalMinutes` / `atTime` to show; the actual
 /// XOR is enforced by the sum type on the way back in, not by this enum.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
-pub enum GqlBreakCadence {
+pub enum BreakCadenceGql {
     Interval,
     Daily,
 }
 
 /// GraphQL projection of one break rule. This is what the settings screen lists.
 #[derive(SimpleObject)]
-pub struct GqlBreakRule {
+pub struct BreakRuleGql {
     pub id: ID,
-    pub kind: GqlBreakKind,
+    pub kind: BreakKindGql,
     pub label: String,
     pub body: String,
-    pub cadence: GqlBreakCadence,
+    pub cadence: BreakCadenceGql,
     pub interval_minutes: Option<i32>,
     /// `HH:MM` in the user's timezone.
     pub at_time: Option<String>,
     pub duration_seconds: i32,
     pub priority: i32,
     pub enabled: bool,
-    pub urgency: GqlBreakUrgency,
+    pub urgency: BreakUrgencyGql,
 }
 
-impl From<BreakRule> for GqlBreakRule {
+impl From<BreakRule> for BreakRuleGql {
     fn from(rule: BreakRule) -> Self {
         let (cadence, interval_minutes, at_time) = match rule.cadence {
             BreakCadence::Interval { minutes } => {
-                (GqlBreakCadence::Interval, Some(minutes as i32), None)
+                (BreakCadenceGql::Interval, Some(minutes as i32), None)
             }
             BreakCadence::Daily { at } => {
-                (GqlBreakCadence::Daily, None, Some(at.format("%H:%M").to_string()))
+                (BreakCadenceGql::Daily, None, Some(at.format("%H:%M").to_string()))
             }
         };
-        GqlBreakRule {
+        BreakRuleGql {
             id: ID(rule.id.to_string()),
             kind: rule.kind.into(),
             label: rule.label,
@@ -116,24 +116,24 @@ impl From<BreakRule> for GqlBreakRule {
 }
 
 /// Input carried by `createBreakRule` / `updateBreakRule`: the same fields as
-/// `GqlBreakRule` minus `id`, which the mutation resolves on its own.
+/// `BreakRuleGql` minus `id`, which the mutation resolves on its own.
 #[derive(InputObject)]
 pub struct BreakRuleInput {
-    pub kind: GqlBreakKind,
+    pub kind: BreakKindGql,
     pub label: String,
     pub body: String,
-    pub cadence: GqlBreakCadence,
+    pub cadence: BreakCadenceGql,
     pub interval_minutes: Option<i32>,
     pub at_time: Option<String>,
     pub duration_seconds: i32,
     pub priority: i32,
     pub enabled: bool,
-    pub urgency: GqlBreakUrgency,
+    pub urgency: BreakUrgencyGql,
 }
 
 /// One rule's adherence over a window — one row per rule in `breakStats`.
 #[derive(SimpleObject)]
-pub struct GqlBreakRuleStats {
+pub struct BreakRuleStatsGql {
     pub rule_id: async_graphql::ID,
     pub label: String,
     pub taken: i32,
@@ -150,8 +150,8 @@ pub struct GqlBreakRuleStats {
 
 /// The adherence statistics panel, one row per rule, over the queried window.
 #[derive(SimpleObject)]
-pub struct GqlBreakStats {
-    pub per_rule: Vec<GqlBreakRuleStats>,
+pub struct BreakStatsGql {
+    pub per_rule: Vec<BreakRuleStatsGql>,
 }
 
 impl BreakRuleInput {
@@ -159,22 +159,22 @@ impl BreakRuleInput {
     /// can display. The CHECK stays as the backstop, not as the user experience.
     pub fn to_cadence(&self) -> Result<BreakCadence, String> {
         match (self.cadence, self.interval_minutes, self.at_time.as_deref()) {
-            (GqlBreakCadence::Interval, Some(m), None) if m > 0 => {
+            (BreakCadenceGql::Interval, Some(m), None) if m > 0 => {
                 Ok(BreakCadence::Interval { minutes: m as u32 })
             }
-            (GqlBreakCadence::Interval, _, Some(_)) => {
+            (BreakCadenceGql::Interval, _, Some(_)) => {
                 Err("une règle par intervalle ne peut pas porter d'heure fixe".into())
             }
-            (GqlBreakCadence::Interval, _, None) => {
+            (BreakCadenceGql::Interval, _, None) => {
                 Err("intervalMinutes est requis et doit être positif".into())
             }
-            (GqlBreakCadence::Daily, None, Some(t)) => chrono::NaiveTime::parse_from_str(t, "%H:%M")
+            (BreakCadenceGql::Daily, None, Some(t)) => chrono::NaiveTime::parse_from_str(t, "%H:%M")
                 .map(|at| BreakCadence::Daily { at })
                 .map_err(|_| "atTime doit être au format HH:MM".to_string()),
-            (GqlBreakCadence::Daily, Some(_), _) => {
+            (BreakCadenceGql::Daily, Some(_), _) => {
                 Err("une règle quotidienne ne peut pas porter d'intervalle".into())
             }
-            (GqlBreakCadence::Daily, None, None) => Err("atTime est requis".into()),
+            (BreakCadenceGql::Daily, None, None) => Err("atTime est requis".into()),
         }
     }
 

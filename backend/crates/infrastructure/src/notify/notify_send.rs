@@ -3,7 +3,6 @@ use tokio::process::Command;
 
 use application::errors::AppError;
 use application::services::{Notification, NotificationOutcome, Notifier};
-use domain::types::BreakUrgency;
 
 /// Build the `notify-send` argv for a notification.
 ///
@@ -74,6 +73,7 @@ impl Notifier for NotifySendNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::types::BreakUrgency;
     use std::time::Duration;
 
     fn sample() -> Notification {

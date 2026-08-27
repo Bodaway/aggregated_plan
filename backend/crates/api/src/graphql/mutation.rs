@@ -1814,7 +1814,7 @@ impl MutationRoot {
         &self,
         ctx: &Context<'_>,
         input: BreakRuleInput,
-    ) -> Result<GqlBreakRule> {
+    ) -> Result<BreakRuleGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
         let cadence = input.to_cadence().map_err(async_graphql::Error::new)?;
@@ -1839,7 +1839,7 @@ impl MutationRoot {
         repo.create(&rule)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(GqlBreakRule::from(rule))
+        Ok(BreakRuleGql::from(rule))
     }
 
     /// Update an existing break rule. `createdAt` is carried over from the row it
@@ -1849,7 +1849,7 @@ impl MutationRoot {
         ctx: &Context<'_>,
         id: ID,
         input: BreakRuleInput,
-    ) -> Result<GqlBreakRule> {
+    ) -> Result<BreakRuleGql> {
         let user_id = *ctx.data::<UserId>()?;
         let repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
         let rule_id = Uuid::parse_str(&id)
@@ -1880,7 +1880,7 @@ impl MutationRoot {
         repo.update(&rule)
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(GqlBreakRule::from(rule))
+        Ok(BreakRuleGql::from(rule))
     }
 
     /// Delete a break rule by ID. Returns true on success.
