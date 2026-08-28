@@ -13,12 +13,14 @@ import { TriagePage } from '@/pages/TriagePage';
 import { MemoryPage } from '@/pages/MemoryPage';
 import { SearchProvider } from '@/lib/search/SearchProvider';
 import { HudPage } from '@/pages/hud/HudPage';
+import { ReturnToHudOnOpen } from '@/pages/hud/ReturnToHudOnOpen';
 import { landingRoute } from '@/lib/landing-route';
 
 export function App() {
   return (
     <BrowserRouter>
       <SearchProvider>
+        <ReturnToHudOnOpen />
         <Routes>
           <Route path="/hud" element={<HudPage />} />
           <Route path="/" element={<Navigate to={landingRoute()} replace />} />
