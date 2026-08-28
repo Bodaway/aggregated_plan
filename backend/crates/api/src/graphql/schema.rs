@@ -124,6 +124,10 @@ pub async fn graphql_playground() -> impl IntoResponse {
     Html(
         GraphiQLSource::build()
             .endpoint("/graphql")
+            // Same-origin requests from this debug-only page still hit the
+            // `require_csrf_header` layer on `POST /graphql` (it isn't
+            // CORS-specific), so the playground needs to send the header too.
+            .header(crate::security::CSRF_HEADER_NAME, "graphiql")
             .finish(),
     )
 }

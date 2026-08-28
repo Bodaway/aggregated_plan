@@ -38,8 +38,22 @@ pub struct Client {
 
 impl Client {
     pub fn new(api_url: String) -> Self {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            // Mirrors `api::security::CSRF_HEADER_NAME`. `POST /graphql` now
+            // rejects any request missing this header (see that module for
+            // why): set it once here, on every request the client makes,
+            // rather than at each call site in `run` below. The value itself
+            // carries no meaning -- the header's security value for browser
+            // clients is that a cross-origin page cannot attach it before a
+            // CORS preflight succeeds, not that it is secret. A CLI process
+            // has no such restriction and sends it plainly.
+            "x-aplan-client",
+            reqwest::header::HeaderValue::from_static("cli"),
+        );
         let inner = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .default_headers(headers)
             .build()
             .expect("reqwest client builds with default config");
         Self { inner, api_url }

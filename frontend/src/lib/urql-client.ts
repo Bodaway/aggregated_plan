@@ -9,6 +9,15 @@ const sseClient = createSSEClient({
 
 export const urqlClient = new Client({
   url: `${API_URL}/graphql`,
+  // `x-aplan-client` is not a secret and carries no identity -- its only job is
+  // to force the browser to run a CORS preflight before this request can be
+  // sent cross-origin, so the backend's origin allow-list gets a chance to
+  // block requests from pages other than this app. See
+  // backend/crates/api/src/security.rs for the full rationale. Do not remove
+  // it or turn it into an auth token.
+  fetchOptions: {
+    headers: { 'x-aplan-client': '1' },
+  },
   exchanges: [
     cacheExchange,
     fetchExchange,

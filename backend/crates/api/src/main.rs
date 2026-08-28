@@ -11,6 +11,7 @@ use tower_http::trace::TraceLayer;
 mod auth;
 mod graphql;
 mod jobs;
+mod security;
 mod state;
 
 use uuid::Uuid;
@@ -34,6 +35,74 @@ struct Cli {
 enum Command {
     /// Print the GraphQL SDL to stdout and exit (used by the CLI codegen).
     ExportSchema,
+}
+
+/// Builds the full HTTP router: `/graphql` (CSRF-guarded, see `security.rs`),
+/// the OAuth redirect routes, the debug GraphiQL playground (debug builds
+/// only), CORS, and tracing. Extracted out of `main` so tests can drive the
+/// router `main` actually serves instead of a hand-rolled stand-in that could
+/// silently drift from it -- see the `require_csrf_header` regression this
+/// guards against.
+pub(crate) fn build_router(state: state::AppState) -> Router {
+    let mut app = Router::new()
+        .route(
+            "/graphql",
+            // Scoped to this one route via `MethodRouter::layer`, not
+            // `Router::layer` -- the OAuth `GET` redirects below and the debug
+            // playground route must stay reachable without this header. See
+            // `security.rs` for what this defends against and why.
+            post(graphql::schema::graphql_handler)
+                .layer(axum::middleware::from_fn(security::require_csrf_header)),
+        )
+        .route("/auth/microsoft/login", get(auth::microsoft::login))
+        .route("/auth/microsoft/callback", get(auth::microsoft::callback));
+    if cfg!(debug_assertions) {
+        app = app.route("/graphql/playground", get(graphql::schema::graphql_playground));
+    }
+    app.layer(
+        CorsLayer::new()
+            .allow_origin([
+                // The Vite dev server, used by `pnpm dev` and by the Tauri HUD's
+                // own `devUrl` during `tauri dev`.
+                "http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap(),
+                // The aplan HUD (Tauri v2 desktop overlay, see
+                // docs/plans/2026-08-27-hud-overlay-plan-1-coque-tauri.md): its
+                // production window loads the bundled frontend through Tauri's
+                // custom asset protocol, whose origin on Linux is `tauri://localhost`
+                // -- not `http://localhost:3000`, so every GraphQL request from the
+                // built app was previously rejected by this layer. Confirmed
+                // empirically (not guessed): a throwaway `tauri::WebviewWindowBuilder`
+                // probe built with the same `custom-protocol` feature flag Tauri's
+                // own CLI passes for production builds, loaded via `WebviewUrl::App`
+                // exactly like the real HUD, was pointed at a local echo server and
+                // its raw request logged `Origin: tauri://localhost` on the wire (not
+                // just what devtools would display, which has been known to diverge
+                // from the header WebKitGTK actually sends -- see
+                // https://github.com/tauri-apps/wry/issues/366). This origin is not
+                // app-specific -- every Tauri v2 app on Linux/macOS shares
+                // `tauri://localhost` -- and CORS is browser-enforced, so it never
+                // gated local non-browser processes anyway (`curl` against this
+                // endpoint always worked and still does). This entry doesn't
+                // meaningfully widen exposure because `graphql_handler` doesn't
+                // authenticate per request at all (it resolves everything against a
+                // hardcoded `default_user_id`): reachability already equals authority
+                // here. Do not delete this entry -- the HUD needs it, and CORS is
+                // currently the only thing standing between a visited website and the
+                // cockpit. Windows uses `http://tauri.localhost` instead (a third
+                // entry, not added -- bundling is disabled today so this is Linux-only).
+                "tauri://localhost".parse::<axum::http::HeaderValue>().unwrap(),
+            ])
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+            // `x-aplan-client` must be preflight-approved for the real
+            // frontend's cross-origin requests to succeed at all -- see
+            // `security.rs` for why this header exists.
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderName::from_static(security::CSRF_HEADER_NAME),
+            ]),
+    )
+    .layer(TraceLayer::new_for_http())
+    .with_state(state)
 }
 
 #[tokio::main]
@@ -191,58 +260,13 @@ async fn main() {
         Err(e) => tracing::error!("slot provenance classification failed: {e}"),
     }
 
-    let mut app = Router::new()
-        .route("/graphql", post(graphql::schema::graphql_handler))
-        .route("/auth/microsoft/login", get(auth::microsoft::login))
-        .route("/auth/microsoft/callback", get(auth::microsoft::callback));
-    if cfg!(debug_assertions) {
-        app = app.route("/graphql/playground", get(graphql::schema::graphql_playground));
-    }
-    let app = app
-        .layer(
-            CorsLayer::new()
-                .allow_origin([
-                    // The Vite dev server, used by `pnpm dev` and by the Tauri HUD's
-                    // own `devUrl` during `tauri dev`.
-                    "http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap(),
-                    // The aplan HUD (Tauri v2 desktop overlay, see
-                    // docs/plans/2026-08-27-hud-overlay-plan-1-coque-tauri.md): its
-                    // production window loads the bundled frontend through Tauri's
-                    // custom asset protocol, whose origin on Linux is `tauri://localhost`
-                    // -- not `http://localhost:3000`, so every GraphQL request from the
-                    // built app was previously rejected by this layer. Confirmed
-                    // empirically (not guessed): a throwaway `tauri::WebviewWindowBuilder`
-                    // probe built with the same `custom-protocol` feature flag Tauri's
-                    // own CLI passes for production builds, loaded via `WebviewUrl::App`
-                    // exactly like the real HUD, was pointed at a local echo server and
-                    // its raw request logged `Origin: tauri://localhost` on the wire (not
-                    // just what devtools would display, which has been known to diverge
-                    // from the header WebKitGTK actually sends -- see
-                    // https://github.com/tauri-apps/wry/issues/366). This origin is not
-                    // app-specific -- every Tauri v2 app on Linux/macOS shares
-                    // `tauri://localhost` -- and CORS is browser-enforced, so it never
-                    // gated local non-browser processes anyway (`curl` against this
-                    // endpoint always worked and still does). This entry doesn't
-                    // meaningfully widen exposure because `graphql_handler` doesn't
-                    // authenticate per request at all (it resolves everything against a
-                    // hardcoded `default_user_id`): reachability already equals authority
-                    // here. Do not delete this entry -- the HUD needs it, and CORS is
-                    // currently the only thing standing between a visited website and the
-                    // cockpit. Windows uses `http://tauri.localhost` instead (a third
-                    // entry, not added -- bundling is disabled today so this is Linux-only).
-                    "tauri://localhost".parse::<axum::http::HeaderValue>().unwrap(),
-                ])
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                .allow_headers([axum::http::header::CONTENT_TYPE]),
-        )
-        .layer(TraceLayer::new_for_http())
-        .with_state(state::AppState {
-            schema: schema.clone(),
-            config_repo: config_repo.clone(),
-            oauth: oauth.clone(),
-            default_user_id,
-            oauth_state: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        });
+    let app = build_router(state::AppState {
+        schema: schema.clone(),
+        config_repo: config_repo.clone(),
+        oauth: oauth.clone(),
+        default_user_id,
+        oauth_state: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+    });
 
     tokio::spawn(jobs::run_eod_scheduler(eod_deps, default_user_id));
 
