@@ -67,6 +67,23 @@ describe('PressureBlock', () => {
     expect(gauge.querySelector('i')).toHaveStyle({ width: '90%' });
   });
 
+  it('caps the rendered rows at five while the label keeps the true total', () => {
+    // Controller ruling: a panel overflowing its grid cell is worse than one
+    // that summarises, but the label must still tell the truth. Seven
+    // deadlines exercises both halves of that ruling at once.
+    const tasks = Array.from({ length: 7 }, (_, i) => ({
+      id: `t${i}`,
+      title: `Deadline ${i}`,
+      deadline: `2026-09-${String(10 + i).padStart(2, '0')}`,
+    }));
+    mockDashboard({ tasks });
+
+    render(<PressureBlock />);
+
+    expect(screen.getByText(/7 deadlines/i)).toBeInTheDocument();
+    expect(screen.getAllByTestId('pressure-deadline')).toHaveLength(5);
+  });
+
   it('reads a deliberate empty state when there are no upcoming deadlines', () => {
     mockDashboard({ tasks: [] });
 
