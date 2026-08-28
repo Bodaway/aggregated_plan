@@ -90,12 +90,14 @@
    Transcribed from the mockup's `.nav`, with one deliberate correction:
    the mockup colours idle labels (and their shortcut digit) with its
    `--ink-low` equivalent, but `--hud-ink-low` is documented above as
-   hairlines-only (fails WCAG AA as text on this element, which has no
-   panel backdrop to darken it) — idle labels and the shortcut digit use
-   `--hud-ink-mid` instead; the digit is live, meaningful text (the
-   shortcut a sighted keyboard user reads), not a hairline. The current
-   destination is the lit one; the glow stays the only encoding of "where
-   you are". --- */
+   hairlines-only, never text — a rule about what the token IS, not about
+   what happens to sit behind it (round-2 review: this element now shares
+   `.hud-panel`'s own backdrop, per the shared occlusion rule below, and
+   the correction still holds unchanged) — idle labels and the shortcut
+   digit use `--hud-ink-mid` instead; the digit is live, meaningful text
+   (the shortcut a sighted keyboard user reads), not a hairline. The
+   current destination is the lit one; the glow stays the only encoding of
+   "where you are". --- */
 .hud-nav {
   display: flex;
   align-items: center;
@@ -751,15 +753,22 @@
   align-self: center;
 }
 
-/* --- the Ticker: the bottom band, deliberately NOT a `.hud-panel` — the
-   validated mockup draws it as a plain flex row under a single hairline,
-   never a panel with corner brackets or a blurred backdrop (its `.ticker`
+/* --- the Ticker: the bottom band, deliberately not the FULL `.hud-panel`
+   treatment — the validated mockup draws it as a plain flex row under a
+   single hairline, never a boxed panel with corner brackets (its `.ticker`
    carries no `.p` class, unlike every other secondary block in
-   hud-mockup.html). One correction against the mockup: its base text
-   colour is the mockup's `--ink-low` equivalent, but `--hud-ink-low` is
-   documented above as hairlines-only — the same correction HudNav already
-   made for the same reason. The ticker's alert messages, adherence figure
-   and version string are live, meaningful text, not a hairline. --- */
+   hud-mockup.html), and that much is unchanged. Round-2 review finding: it
+   HAD no blurred backdrop either, on raw transparency, and desktop noise
+   bled straight through its text worse than any panel — it now shares
+   `.hud-panel`'s own background/backdrop-filter via the grouped occlusion
+   rule above, same as the nav bar, while still skipping the brackets and
+   box padding that would make it read as a seventh panel. One correction
+   against the mockup: its base text colour is the mockup's `--ink-low`
+   equivalent, but `--hud-ink-low` is documented above as hairlines-only,
+   never text, regardless of what backdrop sits behind it — the same
+   correction HudNav already made for the same reason. The ticker's alert
+   messages, adherence figure and version string are live, meaningful
+   text, not a hairline. --- */
 .hud-ticker {
   display: flex;
   align-items: center;
