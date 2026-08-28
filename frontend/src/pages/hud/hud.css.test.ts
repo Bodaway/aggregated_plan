@@ -7,7 +7,13 @@ const CSS = readFileSync(resolve(__dirname, 'hud.css'), 'utf8');
 describe('HUD visual foundation', () => {
   it('scales with its container, not the viewport', () => {
     expect(CSS).toMatch(/container-type:\s*size/);
-    expect(CSS).toMatch(/font-size:\s*clamp\(10px,\s*0\.74cqw,\s*30px\)/);
+    // The shape, not the number. What this test guards is that the whole
+    // scale rides a CONTAINER unit between px bounds — the coefficient is a
+    // design decision that is meant to move (it went 0.74 -> 0.85 the first
+    // time the HUD was read on a real screen), and pinning it turned that
+    // intended change into a build failure. A viewport unit, or a middle
+    // term that stops being container-relative, still fails here.
+    expect(CSS).toMatch(/font-size:\s*clamp\(\s*\d+px,\s*[\d.]+cqw,\s*\d+px\s*\)/);
     expect(CSS).not.toMatch(/\dvw/);
   });
 
