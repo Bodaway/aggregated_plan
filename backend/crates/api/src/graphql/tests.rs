@@ -5356,3 +5356,195 @@ async fn break_stats_reports_null_adherence_when_nothing_was_seen() {
         .await;
     assert!(res.data.into_json().unwrap()["breakStats"]["perRule"][0]["adherence"].is_null());
 }
+
+// ─── nextBreakDue (HUD countdown) ───
+//
+// The resolver has no injectable clock: it reads `Utc::now()` directly, unlike
+// `resolve_windows` / `run_break_tick`, which both take `now` as a parameter and are
+// the only reason the application-layer break tests can pin a fixed calendar instant.
+// The tests below work around that gap rather than assume it away — see
+// `expected_next_due_bounds` for how.
+
+/// Every day is a working day and the (single) window spans practically all of it, so
+/// a `nextBreakDue` test never depends on which real day or hour the suite runs at.
+/// The afternoon slot is collapsed to a single instant (`end <= start`, `resolve_windows`'s
+/// own skip rule) so there is exactly one window and one due grid to reason about.
+const NEXT_DUE_ALL_DAY_WINDOW_CONFIG: &[(&str, &str)] = &[
+    ("aplan.timezone", "Europe/Paris"),
+    ("general.working_days", "1,2,3,4,5,6,7"),
+    ("workday.morning_start_hour", "0"),
+    ("workday.morning_end_hour", "23"),
+    ("workday.afternoon_start_hour", "23"),
+    ("workday.afternoon_end_hour", "23"),
+];
+
+async fn arm_next_due_all_day_window(schema: &TestSchema) {
+    for (key, value) in NEXT_DUE_ALL_DAY_WINDOW_CONFIG {
+        let res = schema
+            .execute(format!(
+                r#"mutation {{ updateConfiguration(key: "{key}", value: "{value}") }}"#
+            ))
+            .await;
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+    }
+}
+
+fn next_due_default_user_id() -> UserId {
+    Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID")
+}
+
+fn next_due_interval_rule(minutes: u32, enabled: bool) -> BreakRule {
+    let now = chrono::Utc::now();
+    BreakRule {
+        id: Uuid::new_v4(),
+        user_id: next_due_default_user_id(),
+        kind: BreakKind::Posture,
+        label: "Test".into(),
+        body: "Bouge".into(),
+        cadence: BreakCadence::Interval { minutes },
+        duration_seconds: 30,
+        priority: 1,
+        enabled,
+        urgency: BreakUrgency::Normal,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+/// Cross-checks the resolver against the exact domain primitive its doc comment says
+/// it calls (`next_natural_due_after` over `resolve_windows`), bracketed by a
+/// wall-clock reading taken just before and just after the GraphQL call.
+///
+/// `next_natural_due_after` is non-decreasing in `t` — a later `t` only rules
+/// candidates out, never in — and `.min()` over a set of non-decreasing functions is
+/// itself non-decreasing. The resolver's own `Utc::now()` necessarily falls inside
+/// `[t_before, t_after]`, so its `.min()` cannot land outside `[low, high]`. That is
+/// what makes the assertion exact rather than a bet on the wall clock cooperating.
+async fn expected_next_due_bounds(
+    config: &StubConfigRepository,
+    user_id: UserId,
+    rules: &[BreakRule],
+    t_before: chrono::DateTime<chrono::Utc>,
+    t_after: chrono::DateTime<chrono::Utc>,
+) -> (Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>) {
+    let windows_before =
+        application::use_cases::breaks::resolve_windows(config, user_id, t_before)
+            .await
+            .expect("resolve_windows");
+    let windows_after = application::use_cases::breaks::resolve_windows(config, user_id, t_after)
+        .await
+        .expect("resolve_windows");
+    let low = rules
+        .iter()
+        .filter_map(|r| domain::rules::breaks::next_natural_due_after(r, &windows_before, t_before))
+        .min();
+    let high = rules
+        .iter()
+        .filter_map(|r| domain::rules::breaks::next_natural_due_after(r, &windows_after, t_after))
+        .min();
+    (low, high)
+}
+
+/// A next due exists across several enabled interval rules, and it is the **earliest**
+/// one — not, say, the latest. The two cadences (5 and 500 minutes) are far enough
+/// apart that `.min()` and `.max()` disagree by minutes regardless of what instant
+/// "now" happens to be when the suite runs.
+#[tokio::test]
+async fn next_break_due_returns_the_earliest_of_several_enabled_interval_rules() {
+    let schema = build_test_schema();
+    arm_next_due_all_day_window(&schema).await;
+
+    for minutes in [5, 500] {
+        let created = schema
+            .execute(format!(
+                r#"mutation {{ createBreakRule(input: {{
+                     kind: POSTURE, label: "Test", body: "Bouge",
+                     cadence: INTERVAL, intervalMinutes: {minutes},
+                     durationSeconds: 30, priority: 1, enabled: true, urgency: NORMAL
+                   }}) {{ id }} }}"#
+            ))
+            .await;
+        assert!(created.errors.is_empty(), "{:?}", created.errors);
+    }
+
+    let config = StubConfigRepository::new();
+    let user_id = next_due_default_user_id();
+    for (key, value) in NEXT_DUE_ALL_DAY_WINDOW_CONFIG {
+        config.set(user_id, key, value).await.unwrap();
+    }
+    let rules = [next_due_interval_rule(5, true), next_due_interval_rule(500, true)];
+
+    let t_before = chrono::Utc::now();
+    let res = schema.execute("{ nextBreakDue }").await;
+    let t_after = chrono::Utc::now();
+
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let actual_str = res.data.into_json().unwrap()["nextBreakDue"]
+        .as_str()
+        .expect("nextBreakDue must not be null when enabled interval rules exist")
+        .to_string();
+    let actual = chrono::DateTime::parse_from_rfc3339(&actual_str)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let (low, high) = expected_next_due_bounds(&config, user_id, &rules, t_before, t_after).await;
+    let low = low.expect("the all-day window must still hold a candidate");
+    let high = high.expect("the all-day window must still hold a candidate");
+    assert!(
+        low <= actual && actual <= high,
+        "expected nextBreakDue in [{low}, {high}] (the earliest of the two rules), got {actual}"
+    );
+}
+
+/// An all-`Daily` routine has no "next" today: `next_natural_due_after` returns
+/// `None` unconditionally for a `Daily` cadence (a daily break fires once, not on a
+/// countdown), so `nextBreakDue` must be `null` rather than an error or a stale value.
+/// No window needs arming: the result does not depend on `resolve_windows` at all here.
+#[tokio::test]
+async fn next_break_due_is_null_when_every_enabled_rule_is_daily() {
+    let schema = build_test_schema();
+    let created = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: STRENGTH, label: "Renfo", body: "Élastique",
+                 cadence: DAILY, atTime: "14:00",
+                 durationSeconds: 120, priority: 1, enabled: true, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+
+    let res = schema.execute("{ nextBreakDue }").await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert!(res.data.into_json().unwrap()["nextBreakDue"].is_null());
+}
+
+/// A disabled rule must not arm the countdown — the same `list_enabled` filter
+/// `run_break_tick` applies before it ever calls `decide`, deliberately unlike
+/// `breakRules` / `breakStats`, which use `list()` and report on disabled rules too.
+/// The window is armed wide enough that, were the disabled rule wrongly included, its
+/// 10-minute cadence would certainly produce a non-null due — so a silent regression
+/// to `list()` here is caught, not accidentally passed by an empty window.
+#[tokio::test]
+async fn next_break_due_ignores_a_disabled_rule() {
+    let schema = build_test_schema();
+    arm_next_due_all_day_window(&schema).await;
+
+    let created = schema
+        .execute(
+            r#"mutation { createBreakRule(input: {
+                 kind: POSTURE, label: "Off", body: "Bouge",
+                 cadence: INTERVAL, intervalMinutes: 10,
+                 durationSeconds: 30, priority: 1, enabled: false, urgency: NORMAL
+               }) { id } }"#,
+        )
+        .await;
+    assert!(created.errors.is_empty(), "{:?}", created.errors);
+
+    let res = schema.execute("{ nextBreakDue }").await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert!(
+        res.data.into_json().unwrap()["nextBreakDue"].is_null(),
+        "a disabled rule must not arm the countdown"
+    );
+}

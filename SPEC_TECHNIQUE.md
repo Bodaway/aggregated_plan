@@ -6287,6 +6287,7 @@ type BreakStatsGql {
 extend type Query {
   breakRules: [BreakRuleGql!]!
   breakStats(from: String!, to: String!): BreakStatsGql!
+  nextBreakDue: DateTime
 }
 
 extend type Mutation {
@@ -6295,6 +6296,13 @@ extend type Mutation {
   deleteBreakRule(id: ID!): Boolean!
 }
 ```
+
+`nextBreakDue` porte le compte à rebours du panneau HUD : le minimum de
+`next_natural_due_after` (§21.2) sur les règles **activées** uniquement — même filtre que
+`run_break_tick` avant `decide`, pour que le HUD ne décompte jamais vers une règle que l'écran de
+réglages montre coupée. Les fenêtres viennent de `resolve_windows`, la même construction que le
+passage du job utilise sur `workday.*` : `null` si tout ce qui reste est une règle `Daily` (pas de
+« prochaine » aujourd'hui) ou si les fenêtres du jour sont épuisées.
 
 Les scalaires de configuration (§21.3) passent par la mutation `updateConfiguration` **existante**
 — `SettingsPage` a déjà `CONFIG_KEYS` et son bouton de sauvegarde, ce chemin n'est pas dupliqué.

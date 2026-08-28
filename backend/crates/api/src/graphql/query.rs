@@ -8,6 +8,7 @@ use uuid::Uuid;
 use application::repositories::*;
 use application::services::MemoryRetriever;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
+use application::use_cases::breaks as breaks_uc;
 use application::use_cases::brief as brief_uc;
 use application::use_cases::consolidation as consolidation_uc;
 use application::use_cases::memory as memory_uc;
@@ -15,6 +16,7 @@ use application::use_cases::recurrence as recurrence_uc;
 use application::use_cases::search as search_uc;
 use application::use_cases::session_tracking;
 use application::use_cases::timesheet::load_reconstruction_config;
+use domain::rules::breaks::next_natural_due_after;
 
 use super::types::*;
 
@@ -880,6 +882,36 @@ impl QueryRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(rules.into_iter().map(BreakRuleGql::from).collect())
+    }
+
+    /// The soonest instant the routine next comes due — the HUD's countdown.
+    ///
+    /// The minimum of `next_natural_due_after` over **enabled** rules only, so the
+    /// HUD never counts down to a rule the settings screen shows as switched off,
+    /// same filter `run_break_tick` applies before it ever calls `decide`. `null`
+    /// when nothing remains: every enabled rule is `Daily` (no "next" today — a
+    /// daily cadence fires once, not on a countdown), or today's working windows
+    /// are exhausted. Windows come from `resolve_windows`, the same construction
+    /// the tick itself runs on `workday.*`, so the HUD and the engine can never
+    /// disagree about what "today" looks like.
+    async fn next_break_due(&self, ctx: &Context<'_>) -> Result<Option<DateTime<Utc>>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let rules_repo = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+        let now = Utc::now();
+
+        let rules = rules_repo
+            .list_enabled(user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let windows = breaks_uc::resolve_windows(config_repo.as_ref(), user_id, now)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(rules
+            .iter()
+            .filter_map(|rule| next_natural_due_after(rule, &windows, now))
+            .min())
     }
 
     /// Adherence per rule over `[from, to)` — `taken / seen`, where `seen` counts only
