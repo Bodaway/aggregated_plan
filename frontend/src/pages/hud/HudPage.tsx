@@ -39,11 +39,13 @@ export function resetBootSequenceForTests(): void {
   bootSequencePlayed = false;
 }
 
-/** How long `data-opening` stays on: the last panel's delay plus its own
- *  duration, plus the sweep, plus a little. Removing the attribute is what
+/** How long `data-opening` stays on: the last panel's delay (430ms) plus its
+ *  own duration (620ms), which also clears the 980ms sweep, plus a little.
+ *  Slowed from 700ms on the user's read of it running — the first pass was
+ *  over before it registered. Removing the attribute is what
  *  arms the next opening — the rules stop matching, so applying them again
  *  runs them from the top rather than finding an animation already spent. */
-const OPENING_MS = 700;
+const OPENING_MS = 1150;
 
 /**
  * True for the length of the opening animation, and again on every reopening.

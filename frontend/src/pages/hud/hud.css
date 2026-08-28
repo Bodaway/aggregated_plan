@@ -122,20 +122,21 @@
 }
 
 .hud[data-opening] > *:not(.hud-sweep) {
-  animation: hud-panel-in 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: hud-panel-in 620ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 /* The stagger reads top-left to bottom-right, the order the eye takes the
    grid in — nav first because it is the frame, ticker last because it is the
-   footnote. Kept under a quarter second end to end: any longer and the last
-   panel is visibly late rather than part of one gesture. */
+   footnote. Slowed from a 220ms spread on the user's read of it running: the
+   first pass was over before it registered as anything. 430ms end to end is
+   still one gesture rather than eight arrivals. */
 .hud[data-opening] > .hud-nav      { animation-delay: 0ms; }
-.hud[data-opening] > .hud-focus    { animation-delay: 40ms; }
-.hud[data-opening] > .hud-pressure { animation-delay: 70ms; }
-.hud[data-opening] > .hud-agenda   { animation-delay: 100ms; }
-.hud[data-opening] > .hud-neural   { animation-delay: 130ms; }
-.hud[data-opening] > .hud-agents   { animation-delay: 160ms; }
-.hud[data-opening] > .hud-station  { animation-delay: 190ms; }
-.hud[data-opening] > .hud-ticker   { animation-delay: 220ms; }
+.hud[data-opening] > .hud-focus    { animation-delay: 70ms; }
+.hud[data-opening] > .hud-pressure { animation-delay: 130ms; }
+.hud[data-opening] > .hud-agenda   { animation-delay: 190ms; }
+.hud[data-opening] > .hud-neural   { animation-delay: 250ms; }
+.hud[data-opening] > .hud-agents   { animation-delay: 310ms; }
+.hud[data-opening] > .hud-station  { animation-delay: 370ms; }
+.hud[data-opening] > .hud-ticker   { animation-delay: 430ms; }
 
 /* One pass of a soft teal band across the whole surface. A gradient, never a
    box-shadow: the glow budget is exactly one --cn-teal box-shadow file-wide
@@ -162,7 +163,7 @@
     color-mix(in srgb, var(--cn-teal) 7%, transparent) 55%,
     transparent
   );
-  animation: hud-sweep 560ms cubic-bezier(0.35, 0, 0.2, 1) both;
+  animation: hud-sweep 980ms cubic-bezier(0.35, 0, 0.2, 1) both;
 }
 
 /* Someone who asked the system for less motion gets the grid, immediately and

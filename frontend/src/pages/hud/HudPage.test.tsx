@@ -226,7 +226,7 @@ describe('HudPage', () => {
     // matching, so applying them again later runs them from the top instead of
     // finding an animation already spent.
     renderGrid();
-    act(() => void vi.advanceTimersByTime(1000));
+    act(() => void vi.advanceTimersByTime(2000));
 
     expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-opening');
     expect(screen.queryByTestId('hud-sweep')).not.toBeInTheDocument();
@@ -234,7 +234,7 @@ describe('HudPage', () => {
 
   it('plays again on every reopening', () => {
     renderGrid();
-    act(() => void vi.advanceTimersByTime(1000));
+    act(() => void vi.advanceTimersByTime(2000));
     expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-opening');
 
     setSurface('hidden');
