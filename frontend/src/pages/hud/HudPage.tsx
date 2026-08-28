@@ -39,45 +39,67 @@ export function resetBootSequenceForTests(): void {
   bootSequencePlayed = false;
 }
 
-/** How long `data-opening` stays on: the last panel's delay (430ms) plus its
- *  own duration (620ms), which also clears the 980ms sweep, plus a little.
- *  Slowed from 700ms on the user's read of it running — the first pass was
- *  over before it registered. Removing the attribute is what
- *  arms the next opening — the rules stop matching, so applying them again
- *  runs them from the top rather than finding an animation already spent. */
+/** How long `playing` stays on: the last panel's delay (430ms) plus its own
+ *  duration (620ms), which also clears the 980ms sweep, plus a little. Slowed
+ *  from 700ms on the user's read of it running — the first pass was over
+ *  before it registered. Removing the attribute is what arms the next
+ *  opening: the rules stop matching, so applying them again runs them from
+ *  the top rather than finding an animation already spent. */
 const OPENING_MS = 1150;
 
+type OpenState = 'armed' | 'playing' | undefined;
+
 /**
- * True for the length of the opening animation, and again on every reopening.
+ * Drives the opening animation, in three states.
  *
- * The whole grid is rendered and readable throughout — this animates data in,
- * it never makes anyone wait for it. That distinction is the lesson of the
- * boot sequence, which was cut back to once per process for standing between
- * the keystroke and the numbers.
+ * The grid is rendered and readable throughout — this animates data in, it
+ * never makes anyone wait for it. That distinction is the lesson of the boot
+ * sequence, cut back to once per process for standing between the keystroke
+ * and the numbers.
  *
- * Mount counts as an opening: the grid mounts when the boot sequence ends on
- * the first launch, and again on every return from another tab, and both are
- * moments the HUD arrives in front of someone.
+ * `armed` exists because of a flicker the user caught: the compositor reveals
+ * the window BEFORE the signal telling us it is revealed arrives, so a grid
+ * that only starts animating on the signal is briefly seen finished, drops to
+ * nothing and climbs back. Arming on HIDE puts it at the animation's first
+ * frame while nobody is looking.
+ *
+ * Mount plays straight away rather than arming: the grid mounts when the boot
+ * sequence ends, and again on every return from another tab, and both are
+ * moments it is already in front of someone.
  */
-function useOpeningAnimation(): boolean {
+function useOpeningAnimation(): OpenState {
   const visible = useSurfaceVisibility();
-  const [openings, setOpenings] = useState(0);
+  const [state, setState] = useState<OpenState>('playing');
   const wasVisible = useRef(visible);
-  const [opening, setOpening] = useState(true);
 
   useEffect(() => {
     const opened = visible && !wasVisible.current;
+    const closed = !visible && wasVisible.current;
     wasVisible.current = visible;
-    if (opened) setOpenings((n) => n + 1);
+    if (opened) setState('playing');
+    if (closed) setState('armed');
   }, [visible]);
 
+  // Safety net for the one failure `armed` could otherwise cause: a grid
+  // parked invisible because the reveal signal never came (the workspace
+  // toggled by something other than our own script, say). Focus is not a
+  // reliable "visible", which is why it does not drive the state generally —
+  // but it is a reliable "definitely on screen now", and the only thing it
+  // can do here is reveal a grid that is already hidden.
   useEffect(() => {
-    setOpening(true);
-    const timer = setTimeout(() => setOpening(false), OPENING_MS);
-    return () => clearTimeout(timer);
-  }, [openings]);
+    if (state !== 'armed') return;
+    const reveal = () => setState('playing');
+    window.addEventListener('focus', reveal);
+    return () => window.removeEventListener('focus', reveal);
+  }, [state]);
 
-  return opening;
+  useEffect(() => {
+    if (state !== 'playing') return;
+    const timer = setTimeout(() => setState(undefined), OPENING_MS);
+    return () => clearTimeout(timer);
+  }, [state]);
+
+  return state;
 }
 
 /** The grid proper, split out of `HudPage` so that nothing behind the boot
@@ -88,10 +110,10 @@ function HudGrid() {
   // One arbiter, one glow: every `lit` below is derived from this single
   // value, so no combination of props can light two panels at once.
   const dominant = useDominantBlock();
-  const opening = useOpeningAnimation();
+  const openState = useOpeningAnimation();
 
   return (
-    <div data-testid="hud-grid" className="hud" data-opening={opening ? '' : undefined}>
+    <div data-testid="hud-grid" className="hud" data-open={openState}>
       <HudNav />
       <FocusBlock lit={dominant === 'focus'} />
       <PressureBlock lit={dominant === 'pressure'} />
@@ -100,7 +122,7 @@ function HudGrid() {
       <AgentsBlock />
       <StationBlock />
       <Ticker />
-      {opening && <div className="hud-sweep" data-testid="hud-sweep" />}
+      {openState === 'playing' && <div className="hud-sweep" data-testid="hud-sweep" />}
     </div>
   );
 }

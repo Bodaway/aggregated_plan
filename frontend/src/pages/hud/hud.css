@@ -100,11 +100,22 @@
    between the keystroke and the data; this must not repeat that mistake, so
    nothing here delays a single value.
 
-   `data-opening` is set for the duration and then removed, which is what
-   makes the animation restart on the next opening: the rules below stop
-   matching in between, so applying them again runs them from the top. An
-   ancestor attribute merely changing value would not re-trigger an animation
-   already applied.
+   Three states, and the first of them exists because of a flicker: the
+   compositor reveals the window BEFORE the app is told it is being revealed,
+   so a grid that only starts animating on the signal is briefly seen
+   finished, drops to nothing, and climbs back. `armed` is the fix — the grid
+   is put at the animation's starting point the moment it is HIDDEN, while
+   nobody is looking, so the reveal shows the first frame rather than the
+   last.
+
+     armed   : hidden, holding the opening's first frame, no animation running
+     playing : on screen, the animation running from that same first frame
+     (absent): settled
+
+   `playing` is removed at the end, and that removal is what arms the next
+   opening: the rules stop matching, so applying them again runs them from the
+   top. An ancestor attribute merely changing value would not re-trigger an
+   animation already applied.
 
    Cost: ~600 ms of compositor work per opening, and only while the surface is
    actually on screen — the signal that drives it fires nowhere else. Nothing
@@ -121,7 +132,13 @@
   to   { transform: translateX(340%); opacity: 0; }
 }
 
-.hud[data-opening] > *:not(.hud-sweep) {
+/* Held, not animated: this is the pose the animation starts from, adopted
+   while the overlay is off screen so the reveal never shows the finished
+   grid first. */
+.hud[data-open='armed'] > *:not(.hud-sweep) {
+  opacity: 0;
+}
+.hud[data-open='playing'] > *:not(.hud-sweep) {
   animation: hud-panel-in 620ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 /* The stagger reads top-left to bottom-right, the order the eye takes the
@@ -129,14 +146,14 @@
    footnote. Slowed from a 220ms spread on the user's read of it running: the
    first pass was over before it registered as anything. 430ms end to end is
    still one gesture rather than eight arrivals. */
-.hud[data-opening] > .hud-nav      { animation-delay: 0ms; }
-.hud[data-opening] > .hud-focus    { animation-delay: 70ms; }
-.hud[data-opening] > .hud-pressure { animation-delay: 130ms; }
-.hud[data-opening] > .hud-agenda   { animation-delay: 190ms; }
-.hud[data-opening] > .hud-neural   { animation-delay: 250ms; }
-.hud[data-opening] > .hud-agents   { animation-delay: 310ms; }
-.hud[data-opening] > .hud-station  { animation-delay: 370ms; }
-.hud[data-opening] > .hud-ticker   { animation-delay: 430ms; }
+.hud[data-open='playing'] > .hud-nav      { animation-delay: 0ms; }
+.hud[data-open='playing'] > .hud-focus    { animation-delay: 70ms; }
+.hud[data-open='playing'] > .hud-pressure { animation-delay: 130ms; }
+.hud[data-open='playing'] > .hud-agenda   { animation-delay: 190ms; }
+.hud[data-open='playing'] > .hud-neural   { animation-delay: 250ms; }
+.hud[data-open='playing'] > .hud-agents   { animation-delay: 310ms; }
+.hud[data-open='playing'] > .hud-station  { animation-delay: 370ms; }
+.hud[data-open='playing'] > .hud-ticker   { animation-delay: 430ms; }
 
 /* One pass of a soft teal band across the whole surface. A gradient, never a
    box-shadow: the glow budget is exactly one --cn-teal box-shadow file-wide
@@ -169,7 +186,9 @@
 /* Someone who asked the system for less motion gets the grid, immediately and
    still. Not a shorter animation — none. */
 @media (prefers-reduced-motion: reduce) {
-  .hud[data-opening] > *:not(.hud-sweep) { animation: none; }
+  /* Both states cancelled: `armed` holds the grid invisible on purpose, and
+     without an animation to reveal it there would be nothing to reveal it. */
+  .hud[data-open] > *:not(.hud-sweep) { animation: none; opacity: 1; }
   .hud-sweep { display: none; }
 }
 

@@ -216,7 +216,7 @@ describe('HudPage', () => {
     renderGrid();
 
     const grid = screen.getByTestId('hud-grid');
-    expect(grid).toHaveAttribute('data-opening');
+    expect(grid).toHaveAttribute('data-open', 'playing');
     expect(screen.getByTestId('hud-sweep')).toBeInTheDocument();
     expect(screen.getByTestId('station-block')).toBeInTheDocument();
   });
@@ -228,20 +228,50 @@ describe('HudPage', () => {
     renderGrid();
     act(() => void vi.advanceTimersByTime(2000));
 
-    expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-opening');
+    expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-open');
     expect(screen.queryByTestId('hud-sweep')).not.toBeInTheDocument();
   });
 
   it('plays again on every reopening', () => {
     renderGrid();
     act(() => void vi.advanceTimersByTime(2000));
-    expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-opening');
+    expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-open');
 
     setSurface('hidden');
     setSurface('visible');
 
-    expect(screen.getByTestId('hud-grid')).toHaveAttribute('data-opening');
+    expect(screen.getByTestId('hud-grid')).toHaveAttribute('data-open', 'playing');
     expect(screen.getByTestId('hud-sweep')).toBeInTheDocument();
+  });
+
+  it('arms the grid while it is hidden, so the reveal never shows it finished', () => {
+    // The flicker the user caught: the compositor reveals the window before
+    // the signal telling us so arrives. A grid that only starts animating on
+    // the signal is seen finished for a frame or two, drops to nothing, and
+    // climbs back. Arming on HIDE means the reveal shows the first frame.
+    renderGrid();
+    act(() => void vi.advanceTimersByTime(2000));
+
+    setSurface('hidden');
+
+    expect(screen.getByTestId('hud-grid')).toHaveAttribute('data-open', 'armed');
+    // Armed is a pose, not a performance: no sweep runs behind the curtain.
+    expect(screen.queryByTestId('hud-sweep')).not.toBeInTheDocument();
+  });
+
+  it('reveals an armed grid on window focus, if the signal never comes', () => {
+    // `armed` holds the grid invisible, so its one dangerous failure is a
+    // reveal signal that never arrives — the workspace toggled by something
+    // other than our own script. Focus is not a reliable "visible", but it is
+    // a reliable "on screen now", and all it can do here is reveal.
+    renderGrid();
+    act(() => void vi.advanceTimersByTime(2000));
+    setSurface('hidden');
+    expect(screen.getByTestId('hud-grid')).toHaveAttribute('data-open', 'armed');
+
+    act(() => void window.dispatchEvent(new Event('focus')));
+
+    expect(screen.getByTestId('hud-grid')).toHaveAttribute('data-open', 'playing');
   });
 
   it('gives someone who asked for less motion the grid, still', () => {
@@ -249,6 +279,9 @@ describe('HudPage', () => {
     // animation would not honour the request, so the rule must cancel it.
     const reduced = HUD_CSS.match(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[^}]*\{[^}]*\}[^}]*\}/)?.[0] ?? '';
     expect(reduced).toMatch(/animation:\s*none/);
+    // And `opacity: 1` with it: `armed` hides the grid deliberately, so
+    // cancelling only the animation would leave nothing to reveal it.
+    expect(reduced).toMatch(/opacity:\s*1/);
     expect(reduced).toMatch(/\.hud-sweep\s*\{\s*display:\s*none/);
   });
 
