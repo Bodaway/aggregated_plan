@@ -1,0 +1,333 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>aplan HUD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@200;300;400;700&family=Chakra+Petch:wght@300;600;700&display=swap">
+<style>
+/* ---------------------------------------------------------------------------
+   Croisement 01 Télémétrie × 04 Néon.
+   Règle de composition : la lueur est un budget, pas un effet. UN bloc dominant
+   la porte ; les cinq autres sont en filets. La lueur encode donc la hiérarchie
+   et ne peut pas proliférer — c'est ce qui rend le système tenable à six blocs.
+   Palette CyberNord du poste, inchangée.
+--------------------------------------------------------------------------- */
+:root {
+  --cyan:   #08f7fe;
+  --pink:   #ff2e63;
+  --purple: #d08fff;
+  --green:  #00ff9c;
+  --orange: #ff6e27;
+  --yellow: #ebcb8b;
+
+  /* encres du HUD : froides, désaturées, dérivées du cyan */
+  --ink:      #d7e9ee;
+  --ink-mid:  #8ba3ac;
+  --ink-low:  #5d737d;
+  --hair:     #24363d;         /* filet standard */
+  --panel:    rgba(9,17,22,.72);
+
+  /* neutres de la page d'exposition */
+  --page:   #101319;
+  --rule:   #232833;
+  --page-ink: #ccd2dc;
+  --page-low: #737e91;
+
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --disp: "Chakra Petch", var(--mono);
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--page); color:var(--page-ink);
+  font-family:var(--mono); font-size:1em; line-height:1.6; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1240px; margin:0 auto; padding:64px 24px 110px; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+header { border-bottom:1px solid var(--rule); padding-bottom:32px; margin-bottom:40px; }
+.kicker { font-size:.75em; letter-spacing:.28em; text-transform:uppercase; color:var(--cyan); margin:0 0 16px; }
+h1 { font-family:var(--disp); font-weight:700; font-size:clamp(32px,5.4vw,54px); line-height:1.02;
+  margin:0 0 18px; letter-spacing:-.02em; color:#fff; text-wrap:balance; }
+header p { margin:0; max-width:64ch; color:var(--page-low); }
+header p b { color:var(--page-ink); font-weight:400; }
+
+/* ====================== l'écran ====================== */
+.screen {
+  position:relative; aspect-ratio:16/9; min-height:520px; overflow:hidden;
+  container-type: size; container-name: hud;
+  border:1px solid var(--rule);
+  /* fond « bureau » : c'est ce qu'on voit à travers la fenêtre transparente */
+  background:
+    radial-gradient(900px 460px at 12% 6%,  rgba(8,247,254,.07), transparent 68%),
+    radial-gradient(760px 420px at 88% 96%, rgba(255,46,99,.06), transparent 68%),
+    linear-gradient(128deg,#1a2331 0%,#241c2d 46%,#0e141c 100%);
+}
+.hud {
+  position:absolute; inset:0;
+  display:grid;
+  font-family:var(--mono); color:var(--ink);
+  /* tout est exprimé en em : une seule variable pilote l'échelle */
+  font-size: clamp(10px, 0.74cqw, 30px);
+  padding: 1.9em; gap: 1em;
+  grid-template-columns: repeat(12, 1fr);
+  grid-template-rows: auto 1fr 1fr auto;  /* barre, deux lignes pleines, pied */
+}
+
+/* --- reflow : conteneur étroit (écran du portable) ---
+   Focus passe pleine largeur et les paires se répartissent sur quatre lignes,
+   au lieu d'entasser six blocs sur trois. --- */
+@container hud (max-width: 1500px) {
+  .hud { grid-template-rows: auto 1.25fr 1fr 1fr auto; gap:.8em; padding:1.4em; }
+  .focus    { grid-column: 1 / -1;  grid-row: 2; }
+  .pression { grid-column: span 7;  grid-row: 3; }
+  .agenda   { grid-column: span 5;  grid-row: 3; }
+  .neural   { grid-column: span 7;  grid-row: 4; }
+  .agents   { grid-column: span 5;  grid-row: 4; }
+  .ambiance { grid-column: span 5;  grid-row: 5; }
+  .ticker   { grid-column: span 7;  grid-row: 5; }
+  .focus { flex-direction:row; align-items:flex-start; gap:2em; flex-wrap:wrap; }
+  .focus .chrono { font-size:4.6em; }
+  .focus .foot { margin-top:0; margin-left:auto; align-self:flex-end; border-top:0; }
+}
+
+/* --- barre de destinations : sortir du HUD vers le reste de l'app.
+   La vue courante est allumée — la lueur reste l'encodage de « où tu es ». --- */
+.nav { grid-column: 1 / -1; grid-row: 1; display:flex; align-items:center;
+  gap:1.5em; border-bottom:1px solid var(--hair); padding-bottom:.7em; }
+.nav .mark { font-family:var(--disp); font-weight:600; font-size:.85em;
+  letter-spacing:.3em; color:var(--cyan); text-shadow:0 0 12px rgba(8,247,254,.7); }
+.dest { display:flex; gap:1.15em; flex-wrap:wrap; align-items:baseline; }
+.dest a { text-decoration:none; display:flex; gap:.4em; align-items:baseline;
+  font-size:.66em; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-low); }
+.dest a i { font-style:normal; color:#3f5a63; font-variant-numeric:tabular-nums; }
+.dest a:hover, .dest a:focus-visible { color:var(--ink); outline:none; }
+.dest a:hover i, .dest a:focus-visible i { color:var(--cyan); }
+.dest a.on { color:var(--cyan); text-shadow:0 0 12px rgba(8,247,254,.65); }
+.dest a.on i { color:var(--cyan); }
+.nav .esc { margin-left:auto; font-size:.62em; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--ink-low); white-space:nowrap; }
+@container hud (max-width: 1500px) { .nav { gap:1em; } .dest { gap:.85em; } }
+
+/* --- panneau sobre, commun aux cinq secondaires --- */
+.p { position:relative; background:var(--panel); padding:.9em 1em; min-width:0;
+     backdrop-filter: blur(18px) saturate(.75); }
+.p::before,.p::after { content:""; position:absolute; width:.78em; height:.78em; border:1px solid var(--hair); }
+.p::before { top:0; left:0;  border-right:0; border-bottom:0; }
+.p::after  { bottom:0; right:0; border-left:0; border-top:0; }
+.p > .lbl { font-size:.62em; letter-spacing:.3em; text-transform:uppercase; color:var(--ink-low); }
+.p.lit > .lbl { color:var(--cyan); }
+
+.kv { display:flex; justify-content:space-between; gap:0.67em; font-size:.75em; color:var(--ink-mid); margin-top:0.40em; }
+.kv b { color:var(--ink); font-weight:400; }
+.gauge { height:.22em; background:#1b2a30; margin-top:0.40em; }
+.gauge i { display:block; height:100%; background:var(--cyan); }
+
+/* --- le bloc dominant : le seul qui porte la lueur --- */
+.focus {
+  grid-column: span 4; grid-row: 2 / span 2;
+  position:relative; padding:1.5em 1.6em; display:flex; flex-direction:column;
+  background:linear-gradient(158deg, rgba(18,26,44,.90), rgba(7,11,20,.95));
+  backdrop-filter: blur(22px) saturate(.7);
+  border:1px solid rgba(8,247,254,.30);
+  box-shadow: 0 0 46px rgba(8,247,254,.11), inset 0 1px 0 rgba(255,255,255,.05);
+}
+.focus .lbl { font-size:.68em; letter-spacing:.42em; text-transform:uppercase;
+  color:var(--cyan); text-shadow:0 0 14px rgba(8,247,254,.85); }
+.focus .task { font-size:.9em; color:#9fb2bd; margin-top:0.93em; line-height:1.45; }
+.focus .task b { color:var(--ink); font-weight:400; }
+.focus .chrono {
+  font-family:var(--disp); font-weight:200; font-size:6.2em; line-height:.95;
+  margin:.28em 0 0; letter-spacing:.01em; color:#fff;
+  text-shadow:0 0 26px rgba(8,247,254,.7), 0 0 72px rgba(8,247,254,.3);
+}
+.focus .since { font-size:.72em; letter-spacing:.18em; color:var(--ink-low); text-transform:uppercase; }
+.focus .glowbar { height:.15em; margin:1.3em 0 0;
+  background:linear-gradient(90deg,var(--cyan),var(--pink) 72%,transparent);
+  box-shadow:0 0 12px rgba(255,46,99,.6); }
+.quarters { display:flex; gap:0.27em; margin-top:auto; }
+.quarters i { flex:1; height:1.9em; background:rgba(8,247,254,.07); border-top:2px solid #2c4750; }
+.quarters i.full { background:rgba(8,247,254,.22); border-top-color:var(--cyan); }
+.quarters i.now  { background:rgba(8,247,254,.38); border-top-color:var(--cyan);
+  box-shadow:0 -6px 18px rgba(8,247,254,.35); }
+.qlabels { display:flex; font-size:.62em; letter-spacing:.14em; color:var(--ink-low); margin-top:0.40em; }
+.qlabels span { flex:1; }
+.focus .foot { margin-top:1.6em; padding-top:1.20em; border-top:1px solid rgba(8,247,254,.15); display:flex; justify-content:space-between; align-items:flex-end; }
+.focus .foot .big { font-family:var(--disp); font-size:1.8em; font-weight:300; color:var(--ink); }
+
+/* --- pression --- */
+.pression { grid-column: span 5; grid-row: 2; }
+.deadline { display:grid; grid-template-columns:auto 1fr; gap:0.60em; align-items:baseline;
+  font-size:.78em; margin-top:0.60em; color:var(--ink-mid); }
+.deadline .when { font-size:.62em; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-low); white-space:nowrap; }
+.deadline.hot .when { color:var(--pink); text-shadow:0 0 10px rgba(255,46,99,.55); }
+.deadline .what { color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* --- agenda --- */
+.agenda   { grid-column: span 3; grid-row: 2; }
+.timeline { position:relative; height:.34em; background:#1b2a30; margin-top:0.93em; }
+.timeline i { position:absolute; top:0; height:100%; background:var(--purple); opacity:.75; }
+.timeline u { position:absolute; top:-4px; width:1px; height:.9em; background:var(--cyan); }
+
+/* --- neural budget --- */
+.neural   { grid-column: span 5; grid-row: 3; }
+.spark { display:flex; align-items:flex-end; gap:0.13em; height:2.7em; margin-top:0.80em; }
+.spark i { flex:1; background:linear-gradient(to top, rgba(255,46,99,.12), rgba(255,46,99,.85)); }
+.spark i.last { background:linear-gradient(to top, rgba(8,247,254,.15), var(--cyan)); }
+
+/* --- agents --- */
+.agents   { grid-column: span 3; grid-row: 3; }
+.agent { display:grid; grid-template-columns:.5em 1fr auto; gap:0.53em; align-items:center;
+  font-size:.75em; margin-top:0.53em; color:var(--ink-mid); }
+.agent s { width:.5em; height:.5em; background:var(--green); text-decoration:none; }
+.agent s.idle { background:var(--ink-low); }
+.agent .who { color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* --- ambiance --- */
+.ambiance { grid-column: span 4; grid-row: 4; display:flex; flex-direction:row;
+  align-items:baseline; gap:1.4em; }
+.clock { font-family:var(--disp); font-weight:300; font-size:2.2em; line-height:1; margin-top:0.53em; color:var(--ink); }
+.date  { font-size:.68em; letter-spacing:.2em; text-transform:uppercase; color:var(--ink-low); margin-top:0.27em; }
+.sys { display:grid; grid-template-columns:repeat(3,1fr); gap:0.8em; flex:1; align-self:stretch; align-items:end; }
+.sys div { border-top:1px solid var(--hair); padding-top:0.40em; }
+.sys span { display:block; font-size:.58em; letter-spacing:.16em; color:var(--ink-low); text-transform:uppercase; }
+.sys b { font-size:.95em; font-weight:400; color:var(--ink); }
+
+/* bandeau bas : le ticker d'alertes, ligne pleine largeur */
+.ticker { grid-column: span 8; grid-row: 4; display:flex; gap:1.73em; align-items:center;
+  border-top:1px solid var(--hair); padding-top:0.67em; font-size:.68em;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--ink-low); }
+.ticker b { color:var(--pink); font-weight:400; text-shadow:0 0 10px rgba(255,46,99,.5); }
+
+/* ====================== notes ====================== */
+.notes { margin-top:3.47em; display:grid; gap:2.27em; grid-template-columns:1fr; }
+@media (min-width:860px){ .notes { grid-template-columns:1fr 1fr; } }
+.note h3 { font-family:var(--disp); font-size:17px; font-weight:600; margin:0 0 10px; color:#fff; letter-spacing:.01em; }
+.note p { margin:0 0 10px; color:var(--page-low); }
+.note p b { color:var(--page-ink); font-weight:400; }
+.rulebox { border-left:2px solid var(--cyan); padding-left:16px; }
+
+footer { margin-top:3.73em; padding-top:2.00em; border-top:1px solid var(--rule); color:var(--page-low); }
+footer p { max-width:66ch; margin:0 0 10px; }
+footer b { color:var(--page-ink); font-weight:400; }
+
+@media (prefers-reduced-motion: reduce){ *{ animation:none!important; } }
+</style>
+<style>
+  html, body { height:100%; margin:0; background:transparent !important; overflow:hidden; }
+  body { container-type: size; container-name: hud; }
+  .hud { position:fixed; inset:0; }
+</style>
+<div class="hud">
+
+    <nav class="nav">
+      <span class="mark">APLAN</span>
+      <div class="dest">
+        <a class="on" href="#"><i>0</i>HUD</a>
+        <a href="#"><i>1</i>Dashboard</a>
+        <a href="#"><i>2</i>Triage</a>
+        <a href="#"><i>3</i>Priorités</a>
+        <a href="#"><i>4</i>Charge</a>
+        <a href="#"><i>5</i>Activité</a>
+        <a href="#"><i>6</i>Timesheet</a>
+        <a href="#"><i>7</i>Worklog</a>
+        <a href="#"><i>8</i>Mémoire</a>
+        <a href="#"><i>9</i>Dédup</a>
+        <a href="#"><i>A</i>Alertes</a>
+        <a href="#"><i>,</i>Réglages</a>
+      </div>
+      <span class="esc">Esc ferme</span>
+    </nav>
+
+    <!-- ===== bloc dominant : le seul qui brille ===== -->
+    <div class="focus">
+      <div class="lbl">Focus</div>
+      <div class="task"><b>SCB-455</b> · revue du dossier de cadrage<br>interfaçage eProject A3</div>
+      <div class="chrono tnum">01:47:12</div>
+      <div class="since">démarré à 13 h 04 · session 152b69b2</div>
+      <div class="glowbar"></div>
+
+      <div class="quarters">
+        <i class="full"></i><i class="now"></i><i></i><i></i>
+      </div>
+      <div class="qlabels"><span>Q1 08–10</span><span>Q2 10–12</span><span>Q3 13–15</span><span>Q4 15–17</span></div>
+
+      <div class="foot">
+        <div>
+          <div class="since">Charge du jour</div>
+          <div class="big tnum">6,5 <span style="font-size:1em;color:var(--ink-low)">/ 7,0 h</span></div>
+        </div>
+        <div style="text-align:right">
+          <div class="since">Prochaine pause</div>
+          <div class="big tnum">12 min</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== pression ===== -->
+    <div class="p pression">
+      <div class="lbl">▌ Pression · 14 échéances</div>
+      <div class="deadline hot"><span class="when">Aujourd'hui</span><span class="what">eActions — mort au démarrage si CSV corrompu</span></div>
+      <div class="deadline hot"><span class="when">Aujourd'hui</span><span class="what">SCB-455 — revue cadrage eProject A3</span></div>
+      <div class="deadline"><span class="when">J-4</span><span class="what">cadrage Gestion des Standards</span></div>
+      <div class="deadline"><span class="when">J-4</span><span class="what">eActions — étude tests E2E</span></div>
+      <div class="deadline"><span class="when">J-4</span><span class="what">[eActions] récupération APU et Owner</span></div>
+      <div class="kv" style="margin-top:0.93em"><span>Capacité</span><b class="tnum">93 %</b></div>
+      <div class="gauge"><i style="width:93%;background:var(--orange)"></i></div>
+    </div>
+
+    <!-- ===== agenda ===== -->
+    <div class="p agenda">
+      <div class="lbl">▌ Agenda</div>
+      <div class="kv" style="margin-top:0.67em"><span>Prochaine</span><b class="tnum">T-38 min</b></div>
+      <div class="kv"><span class="what" style="color:var(--ink)">Point hebdo SAFT</span></div>
+      <div class="timeline">
+        <i style="left:8%;width:11%"></i><i style="left:34%;width:7%"></i><i style="left:62%;width:14%"></i>
+        <u style="left:44%"></u>
+      </div>
+      <div class="kv" style="margin-top:0.53em"><span>08 h</span><span>17 h</span></div>
+      <div class="kv" style="margin-top:0.93em"><span>Réunions</span><b class="tnum">3 · 2 h 10</b></div>
+    </div>
+
+    <!-- ===== neural budget ===== -->
+    <div class="p neural">
+      <div class="lbl">▌ Neural budget · fenêtre 5 h</div>
+      <div class="kv" style="margin-top:0.60em"><span>Consommé</span><b class="tnum">68 % du plafond déclaré</b></div>
+      <div class="gauge"><i style="width:68%;background:var(--pink)"></i></div>
+      <div class="spark">
+        <i style="height:24%"></i><i style="height:47%"></i><i style="height:33%"></i><i style="height:71%"></i>
+        <i style="height:52%"></i><i style="height:88%"></i><i style="height:44%"></i><i style="height:63%"></i>
+        <i style="height:37%"></i><i class="last" style="height:79%"></i>
+      </div>
+      <div class="kv" style="margin-top:0.67em"><span>opus-5</span><b class="tnum">1,86 M</b></div>
+      <div class="kv"><span>fable-5</span><b class="tnum">412 k</b></div>
+      <div class="kv"><span>aggregated_plan</span><b class="tnum">61 % du total</b></div>
+    </div>
+
+    <!-- ===== agents ===== -->
+    <div class="p agents">
+      <div class="lbl">▌ Agents actifs · 3 sessions</div>
+      <div class="agent"><s></s><span class="who">aggregated-plan-98</span><b class="tnum">SCB-455</b></div>
+      <div class="agent"><s></s><span class="who">cicd-safteaction-3d</span><b class="tnum">SAFT QRCode</b></div>
+      <div class="agent"><s class="idle"></s><span class="who">qmkkc-1f</span><b class="tnum">— inactif 1 h</b></div>
+      <div class="kv" style="margin-top:0.93em"><span>Worklog du jour</span><b class="tnum">4 h 20 · 11 notes</b></div>
+      <div class="gauge"><i style="width:62%"></i></div>
+    </div>
+
+    <!-- ===== ambiance ===== -->
+    <div class="p ambiance">
+      <div class="lbl">▌ Poste</div>
+      <div class="clock tnum">14:52</div>
+      <div class="date">jeudi 27 août</div>
+      <div class="sys">
+        <div><span>CPU</span><b class="tnum">18 %</b></div>
+        <div><span>RAM</span><b class="tnum">11,4 G</b></div>
+        <div><span>Net</span><b class="tnum">2,1 M</b></div>
+      </div>
+    </div>
+
+    <!-- ===== ticker ===== -->
+    <div class="ticker">
+      <span><b>▲ Surcharge</b> · 93 % de capacité, 2 échéances aujourd'hui</span>
+      <span>Adhérence pauses <b style="color:var(--yellow);text-shadow:none">72 %</b></span>
+      <span style="margin-left:auto">aplan v0.1.0 · super+b</span>
+    </div>
+
+  

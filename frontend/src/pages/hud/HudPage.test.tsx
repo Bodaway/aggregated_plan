@@ -161,4 +161,66 @@ describe('HudPage', () => {
     act(() => void vi.advanceTimersByTime(1600));
     expect(dashboardMock).toHaveBeenCalled();
   });
+
+  // ─── the boot sequence, and who gets to see it ───
+
+  /** jsdom reports `visible` by default and offers no way to toggle it, so the
+   *  property is redefined and the event fired by hand — the same pair
+   *  `useSurfaceVisibility` listens for in the real window. */
+  function setSurface(state: 'visible' | 'hidden') {
+    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+    act(() => void document.dispatchEvent(new Event('visibilitychange')));
+  }
+
+  afterEach(() => setSurface('visible'));
+
+  it('holds the boot sequence back while the surface is hidden', () => {
+    // The window is born on a hidden special workspace. A sequence that starts
+    // at mount plays out behind the curtain and is never seen by anyone.
+    setSurface('hidden');
+    renderHudPage();
+
+    act(() => void vi.advanceTimersByTime(5000));
+    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
+    expect(screen.queryByTestId('hud-grid')).not.toBeInTheDocument();
+  });
+
+  it('runs it on the first opening', () => {
+    setSurface('hidden');
+    renderHudPage();
+    act(() => void vi.advanceTimersByTime(5000));
+
+    setSurface('visible');
+    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(1600));
+    expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
+  });
+
+  it('never runs it a second time', () => {
+    renderGrid();
+    setSurface('hidden');
+    act(() => void vi.advanceTimersByTime(10_000));
+    setSurface('visible');
+
+    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
+    expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
+  });
+
+  it('does not restart the sequence that was interrupted mid-play', () => {
+    // The case the plan left open: SUPER+B can hide the surface 300 ms into a
+    // 1500 ms sequence. One chance per process means the remaining time is
+    // served on return, not a fresh 1500 ms — and after any real absence the
+    // remainder is zero, so the grid is there immediately.
+    renderHudPage();
+    act(() => void vi.advanceTimersByTime(300));
+    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
+
+    setSurface('hidden');
+    act(() => void vi.advanceTimersByTime(5000));
+    setSurface('visible');
+
+    act(() => void vi.advanceTimersByTime(1));
+    expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
+  });
 });

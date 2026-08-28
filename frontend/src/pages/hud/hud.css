@@ -3,7 +3,7 @@
 
    One sheet carries the scale, the panel, the glow budget and the reflow so
    that none of the six blocks has to reinvent them. Composition transcribed
-   from the validated mockup (frontend/public/hud-mockup.html); every literal
+   from the validated mockup (docs/plans/2026-08-28-hud-overlay-mockup.html); every literal
    colour there is replaced here by the CyberNord --cn-* token it stood for,
    so repainting the desktop theme repaints the HUD.
 
@@ -596,7 +596,7 @@
    this gauge pink, deliberately distinct from Pressure's orange overload
    gauge above — two different meanings (a self-reported ceiling vs. a
    measured capacity threshold), two different colours. Confirmed against
-   hud-mockup.html:293 and task 5's own review note on the point. */
+   the mockup at docs/plans/2026-08-28-hud-overlay-mockup.html:293 and task 5's own review note on the point. */
 .hud-gauge--neural i {
   background: var(--cn-red);
 }
@@ -828,8 +828,8 @@
 /* --- the Ticker: the bottom band, deliberately not the FULL `.hud-panel`
    treatment — the validated mockup draws it as a plain flex row under a
    single hairline, never a boxed panel with corner brackets (its `.ticker`
-   carries no `.p` class, unlike every other secondary block in
-   hud-mockup.html), and that much is unchanged. Round-2 review finding: it
+   carries no `.p` class, unlike every other secondary block in the mockup),
+   and that much is unchanged. Round-2 review finding: it
    HAD no blurred backdrop either, on raw transparency, and desktop noise
    bled straight through its text worse than any panel — it now shares
    `.hud-panel`'s own background/backdrop-filter via the grouped occlusion
