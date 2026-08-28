@@ -40,8 +40,50 @@ if ! pgrep -x aplan-hud >/dev/null 2>&1; then
     # and since the lock belongs to the open file description (not to this
     # script's process), the lock would then stay held for as long as the
     # HUD runs -- wedging every press after the first on the `flock` above.
-    "$BIN" 9>&- &
+    #
+    # `trap ''` sets those two to SIG_IGN, and SIG_IGN -- unlike a handler --
+    # SURVIVES exec. The child therefore starts deaf to them until signal_hook
+    # installs its own handler about a second later. Without this, a signal
+    # landing while the dynamic linker is still pulling in WebKitGTK hits the
+    # DEFAULT disposition, which for these is to terminate the process:
+    # measured at a 50 ms delay, the HUD died on its own first opening, every
+    # time.
+    #
+    # Real-time signals rather than SIGUSR1/2, which look like the obvious
+    # choice and are not: JavaScriptCore already uses SIGUSR1 for garbage
+    # collection, and taking it from WebKit killed the HUD on whichever
+    # opening a collection happened to fall.
+    ( trap '' RTMIN RTMIN+1; exec "$BIN" 9>&- ) &
     disown
+    just_launched=1
 fi
 
 hyprctl dispatch togglespecialworkspace "$WORKSPACE"
+
+# Tell the HUD whether it is now on screen.
+#
+# It cannot work this out for itself: measured on the real compositor, a
+# webview on a hidden special workspace still reports
+# `document.visibilityState === "visible"` for the whole time it is off
+# screen. So every visibility gate inside the HUD was inert, and the boot
+# sequence played out behind the curtain where nobody could see it. This
+# script is the only thing that knows, because it is what does the toggling.
+#
+# The state is READ BACK from the compositor rather than tracked here: this
+# script is not the only way the workspace can be shown or hidden (a bare
+# `hyprctl dispatch`, another binding, a rule), so guessing "we just toggled,
+# therefore it flipped" would drift out of sync. `special workspace:` names
+# the workspace in parentheses when one is up, and is bare when none is.
+#
+# Skipped entirely on the launch path. A HUD we just started is still linking
+# and could not act on the signal anyway; it seeds itself as shown, which is
+# correct by construction, since the only reason it was launched is that this
+# press is opening it. Signalling there was the race described above, and not
+# signalling removes it rather than narrowing it.
+if [ -z "${just_launched:-}" ]; then
+    if hyprctl monitors | grep -q "special workspace: .*(special:$WORKSPACE)"; then
+        pkill -x --signal RTMIN aplan-hud || true
+    else
+        pkill -x --signal RTMIN+1 aplan-hud || true
+    fi
+fi

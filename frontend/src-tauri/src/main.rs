@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use serde::Serialize;
+use tauri::Emitter;
 use sysinfo::{Networks, System};
 
 /// One sample of local machine telemetry for the HUD's Station block.
@@ -94,10 +95,62 @@ fn station_stats(state: tauri::State<'_, Mutex<StationState>>) -> StationStats {
     }
 }
 
+/// The event the frontend listens on to learn whether the overlay is actually
+/// on screen. Payload: `true` shown, `false` hidden.
+const SURFACE_VISIBILITY: &str = "surface-visibility";
+
 fn main() {
+    // NOT SIGUSR1/SIGUSR2. JavaScriptCore already owns SIGUSR1 for garbage
+    // collection: installing a handler over it made WebKit say so out loud —
+    // "Overriding existing handler for signal 10. Set JSC_SIGNAL_FOR_GC…" —
+    // and then killed the HUD on the openings where a collection happened to
+    // fall. Real-time signals are claimed by nobody and are queued rather
+    // than coalesced.
+    //
+    // Registered BEFORE Tauri starts, and that ordering is load-bearing: the
+    // toggle script can signal within ~50 ms of launch, while the dynamic
+    // linker is still pulling in WebKitGTK — far earlier than `setup()` would
+    // run. Measured at that delay, an unregistered signal hit the default
+    // disposition and the process died. The script also stays silent on the
+    // launch path; the two guards overlap on purpose.
+    let shown_signal = libc::SIGRTMIN();
+    let hidden_signal = libc::SIGRTMIN() + 1;
+    let mut signals = signal_hook::iterator::Signals::new([shown_signal, hidden_signal])
+        .expect("failed to register the surface-visibility signal handlers");
+
     tauri::Builder::default()
         .manage(Mutex::new(StationState::new()))
         .invoke_handler(tauri::generate_handler![station_stats])
+        .setup(move |app| {
+            // Measured on the real compositor: when Hyprland hides the special
+            // workspace this window lives on, the webview never notices —
+            // `document.visibilityState` stays "visible" for as long as the
+            // overlay is off screen. Every visibility gate in the HUD was
+            // therefore inert, and the boot sequence played out behind the
+            // curtain where nobody could see it.
+            //
+            // `aplan-hud-toggle` is the only thing that knows, because it is
+            // what performs the toggle. It signals us afterwards, and we turn
+            // that into an ordinary Tauri event. Done on a thread rather than
+            // in a handler: a signal handler may not allocate or take a lock,
+            // and emitting an event does both.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                for signal in signals.forever() {
+                    let shown = signal == shown_signal;
+                    // A failed emit means the webview is gone, which is not
+                    // something this thread can or should fix.
+                    if let Err(error) = handle.emit(SURFACE_VISIBILITY, shown) {
+                        // Loud on purpose. The mirror-image failure on the
+                        // webview side — `listen()` refused by the ACL — was
+                        // silent, and cost an hour of looking in the wrong
+                        // place while this side reported success.
+                        eprintln!("aplan-hud: could not emit {SURFACE_VISIBILITY}: {error}");
+                    }
+                }
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("failed to start the aplan HUD shell");
 }

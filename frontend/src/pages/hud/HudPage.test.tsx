@@ -197,30 +197,41 @@ describe('HudPage', () => {
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 
-  it('never runs it a second time', () => {
+  it('runs it again on every opening', () => {
+    // The user's own call, made after being shown the cost: the sequence
+    // plays at each SUPER+B, not once per process. 1.5s stands between the
+    // keystroke and the data every single time.
     renderGrid();
+    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
+
     setSurface('hidden');
-    act(() => void vi.advanceTimersByTime(10_000));
     setSurface('visible');
 
-    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
+    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
+    expect(screen.queryByTestId('hud-grid')).not.toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(1600));
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 
-  it('does not restart the sequence that was interrupted mid-play', () => {
-    // The case the plan left open: SUPER+B can hide the surface 300 ms into a
-    // 1500 ms sequence. One chance per process means the remaining time is
-    // served on return, not a fresh 1500 ms — and after any real absence the
-    // remainder is zero, so the grid is there immediately.
+  it('restarts a sequence that was interrupted mid-play', () => {
+    // Closing 300 ms into a 1500 ms sequence and reopening gives a full
+    // sequence, not the 1200 ms remainder — "every opening" means every one,
+    // including the one that cut the last short.
     renderHudPage();
     act(() => void vi.advanceTimersByTime(300));
-    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
 
     setSurface('hidden');
     act(() => void vi.advanceTimersByTime(5000));
     setSurface('visible');
 
-    act(() => void vi.advanceTimersByTime(1));
+    // Still booting at 1400 ms is the whole assertion: had the remainder of
+    // the interrupted run been served instead, the 1200 ms left of it would
+    // have elapsed and the grid would already be up.
+    act(() => void vi.advanceTimersByTime(1400));
+    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(200));
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 });

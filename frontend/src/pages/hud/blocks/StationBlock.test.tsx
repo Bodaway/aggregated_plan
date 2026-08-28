@@ -18,15 +18,41 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
 }));
 
+// Inside Tauri, surface visibility no longer comes from the document — it
+// arrives as a `surface-visibility` event the shell emits when the toggle
+// script signals it (the webview itself never notices a Hyprland
+// special-workspace hide; measured on the real compositor). `vi.hoisted`
+// because `vi.mock` is lifted above ordinary declarations.
+const surfaceEvents = vi.hoisted(() => ({
+  subscribers: new Set<(event: { payload: boolean }) => void>(),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (_name: string, handler: (event: { payload: boolean }) => void) => {
+    surfaceEvents.subscribers.add(handler);
+    return Promise.resolve(() => surfaceEvents.subscribers.delete(handler));
+  },
+}));
+
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { StationBlock, type StationStats } from './StationBlock';
 
-function setVisibility(state: DocumentVisibilityState) {
-  Object.defineProperty(document, 'visibilityState', {
-    configurable: true,
-    get: () => state,
+/** Drives the shell's `surface-visibility` event — the only signal that works
+ *  inside Tauri, the webview being blind to a Hyprland special-workspace hide.
+ *  The surface starts SHOWN there (the toggle script launches the binary and
+ *  reveals the workspace in one breath), so a test that wants it hidden has to
+ *  say so. */
+async function showSurface() {
+  await act(async () => {
+    surfaceEvents.subscribers.forEach((handler) => handler({ payload: true }));
+    await Promise.resolve();
   });
-  document.dispatchEvent(new Event('visibilitychange'));
+}
+
+async function hideSurface() {
+  await act(async () => {
+    surfaceEvents.subscribers.forEach((handler) => handler({ payload: false }));
+    await Promise.resolve();
+  });
 }
 
 const SAMPLE_STATS: StationStats = {
@@ -53,7 +79,7 @@ describe('StationBlock', () => {
     // already-unmounted component.
     cleanup();
     vi.useRealTimers();
-    setVisibility('visible');
+    surfaceEvents.subscribers.clear();
   });
 
   it('shows the clock and date outside Tauri, with no empty cell and no invented system value', async () => {
@@ -89,6 +115,7 @@ describe('StationBlock', () => {
     vi.mocked(invoke).mockResolvedValue(SAMPLE_STATS);
 
     render(<StationBlock />);
+    await showSurface();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -107,6 +134,7 @@ describe('StationBlock', () => {
     vi.mocked(invoke).mockResolvedValue(SAMPLE_STATS);
 
     render(<StationBlock />);
+    await showSurface();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -121,33 +149,56 @@ describe('StationBlock', () => {
   });
 
   it('does not poll system stats while the surface is hidden', async () => {
-    setVisibility('hidden');
     vi.mocked(isTauri).mockReturnValue(true);
     vi.mocked(invoke).mockResolvedValue(SAMPLE_STATS);
 
     render(<StationBlock />);
+    await hideSurface();
+    vi.mocked(invoke).mockClear();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
 
     expect(invoke).not.toHaveBeenCalled();
-    expect(screen.queryByTestId('station-sys')).not.toBeInTheDocument();
   });
 
   it('resumes polling once the surface becomes visible again', async () => {
-    setVisibility('hidden');
     vi.mocked(isTauri).mockReturnValue(true);
     vi.mocked(invoke).mockResolvedValue(SAMPLE_STATS);
 
     render(<StationBlock />);
+    await hideSurface();
+    vi.mocked(invoke).mockClear();
 
+    await showSurface();
     await act(async () => {
-      setVisibility('visible');
       await vi.advanceTimersByTimeAsync(0);
     });
 
     expect(invoke).toHaveBeenCalledWith('station_stats');
+  });
+
+  it('stops polling again when the surface is hidden', async () => {
+    // The other half of the signal: SIGUSR2 must actually put the block back
+    // to sleep, not merely fail to wake it.
+    vi.mocked(isTauri).mockReturnValue(true);
+    vi.mocked(invoke).mockResolvedValue(SAMPLE_STATS);
+
+    render(<StationBlock />);
+    await showSurface();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000);
+    });
+    const callsWhileVisible = vi.mocked(invoke).mock.calls.length;
+    expect(callsWhileVisible).toBeGreaterThan(0);
+
+    await hideSurface();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(vi.mocked(invoke).mock.calls.length).toBe(callsWhileVisible);
   });
 
   it('ticks the clock forward once a minute passes, gated on surface visibility', async () => {

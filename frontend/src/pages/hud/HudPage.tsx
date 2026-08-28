@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
 import { useDominantBlock } from './useDominantBlock';
 import { HudNav } from './HudNav';
@@ -47,25 +47,23 @@ function HudGrid() {
 export function HudPage() {
   const [booting, setBooting] = useState(true);
   const visible = useSurfaceVisibility();
-  const bootDeadline = useRef<number | null>(null);
 
   // The window is born on a hidden Hyprland special workspace, so a sequence
   // started at mount plays out entirely behind the curtain and is never seen.
-  // It starts at first VISIBILITY instead.
+  // It runs on every OPENING instead — the user's own call, made after being
+  // shown what it costs: 1.5s stands between SUPER+B and the data, every
+  // single time, not just the first.
   //
-  // The deadline is stamped once and never re-stamped: the sequence gets one
-  // chance per process. That settles the case the plan left open — hiding the
-  // surface mid-boot (SUPER+B 300 ms in) must not buy a second showing, and
-  // must not strand the grid behind a boot screen either. On return we serve
-  // whatever is left of the original window, which after any real absence is
-  // nothing, and the grid appears at once.
+  // This only works because `useSurfaceVisibility` now has a signal that
+  // actually fires (see its comment); with the webview's own
+  // `visibilityState`, which never changes here, this effect would run once at
+  // mount and never again.
   useEffect(() => {
-    if (!visible || !booting) return;
-    if (bootDeadline.current === null) bootDeadline.current = Date.now() + BOOT_MS;
-    const remaining = Math.max(0, bootDeadline.current - Date.now());
-    const t = setTimeout(() => setBooting(false), remaining);
+    if (!visible) return;
+    setBooting(true);
+    const t = setTimeout(() => setBooting(false), BOOT_MS);
     return () => clearTimeout(t);
-  }, [visible, booting]);
+  }, [visible]);
 
   return (
     <div

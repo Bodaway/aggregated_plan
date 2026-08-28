@@ -12,9 +12,22 @@ run_case() {
 echo "pgrep \$*" >> "\$STUB_LOG"
 exit $([ "$running" = "yes" ] && echo 0 || echo 1)
 EOF
-    cat > "$stub/hyprctl" <<'EOF'
+    # `hyprctl monitors` is read back to decide which signal to send, so the
+    # stub has to answer it. ${SHOWN:-no} picks the branch under test.
+    cat > "$stub/hyprctl" <<EOF
 #!/usr/bin/env bash
-echo "hyprctl $*" >> "$STUB_LOG"
+echo "hyprctl \$*" >> "\$STUB_LOG"
+if [ "\$1" = "monitors" ]; then
+$([ "${SHOWN:-no}" = "yes" ] \
+    && echo '    echo "	special workspace: -96 (special:aplan)"' \
+    || echo '    echo "	special workspace: 0 ()"')
+fi
+EOF
+    # MUST be stubbed: the script signals the running HUD, and an unstubbed
+    # pkill in a test would reach the user's real overlay.
+    cat > "$stub/pkill" <<'EOF'
+#!/usr/bin/env bash
+echo "pkill $*" >> "$STUB_LOG"
 EOF
     cat > "$stub/aplan-hud" <<'EOF'
 #!/usr/bin/env bash
@@ -201,6 +214,54 @@ EOF
     rm -rf "$stub"
 }
 
+test_signal_cases() {
+    echo "signalling the HUD about its own visibility"
+    SHOWN=yes run_case "workspace now shown -> SIGRTMIN" yes "pkill -x --signal RTMIN aplan-hud"
+    SHOWN=no  run_case "workspace now hidden -> SIGRTMIN+1" yes "pkill -x --signal RTMIN+1 aplan-hud"
+}
+
+test_no_signal_on_launch() {
+    # A HUD we just started is still linking; a signal arriving then hits the
+    # default disposition and kills it (measured). The launch path must stay
+    # silent -- the app seeds itself as shown, which is what this press means.
+    local name="fresh launch sends no signal at all"
+    local stub; stub="$(mktemp -d)"
+    cat > "$stub/pgrep" <<'EOF'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$STUB_LOG"
+exit 1
+EOF
+    cat > "$stub/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+echo "hyprctl $*" >> "$STUB_LOG"
+[ "$1" = "monitors" ] && echo "	special workspace: -96 (special:aplan)"
+EOF
+    cat > "$stub/pkill" <<'EOF'
+#!/usr/bin/env bash
+echo "pkill $*" >> "$STUB_LOG"
+EOF
+    cat > "$stub/aplan-hud" <<'EOF'
+#!/usr/bin/env bash
+echo "launched" >> "$STUB_LOG"
+EOF
+    chmod +x "$stub"/*
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+    PATH="$stub:$PATH" APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$stub/lock" "$HERE/aplan-hud-toggle"
+    local waited=0
+    until grep -q "launched" "$STUB_LOG" 2>/dev/null || [ "$waited" -ge 20 ]; do
+        sleep 0.05; waited=$((waited + 1))
+    done
+    if grep -q "^pkill " "$STUB_LOG"; then
+        echo "  FAIL $name -- a signal was sent on the launch path; log:"; sed 's/^/       /' "$STUB_LOG"
+        FAILED=1
+    else
+        echo "  ok   $name"
+    fi
+    rm -rf "$stub"
+}
+
+test_signal_cases
+test_no_signal_on_launch
 test_inherited_fd
 test_missing_binary
 exit $FAILED

@@ -20,6 +20,16 @@ serde = { version = "1", features = ["derive"] }
 # toolchain is 1.94.1 (verified against crates.io's own rust_version field
 # per release, not guessed).
 sysinfo = "0.38"
+# The webview cannot see a Hyprland special-workspace toggle: measured on the
+# real compositor, `document.visibilityState` stays "visible" the whole time
+# the overlay is hidden. The script that performs the toggle is the only thing
+# that knows, so it tells us over SIGUSR1 (shown) / SIGUSR2 (hidden) and this
+# crate turns that into a Tauri event. `signal-hook` rather than a raw handler
+# because a signal handler may not allocate or lock, and emitting an event
+# does both — `Signals` moves the work onto an ordinary thread.
+signal-hook = "0.3"
+# For `SIGRTMIN()`, which is a glibc function, not a constant.
+libc = "0.2"
 
 [profile.release]
 opt-level = "s"
