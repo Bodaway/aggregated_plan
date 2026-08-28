@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
 import { HudNav } from './HudNav';
 import { FocusBlock } from './blocks/FocusBlock';
+import { PressureBlock } from './blocks/PressureBlock';
+import { AgendaBlock } from './blocks/AgendaBlock';
 import './hud.css';
 
 const BOOT_LINES = [
@@ -35,7 +37,9 @@ export function HudPage() {
         <div data-testid="hud-grid" className="hud">
           <HudNav />
           <FocusBlock lit />
-          {/* The remaining four blocks arrive later in plan 3. */}
+          <PressureBlock />
+          <AgendaBlock />
+          {/* The remaining three blocks arrive later in plan 3. */}
         </div>
       )}
     </div>

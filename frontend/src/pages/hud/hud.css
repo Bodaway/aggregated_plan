@@ -414,3 +414,113 @@
   .hud-focus__chrono--idle { font-size: 1em; }
   .hud-focus__foot { margin-top: 0; margin-left: auto; align-self: flex-end; border-top: 0; }
 }
+
+/* --- the Pressure block: deadlines sorted by proximity, plus a capacity
+   gauge. Neither of the two secondary blocks below carries the glow — they
+   are `.hud-panel`, never `.hud-panel--lit` (see the glow-budget comment
+   above `.hud-panel--lit`). --- */
+.hud-pressure {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-pressure__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+  margin-top: 0.6em;
+  /* The list is capped in the component, not just here: a week can carry far
+     more deadlines than five rows, and this panel's grid area has a fixed
+     height — overflow is the fallback, not the plan. */
+  overflow: hidden;
+}
+
+.hud-pressure__deadline {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6em;
+  align-items: baseline;
+  font-size: 0.78em;
+}
+
+.hud-pressure__when {
+  font-size: 0.62em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud-ink-mid);
+  white-space: nowrap;
+}
+/* The one other sanctioned use of --cn-red in this file besides a deadline
+   falling today would be a gauge past its threshold — but Pressure's own
+   gauge below uses --cn-orange (task brief: "en orange au-delà du seuil"),
+   so this is the only rule here that reaches for red. */
+.hud-pressure__when--hot {
+  color: var(--cn-red);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--cn-red) 55%, transparent);
+}
+
+.hud-pressure__what {
+  color: var(--hud-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-pressure__empty {
+  font-style: italic;
+  color: var(--hud-ink-mid);
+  margin-top: 0.6em;
+}
+
+.hud-pressure__capacity {
+  margin-top: auto;
+  padding-top: 0.6em;
+}
+
+/* Orange beyond the capacity threshold — the threshold itself is the
+   domain's own `overload` verdict (R16), not re-derived here. */
+.hud-gauge--over i {
+  background: var(--cn-orange);
+}
+
+/* --- the Agenda block: countdown to the next real meeting, and a timeline
+   of the day where meetings are purple segments and the present instant a
+   teal marker. The marker is a background/border, not a glow — the glow
+   budget is spent once, on the dominant panel, not here. --- */
+.hud-agenda {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-agenda__next-title {
+  color: var(--hud-ink);
+}
+
+.hud-agenda__empty {
+  font-style: italic;
+  color: var(--hud-ink-mid);
+  margin-top: 0.6em;
+}
+
+.hud-agenda__timeline {
+  position: relative;
+  height: 0.34em;
+  background: var(--cn-bg);
+  margin-top: 0.93em;
+}
+
+.hud-agenda__segment {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--cn-purple);
+  opacity: 0.75;
+}
+
+.hud-agenda__now {
+  position: absolute;
+  top: -0.3em;
+  width: 1px;
+  height: 0.9em;
+  background: var(--cn-teal);
+}
