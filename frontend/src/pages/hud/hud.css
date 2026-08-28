@@ -524,3 +524,116 @@
   height: 0.9em;
   background: var(--cn-teal);
 }
+
+/* --- the Neural budget block: burn against a hand-set ceiling, a per-day
+   sparkline, and a per-model/per-project breakdown. Neither this block nor
+   Agents below carries the glow (see the glow-budget comment above
+   `.hud-panel--lit`) — same rule as Pressure and Agenda.
+
+   Design doc §9's stated limitation: the ceiling this gauge measures against
+   is typed by the user once, calibrated against `/usage`, never measured by
+   this app. The two `.hud-neural__ceiling*` rules below exist so that
+   limitation reads on the panel itself, not only in a comment nobody using
+   the HUD will ever see. --- */
+.hud-neural {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The one other sanctioned use of --cn-red in this file: the mockup paints
+   this gauge pink, deliberately distinct from Pressure's orange overload
+   gauge above — two different meanings (a self-reported ceiling vs. a
+   measured capacity threshold), two different colours. Confirmed against
+   hud-mockup.html:293 and task 5's own review note on the point. */
+.hud-gauge--neural i {
+  background: var(--cn-red);
+}
+
+.hud-neural__ceiling-note {
+  font-size: 0.6em;
+  letter-spacing: 0.05em;
+  font-style: italic;
+  color: var(--hud-ink-mid);
+  margin-top: 0.3em;
+}
+
+.hud-neural__spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.13em;
+  height: 2.2em;
+  margin-top: 0.7em;
+}
+.hud-neural__spark-bar {
+  flex: 1;
+  min-height: 2px;
+  background: color-mix(in srgb, var(--cn-teal) 40%, transparent);
+}
+/* The most recent day, singled out the same way the mockup does — just
+   brighter, never a second glow (the budget above is spent once already). */
+.hud-neural__spark-bar--last {
+  background: var(--cn-teal);
+}
+
+.hud-neural__empty {
+  font-style: italic;
+  color: var(--hud-ink-mid);
+  margin-top: 0.6em;
+}
+
+/* --- the Agents block: live Claude Code sessions and the aplan task each is
+   linked to, if any. --- */
+.hud-agents {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-agents__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.13em;
+  margin-top: 0.6em;
+}
+
+.hud-agents__row {
+  display: grid;
+  grid-template-columns: 0.5em 1fr auto;
+  gap: 0.53em;
+  align-items: center;
+  font-size: 0.75em;
+  color: var(--hud-ink-mid);
+}
+.hud-agents__row b {
+  color: var(--hud-ink);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-agents__dot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--cn-teal);
+}
+/* A decorative status mark, not text — --hud-ink-low's "never text" rule
+   (see its declaration above) doesn't apply to it, and this mirrors the
+   mockup's own choice of its ink-low equivalent for the idle dot. */
+.hud-agents__dot--idle {
+  background: var(--hud-ink-low);
+}
+
+.hud-agents__who {
+  color: var(--hud-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-agents__empty {
+  font-style: italic;
+  color: var(--hud-ink-mid);
+  margin-top: 0.6em;
+}
