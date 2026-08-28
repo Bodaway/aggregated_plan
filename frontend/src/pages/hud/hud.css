@@ -30,7 +30,14 @@
      short of WCAG AA (4.5:1) at the small sizes this scale produces. */
   --hud-ink-low: color-mix(in srgb, var(--cn-fg) 25%, var(--cn-dim));
   --hud-hair: color-mix(in srgb, var(--cn-dim) 70%, transparent);
-  --hud-panel-bg: color-mix(in srgb, var(--cn-bg) 72%, transparent);
+  /* Opacity floor, raised from 72% after task-2 review finding 4: a busy
+     BRIGHT desktop is a mean-level problem (fixed by backdrop-filter
+     brightness() below), but a busy DARK desktop with high-contrast content
+     — a terminal, light monospace on near-black — is a variance/occlusion
+     problem brightness() barely touches, because it scales the backdrop's
+     own bright/dark swing down without erasing it. See the backdrop-filter
+     comment on .hud-panel for the model and the numbers. */
+  --hud-panel-bg: color-mix(in srgb, var(--cn-bg) 92%, transparent);
 
   position: relative;
   height: 100%;
@@ -168,13 +175,31 @@
   padding: 0.9em 1em;
   background: var(--hud-panel-bg);
   /* brightness() darkens whatever sits behind the panel before it blends
-     with --hud-panel-bg. Without it, a worst-case bright desktop measured
-     --hud-ink-mid at ~2.2:1 and --hud-ink at ~4.5:1 — unreadable and
-     borderline. At 0.2, the same worst case reaches ~5.4:1 for --hud-ink-mid
-     (WCAG AA) and ~10.9:1 for --hud-ink (AAA); a dark desktop is essentially
-     unaffected, since brightness() scales an already-near-black backdrop to
-     itself either way (~6.5:1 / ~13.3:1). --hud-ink-low stays below AA in
-     both cases — see the note on its declaration above. */
+     with --hud-panel-bg — it fixes the ink-vs-panel CONTRAST RATIO against a
+     bright, low-detail desktop (WCAG): --hud-ink-mid went from ~2.2:1 to
+     ~5.4:1 (AA), --hud-ink from ~4.5:1 to ~10.9:1 (AAA), both measured over
+     white, the worst case for MEAN LEVEL. --hud-ink-low stays under AA
+     either way — see the note on its declaration above.
+
+     brightness() does NOT fix a second, different failure: a dark desktop
+     carrying its own high-contrast detail (a terminal, light monospace on
+     near-black) bleeding through as legible noise competing with the HUD's
+     own text. That is not a contrast-ratio problem — the ink still reads
+     fine against the panel — it is how much of the BACKDROP'S OWN
+     LIGHT/DARK SWING survives compositing. Model, conservatively assuming
+     blur does not attenuate small, closely-packed glyphs (unverified from
+     here — trusting an unmeasured filter assumption is exactly what missed
+     this the first time): surviving swing ≈ (1 − opacity) × brightness ×
+     255. At the old 72% opacity that was 0.28 × 0.2 × 255 ≈ 14 (~5.6% of
+     full range) for a pure-black/white terminal worst case — enough to
+     read as ghosted text, per size #4B on the real desktop. --hud-panel-bg
+     was raised to 92% for exactly this: 0.08 × 0.2 × 255 ≈ 4 (~1.6%),
+     matched by .hud-panel--lit's own floor below. Cost: at 92% opacity only
+     an 8% ghost of the live desktop survives at all, well down from the
+     72% design's original see-through intent — flagged to the user rather
+     than decided here. contrast() was considered and rejected: contrast()
+     recenters toward mid-grey (0.5), so it would grey out a plain, empty
+     DARK desktop too, even though there is nothing there to occlude. */
   backdrop-filter: blur(18px) saturate(0.75) brightness(0.2);
 }
 .hud-panel::before,
@@ -197,10 +222,14 @@
    dominant block is a distinct visual language, never a panel with a glow
    bolted on. --- */
 .hud-panel--lit {
+  /* Same 92%+ opacity floor as --hud-panel-bg, same reason (task-2 review
+     finding 4) — kept as its own gradient rather than the shared variable
+     because the dominant block earns a richer background, not a flatter
+     one. */
   background: linear-gradient(
     158deg,
-    color-mix(in srgb, var(--cn-surface) 90%, transparent),
-    color-mix(in srgb, var(--cn-bg) 95%, transparent)
+    color-mix(in srgb, var(--cn-surface) 92%, transparent),
+    color-mix(in srgb, var(--cn-bg) 96%, transparent)
   );
   backdrop-filter: blur(22px) saturate(0.7) brightness(0.2);
   border: 1px solid color-mix(in srgb, var(--cn-teal) 30%, transparent);
@@ -297,7 +326,18 @@
     0 0 26px color-mix(in srgb, var(--cn-teal) 70%, transparent),
     0 0 72px color-mix(in srgb, var(--cn-teal) 30%, transparent);
 }
+/* Review finding: at the hero's 6.2em/200-weight, "--:--:--" reads as a
+   loading skeleton, not an idle timer — presence in the DOM is not
+   legibility. The idle state drops the glyph grid for a short worded label
+   at ordinary text scale instead of a shrunk chronometer, so "nothing is
+   running" reads as deliberate rather than broken. */
 .hud-focus__chrono--idle {
+  font-size: 1em;
+  font-weight: 400;
+  font-style: italic;
+  line-height: 1.45;
+  margin-top: 0.6em;
+  letter-spacing: normal;
   color: var(--hud-ink-mid);
   text-shadow: none;
 }
@@ -368,5 +408,9 @@
 @container hud (max-width: 1500px) {
   .hud-focus { flex-direction: row; align-items: flex-start; gap: 2em; flex-wrap: wrap; }
   .hud-focus__chrono { font-size: 4.6em; }
+  /* Same specificity as the rule above, declared after it so it wins here
+     too — without this the idle label would revert to a shrunk-but-still-
+     giant glyph size on the narrow (laptop) reflow. */
+  .hud-focus__chrono--idle { font-size: 1em; }
   .hud-focus__foot { margin-top: 0; margin-left: auto; align-self: flex-end; border-top: 0; }
 }
