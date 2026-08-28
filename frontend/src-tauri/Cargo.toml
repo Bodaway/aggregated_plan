@@ -13,6 +13,13 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+# Backs the Station block's `station_stats` IPC command (spec §5: CPU/RAM/
+# network telemetry is local and ephemeral, so it never touches GraphQL).
+# Pinned to the 0.38 line: 0.39 requires rustc 1.95, and this machine's
+# toolchain is 1.94.1 (verified against crates.io's own rust_version field
+# per release, not guessed).
+sysinfo = "0.38"
 
 [profile.release]
 opt-level = "s"

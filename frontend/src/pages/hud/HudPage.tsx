@@ -6,6 +6,8 @@ import { PressureBlock } from './blocks/PressureBlock';
 import { AgendaBlock } from './blocks/AgendaBlock';
 import { NeuralBudgetBlock } from './blocks/NeuralBudgetBlock';
 import { AgentsBlock } from './blocks/AgentsBlock';
+import { StationBlock } from './blocks/StationBlock';
+import { Ticker } from './blocks/Ticker';
 import './hud.css';
 
 const BOOT_LINES = [
@@ -43,7 +45,8 @@ export function HudPage() {
           <AgendaBlock />
           <NeuralBudgetBlock />
           <AgentsBlock />
-          {/* Station and Ticker arrive in task 7. */}
+          <StationBlock />
+          <Ticker />
         </div>
       )}
     </div>
