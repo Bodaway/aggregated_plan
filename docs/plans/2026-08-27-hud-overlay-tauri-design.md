@@ -428,6 +428,97 @@ d'animation s'appuie sur `document.visibilityState` côté frontend, sans
 abonnement au socket Hyprland. La question du format de `socket2` ne se pose
 donc pas pour ce plan.
 
+### 10.5 `AuthGate` laisse-t-il monter `/hud` ? *(bloquant)* — RÉSOLU (intermittent)
+
+`AuthGate` (`main.tsx`, au-dessus de `App`) statue sur `session.authenticated`,
+une valeur purement serveur : `query.rs:547-562` renvoie `true` ssi
+`microsoft.refresh_token` est non vide dans la table `configuration` pour
+l'utilisateur par défaut — un état global, sans cookie, indépendant de
+l'origine de la requête. Pendant le chargement (`fetching`), la porte rend un
+`<div>` centré `"Loading…"`. En échec, elle rend un écran de connexion
+centré (« Aggregated Plan » / « Sign in with your Microsoft account to
+continue. » / bouton bleu « Sign in with Microsoft ») — **le même écran**
+qu'une session réellement expirée ou qu'un échec de la requête GraphQL
+elle-même (`use-session.ts:21` retombe sur `authenticated:false` dès que
+`result.data` est absent, quelle qu'en soit la cause).
+
+**Un chiffre du brief était déjà rétracté.** La référence « ~22 000 pixels =
+séquence de boot qui cède la place à la grille » vient de l'adjudication
+*initiale* de la tâche 6 du plan 1. La revue finale de branche du même plan
+(`progress.md:372-393`, « CORRECTION MAJEURE ») avait déjà retracté cette
+lecture : en recadrant cette même capture, c'est le bouton « Sign in with
+Microsoft » qui *apparaissait*, pas le boot qui disparaissait — confirmé par
+`curl` (le backend répond `authenticated:true`, sain) contre un vrai onglet
+Chrome (`TypeError: Failed to fetch`), la cause étant
+`backend/crates/api/src/main.rs:204` qui fixe
+`access-control-allow-origin: http://localhost:3000` quelle que soit
+l'`Origin` reçue. Cette rétractation n'avait jamais été reportée dans une
+spec — l'erreur a failli se reproduire ici via le brief de cette tâche.
+
+**Mesuré le 2026-08-28.** Méthode imposée : image de différence, jamais de
+seuil de couleur — et, cette fois, **le seuil de couleur s'est révélé être un
+piège à deux reprises pendant la mesure elle-même** (voir plus bas), pas
+seulement dans l'historique du plan 1.
+
+Sonde : `scripts/hud-bench/authgate_probe.py`. Lance le HUD via
+`scripts/aplan-hud-toggle` (le chemin réel de SUPER+B), capture le moniteur
+focus toutes les ~300-500 ms depuis l'appel du toggle, diffuse les images
+consécutives entre elles (jamais contre le bureau nu). Plancher de bruit
+mesuré (bureau seul, 2 captures) : **0 pixel** sur les essais retenus (un
+premier essai à 154 px reflétait un résidu de processus non nettoyé, voir
+auto-revue). Trois lancements indépendants, chacun démarrant d'un état propre
+(processus tué, workspace masqué vérifié avant relance) :
+
+| lancement | écran de connexion apparaît | transition vers le vrai HUD | délai observé |
+|---|---|---|---|
+| 1 (11 s observées) | oui, dès t≈0,3-2 s | **oui** — séquence de boot réelle (`aplan cockpit v0.1.0`, checks `link`/`palette`/`session bus`) puis grille vide | ≈6,7-8,3 s |
+| 2 (12,5 s observées) | oui, dès t≈0,3-2 s | **oui** — même séquence de boot, byte pour byte identique | ≈7,2-8,6 s |
+| 3 (29 s observées) | oui, dès t≈0,3-2 s | **non** — reste sur l'écran de connexion jusqu'à la fin de l'observation | jamais (dans la fenêtre observée) |
+
+Deux pièges de seuil de couleur rencontrés en mesurant, documentés pour que
+la sonde ne les répète pas : (1) la couleur exacte du bouton varie entre
+`#2563eb` (repos) et une teinte voisine (`:hover`, selon la position
+accidentelle du curseur physique) — un seuil calé sur une seule des deux
+valeurs donne des faux négatifs ; (2) un seuil large mais mal calé confond le
+bleu du bouton avec le bleu ambiant des liens hypertexte du terminal visible
+par transparence (ce bureau n'est pas au repos comme celui du plan 1 — des
+sessions Claude Code y tournent en direct). Les deux ont été corrigés en
+calibrant la couleur réellement rendue (histogramme de fréquence sur l'image
+elle-même) avant de compter, puis **vérifiés par inspection visuelle directe
+de chaque image retenue** — pas seulement par le chiffre — après qu'une
+première lecture (image par image, sans recalibrer) a produit une fausse
+lecture (« l'image 18 montre encore l'écran de connexion ») contredite par la
+suite par le comptage de pixels puis par une relecture visuelle correcte de
+la même image. Cet aller-retour est resté dans les brouillons de mesure, pas
+dans ce paragraphe.
+
+**Verdict : comportement intermittent, ni « passe de façon fiable » ni
+« bloque de façon fiable ».** Taux observé : 2/3 lancements atteignent le
+vrai HUD (boot puis grille vide), mais seulement après un délai de 6,7-8,6 s
+inexpliqué ; 1/3 reste bloqué sur l'écran de connexion sur toute la fenêtre
+observée (29 s). Le mécanisme du délai n'a pas pu être établi : aucun
+timer/`setInterval` dans `AuthGate.tsx`/`use-session.ts`/`urql-client.ts` ne
+l'explique, `journalctl --user -u aplan-api` ne journalise pas les requêtes
+individuelles au niveau de log actuel (piste non poursuivie plutôt que de
+redémarrer le service en production pour l'instrumenter), et aucun outil de
+devtools n'est disponible dans ce build release (même limite que la tâche 6
+du plan 1). Ce qui reste établi avec certitude : le CORS reste cassé
+(`curl -H "Origin: tauri://localhost"` contre le backend réel, aujourd'hui,
+renvoie toujours `access-control-allow-origin: http://localhost:3000`) et le
+compte est authentifié côté serveur (`microsoft.refresh_token` non vide,
+`curl` sans CORS obtient `authenticated:true`) — mais ces deux faits, à eux
+seuls, prédisent un blocage *déterministe*, pas le comportement intermittent
+observé. Une variable non identifiée fait la différence entre les 2 lancements
+qui finissent par réussir et celui qui reste bloqué.
+
+**Conséquence pour la suite du plan 3 : ni la branche « procéder tel quel »
+ni la branche « s'arrêter, remonter un choix CORS-vs-porte à trancher » ne
+s'applique proprement.** Un correctif visant le CORS n'est pas justifié par
+la donnée actuelle (le blocage n'est pas systématique), et « procéder tel
+quel » ferait construire six blocs sur une porte qui, un lancement sur trois
+dans cet échantillon, ne s'ouvre jamais. Remonté au contrôleur tel quel,
+conformément à la règle du brief sur les changements d'authentification.
+
 ---
 
 ## 11. Tests
