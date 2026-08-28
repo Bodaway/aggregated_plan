@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+
+// The grid now also hosts FocusBlock, which reads real data hooks (urql
+// underneath) — mocked here so this page-level test stays about the boot
+// sequence / grid handoff, not about GraphQL wiring (FocusBlock.test.tsx
+// owns that).
+vi.mock('@/hooks/use-activity', () => ({ useActivity: () => ({ currentActivity: null }) }));
+vi.mock('@/hooks/use-timesheet', () => ({ useTimesheet: () => ({ day: null }) }));
+vi.mock('@/hooks/use-dashboard', () => ({ useDashboard: () => ({ data: null }) }));
+
 import { HudPage } from './HudPage';
 
 // The grid now hosts HudNav, which reads router context (useLocation /

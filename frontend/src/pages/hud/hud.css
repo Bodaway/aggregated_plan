@@ -255,3 +255,118 @@
   background: linear-gradient(90deg, var(--cn-teal), var(--cn-red) 72%, transparent);
   box-shadow: 0 0 12px color-mix(in srgb, var(--cn-red) 60%, transparent);
 }
+
+/* --- the Focus block's own content: label, task, hero chronometer, the
+   gradient bar above, four quarters and a two-column footer. The outer
+   panel look (background, border, corner brackets) already lives in
+   `.hud-panel` / `.hud-panel--lit` above, shared with whichever block task 8
+   later makes dominant — only the internal layout is specific to Focus.
+
+   One deliberate correction against the mockup: its "current quarter" tint
+   carried a `--cn-teal` box-shadow, but the glow budget above is exactly one
+   `--cn-teal` box-shadow for the whole file (the dominant panel's own). The
+   current quarter is marked by background/border strength alone instead. */
+.hud-focus {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-focus__task {
+  font-size: 0.9em;
+  color: var(--hud-ink-mid);
+  margin-top: 0.93em;
+  line-height: 1.45;
+}
+.hud-focus__task b {
+  color: var(--hud-ink);
+  font-weight: 400;
+}
+.hud-focus__task--empty {
+  font-style: italic;
+}
+
+.hud-focus__chrono {
+  font-weight: 200;
+  font-size: 6.2em;
+  line-height: 0.95;
+  margin: 0.28em 0 0;
+  letter-spacing: 0.01em;
+  color: var(--hud-ink);
+  font-variant-numeric: tabular-nums;
+  text-shadow:
+    0 0 26px color-mix(in srgb, var(--cn-teal) 70%, transparent),
+    0 0 72px color-mix(in srgb, var(--cn-teal) 30%, transparent);
+}
+.hud-focus__chrono--idle {
+  color: var(--hud-ink-mid);
+  text-shadow: none;
+}
+
+.hud-quarters {
+  display: flex;
+  gap: 0.27em;
+  margin-top: auto;
+}
+.hud-quarters__segment {
+  flex: 1;
+  height: 1.9em;
+  background: color-mix(in srgb, var(--cn-teal) 7%, transparent);
+  border-top: 2px solid color-mix(in srgb, var(--cn-dim) 70%, transparent);
+}
+.hud-quarters__segment--full {
+  background: color-mix(in srgb, var(--cn-teal) 22%, transparent);
+  border-top-color: var(--cn-teal);
+}
+.hud-quarters__segment--current {
+  background: color-mix(in srgb, var(--cn-teal) 38%, transparent);
+  border-top-color: var(--cn-teal);
+}
+
+.hud-quarters__labels {
+  display: flex;
+  font-size: 0.62em;
+  letter-spacing: 0.14em;
+  color: var(--hud-ink-mid);
+  margin-top: 0.4em;
+}
+.hud-quarters__labels span {
+  flex: 1;
+}
+
+.hud-focus__foot {
+  margin-top: 1.6em;
+  padding-top: 1.2em;
+  border-top: 1px solid color-mix(in srgb, var(--cn-teal) 15%, transparent);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.hud-focus__foot-caption {
+  font-size: 0.72em;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--hud-ink-mid);
+}
+.hud-focus__foot-value {
+  font-size: 1.8em;
+  font-weight: 300;
+  color: var(--hud-ink);
+  font-variant-numeric: tabular-nums;
+}
+.hud-focus__foot-unit {
+  font-size: 1em;
+  color: var(--hud-ink-mid);
+}
+.hud-focus__foot-warning {
+  font-size: 0.68em;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cn-orange);
+  margin-top: 0.3em;
+}
+
+@container hud (max-width: 1500px) {
+  .hud-focus { flex-direction: row; align-items: flex-start; gap: 2em; flex-wrap: wrap; }
+  .hud-focus__chrono { font-size: 4.6em; }
+  .hud-focus__foot { margin-top: 0; margin-left: auto; align-self: flex-end; border-top: 0; }
+}
