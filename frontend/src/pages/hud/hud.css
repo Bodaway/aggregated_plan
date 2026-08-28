@@ -79,6 +79,83 @@
 .hud-station  { grid-area: station; }
 .hud-ticker   { grid-area: ticker; }
 
+/* --- the destination bar: leaves the HUD for the rest of the app.
+   Transcribed from the mockup's `.nav`, with one deliberate correction:
+   the mockup colours idle labels with its `--ink-low` equivalent, but
+   `--hud-ink-low` is documented above as hairlines-only (fails WCAG AA as
+   text on this element, which has no panel backdrop to darken it) — idle
+   labels use `--hud-ink-mid` instead. The current destination is the lit
+   one; the glow stays the only encoding of "where you are". --- */
+.hud-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5em;
+  border-bottom: 1px solid var(--hud-hair);
+  padding-bottom: 0.7em;
+}
+
+.hud-nav__mark {
+  font-weight: 600;
+  font-size: 0.85em;
+  letter-spacing: 0.3em;
+  color: var(--cn-teal);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--cn-teal) 70%, transparent);
+}
+
+.hud-nav__dest {
+  display: flex;
+  gap: 1.15em;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.hud-nav__link {
+  display: flex;
+  gap: 0.4em;
+  align-items: baseline;
+  font-size: 0.66em;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--hud-ink-mid);
+}
+.hud-nav__digit {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-ink-low);
+}
+.hud-nav__link:hover,
+.hud-nav__link:focus-visible {
+  color: var(--hud-ink);
+  outline: none;
+}
+.hud-nav__link:hover .hud-nav__digit,
+.hud-nav__link:focus-visible .hud-nav__digit {
+  color: var(--cn-teal);
+}
+
+.hud-nav__link--current {
+  color: var(--cn-teal);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--cn-teal) 65%, transparent);
+}
+.hud-nav__link--current .hud-nav__digit {
+  color: var(--cn-teal);
+}
+
+.hud-nav__esc {
+  margin-left: auto;
+  font-size: 0.62em;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--hud-ink-mid);
+  white-space: nowrap;
+}
+
+@container hud (max-width: 1500px) {
+  .hud-nav { gap: 1em; }
+  .hud-nav__dest { gap: 0.85em; }
+}
+
 /* --- the panel shell, common to every block --- */
 .hud-panel {
   position: relative;

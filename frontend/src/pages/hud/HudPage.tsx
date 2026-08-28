@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
+import { HudNav } from './HudNav';
 import './hud.css';
 
 const BOOT_LINES = [
@@ -31,7 +32,8 @@ export function HudPage() {
         </pre>
       ) : (
         <div data-testid="hud-grid" className="hud">
-          {/* The six blocks arrive in plan 3. */}
+          <HudNav />
+          {/* The remaining five blocks arrive later in plan 3. */}
         </div>
       )}
     </div>

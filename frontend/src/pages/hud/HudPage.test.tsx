@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { HudPage } from './HudPage';
+
+// The grid now hosts HudNav, which reads router context (useLocation /
+// useNavigate) — so every render needs a Router, same as it gets from
+// BrowserRouter in the real app.
+const renderHudPage = () => render(<HudPage />, { wrapper: MemoryRouter });
 
 describe('HudPage', () => {
   beforeEach(() => {
@@ -11,20 +17,20 @@ describe('HudPage', () => {
   });
 
   it('shows the boot sequence first', () => {
-    render(<HudPage />);
+    renderHudPage();
     expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
     expect(screen.queryByTestId('hud-grid')).not.toBeInTheDocument();
   });
 
   it('gives way to the grid after the sequence', () => {
-    render(<HudPage />);
+    renderHudPage();
     act(() => void vi.advanceTimersByTime(1600));
     expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 
   it('paints a transparent background, the window being transparent', () => {
-    const { container } = render(<HudPage />);
+    const { container } = renderHudPage();
     const root = container.firstElementChild as HTMLElement;
     expect(root.className).toContain('bg-transparent');
   });
