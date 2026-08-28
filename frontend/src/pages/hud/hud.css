@@ -253,6 +253,18 @@
   text-shadow: 0 0 14px color-mix(in srgb, var(--cn-teal) 85%, transparent);
 }
 
+/* Review finding: Neural budget and Agents both render on plan-2 stub data
+   (see stub-data.ts's own banner comment) that reads as entirely real on
+   screen — plausible session names, a plausible token count. The code-level
+   warnings protect a developer reading the source; they do nothing for
+   whoever is looking at the HUD. This marker is the on-screen equivalent,
+   living in the one place every block already puts its identity — cheap to
+   delete alongside stub-data.ts once plan 2 supplies the real resolvers. */
+.hud-label__stub {
+  color: var(--cn-orange);
+  margin-left: 0.6em;
+}
+
 .hud-kv {
   display: flex;
   justify-content: space-between;
@@ -741,6 +753,12 @@
 }
 
 .hud-ticker__alert {
+  /* A flex item's default `min-width: auto` refuses to shrink below its
+     own content — without this, `text-overflow: ellipsis` below never gets
+     the chance to fire, and a long message is instead bluntly clipped by
+     `.hud-ticker`'s own `overflow: hidden` at the strip's edge. Confirmed
+     on the real screen: two alerts were truncating mid-word before this. */
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -62,6 +62,9 @@ describe('StationBlock', () => {
     render(<StationBlock />);
 
     expect(screen.getByTestId('station-block')).toBeInTheDocument();
+    // Every sibling block carries its own `.hud-label` header — review
+    // finding: Station had shipped without one.
+    expect(screen.getByText(/▌ Station/)).toBeInTheDocument();
     expect(screen.getByTestId('station-clock')).toHaveTextContent('14:52');
     expect(screen.getByText(/Friday 28 August/i)).toBeInTheDocument();
 

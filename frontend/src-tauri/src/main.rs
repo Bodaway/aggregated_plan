@@ -58,7 +58,15 @@ impl StationState {
 
 #[tauri::command]
 fn station_stats(state: tauri::State<'_, Mutex<StationState>>) -> StationStats {
-    let mut state = state.lock().expect("station state mutex poisoned");
+    // A HUD readout must not go permanently dark over one panic while the
+    // lock was held: `std::sync::Mutex` never un-poisons itself, so
+    // `.expect()` here would make every future call panic forever, and the
+    // frontend's own `.catch(() => {})` would swallow that silently — the
+    // Station block frozen on its last values with nothing on screen to say
+    // anything broke. Nothing in the critical section below can corrupt
+    // `StationState` on panic (it's plain field reads/writes, no invariant
+    // spanning multiple fields), so recovering the poisoned data is sound.
+    let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     state.sys.refresh_cpu_usage();
     state.sys.refresh_memory();

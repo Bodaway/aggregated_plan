@@ -99,6 +99,7 @@ export function StationBlock() {
 
   return (
     <div className="hud-panel hud-station" data-testid="station-block">
+      <div className="hud-label">▌ Station</div>
       <div className="hud-station__clock" data-testid="station-clock">
         {formatClock(now)}
       </div>

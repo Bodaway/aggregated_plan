@@ -62,6 +62,20 @@ describe('NeuralBudgetBlock', () => {
     expect(gaugeRule).toMatch(/var\(--cn-red\)/);
   });
 
+  it('marks itself as placeholder data, in the label, on every render', () => {
+    // Review finding: on the real screen this block was indistinguishable
+    // from real telemetry — a plausible consumption percentage, plausible
+    // per-model token counts. Plan 2 must remove this marker alongside
+    // stub-data.ts when it supplies real resolvers, not leave it standing
+    // next to real data.
+    render(<NeuralBudgetBlock budget={makeBudget()} />);
+
+    expect(screen.getByTestId('stub-marker')).toHaveTextContent(/stub/i);
+
+    const stubRule = HUD_CSS.match(/\.hud-label__stub\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(stubRule).toMatch(/var\(--cn-orange\)/);
+  });
+
   it('omits the top-project row when the contract reports none', () => {
     render(<NeuralBudgetBlock budget={makeBudget({ topProject: null })} />);
 

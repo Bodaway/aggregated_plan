@@ -2,12 +2,15 @@ import { useMemo } from 'react';
 import { useDashboard, type DashboardAlert } from '@/hooks/use-dashboard';
 import { useBreakRules, type BreakRuleStats } from '@/hooks/use-break-rules';
 import { formatDate } from '@/lib/date-utils';
+import { HUD_VERSION } from '../hud-version';
 
-/** Mirrors HudPage's own boot-sequence banner ("aplan cockpit v0.1.0") — the
- *  two are not read from a single shared constant because that string lives
- *  inline in HudPage's own `BOOT_LINES` array, not exported. Keep them in
- *  sync by hand until there's an actual version source to read from. */
-const APLAN_VERSION = 'aplan v0.1.0';
+/** Review fix: was a second hardcoded copy of the version digits
+ *  HudPage's boot banner also carries — extracted into `HUD_VERSION`
+ *  (shared) once there were two, per this plan's own precedent
+ *  (`lib/is-real-meeting.ts`). The wording still differs on purpose
+ *  ("aplan" here, "aplan cockpit" in the boot banner) — only the digits
+ *  were the actual manual-sync risk. */
+const APLAN_VERSION = `aplan v${HUD_VERSION}`;
 
 /** The shortcut that opens the HUD (docs/plans/2026-08-27-hud-overlay-tauri-
  *  design.md §6: `bind = $mainMod, B, ...`) — static Hyprland config, not

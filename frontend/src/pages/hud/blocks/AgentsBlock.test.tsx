@@ -52,6 +52,19 @@ describe('AgentsBlock', () => {
     expect(screen.getByTestId('agent-dot').className).not.toContain('--idle');
   });
 
+  it('marks itself as placeholder data, in the label, on every render', () => {
+    // Review finding: on the real screen this block was indistinguishable
+    // from a real data source — plausible session names, a plausible task
+    // link. Plan 2 must remove this marker alongside stub-data.ts when it
+    // supplies real resolvers, not leave it standing next to real data.
+    render(<AgentsBlock />);
+
+    expect(screen.getByTestId('stub-marker')).toHaveTextContent(/stub/i);
+
+    const stubRule = HUD_CSS.match(/\.hud-label__stub\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(stubRule).toMatch(/var\(--cn-orange\)/);
+  });
+
   it('reads a deliberate empty state when there is no active session', () => {
     render(<AgentsBlock agents={[]} />);
 

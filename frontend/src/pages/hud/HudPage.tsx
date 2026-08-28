@@ -8,10 +8,11 @@ import { NeuralBudgetBlock } from './blocks/NeuralBudgetBlock';
 import { AgentsBlock } from './blocks/AgentsBlock';
 import { StationBlock } from './blocks/StationBlock';
 import { Ticker } from './blocks/Ticker';
+import { HUD_VERSION } from './hud-version';
 import './hud.css';
 
 const BOOT_LINES = [
-  'aplan cockpit v0.1.0',
+  `aplan cockpit v${HUD_VERSION}`,
   'link 127.0.0.1:3001 ......... ok',
   'palette cybernord .......... ok',
   'session bus ................ ok',

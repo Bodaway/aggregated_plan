@@ -35,6 +35,13 @@ export function AgentsBlock({ agents = STUB_ACTIVE_AGENTS }: AgentsBlockProps) {
     <div className="hud-panel hud-agents" data-testid="agents-block">
       <div className="hud-label">
         {count > 0 ? `▌ Agents · ${count} session${count === 1 ? '' : 's'}` : '▌ Agents'}
+        {/* Review finding: this block runs on the plan-2 stub (stub-data.ts)
+            and reads as real telemetry on screen without this marker — see
+            the rule's own comment in hud.css. Plan 2 must remove this
+            alongside stub-data.ts, not leave it standing next to real data. */}
+        <span className="hud-label__stub" data-testid="stub-marker">
+          STUB
+        </span>
       </div>
 
       {count === 0 ? (

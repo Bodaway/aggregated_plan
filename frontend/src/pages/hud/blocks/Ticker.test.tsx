@@ -72,6 +72,18 @@ describe('Ticker', () => {
     expect(criticalRule).toMatch(/var\(--cn-red\)/);
   });
 
+  it('lets a long alert message actually ellipsis instead of being clipped by the strip', () => {
+    // Review finding, confirmed on the real screen: without `min-width: 0`,
+    // a flex item refuses to shrink below its own content, so
+    // `text-overflow: ellipsis` never gets the chance to fire — the message
+    // is bluntly cut off by `.hud-ticker`'s own `overflow: hidden` instead.
+    // jsdom doesn't lay out flexbox, so this is asserted against the CSS
+    // source itself, same technique as every other regression guard here.
+    const alertRule = HUD_CSS.match(/\.hud-ticker__alert\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(alertRule).toMatch(/min-width:\s*0/);
+    expect(alertRule).toMatch(/text-overflow:\s*ellipsis/);
+  });
+
   it('caps the rendered alerts while stating the true overflow', () => {
     const alerts = Array.from({ length: 5 }, (_, i) => ({
       id: `a${i}`,
