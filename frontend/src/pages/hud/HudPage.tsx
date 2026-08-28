@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
+import { useDominantBlock } from './useDominantBlock';
 import { HudNav } from './HudNav';
 import { FocusBlock } from './blocks/FocusBlock';
 import { PressureBlock } from './blocks/PressureBlock';
@@ -20,6 +21,29 @@ const BOOT_LINES = [
 
 const BOOT_MS = 1500;
 
+/** The grid proper, split out of `HudPage` so that nothing behind the boot
+ *  sequence touches the network: `useDominantBlock` reads the dashboard, and
+ *  the six blocks each read their own hooks — all of it mounts when the boot
+ *  animation ends, not while it plays. */
+function HudGrid() {
+  // One arbiter, one glow: every `lit` below is derived from this single
+  // value, so no combination of props can light two panels at once.
+  const dominant = useDominantBlock();
+
+  return (
+    <div data-testid="hud-grid" className="hud">
+      <HudNav />
+      <FocusBlock lit={dominant === 'focus'} />
+      <PressureBlock lit={dominant === 'pressure'} />
+      <AgendaBlock lit={dominant === 'agenda'} />
+      <NeuralBudgetBlock />
+      <AgentsBlock />
+      <StationBlock />
+      <Ticker />
+    </div>
+  );
+}
+
 export function HudPage() {
   const [booting, setBooting] = useState(true);
   const visible = useSurfaceVisibility();
@@ -39,16 +63,7 @@ export function HudPage() {
           {BOOT_LINES.join('\n')}
         </pre>
       ) : (
-        <div data-testid="hud-grid" className="hud">
-          <HudNav />
-          <FocusBlock lit />
-          <PressureBlock />
-          <AgendaBlock />
-          <NeuralBudgetBlock />
-          <AgentsBlock />
-          <StationBlock />
-          <Ticker />
-        </div>
+        <HudGrid />
       )}
     </div>
   );

@@ -9,8 +9,8 @@ import { isRealMeeting } from '@/lib/is-real-meeting';
 import { useSurfaceVisibility } from '../useSurfaceVisibility';
 
 interface FocusBlockProps {
-  /** Whether this block carries the HUD's one glow. Always `true` today —
-   *  task 8 will decide it dynamically across the six blocks. */
+  /** Whether this block carries the HUD's one glow, as arbitrated by
+   *  `useDominantBlock`. */
   readonly lit: boolean;
 }
 

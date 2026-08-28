@@ -1,31 +1,18 @@
 import { useMemo } from 'react';
 import { differenceInCalendarDays, parseISO } from 'date-fns';
-import { useDashboard, type DashboardTask, type WeeklyWorkloadData } from '@/hooks/use-dashboard';
+import { useDashboard } from '@/hooks/use-dashboard';
 import { formatDate } from '@/lib/date-utils';
+import { computeCapacity, openDeadlines } from '@/lib/pressure-rules';
 
-/** A half-day, the unit `weeklyWorkload.capacity` is counted in — 4 hours
- *  (morning 08:00-12:00 or afternoon 13:00-17:00, per CLAUDE.md). Needed to
- *  turn that count into hours comparable with `totalPlanned`/`totalMeetings`. */
-const HOURS_PER_HALF_DAY = 4;
+interface PressureBlockProps {
+  /** Whether this block carries the HUD's one glow, as arbitrated by
+   *  `useDominantBlock`. */
+  readonly lit: boolean;
+}
 
 /** Rows shown before the panel's own fixed height runs out. The label still
  *  states the true count — this only caps what's drawn. */
 const MAX_VISIBLE_DEADLINES = 5;
-
-interface DeadlineTask {
-  readonly id: string;
-  readonly title: string;
-  readonly deadline: string;
-}
-
-/** Tasks with a deadline, earliest first — "proximity" is chronological,
- *  overdue and all. */
-function sortedDeadlines(tasks: readonly DashboardTask[]): DeadlineTask[] {
-  return tasks
-    .filter((t): t is DashboardTask & { deadline: string } => t.deadline !== null)
-    .map((t) => ({ id: t.id, title: t.title, deadline: t.deadline }))
-    .sort((a, b) => a.deadline.localeCompare(b.deadline));
-}
 
 /** `Today`, `Tomorrow`, `In Nd` or `Overdue` — a date-only comparison since
  *  `deadline` (like `today`) is a bare `YYYY-MM-DD`, no time component. */
@@ -43,28 +30,18 @@ function isHot(deadline: string, today: string): boolean {
   return deadline === today;
 }
 
-/** Capacity as a percentage of the week's planned load (tasks + meetings)
- *  over its capacity, converted from half-days to hours. `overloaded` is the
- *  domain's own R16 verdict, not re-derived from the percentage here. */
-function computeCapacity(workload: WeeklyWorkloadData | null): { pct: number; overloaded: boolean } {
-  if (!workload) return { pct: 0, overloaded: false };
-  const capacityHours = workload.capacity * HOURS_PER_HALF_DAY;
-  const plannedHours = workload.totalPlanned + workload.totalMeetings;
-  const pct = capacityHours > 0 ? Math.round((plannedHours / capacityHours) * 100) : 0;
-  return { pct, overloaded: workload.overload };
-}
-
-export function PressureBlock() {
+export function PressureBlock({ lit }: PressureBlockProps) {
   const today = formatDate(new Date());
   const { data } = useDashboard(today);
 
-  const deadlines = useMemo(() => sortedDeadlines(data?.tasks ?? []), [data]);
+  const deadlines = useMemo(() => openDeadlines(data?.tasks ?? []), [data]);
   const { pct, overloaded } = computeCapacity(data?.weeklyWorkload ?? null);
 
   const gaugeClass = overloaded ? 'hud-gauge hud-gauge--over' : 'hud-gauge';
+  const panelClass = lit ? 'hud-panel hud-panel--lit hud-pressure' : 'hud-panel hud-pressure';
 
   return (
-    <div className="hud-panel hud-pressure" data-testid="pressure-block">
+    <div className={panelClass} data-testid="pressure-block">
       <div className="hud-label">
         {deadlines.length > 0 ? `▌ Pressure · ${deadlines.length} deadline${deadlines.length === 1 ? '' : 's'}` : '▌ Pressure'}
       </div>

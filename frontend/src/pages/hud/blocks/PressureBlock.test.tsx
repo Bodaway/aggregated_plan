@@ -15,7 +15,7 @@ vi.mock('@/hooks/use-dashboard', () => ({ useDashboard: (...args: unknown[]) => 
 import { PressureBlock } from './PressureBlock';
 
 function mockDashboard({
-  tasks = [] as { id: string; title: string; deadline: string | null }[],
+  tasks = [] as { id: string; title: string; status?: string; deadline: string | null }[],
   weeklyWorkload = { capacity: 10, totalPlanned: 30, totalMeetings: 6, overload: false },
 } = {}) {
   dashboardMock.mockReturnValue({ data: { tasks, weeklyWorkload } });
@@ -42,7 +42,7 @@ describe('PressureBlock', () => {
       ],
     });
 
-    render(<PressureBlock />);
+    render(<PressureBlock lit={false} />);
 
     expect(screen.getByTestId('pressure-block')).toBeInTheDocument();
     expect(screen.getByText(/pressure/i)).toBeInTheDocument();
@@ -78,7 +78,7 @@ describe('PressureBlock', () => {
     }));
     mockDashboard({ tasks });
 
-    render(<PressureBlock />);
+    render(<PressureBlock lit={false} />);
 
     expect(screen.getByText(/7 deadlines/i)).toBeInTheDocument();
     expect(screen.getAllByTestId('pressure-deadline')).toHaveLength(5);
@@ -87,7 +87,7 @@ describe('PressureBlock', () => {
   it('reads a deliberate empty state when there are no upcoming deadlines', () => {
     mockDashboard({ tasks: [] });
 
-    render(<PressureBlock />);
+    render(<PressureBlock lit={false} />);
 
     expect(screen.getByText(/no upcoming deadlines/i)).toBeInTheDocument();
     expect(screen.queryAllByTestId('pressure-deadline')).toHaveLength(0);
@@ -106,7 +106,7 @@ describe('PressureBlock', () => {
       tasks: [{ id: 't3', title: 'eActions — mort au démarrage si CSV corrompu', deadline: '2026-08-25' }],
     });
 
-    render(<PressureBlock />);
+    render(<PressureBlock lit={false} />);
 
     const when = screen.getByTestId('deadline-when');
     expect(when).toHaveTextContent('Overdue');
@@ -121,7 +121,7 @@ describe('PressureBlock', () => {
       weeklyWorkload: { capacity: 10, totalPlanned: 40, totalMeetings: 5, overload: true },
     });
 
-    render(<PressureBlock />);
+    render(<PressureBlock lit={false} />);
 
     // 45 planned hours over 40 capacity hours → 113%, gauge bar clamped at 100%.
     expect(screen.getByText('113%')).toBeInTheDocument();
@@ -131,5 +131,36 @@ describe('PressureBlock', () => {
 
     const overRule = HUD_CSS.match(/\.hud-gauge--over[^{]*\{[^}]*\}/)?.[0] ?? '';
     expect(overRule).toMatch(/var\(--cn-orange\)/);
+  });
+
+  it('leaves a done or cancelled deadline out of the list entirely', () => {
+    // The backend does not filter for us — `find_by_date_range` selects purely
+    // on date range — so a finished task with today's deadline really does
+    // reach this block. It is not pressure: nothing is left to do on it.
+    mockDashboard({
+      tasks: [
+        { id: 't1', title: 'Livrable signé', status: 'DONE', deadline: '2026-08-28' },
+        { id: 't2', title: 'Occurrence sautée', status: 'CANCELLED', deadline: '2026-08-28' },
+        { id: 't3', title: 'Revue eProject A3', status: 'BLOCKED', deadline: '2026-08-28' },
+      ],
+    });
+
+    render(<PressureBlock lit={false} />);
+
+    // Blocked still counts: stalled is not finished.
+    expect(screen.getByText(/1 deadline\b/i)).toBeInTheDocument();
+    const rows = screen.getAllByTestId('pressure-deadline');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('Revue eProject A3');
+  });
+
+  it('wears the HUD’s one glow only while it is the dominant block', () => {
+    mockDashboard();
+
+    const { rerender } = render(<PressureBlock lit />);
+    expect(screen.getByTestId('pressure-block').className).toContain('hud-panel--lit');
+
+    rerender(<PressureBlock lit={false} />);
+    expect(screen.getByTestId('pressure-block').className).not.toContain('hud-panel--lit');
   });
 });

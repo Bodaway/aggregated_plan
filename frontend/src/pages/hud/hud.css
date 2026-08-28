@@ -7,9 +7,12 @@
    colour there is replaced here by the CyberNord --cn-* token it stood for,
    so repainting the desktop theme repaints the HUD.
 
-   The glow is a budget, not an effect: at most one panel wears
+   The glow is a budget, not an effect: exactly one panel wears
    `.hud-panel--lit` at a time, and only that panel gets a shadow. The other
-   panels are a one-pixel rule on a blurred, translucent ground.
+   panels are a one-pixel rule on a blurred, translucent ground. Which one it
+   is moves with urgency — `useDominantBlock` arbitrates between Focus,
+   Pressure and Agenda — so all three of those must be able to wear it, and
+   Neural budget, Agents and Station never do.
 --------------------------------------------------------------------------- */
 
 .hud-viewport {
@@ -330,8 +333,9 @@
 /* --- the Focus block's own content: label, task, hero chronometer, the
    gradient bar above, four quarters and a two-column footer. The outer
    panel look (background, border, corner brackets) already lives in
-   `.hud-panel` / `.hud-panel--lit` above, shared with whichever block task 8
-   later makes dominant — only the internal layout is specific to Focus.
+   `.hud-panel` / `.hud-panel--lit` above, shared with Pressure and Agenda,
+   the two other blocks dominance can move to — only the internal layout is
+   specific to Focus.
 
    One deliberate correction against the mockup: its "current quarter" tint
    carried a `--cn-teal` box-shadow, but the glow budget above is exactly one
@@ -458,9 +462,10 @@
 }
 
 /* --- the Pressure block: deadlines sorted by proximity, plus a capacity
-   gauge. Neither of the two secondary blocks below carries the glow — they
-   are `.hud-panel`, never `.hud-panel--lit` (see the glow-budget comment
-   above `.hud-panel--lit`). --- */
+   gauge. This block and Agenda below both carry the glow when
+   `useDominantBlock` names them — they take `.hud-panel--lit` on the same
+   element, exactly as Focus does, and nothing here is specific to being lit
+   (see the glow-budget comment above `.hud-panel--lit`). --- */
 .hud-pressure {
   display: flex;
   flex-direction: column;
@@ -569,8 +574,9 @@
 
 /* --- the Neural budget block: burn against a hand-set ceiling, a per-day
    sparkline, and a per-model/per-project breakdown. Neither this block nor
-   Agents below carries the glow (see the glow-budget comment above
-   `.hud-panel--lit`) — same rule as Pressure and Agenda.
+   Agents below can ever carry the glow (see the glow-budget comment above
+   `.hud-panel--lit`) — unlike Focus, Pressure and Agenda, dominance never
+   moves here: these two report, they never demand attention.
 
    Design doc §9's stated limitation: the ceiling this gauge measures against
    is typed by the user once, calibrated against `/usage`, never measured by

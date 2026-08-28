@@ -1,3 +1,5 @@
+import { isTaskOpen } from './task-status';
+
 /**
  * Structural shape of a task for hour-counting purposes.
  * Kept minimal so this helper does not depend on component/GraphQL types.
@@ -19,6 +21,6 @@ export interface HourCountableTask {
  * For counting tasks, falls back: effective remaining > effective estimated > 0.
  */
 export function getTaskHours(t: HourCountableTask): number {
-  if (t.status === 'DONE' || t.status === 'CANCELLED') return 0;
+  if (!isTaskOpen(t.status)) return 0;
   return t.effectiveRemainingHours ?? t.effectiveEstimatedHours ?? 0;
 }

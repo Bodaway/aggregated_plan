@@ -4,6 +4,12 @@ import { formatDate } from '@/lib/date-utils';
 import { isRealMeeting } from '@/lib/is-real-meeting';
 import { useSurfaceVisibility } from '../useSurfaceVisibility';
 
+interface AgendaBlockProps {
+  /** Whether this block carries the HUD's one glow, as arbitrated by
+   *  `useDominantBlock`. */
+  readonly lit: boolean;
+}
+
 /** The timeline spans the configured workday window (08:00-17:00, per
  *  CLAUDE.md) — the same bounds FocusBlock's quarters are cut from. There is
  *  no start/end field in the dashboard query to read this from, so it's
@@ -71,7 +77,7 @@ function toSegment(m: DashboardMeeting): TimelineSegment | null {
   };
 }
 
-export function AgendaBlock() {
+export function AgendaBlock({ lit }: AgendaBlockProps) {
   const today = formatDate(new Date());
   const { data } = useDashboard(today);
   const surfaceVisible = useSurfaceVisibility();
@@ -110,8 +116,10 @@ export function AgendaBlock() {
   const meetingCount = meetingsToday.length;
   const totalHours = meetingsToday.reduce((sum, m) => sum + m.durationHours, 0);
 
+  const panelClass = lit ? 'hud-panel hud-panel--lit hud-agenda' : 'hud-panel hud-agenda';
+
   return (
-    <div className="hud-panel hud-agenda" data-testid="agenda-block">
+    <div className={panelClass} data-testid="agenda-block">
       <div className="hud-label">▌ Agenda</div>
 
       {nextMeeting ? (

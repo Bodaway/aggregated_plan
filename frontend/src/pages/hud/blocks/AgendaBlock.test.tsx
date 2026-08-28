@@ -72,7 +72,7 @@ describe('AgendaBlock', () => {
       },
     ]);
 
-    render(<AgendaBlock />);
+    render(<AgendaBlock lit={false} />);
 
     expect(screen.getByTestId('agenda-block')).toBeInTheDocument();
     expect(screen.getByText(/agenda/i)).toBeInTheDocument();
@@ -108,7 +108,7 @@ describe('AgendaBlock', () => {
       },
     ]);
 
-    render(<AgendaBlock />);
+    render(<AgendaBlock lit={false} />);
 
     expect(screen.getByText(/no meetings today/i)).toBeInTheDocument();
     expect(screen.queryAllByTestId('agenda-segment')).toHaveLength(0);
@@ -140,7 +140,7 @@ describe('AgendaBlock', () => {
       },
     ]);
 
-    render(<AgendaBlock />);
+    render(<AgendaBlock lit={false} />);
 
     expect(screen.getByText(/no more meetings today/i)).toBeInTheDocument();
     // Distinct wording from the true-empty case above — same information
@@ -162,9 +162,19 @@ describe('AgendaBlock', () => {
       },
     ]);
 
-    render(<AgendaBlock />);
+    render(<AgendaBlock lit={false} />);
 
     expect(screen.getByText('Now')).toBeInTheDocument();
     expect(screen.getByText('Point quotidien')).toBeInTheDocument();
+  });
+
+  it('wears the HUD’s one glow only while it is the dominant block', () => {
+    mockDashboard();
+
+    const { rerender } = render(<AgendaBlock lit />);
+    expect(screen.getByTestId('agenda-block').className).toContain('hud-panel--lit');
+
+    rerender(<AgendaBlock lit={false} />);
+    expect(screen.getByTestId('agenda-block').className).not.toContain('hud-panel--lit');
   });
 });
