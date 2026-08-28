@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
 import { useDominantBlock } from './useDominantBlock';
 import { HudNav } from './HudNav';
@@ -39,6 +39,45 @@ export function resetBootSequenceForTests(): void {
   bootSequencePlayed = false;
 }
 
+/** How long `data-opening` stays on: the last panel's delay plus its own
+ *  duration, plus the sweep, plus a little. Removing the attribute is what
+ *  arms the next opening — the rules stop matching, so applying them again
+ *  runs them from the top rather than finding an animation already spent. */
+const OPENING_MS = 700;
+
+/**
+ * True for the length of the opening animation, and again on every reopening.
+ *
+ * The whole grid is rendered and readable throughout — this animates data in,
+ * it never makes anyone wait for it. That distinction is the lesson of the
+ * boot sequence, which was cut back to once per process for standing between
+ * the keystroke and the numbers.
+ *
+ * Mount counts as an opening: the grid mounts when the boot sequence ends on
+ * the first launch, and again on every return from another tab, and both are
+ * moments the HUD arrives in front of someone.
+ */
+function useOpeningAnimation(): boolean {
+  const visible = useSurfaceVisibility();
+  const [openings, setOpenings] = useState(0);
+  const wasVisible = useRef(visible);
+  const [opening, setOpening] = useState(true);
+
+  useEffect(() => {
+    const opened = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (opened) setOpenings((n) => n + 1);
+  }, [visible]);
+
+  useEffect(() => {
+    setOpening(true);
+    const timer = setTimeout(() => setOpening(false), OPENING_MS);
+    return () => clearTimeout(timer);
+  }, [openings]);
+
+  return opening;
+}
+
 /** The grid proper, split out of `HudPage` so that nothing behind the boot
  *  sequence touches the network: `useDominantBlock` reads the dashboard, and
  *  the six blocks each read their own hooks — all of it mounts when the boot
@@ -47,9 +86,10 @@ function HudGrid() {
   // One arbiter, one glow: every `lit` below is derived from this single
   // value, so no combination of props can light two panels at once.
   const dominant = useDominantBlock();
+  const opening = useOpeningAnimation();
 
   return (
-    <div data-testid="hud-grid" className="hud">
+    <div data-testid="hud-grid" className="hud" data-opening={opening ? '' : undefined}>
       <HudNav />
       <FocusBlock lit={dominant === 'focus'} />
       <PressureBlock lit={dominant === 'pressure'} />
@@ -58,6 +98,7 @@ function HudGrid() {
       <AgentsBlock />
       <StationBlock />
       <Ticker />
+      {opening && <div className="hud-sweep" data-testid="hud-sweep" />}
     </div>
   );
 }

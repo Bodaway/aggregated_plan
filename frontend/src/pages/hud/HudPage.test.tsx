@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -16,6 +18,10 @@ vi.mock('@/hooks/use-break-rules', () => ({
 }));
 
 import { HudPage, resetBootSequenceForTests } from './HudPage';
+
+// jsdom applies none of this stylesheet, so the source text is the only way to
+// assert the reduced-motion contract — same technique the block tests use.
+const HUD_CSS = readFileSync(resolve(__dirname, 'hud.css'), 'utf8');
 
 // The grid now hosts HudNav, which reads router context (useLocation /
 // useNavigate) — so every render needs a Router, same as it gets from
@@ -199,6 +205,51 @@ describe('HudPage', () => {
 
     act(() => void vi.advanceTimersByTime(1600));
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
+  });
+
+  // ─── the opening animation ───
+
+  it('plays on arrival, without holding a single value back', () => {
+    // The distinction that matters: the grid is present and readable the whole
+    // time. The boot sequence was cut back for standing between the keystroke
+    // and the numbers; this animates them in instead.
+    renderGrid();
+
+    const grid = screen.getByTestId('hud-grid');
+    expect(grid).toHaveAttribute('data-opening');
+    expect(screen.getByTestId('hud-sweep')).toBeInTheDocument();
+    expect(screen.getByTestId('station-block')).toBeInTheDocument();
+  });
+
+  it('takes the animation back off, which is what arms the next opening', () => {
+    // Removing the attribute is load-bearing, not tidiness: the rules stop
+    // matching, so applying them again later runs them from the top instead of
+    // finding an animation already spent.
+    renderGrid();
+    act(() => void vi.advanceTimersByTime(1000));
+
+    expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-opening');
+    expect(screen.queryByTestId('hud-sweep')).not.toBeInTheDocument();
+  });
+
+  it('plays again on every reopening', () => {
+    renderGrid();
+    act(() => void vi.advanceTimersByTime(1000));
+    expect(screen.getByTestId('hud-grid')).not.toHaveAttribute('data-opening');
+
+    setSurface('hidden');
+    setSurface('visible');
+
+    expect(screen.getByTestId('hud-grid')).toHaveAttribute('data-opening');
+    expect(screen.getByTestId('hud-sweep')).toBeInTheDocument();
+  });
+
+  it('gives someone who asked for less motion the grid, still', () => {
+    // Asserted against the stylesheet, jsdom applying none of it: a shorter
+    // animation would not honour the request, so the rule must cancel it.
+    const reduced = HUD_CSS.match(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[^}]*\{[^}]*\}[^}]*\}/)?.[0] ?? '';
+    expect(reduced).toMatch(/animation:\s*none/);
+    expect(reduced).toMatch(/\.hud-sweep\s*\{\s*display:\s*none/);
   });
 
   it('never runs it a second time', () => {

@@ -93,6 +93,85 @@
 .hud-station  { grid-area: station; }
 .hud-ticker   { grid-area: ticker; }
 
+/* ─── the opening ─────────────────────────────────────────────────────────
+   Plays once per SUPER+B, and deliberately does NOT gate anything: the grid
+   is rendered and readable from the first frame, it just arrives. The boot
+   sequence was cut back to once per process precisely because it stood
+   between the keystroke and the data; this must not repeat that mistake, so
+   nothing here delays a single value.
+
+   `data-opening` is set for the duration and then removed, which is what
+   makes the animation restart on the next opening: the rules below stop
+   matching in between, so applying them again runs them from the top. An
+   ancestor attribute merely changing value would not re-trigger an animation
+   already applied.
+
+   Cost: ~600 ms of compositor work per opening, and only while the surface is
+   actually on screen — the signal that drives it fires nowhere else. Nothing
+   here animates a property that forces layout: opacity and transform only.
+   --- */
+@keyframes hud-panel-in {
+  from { opacity: 0; transform: translateY(0.5em) scale(0.994); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes hud-sweep {
+  from { transform: translateX(-40%); opacity: 0; }
+  12%  { opacity: 1; }
+  to   { transform: translateX(340%); opacity: 0; }
+}
+
+.hud[data-opening] > *:not(.hud-sweep) {
+  animation: hud-panel-in 380ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+/* The stagger reads top-left to bottom-right, the order the eye takes the
+   grid in — nav first because it is the frame, ticker last because it is the
+   footnote. Kept under a quarter second end to end: any longer and the last
+   panel is visibly late rather than part of one gesture. */
+.hud[data-opening] > .hud-nav      { animation-delay: 0ms; }
+.hud[data-opening] > .hud-focus    { animation-delay: 40ms; }
+.hud[data-opening] > .hud-pressure { animation-delay: 70ms; }
+.hud[data-opening] > .hud-agenda   { animation-delay: 100ms; }
+.hud[data-opening] > .hud-neural   { animation-delay: 130ms; }
+.hud[data-opening] > .hud-agents   { animation-delay: 160ms; }
+.hud[data-opening] > .hud-station  { animation-delay: 190ms; }
+.hud[data-opening] > .hud-ticker   { animation-delay: 220ms; }
+
+/* One pass of a soft teal band across the whole surface. A gradient, never a
+   box-shadow: the glow budget is exactly one --cn-teal box-shadow file-wide
+   and it belongs to the dominant panel. */
+.hud-sweep {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}
+.hud-sweep::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    color-mix(in srgb, var(--cn-teal) 7%, transparent) 45%,
+    color-mix(in srgb, var(--cn-teal) 22%, transparent) 50%,
+    color-mix(in srgb, var(--cn-teal) 7%, transparent) 55%,
+    transparent
+  );
+  animation: hud-sweep 560ms cubic-bezier(0.35, 0, 0.2, 1) both;
+}
+
+/* Someone who asked the system for less motion gets the grid, immediately and
+   still. Not a shorter animation — none. */
+@media (prefers-reduced-motion: reduce) {
+  .hud[data-opening] > *:not(.hud-sweep) { animation: none; }
+  .hud-sweep { display: none; }
+}
+
 /* --- the destination bar: leaves the HUD for the rest of the app.
    Transcribed from the mockup's `.nav`, with one deliberate correction:
    the mockup colours idle labels (and their shortcut digit) with its
