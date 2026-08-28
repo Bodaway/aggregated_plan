@@ -14,3 +14,12 @@ export const BREAK_STATS_QUERY = `
     }
   }
 `;
+
+// Nullable: no enabled rule has an upcoming due instant today (an all-daily
+// routine, or the working windows are exhausted). Null is a normal outcome,
+// not an error — see useNextBreakDue().
+export const NEXT_BREAK_DUE_QUERY = `
+  query NextBreakDue {
+    nextBreakDue
+  }
+`;

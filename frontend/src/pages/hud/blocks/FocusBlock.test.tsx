@@ -1,18 +1,30 @@
 import { render, screen, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// The three hooks the block reads from — mocked at the module boundary so the
+// The hooks the block reads from — mocked at the module boundary so the
 // tests exercise the block's own logic (chrono tick, quarter/overload
 // detection, empty state), not urql or the GraphQL wire format.
+// `useSurfaceVisibility` is deliberately NOT mocked — real hook, toggled via
+// `setVisibility()` below, same technique `useSurfaceVisibility.test.ts` uses.
 const activityMock = vi.fn();
 const timesheetMock = vi.fn();
 const dashboardMock = vi.fn();
+const nextBreakDueMock = vi.fn();
 
 vi.mock('@/hooks/use-activity', () => ({ useActivity: (...args: unknown[]) => activityMock(...args) }));
 vi.mock('@/hooks/use-timesheet', () => ({ useTimesheet: (...args: unknown[]) => timesheetMock(...args) }));
 vi.mock('@/hooks/use-dashboard', () => ({ useDashboard: (...args: unknown[]) => dashboardMock(...args) }));
+vi.mock('@/hooks/use-break-rules', () => ({ useNextBreakDue: (...args: unknown[]) => nextBreakDueMock(...args) }));
 
 import { FocusBlock } from './FocusBlock';
+
+function setVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => state,
+  });
+  document.dispatchEvent(new Event('visibilitychange'));
+}
 
 // Real quarter boundaries (08–10, 10–12, 13–15, 15–17), in minutes since
 // midnight — matches the configured workday windows documented in CLAUDE.md.
@@ -40,10 +52,14 @@ function mockHooks({
   currentActivity = null as null | { id: string; task: { id: string; title: string } | null; startTime: string; halfDay: string },
   quarters = makeQuarters(),
   dashboardData = null as null | Record<string, unknown>,
+  nextBreakDue = null as string | null,
+  refetchNextBreakDue = vi.fn(),
 } = {}) {
   activityMock.mockReturnValue({ currentActivity });
   timesheetMock.mockReturnValue({ day: quarters.length ? { quarters } : null });
   dashboardMock.mockReturnValue({ data: dashboardData });
+  nextBreakDueMock.mockReturnValue({ nextBreakDue, refetch: refetchNextBreakDue });
+  return { refetchNextBreakDue };
 }
 
 describe('FocusBlock', () => {
@@ -53,10 +69,12 @@ describe('FocusBlock', () => {
     activityMock.mockReset();
     timesheetMock.mockReset();
     dashboardMock.mockReset();
+    nextBreakDueMock.mockReset();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    setVisibility('visible');
   });
 
   it('shows the active task and its running chronometer', () => {
@@ -135,5 +153,54 @@ describe('FocusBlock', () => {
 
     rerender(<FocusBlock lit={false} />);
     expect(screen.getByTestId('focus-block').className).not.toContain('hud-panel--lit');
+  });
+
+  it('shows a countdown to the next break', () => {
+    // 09:30:00 "now" → due at 09:42:00 is exactly 12 minutes out.
+    mockHooks({ nextBreakDue: '2026-08-28T09:42:00' });
+
+    render(<FocusBlock lit />);
+
+    expect(screen.getByText('12 min')).toBeInTheDocument();
+  });
+
+  it('reads "None today" when no break is due', () => {
+    // A normal outcome (e.g. an all-daily routine) — not an error, not a
+    // loading state. `nextBreakDue: null` is the resolver's own contract.
+    mockHooks({ nextBreakDue: null });
+
+    render(<FocusBlock lit />);
+
+    expect(screen.getByText('None today')).toBeInTheDocument();
+  });
+
+  it('reads "Overdue" instead of a negative countdown, and asks for a fresh value', () => {
+    // Due a minute ago — the fetched instant is stale the moment it passes.
+    const { refetchNextBreakDue } = mockHooks({ nextBreakDue: '2026-08-28T09:29:00' });
+
+    render(<FocusBlock lit />);
+
+    expect(screen.getByText('Overdue')).toBeInTheDocument();
+    expect(refetchNextBreakDue).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops ticking the countdown while the surface is hidden, and catches up when it returns', () => {
+    setVisibility('hidden');
+    mockHooks({ nextBreakDue: '2026-08-28T09:42:00' });
+
+    render(<FocusBlock lit />);
+    expect(screen.getByText('12 min')).toBeInTheDocument();
+
+    // Five minutes pass with the HUD hidden — the display must not move.
+    act(() => {
+      vi.advanceTimersByTime(5 * 60 * 1000);
+    });
+    expect(screen.getByText('12 min')).toBeInTheDocument();
+
+    // The surface comes back: it catches up to the real remaining time.
+    act(() => {
+      setVisibility('visible');
+    });
+    expect(screen.getByText('7 min')).toBeInTheDocument();
   });
 });

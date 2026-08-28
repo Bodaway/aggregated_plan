@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useMutation, useQuery } from 'urql';
-import { BREAK_RULES_QUERY, BREAK_STATS_QUERY } from '@/graphql/queries/break-rules';
+import { BREAK_RULES_QUERY, BREAK_STATS_QUERY, NEXT_BREAK_DUE_QUERY } from '@/graphql/queries/break-rules';
 import { CREATE_BREAK_RULE, DELETE_BREAK_RULE, UPDATE_BREAK_RULE } from '@/graphql/mutations/break-rules';
 
 export type BreakKind = 'VISUAL' | 'POSTURE' | 'LONG' | 'STRENGTH';
@@ -138,5 +138,26 @@ export function useBreakRules() {
     createRule,
     updateRule,
     deleteRule,
+  };
+}
+
+interface NextBreakDueData {
+  readonly nextBreakDue: string | null;
+}
+
+/**
+ * The soonest instant the routine next comes due, over enabled rules only —
+ * the HUD's countdown. `null` is a normal outcome (an all-daily routine has
+ * no "next" today, or the working windows are exhausted), not a loading or
+ * error state — callers should render it as a readable empty state.
+ */
+export function useNextBreakDue() {
+  const [result, reexecute] = useQuery<NextBreakDueData>({ query: NEXT_BREAK_DUE_QUERY });
+
+  return {
+    nextBreakDue: result.data?.nextBreakDue ?? null,
+    loading: result.fetching,
+    error: result.error ?? null,
+    refetch: () => reexecute({ requestPolicy: 'network-only' }),
   };
 }

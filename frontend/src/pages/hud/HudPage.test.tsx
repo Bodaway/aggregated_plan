@@ -9,6 +9,7 @@ import { MemoryRouter } from 'react-router-dom';
 vi.mock('@/hooks/use-activity', () => ({ useActivity: () => ({ currentActivity: null }) }));
 vi.mock('@/hooks/use-timesheet', () => ({ useTimesheet: () => ({ day: null }) }));
 vi.mock('@/hooks/use-dashboard', () => ({ useDashboard: () => ({ data: null }) }));
+vi.mock('@/hooks/use-break-rules', () => ({ useNextBreakDue: () => ({ nextBreakDue: null, refetch: vi.fn() }) }));
 
 import { HudPage } from './HudPage';
 

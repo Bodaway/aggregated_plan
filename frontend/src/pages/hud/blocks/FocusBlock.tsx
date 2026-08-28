@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActivity } from '@/hooks/use-activity';
 import { useTimesheet } from '@/hooks/use-timesheet';
 import { useDashboard, type DashboardMeeting } from '@/hooks/use-dashboard';
+import { useNextBreakDue } from '@/hooks/use-break-rules';
 import { formatDate } from '@/lib/date-utils';
 import { getTaskHours } from '@/lib/task-hours';
+import { useSurfaceVisibility } from '../useSurfaceVisibility';
 
 interface FocusBlockProps {
   /** Whether this block carries the HUD's one glow. Always `true` today —
@@ -11,10 +13,10 @@ interface FocusBlockProps {
   readonly lit: boolean;
 }
 
-/** Elapsed seconds between an ISO start time and now, floored at zero so a
- *  clock-skewed `startTime` in the future never renders negative. */
-function getElapsedSeconds(startTime: string): number {
-  return Math.max(0, Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
+/** Elapsed seconds between an ISO start time and a given instant, floored at
+ *  zero so a clock-skewed `startTime` in the future never renders negative. */
+function getElapsedSeconds(startTime: string, now: number): number {
+  return Math.max(0, Math.floor((now - new Date(startTime).getTime()) / 1000));
 }
 
 /** `HH:MM:SS`, zero-padded — the hero chronometer's display format. */
@@ -24,6 +26,16 @@ function formatElapsed(totalSeconds: number): string {
   const seconds = totalSeconds % 60;
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}
+
+/** `12 min` under an hour, `1h 12min` beyond it. Rounds up so the display
+ *  never reads "0 min" for a break that is not due quite yet. */
+function formatCountdown(remainingMs: number): string {
+  const totalMinutes = Math.ceil(remainingMs / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}min`;
 }
 
 /** `08–10` from minutes-since-midnight boundaries. */
@@ -56,20 +68,39 @@ export function FocusBlock({ lit }: FocusBlockProps) {
   const { currentActivity } = useActivity(today);
   const { day } = useTimesheet(new Date());
   const { data } = useDashboard(today);
+  const { nextBreakDue, refetch: refetchNextBreakDue } = useNextBreakDue();
+  const surfaceVisible = useSurfaceVisibility();
 
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
+  // One clock drives both the chronometer and the break countdown, and it
+  // only runs while the surface is actually visible — `useSurfaceVisibility`'s
+  // own contract ("every animation in the HUD must be gated on this"),
+  // since a ticking countdown behind a hidden window is exactly the cost
+  // that hook exists to avoid.
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!currentActivity) {
-      setElapsedSeconds(0);
-      return;
-    }
-    setElapsedSeconds(getElapsedSeconds(currentActivity.startTime));
-    const id = setInterval(() => {
-      setElapsedSeconds(getElapsedSeconds(currentActivity.startTime));
-    }, 1000);
+    if (!surfaceVisible) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [currentActivity]);
+  }, [surfaceVisible]);
+
+  const elapsedSeconds = currentActivity ? getElapsedSeconds(currentActivity.startTime, now) : 0;
+
+  const remainingBreakMs = nextBreakDue ? new Date(nextBreakDue).getTime() - now : null;
+  const breakOverdue = remainingBreakMs !== null && remainingBreakMs <= 0;
+
+  // The fetched instant goes stale the moment it passes — the routine moves
+  // on to whatever comes next, which this query has no way to know about
+  // until asked again. Ask again, once, the moment "overdue" is first true.
+  const refetchedForOverdue = useRef(false);
+  useEffect(() => {
+    if (breakOverdue && !refetchedForOverdue.current) {
+      refetchedForOverdue.current = true;
+      refetchNextBreakDue();
+    } else if (!breakOverdue) {
+      refetchedForOverdue.current = false;
+    }
+  }, [breakOverdue, refetchNextBreakDue]);
 
   const quarters = day?.quarters ?? [];
   const currentQuarterIndex = useMemo(() => {
@@ -153,11 +184,13 @@ export function FocusBlock({ lit }: FocusBlockProps) {
         </div>
         <div>
           <div className="hud-focus__foot-caption">Next break</div>
-          {/* No due-time field exists on use-break-rules() today (routine
-              config + 30-day adherence stats only) — flagged to the
-              controller rather than reimplementing the domain engine's
-              wall-clock/absorption logic client-side. */}
-          <div className="hud-focus__foot-value">—</div>
+          <div className="hud-focus__foot-value">
+            {remainingBreakMs === null
+              ? 'None today'
+              : breakOverdue
+                ? 'Overdue'
+                : formatCountdown(remainingBreakMs)}
+          </div>
         </div>
       </div>
     </div>
