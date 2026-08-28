@@ -20,8 +20,12 @@ describe('HUD visual foundation', () => {
   });
 
   it('spends its glow on the dominant panel only', () => {
-    const lit = (CSS.match(/box-shadow:[^;]*rgba\(8,\s*247,\s*254/g) ?? []).length;
-    expect(lit).toBeLessThanOrEqual(2);
+    // Tokens, not hex, carry the glow now — count declarations that shadow
+    // in --cn-teal, not a literal rgba(8, 247, 254, ...) that a token-based
+    // sheet will never contain. Exactly one: the budget is spent, not
+    // withheld, and never duplicated onto a second panel.
+    const lit = (CSS.match(/box-shadow:[^;]*var\(--cn-teal\)/g) ?? []).length;
+    expect(lit).toBe(1);
   });
 
   it('takes every colour from the CyberNord tokens', () => {

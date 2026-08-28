@@ -24,6 +24,10 @@
 .hud {
   --hud-ink: var(--cn-fg);
   --hud-ink-mid: color-mix(in srgb, var(--cn-fg) 55%, var(--cn-dim));
+  /* Hairline rules and dividers only — never body or caption text. Against a
+     worst-case bright desktop, composited through --hud-panel-bg, this
+     measures ~3:1 at best even after the backdrop-filter brightness() below,
+     short of WCAG AA (4.5:1) at the small sizes this scale produces. */
   --hud-ink-low: color-mix(in srgb, var(--cn-fg) 25%, var(--cn-dim));
   --hud-hair: color-mix(in srgb, var(--cn-dim) 70%, transparent);
   --hud-panel-bg: color-mix(in srgb, var(--cn-bg) 72%, transparent);
@@ -81,7 +85,15 @@
   min-width: 0;
   padding: 0.9em 1em;
   background: var(--hud-panel-bg);
-  backdrop-filter: blur(18px) saturate(0.75);
+  /* brightness() darkens whatever sits behind the panel before it blends
+     with --hud-panel-bg. Without it, a worst-case bright desktop measured
+     --hud-ink-mid at ~2.2:1 and --hud-ink at ~4.5:1 — unreadable and
+     borderline. At 0.2, the same worst case reaches ~5.4:1 for --hud-ink-mid
+     (WCAG AA) and ~10.9:1 for --hud-ink (AAA); a dark desktop is essentially
+     unaffected, since brightness() scales an already-near-black backdrop to
+     itself either way (~6.5:1 / ~13.3:1). --hud-ink-low stays below AA in
+     both cases — see the note on its declaration above. */
+  backdrop-filter: blur(18px) saturate(0.75) brightness(0.2);
 }
 .hud-panel::before,
 .hud-panel::after {
@@ -94,25 +106,36 @@
 .hud-panel::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
 .hud-panel::after { bottom: 0; right: 0; border-left: 0; border-top: 0; }
 
-/* --- the glow budget: at most one panel wears this at a time --- */
+/* --- the glow budget: at most one panel wears this at a time ---
+   Composes with `.hud-panel` on the same element (class="hud-panel
+   hud-panel--lit"). It overrides background, backdrop-filter, border and
+   box-shadow; it leaves position, padding and min-width untouched on
+   purpose, so a block's footprint never shifts when dominance moves onto or
+   off of it. It also turns the corner brackets off below: in the mockup the
+   dominant block is a distinct visual language, never a panel with a glow
+   bolted on. --- */
 .hud-panel--lit {
   background: linear-gradient(
     158deg,
     color-mix(in srgb, var(--cn-surface) 90%, transparent),
     color-mix(in srgb, var(--cn-bg) 95%, transparent)
   );
-  backdrop-filter: blur(22px) saturate(0.7);
+  backdrop-filter: blur(22px) saturate(0.7) brightness(0.2);
   border: 1px solid color-mix(in srgb, var(--cn-teal) 30%, transparent);
   box-shadow:
     0 0 46px color-mix(in srgb, var(--cn-teal) 11%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--cn-fg) 5%, transparent);
+}
+.hud-panel--lit::before,
+.hud-panel--lit::after {
+  content: none;
 }
 
 .hud-label {
   font-size: 0.62em;
   letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: var(--hud-ink-low);
+  color: var(--hud-ink-mid);
 }
 .hud-panel--lit .hud-label {
   color: var(--cn-teal);
