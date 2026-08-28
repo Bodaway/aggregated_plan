@@ -34,6 +34,20 @@ describe('HUD visual foundation', () => {
     expect(hardcoded).toEqual([]);
   });
 
+  it('occludes the nav bar and ticker exactly like every panel, from one shared rule', () => {
+    // Round-2 review finding: the nav bar and ticker strip shipped on raw
+    // transparency — task 2's opacity ruling never reached them, and
+    // measured desktop noise bled through their text worse than any panel
+    // (nav bar std 41.2 vs. a panel's 1.32 on the real screen). The fix is
+    // this exact grouped selector, not three separate copies of the same
+    // two declarations: locking it here means the next opacity or blur
+    // change can only drift the three surfaces apart if this test is
+    // deliberately rewritten, not by accident.
+    const sharedRule = CSS.match(/\.hud-panel,\s*\.hud-nav,\s*\.hud-ticker\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(sharedRule).toMatch(/background:\s*var\(--hud-panel-bg\)/);
+    expect(sharedRule).toMatch(/backdrop-filter:\s*blur\(18px\) saturate\(0\.75\) brightness\(0\.2\)/);
+  });
+
   it('keeps panel backgrounds opaque enough to occlude a busy backdrop', () => {
     // Task-2 review finding 4: a dark desktop carrying its own high-contrast
     // detail (a terminal, light monospace on near-black) bled through as

@@ -168,11 +168,30 @@
   .hud-nav__dest { gap: 0.85em; }
 }
 
-/* --- the panel shell, common to every block --- */
-.hud-panel {
-  position: relative;
-  min-width: 0;
-  padding: 0.9em 1em;
+/* --- shared occlusion: background + backdrop-filter, one recipe reused by
+   every surface that needs to occlude a busy desktop behind it — not only
+   the six content panels below, but also the nav bar and ticker strips
+   (`.hud-nav`, `.hud-ticker`). Round-2 review finding: those two shipped on
+   raw transparency, never touched by task 2's opacity ruling — measured on
+   the real screen at greyscale std 41.2 (nav) / 27.0 (ticker) against a
+   panel's 1.32, the nav bar worse than the 35.45 that was already judged
+   unacceptable pre-fix. Grouping the selector here, instead of copying the
+   two declarations onto `.hud-nav`/`.hud-ticker` separately, is the actual
+   fix for the class of bug that caused this: the next opacity or blur
+   change moves all three surfaces together, because there is exactly one
+   rule to change, not three copies to remember.
+
+   Nav and ticker deliberately do NOT also get `.hud-panel`'s corner-bracket
+   pseudo-elements, its padding, or its min-width below — those are what
+   make the six blocks read as panels: boxed content, competing with each
+   other and with the dominant block's glow. Nav and ticker are chrome
+   (wayfinding, status), not content — same occlusion, deliberately
+   different shape (full-width strips under a single hairline, not boxed
+   cells), so they stay visually subordinate to the six panels rather than
+   reading as two more of them. --- */
+.hud-panel,
+.hud-nav,
+.hud-ticker {
   background: var(--hud-panel-bg);
   /* brightness() darkens whatever sits behind the panel before it blends
      with --hud-panel-bg — it fixes the ink-vs-panel CONTRAST RATIO against a
@@ -201,6 +220,15 @@
      recenters toward mid-grey (0.5), so it would grey out a plain, empty
      DARK desktop too, even though there is nothing there to occlude. */
   backdrop-filter: blur(18px) saturate(0.75) brightness(0.2);
+}
+
+/* --- the panel shell proper: position/sizing and the corner brackets that
+   make the six content blocks read as panels. Nav and ticker stop above,
+   at the shared occlusion rule — see its own comment for why. --- */
+.hud-panel {
+  position: relative;
+  min-width: 0;
+  padding: 0.9em 1em;
 }
 .hud-panel::before,
 .hud-panel::after {
