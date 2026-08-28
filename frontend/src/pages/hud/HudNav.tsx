@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { isTypingTarget } from '@/lib/is-typing-target';
 
 /**
  * The eleven real destinations of the app, in the order the mockup lays
@@ -27,15 +28,6 @@ const DESTINATIONS: readonly Destination[] = [
   { key: 'a', path: '/alerts', label: 'Alerts' },
   { key: ',', path: '/settings', label: 'Settings' },
 ];
-
-// Same convention as HeaderSearchBar's shortcut guard: a shortcut key must
-// never steal a keystroke from something the user is typing into.
-function isTypingTarget(el: Element | null): boolean {
-  if (!el) return false;
-  const tag = el.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
-  return (el as HTMLElement).isContentEditable === true;
-}
 
 export function HudNav() {
   const location = useLocation();

@@ -1,13 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useSearch } from '@/lib/search/SearchProvider';
+import { isTypingTarget } from '@/lib/is-typing-target';
 import { SuggestionDropdown } from './SuggestionDropdown';
-
-function isTypingTarget(el: Element | null): boolean {
-  if (!el) return false;
-  const tag = el.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
-  return (el as HTMLElement).isContentEditable === true;
-}
 
 export function HeaderSearchBar() {
   const { query, setQuery, clearQuery, highlightActive, matches, openTaskInSheet, loading, error } = useSearch();

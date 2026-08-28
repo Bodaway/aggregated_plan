@@ -81,11 +81,14 @@
 
 /* --- the destination bar: leaves the HUD for the rest of the app.
    Transcribed from the mockup's `.nav`, with one deliberate correction:
-   the mockup colours idle labels with its `--ink-low` equivalent, but
-   `--hud-ink-low` is documented above as hairlines-only (fails WCAG AA as
-   text on this element, which has no panel backdrop to darken it) — idle
-   labels use `--hud-ink-mid` instead. The current destination is the lit
-   one; the glow stays the only encoding of "where you are". --- */
+   the mockup colours idle labels (and their shortcut digit) with its
+   `--ink-low` equivalent, but `--hud-ink-low` is documented above as
+   hairlines-only (fails WCAG AA as text on this element, which has no
+   panel backdrop to darken it) — idle labels and the shortcut digit use
+   `--hud-ink-mid` instead; the digit is live, meaningful text (the
+   shortcut a sighted keyboard user reads), not a hairline. The current
+   destination is the lit one; the glow stays the only encoding of "where
+   you are". --- */
 .hud-nav {
   display: flex;
   align-items: center;
@@ -122,7 +125,9 @@
 .hud-nav__digit {
   font-style: normal;
   font-variant-numeric: tabular-nums;
-  color: var(--hud-ink-low);
+  /* This is the shortcut a sighted keyboard user reads, not a hairline —
+     --hud-ink-low is documented above as never body or caption text. */
+  color: var(--hud-ink-mid);
 }
 .hud-nav__link:hover,
 .hud-nav__link:focus-visible {
