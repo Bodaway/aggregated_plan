@@ -15,7 +15,7 @@ vi.mock('@/hooks/use-break-rules', () => ({
   useBreakRules: () => ({ stats: { perRule: [] } }),
 }));
 
-import { HudPage } from './HudPage';
+import { HudPage, resetBootSequenceForTests } from './HudPage';
 
 // The grid now hosts HudNav, which reads router context (useLocation /
 // useNavigate) — so every render needs a Router, same as it gets from
@@ -83,6 +83,10 @@ describe('HudPage', () => {
     vi.setSystemTime(new Date('2026-08-28T09:30:00'));
     dashboardMock.mockReset();
     mockDashboard();
+    // The "played" flag lives at module scope so it survives HudPage
+    // unmounting when the overlay leaves the HUD route — which means it also
+    // survives between tests unless it is cleared here.
+    resetBootSequenceForTests();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -197,41 +201,29 @@ describe('HudPage', () => {
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 
-  it('runs it again on every opening', () => {
-    // The user's own call, made after being shown the cost: the sequence
-    // plays at each SUPER+B, not once per process. 1.5s stands between the
-    // keystroke and the data every single time.
+  it('never runs it a second time', () => {
+    // Once per process. It ran on every opening for a while; the verdict was
+    // that 1.5s between the keystroke and the data is not worth it.
     renderGrid();
     expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
 
     setSurface('hidden');
     setSurface('visible');
 
-    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
-    expect(screen.queryByTestId('hud-grid')).not.toBeInTheDocument();
-
-    act(() => void vi.advanceTimersByTime(1600));
+    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 
-  it('restarts a sequence that was interrupted mid-play', () => {
-    // Closing 300 ms into a 1500 ms sequence and reopening gives a full
-    // sequence, not the 1200 ms remainder — "every opening" means every one,
-    // including the one that cut the last short.
+  it('does not replay when the HUD is remounted by a return from another tab', () => {
+    // `HudPage` unmounts on the way to Timesheet and mounts again on the way
+    // back, so a flag held in component state would reset and the sequence
+    // would replay on every return — which is exactly what module scope is
+    // for here.
+    const first = renderGrid();
+    first.unmount();
+
     renderHudPage();
-    act(() => void vi.advanceTimersByTime(300));
-
-    setSurface('hidden');
-    act(() => void vi.advanceTimersByTime(5000));
-    setSurface('visible');
-
-    // Still booting at 1400 ms is the whole assertion: had the remainder of
-    // the interrupted run been served instead, the 1200 ms left of it would
-    // have elapsed and the grid would already be up.
-    act(() => void vi.advanceTimersByTime(1400));
-    expect(screen.getByTestId('boot-sequence')).toBeInTheDocument();
-
-    act(() => void vi.advanceTimersByTime(200));
+    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });
 });
