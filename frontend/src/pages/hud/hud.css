@@ -49,8 +49,12 @@
   font-family: var(--cn-font);
   color: var(--hud-ink);
   /* the one variable that drives the whole scale: everything below is
-     expressed in em so it rides this clamp instead of the viewport */
-  font-size: clamp(10px, 0.74cqw, 30px);
+     expressed in em so it rides this clamp instead of the viewport.
+     Coefficient raised from 0.74 on the user's read of the running HUD ("a
+     bit small"): on the real 1844px overlay that is a ~13.7px base, now
+     ~15.7px. Only the coefficient moves — the floor and the ceiling still
+     bracket the container query for screens this was never measured on. */
+  font-size: clamp(10px, 0.85cqw, 30px);
   padding: 1.9em;
   gap: 1em;
   grid-template-columns: repeat(12, 1fr);
@@ -697,15 +701,51 @@
    PERMANENTLY absent — outside the Tauri shell there is no IPC channel to
    ask, so `.hud-station__sys` (the three-column CPU/RAM/Net row) is simply
    never rendered rather than shown empty or carrying a value nobody
-   measured (task brief: "sans case vide ni valeur inventée"). --- */
+   measured (task brief: "sans case vide ni valeur inventée").
+
+   The mockup composes this block as one baseline-aligned row — label, clock,
+   date, then the CPU/RAM/Net grid taking whatever is left. That holds at one
+   scale only. Everything in the row is sized in `em` and grows with the base,
+   while the panel is 4/12ths of a fixed window and does not, so the row is
+   over-subscribed by construction as the scale rises. The stat grid, the only
+   item that can give, pays for all of it by wrapping its values — "16.4 G"
+   splitting into "16.4" and "G", and the column labels losing their values
+   as the bottom-aligned cells grow a second line.
+
+   Measured on the 1844px overlay at the 0.85 base: the row leaves 168.6px for
+   the grid, and the tightest possible three columns (content-sized, unwrapped)
+   need 168.0px. It clears the median case by half a pixel and misses on a CPU
+   at 100%, a 22-character date ("Wednesday 30 September"), or a network burst
+   — which is why it was already fragile at 0.74 (226.3px available against
+   231.8px for three equal columns at their worst) rather than newly broken.
+   Nothing local fixes a deficit that size: `nowrap` and `minmax` alone only
+   convert the wrap into an overflow past the panel's edge, and a smaller clock
+   buys the room back by undoing the scale change on the one number this block
+   exists to show.
+
+   So the composition keeps its shape and gains a second line. The date moves
+   under the clock — where it reads better anyway, both being one statement of
+   "now" — and hands the grid the widest and most variable item in the row: at
+   this scale the date alone swings 136px to 188px across the year, more than
+   the whole deficit. That leaves 294px for a grid that wants 194.8px at its
+   worst. Grid, not flex, because the date must sit under the clock without a
+   wrapper element in the markup. */
 .hud-station {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  column-gap: 1.4em;
+  /* The clock and date are one stack; the gap between them is the date's own
+     margin below, not a grid gutter. */
+  row-gap: 0;
   align-items: baseline;
-  gap: 1.4em;
 }
+/* Explicit placement rather than auto-flow: the second row exists only for
+   the date, and the stat grid spans both. */
+.hud-station .hud-label { grid-column: 1; grid-row: 1; }
 
 .hud-station__clock {
+  grid-column: 2;
+  grid-row: 1;
   font-weight: 300;
   font-size: 2.2em;
   line-height: 1;
@@ -718,18 +758,31 @@
    `--hud-ink-low` is documented above as never text, same reasoning
    HudNav's own idle labels already apply. */
 .hud-station__date {
+  grid-column: 2;
+  grid-row: 2;
   font-size: 0.68em;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--hud-ink-mid);
+  /* Was a baseline offset inside the old single row; now plain leading under
+     the clock, which is what the same 0.27em buys here. */
   margin-top: 0.27em;
 }
 
 .hud-station__sys {
+  grid-column: 3;
+  grid-row: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* `repeat(3, 1fr)` is three equal thirds whose automatic minimum is
+     min-content — for "16.4 G" that is "16.4". So the equal-thirds tie lets
+     the widest reading (the network rate, up to "999.9 M/s") set a width all
+     three columns must have, and the moment the panel cannot pay it every
+     column collapses to its own wrap point at once, which is how one narrow
+     value took the whole row down. Flooring each track at its own max-content
+     unties them: equal thirds while they fit, and past that the widest column
+     takes only what it needs while the others stay put. Never a wrap. */
+  grid-template-columns: repeat(3, minmax(max-content, 1fr));
   gap: 0.8em;
-  flex: 1;
   align-self: stretch;
   align-items: end;
 }
@@ -749,13 +802,26 @@
   font-weight: 400;
   color: var(--hud-ink);
   font-variant-numeric: tabular-nums;
+  /* A reading is one token: "16.4 G" and "12.3 M/s" carry a space, which is a
+     wrap opportunity this layout must never take. The max-content floor above
+     already sizes the column so it never has to — this states it on the value
+     itself, so a squeeze from anywhere else (a container below the clamp
+     floor, where the em scale stops shrinking with the window) overflows in
+     plain sight instead of quietly parting a number from its unit. */
+  white-space: nowrap;
 }
 
+/* The date is the one element here allowed to reflow, and that is the release
+   valve: its track's minimum is min-content ("Wednesday"), so a panel too
+   narrow for everything breaks the date over two lines while the readings keep
+   their floor — prose gives, numbers do not. */
+
 .hud-station__unavailable {
+  grid-column: 3;
+  grid-row: 1 / -1;
   font-style: italic;
   font-size: 0.68em;
   color: var(--hud-ink-mid);
-  flex: 1;
   align-self: center;
 }
 
