@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
+import './hud.css';
 
 const BOOT_LINES = [
   'aplan cockpit v0.1.0',
@@ -21,7 +22,7 @@ export function HudPage() {
 
   return (
     <div
-      className="h-screen w-screen bg-transparent font-cn text-cn-fg"
+      className="hud-viewport h-screen w-screen bg-transparent font-cn text-cn-fg"
       data-surface-visible={visible}
     >
       {booting ? (
@@ -29,7 +30,7 @@ export function HudPage() {
           {BOOT_LINES.join('\n')}
         </pre>
       ) : (
-        <div data-testid="hud-grid" className="grid h-full grid-cols-12 gap-3 p-6">
+        <div data-testid="hud-grid" className="hud">
           {/* The six blocks arrive in plan 3. */}
         </div>
       )}

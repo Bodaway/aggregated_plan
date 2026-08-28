@@ -1,0 +1,152 @@
+/* ---------------------------------------------------------------------------
+   Visual foundation of the aplan HUD.
+
+   One sheet carries the scale, the panel, the glow budget and the reflow so
+   that none of the six blocks has to reinvent them. Composition transcribed
+   from the validated mockup (frontend/public/hud-mockup.html); every literal
+   colour there is replaced here by the CyberNord --cn-* token it stood for,
+   so repainting the desktop theme repaints the HUD.
+
+   The glow is a budget, not an effect: at most one panel wears
+   `.hud-panel--lit` at a time, and only that panel gets a shadow. The other
+   panels are a one-pixel rule on a blurred, translucent ground.
+--------------------------------------------------------------------------- */
+
+.hud-viewport {
+  /* Establishes the sizing context so `.hud`, one level down, can react to
+     its own container's width instead of the (two-monitor) viewport — a
+     container cannot be the query target of its own container query. */
+  container-type: size;
+  container-name: hud;
+  overflow: hidden;
+}
+
+.hud {
+  --hud-ink: var(--cn-fg);
+  --hud-ink-mid: color-mix(in srgb, var(--cn-fg) 55%, var(--cn-dim));
+  --hud-ink-low: color-mix(in srgb, var(--cn-fg) 25%, var(--cn-dim));
+  --hud-hair: color-mix(in srgb, var(--cn-dim) 70%, transparent);
+  --hud-panel-bg: color-mix(in srgb, var(--cn-bg) 72%, transparent);
+
+  position: relative;
+  height: 100%;
+  width: 100%;
+  display: grid;
+  font-family: var(--cn-font);
+  color: var(--hud-ink);
+  /* the one variable that drives the whole scale: everything below is
+     expressed in em so it rides this clamp instead of the viewport */
+  font-size: clamp(10px, 0.74cqw, 30px);
+  padding: 1.9em;
+  gap: 1em;
+  grid-template-columns: repeat(12, 1fr);
+  grid-template-rows: auto 1fr 1fr auto;
+  grid-template-areas:
+    'nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav'
+    'focus    focus    focus    focus    pressure pressure pressure pressure pressure agenda   agenda   agenda'
+    'focus    focus    focus    focus    neural   neural   neural   neural   neural   agents   agents   agents'
+    'station  station  station  station  ticker   ticker   ticker   ticker   ticker   ticker   ticker   ticker';
+}
+
+/* --- reflow: narrow container (the laptop screen) ---
+   Focus goes full width, and the other five pair up across four rows
+   instead of packing six blocks into three. --- */
+@container hud (max-width: 1500px) {
+  .hud {
+    gap: 0.8em;
+    padding: 1.4em;
+    grid-template-rows: auto 1.25fr 1fr 1fr auto;
+    grid-template-areas:
+      'nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav'
+      'focus    focus    focus    focus    focus    focus    focus    focus    focus    focus    focus    focus'
+      'pressure pressure pressure pressure pressure pressure pressure agenda   agenda   agenda   agenda   agenda'
+      'neural   neural   neural   neural   neural   neural   neural   agents   agents   agents   agents   agents'
+      'station  station  station  station  station  ticker   ticker   ticker   ticker   ticker   ticker   ticker';
+  }
+}
+
+/* --- named grid zones: each block claims its area, never its own scale --- */
+.hud-nav      { grid-area: nav; }
+.hud-focus    { grid-area: focus; }
+.hud-pressure { grid-area: pressure; }
+.hud-agenda   { grid-area: agenda; }
+.hud-neural   { grid-area: neural; }
+.hud-agents   { grid-area: agents; }
+.hud-station  { grid-area: station; }
+.hud-ticker   { grid-area: ticker; }
+
+/* --- the panel shell, common to every block --- */
+.hud-panel {
+  position: relative;
+  min-width: 0;
+  padding: 0.9em 1em;
+  background: var(--hud-panel-bg);
+  backdrop-filter: blur(18px) saturate(0.75);
+}
+.hud-panel::before,
+.hud-panel::after {
+  content: '';
+  position: absolute;
+  width: 0.78em;
+  height: 0.78em;
+  border: 1px solid var(--hud-hair);
+}
+.hud-panel::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+.hud-panel::after { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+
+/* --- the glow budget: at most one panel wears this at a time --- */
+.hud-panel--lit {
+  background: linear-gradient(
+    158deg,
+    color-mix(in srgb, var(--cn-surface) 90%, transparent),
+    color-mix(in srgb, var(--cn-bg) 95%, transparent)
+  );
+  backdrop-filter: blur(22px) saturate(0.7);
+  border: 1px solid color-mix(in srgb, var(--cn-teal) 30%, transparent);
+  box-shadow:
+    0 0 46px color-mix(in srgb, var(--cn-teal) 11%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--cn-fg) 5%, transparent);
+}
+
+.hud-label {
+  font-size: 0.62em;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--hud-ink-low);
+}
+.hud-panel--lit .hud-label {
+  color: var(--cn-teal);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--cn-teal) 85%, transparent);
+}
+
+.hud-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.67em;
+  margin-top: 0.4em;
+  font-size: 0.75em;
+  color: var(--hud-ink-mid);
+}
+.hud-kv b {
+  color: var(--hud-ink);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-gauge {
+  height: 0.22em;
+  margin-top: 0.4em;
+  background: var(--cn-bg);
+}
+.hud-gauge i {
+  display: block;
+  height: 100%;
+  background: var(--cn-teal);
+}
+
+.hud-glowbar {
+  height: 0.15em;
+  margin: 1.3em 0 0;
+  background: linear-gradient(90deg, var(--cn-teal), var(--cn-red) 72%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--cn-red) 60%, transparent);
+}
