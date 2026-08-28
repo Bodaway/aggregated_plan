@@ -460,13 +460,15 @@ focus toutes les ~300-500 ms depuis l'appel du toggle, diffuse les images
 consécutives entre elles (jamais contre le bureau nu). Plancher de bruit
 mesuré (bureau seul, 2 captures) : **0 pixel** sur les essais retenus (un
 premier essai à 154 px reflétait un résidu de processus non nettoyé). Trois
-lancements indépendants, chacun démarrant d'un état propre :
+lancements indépendants, chacun démarrant d'un état propre, avec les
+paramètres explicites de la sonde (défaut `--duration 6.0 --interval 0.3` ;
+consignés ici pour la reproductibilité) :
 
-| lancement | écran de connexion apparaît | transition vers le vrai HUD | délai observé |
-|---|---|---|---|
-| 1 (11 s observées) | oui, dès t≈0,3-2 s | **oui** — séquence de boot réelle (`aplan cockpit v0.1.0`, checks `link`/`palette`/`session bus`) puis grille vide | ≈6,7-8,3 s |
-| 2 (12,5 s observées) | oui, dès t≈0,3-2 s | **oui** — même séquence de boot, byte pour byte identique | ≈7,2-8,6 s |
-| 3 (29 s observées) | oui, dès t≈0,3-2 s | **non** — reste sur l'écran de connexion jusqu'à la fin de l'observation | jamais (dans la fenêtre observée) |
+| lancement | `--duration`/`--interval` | écran de connexion apparaît | transition vers le vrai HUD | délai observé |
+|---|---|---|---|---|
+| 1 (11 s observées) | `6.0`/`0.3` | oui, dès t≈0,3-2 s | **oui** — séquence de boot réelle (`aplan cockpit v0.1.0`, checks `link`/`palette`/`session bus`) puis grille vide | ≈6,7-8,3 s |
+| 2 (12,5 s observées) | `8.0`/`0.4` | oui, dès t≈0,3-2 s | **oui** — même séquence de boot, byte pour byte identique | ≈7,2-8,6 s |
+| 3 (29 s observées) | `20.0`/`0.5` | oui, dès t≈0,3-2 s | **non** — reste sur l'écran de connexion jusqu'à la fin de l'observation | jamais (dans la fenêtre observée) |
 
 Deux pièges de seuil de couleur rencontrés en mesurant, documentés pour que
 la sonde ne les répète pas : (1) la couleur exacte du bouton varie entre
@@ -519,8 +521,9 @@ déployés par lui.
 Même méthode, même sonde, quatre lancements indépendants, **aucune
 interaction manuelle pendant les captures** (le confondant identifié
 ci-dessus). Plancher de bruit : 0-151 px selon l'essai (bureau non figé,
-sessions Claude Code visibles en transparence). Les quatre lancements
-produisent la **même signature à quelques pixels près** :
+sessions Claude Code visibles en transparence). Paramètres explicites,
+identiques sur les quatre lancements : `--duration 8.0 --interval 0.4`. Les
+quatre lancements produisent la **même signature à quelques pixels près** :
 
 | lancement | pic à t≈0,9-1,6 s (texte de boot apparaît) | pic à t≈2,2-2,9 s (boot cède la place à la grille) | écran de connexion | régime établi (jusqu'à 12,4-12,5 s) |
 |---|---|---|---|---|
