@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActivity } from '@/hooks/use-activity';
 import { useTimesheet } from '@/hooks/use-timesheet';
-import { useDashboard, type DashboardMeeting } from '@/hooks/use-dashboard';
+import { useDashboard } from '@/hooks/use-dashboard';
 import { useNextBreakDue } from '@/hooks/use-break-rules';
 import { formatDate } from '@/lib/date-utils';
 import { getTaskHours } from '@/lib/task-hours';
+import { isRealMeeting } from '@/lib/is-real-meeting';
 import { useSurfaceVisibility } from '../useSurfaceVisibility';
 
 interface FocusBlockProps {
@@ -47,16 +48,6 @@ function formatQuarterRange(startMin: number, endMin: number): string {
 function minutesSinceMidnight(): number {
   const now = new Date();
   return now.getHours() * 60 + now.getMinutes();
-}
-
-/** Same rule `DashboardPage` uses to decide whether a meeting eats into
- *  capacity: an all-day free/OOO entry (or the lunch placeholder) doesn't.
- *  Duplicated here — not exported from DashboardPage — because this block
- *  reads `useDashboard()` on its own, outside that page. */
-function countsAgainstCapacity(m: DashboardMeeting): boolean {
-  if (m.title.toLowerCase() === 'pause midi') return false;
-  if (m.showAs === 'free' || m.showAs === 'oof' || m.showAs === 'workingElsewhere') return false;
-  return true;
 }
 
 function formatHours(hours: number): string {
@@ -115,7 +106,7 @@ export function FocusBlock({ lit }: FocusBlockProps) {
     const dayTasks = data.tasks.filter((t) => (t.plannedStart?.slice(0, 10) ?? t.deadline) === today);
     const dayMeetings = data.meetings.filter((m) => m.startTime.slice(0, 10) === today);
     const meetingHours = dayMeetings
-      .filter(countsAgainstCapacity)
+      .filter(isRealMeeting)
       .reduce((sum, m) => sum + m.durationHours, 0);
     const taskHours = dayTasks.reduce((sum, t) => sum + getTaskHours(t), 0);
     const planned = taskHours + meetingHours;

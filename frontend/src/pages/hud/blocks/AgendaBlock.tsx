@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useDashboard, type DashboardMeeting } from '@/hooks/use-dashboard';
 import { formatDate } from '@/lib/date-utils';
+import { isRealMeeting } from '@/lib/is-real-meeting';
 import { useSurfaceVisibility } from '../useSurfaceVisibility';
 
 /** The timeline spans the configured workday window (08:00-17:00, per
@@ -10,18 +11,6 @@ import { useSurfaceVisibility } from '../useSurfaceVisibility';
 const DAY_START_MIN = 8 * 60;
 const DAY_END_MIN = 17 * 60;
 const DAY_SPAN_MIN = DAY_END_MIN - DAY_START_MIN;
-
-/** Same rule FocusBlock uses to decide whether a meeting is a real
- *  commitment on the calendar rather than an all-day placeholder: an
- *  all-day free/OOO entry (or the lunch placeholder) isn't one. Duplicated
- *  here — not exported from FocusBlock — for the same reason FocusBlock
- *  duplicated it from DashboardPage: each block reads useDashboard() on its
- *  own. */
-function isRealMeeting(m: DashboardMeeting): boolean {
-  if (m.title.toLowerCase() === 'pause midi') return false;
-  if (m.showAs === 'free' || m.showAs === 'oof' || m.showAs === 'workingElsewhere') return false;
-  return true;
-}
 
 function minutesSinceMidnight(iso: string): number {
   const d = new Date(iso);
