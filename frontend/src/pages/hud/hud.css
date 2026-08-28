@@ -557,6 +557,12 @@
   margin-top: 0.3em;
 }
 
+/* Teal here, not the mockup's pink — deliberate, not a missed rename. The
+   gauge above is the one thing in this block expressing "how much of the
+   ceiling is gone", which is exactly what --cn-red is reserved for; a
+   history of daily token counts is a trend, not an alarm, so it doesn't
+   spend that colour too. Different jobs, different colours — don't merge
+   them for consistency with the gauge. */
 .hud-neural__spark {
   display: flex;
   align-items: flex-end;

@@ -4,6 +4,8 @@ import { HudNav } from './HudNav';
 import { FocusBlock } from './blocks/FocusBlock';
 import { PressureBlock } from './blocks/PressureBlock';
 import { AgendaBlock } from './blocks/AgendaBlock';
+import { NeuralBudgetBlock } from './blocks/NeuralBudgetBlock';
+import { AgentsBlock } from './blocks/AgentsBlock';
 import './hud.css';
 
 const BOOT_LINES = [
@@ -39,7 +41,9 @@ export function HudPage() {
           <FocusBlock lit />
           <PressureBlock />
           <AgendaBlock />
-          {/* The remaining three blocks arrive later in plan 3. */}
+          <NeuralBudgetBlock />
+          <AgentsBlock />
+          {/* Station and Ticker arrive in task 7. */}
         </div>
       )}
     </div>

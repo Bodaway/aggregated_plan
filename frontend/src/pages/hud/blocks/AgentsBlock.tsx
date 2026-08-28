@@ -2,9 +2,13 @@ import type { ActiveAgent } from './stub-data';
 import { STUB_ACTIVE_AGENTS } from './stub-data';
 
 /** A transcript unseen for longer than this reads as a session that has
- *  gone quiet rather than one still working — arbitrary, like
- *  PressureBlock's MAX_VISIBLE_DEADLINES, and open to the controller's
- *  confirmation once this is seen against real transcripts in plan 2. */
+ *  gone quiet rather than one still working.
+ *
+ *  This is a display heuristic chosen without data — unlike
+ *  PressureBlock's MAX_VISIBLE_DEADLINES, which follows from the panel's
+ *  fixed layout, nothing grounds "5" here. It is a guess, named as one so
+ *  it doesn't quietly harden into a fact; revisit once plan 2's
+ *  `hud-daemon` supplies real session freshness to check it against. */
 const IDLE_THRESHOLD_MINUTES = 5;
 
 /** `12 min` under an hour, `1h 12min` beyond it — mirrors FocusBlock's own
