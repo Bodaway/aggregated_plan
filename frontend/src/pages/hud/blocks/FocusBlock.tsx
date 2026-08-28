@@ -138,7 +138,7 @@ export function FocusBlock({ lit }: FocusBlockProps) {
       )}
 
       <div className={currentActivity ? 'hud-focus__chrono' : 'hud-focus__chrono hud-focus__chrono--idle'}>
-        {currentActivity ? formatElapsed(elapsedSeconds) : '--:--:--'}
+        {currentActivity ? formatElapsed(elapsedSeconds) : 'No timer'}
       </div>
 
       <div className="hud-glowbar" />

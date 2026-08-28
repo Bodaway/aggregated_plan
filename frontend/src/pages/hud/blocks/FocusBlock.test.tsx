@@ -1,5 +1,12 @@
-import { render, screen, act } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { render, screen, act, cleanup } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Read directly, same technique hud.css.test.ts uses — jsdom does not apply
+// this stylesheet, so a rendered element's computed style can't tell us
+// what size the idle chrono actually paints at.
+const HUD_CSS = readFileSync(resolve(__dirname, '../hud.css'), 'utf8');
 
 // The hooks the block reads from — mocked at the module boundary so the
 // tests exercise the block's own logic (chrono tick, quarter/overload
@@ -73,6 +80,12 @@ describe('FocusBlock', () => {
   });
 
   afterEach(() => {
+    // Unmount BEFORE touching timers/visibility: RTL's own auto-cleanup
+    // afterEach is registered at import time (outside this describe), so it
+    // would otherwise run AFTER this one — leaving the component mounted
+    // while `vi.useRealTimers()` / `setVisibility()` fire, which is what was
+    // producing an act() warning on the timer-driven tests.
+    cleanup();
     vi.useRealTimers();
     setVisibility('visible');
   });
@@ -142,7 +155,17 @@ describe('FocusBlock', () => {
     render(<FocusBlock lit />);
 
     expect(screen.getByText('No active task')).toBeInTheDocument();
-    expect(screen.getByText('--:--:--')).toBeInTheDocument();
+    // A worded label, not a glyph grid: "--:--:--" at hero scale read as a
+    // loading skeleton rather than an idle timer (review finding).
+    expect(screen.getByText('No timer')).toBeInTheDocument();
+
+    // Regression guard for that exact defect: the idle chrono must not
+    // inherit the hero chronometer's giant scale. Asserted against the CSS
+    // source itself (see HUD_CSS above) so a reverted style, not just a
+    // reverted string, fails this test.
+    const idleRule = HUD_CSS.match(/\.hud-focus__chrono--idle\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(idleRule).toMatch(/font-size:\s*1em/);
+    expect(idleRule).not.toMatch(/6\.2em/);
   });
 
   it('carries the lit class only when told to', () => {
