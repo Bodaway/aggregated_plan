@@ -226,7 +226,7 @@ export function ActivityJournalPage() {
             {completedSlots.length === 0 ? (
               <div className="text-center py-8">
                 <svg
-                  className="w-10 h-10 text-gray-300 mx-auto mb-2"
+                  className="w-10 h-10 text-gray-400 mx-auto mb-2"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"

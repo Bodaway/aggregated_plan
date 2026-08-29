@@ -1,0 +1,372 @@
+/* ---------------------------------------------------------------------------
+   The application shell, in the HUD's language.
+
+   The twelve tabs were written as a light app: white cards on a grey ground,
+   soft corners, drop shadows. `tailwind.config.ts` remaps the neutral and
+   accent scales onto the CyberNord tokens, which flips all 1253 of those
+   utilities at once without editing a page. This sheet supplies what a colour
+   remap cannot: the typeface, the ground, the hairlines, the scrollbars, the
+   focus ring, and the way a page arrives.
+
+   Everything here reads the same `--cn-*` tokens as `hud.css`, so repainting
+   the desktop theme repaints the HUD and the tabs together.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* Named for their role rather than their colour, so a page never has to
+     know which token is behind a hairline. Mirrors hud.css's own scale. */
+  --app-ink: var(--cn-fg);
+  --app-ink-mid: color-mix(in srgb, var(--cn-fg) 62%, var(--cn-dim));
+  --app-ink-low: color-mix(in srgb, var(--cn-fg) 34%, var(--cn-dim));
+  --app-hair: color-mix(in srgb, var(--cn-dim) 65%, transparent);
+  --app-surface: color-mix(in srgb, var(--cn-surface) 55%, var(--cn-bg));
+  --app-raise: var(--cn-surface);
+
+  /* Tells the engine every native widget is on a dark ground: date pickers,
+     select popups, the caret, autofill. Without it the browser keeps painting
+     its light-mode furniture over an otherwise dark app. */
+  color-scheme: dark;
+}
+
+/* --- form controls -------------------------------------------------------
+   A class remap only reaches elements that carry a class. Every `<input>` in
+   this app that never needed a background under a light theme was inheriting
+   the user agent's white — measured, not guessed: the memory search box came
+   back `rgb(255, 255, 255)` while the field under it, which does carry
+   `bg-white`, came back dark.
+
+   Element selectors on purpose, so any explicit Tailwind class still wins. */
+input,
+textarea,
+select {
+  background-color: var(--app-surface);
+  color: var(--app-ink);
+  border-color: var(--app-hair);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--app-ink-low);
+}
+input[type='checkbox'],
+input[type='radio'],
+progress,
+::marker {
+  accent-color: var(--cn-teal);
+}
+/* Chrome paints autofilled fields with a hardcoded pale yellow that no
+   background can override; the inset shadow is the only way to cover it. */
+input:-webkit-autofill,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 40rem var(--app-surface) inset;
+  -webkit-text-fill-color: var(--app-ink);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* No background on `body`, and that omission is load-bearing.
+   The Tauri overlay renders the HUD in a TRANSPARENT window: a solid body
+   would make the whole thing opaque and undo the overlay. The ground is
+   painted by whatever actually wants one — `.app-shell` for the twelve tabs,
+   `.app-ground` for the sign-in screen — while `hud.css` deliberately paints
+   none. */
+body {
+  color: var(--app-ink);
+  font-family: var(--cn-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-ground {
+  background: var(--cn-bg);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--cn-teal) 30%, transparent);
+  color: var(--cn-fg);
+}
+
+/* --- scrollbars ---------------------------------------------------------
+   A default light scrollbar on a dark page is the single loudest thing on
+   screen, and this app scrolls in a dozen places. Thin, hairline-coloured,
+   brightening under the pointer. --- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cn-dim) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--cn-dim);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--cn-teal) 55%, var(--cn-dim));
+  background-clip: content-box;
+}
+
+/* --- focus ---------------------------------------------------------------
+   Keyboard focus has to survive on a dark ground, and the browser default
+   does not. Teal because that is what "here" means everywhere else in this
+   interface. --- */
+:focus-visible {
+  outline: 1px solid var(--cn-teal);
+  outline-offset: 2px;
+}
+
+/* --- the shell ----------------------------------------------------------- */
+.app-shell {
+  display: flex;
+  height: 100%;
+  background: var(--cn-bg);
+}
+
+.app-rail {
+  width: 15rem;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--app-hair);
+  background: color-mix(in srgb, var(--cn-bg) 60%, #000);
+}
+
+.app-rail__brand {
+  padding: 1.1rem 1.15rem;
+  border-bottom: 1px solid var(--app-hair);
+  font-size: 0.78rem;
+  letter-spacing: 0.38em;
+  text-transform: uppercase;
+  color: var(--cn-teal);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--cn-teal) 45%, transparent);
+}
+
+.app-rail__nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.7rem 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.app-rail__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-ink-mid);
+  text-decoration: none;
+  transition: color 120ms linear, background-color 120ms linear;
+}
+.app-rail__link:hover {
+  color: var(--app-ink);
+  background: color-mix(in srgb, var(--cn-surface) 45%, transparent);
+}
+/* The current tab is marked by a lit edge rather than a filled pill: the
+   same "one thing is live" language the HUD's dominant panel uses. */
+.app-rail__link--on {
+  color: var(--cn-teal);
+  background: color-mix(in srgb, var(--cn-teal) 9%, transparent);
+}
+.app-rail__link--on::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--cn-teal);
+  box-shadow: 0 0 10px var(--cn-teal);
+}
+.app-rail__link svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  opacity: 0.85;
+}
+
+.app-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.4rem;
+  border-bottom: 1px solid var(--app-hair);
+  background: color-mix(in srgb, var(--cn-bg) 60%, #000);
+}
+.app-head__title {
+  font-size: 0.82rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--app-ink);
+}
+.app-head__who {
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  color: var(--app-ink-low);
+}
+.app-head__out {
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--app-hair);
+  color: var(--app-ink-mid);
+  background: transparent;
+  transition: color 120ms linear, border-color 120ms linear;
+}
+.app-head__out:hover {
+  color: var(--cn-teal);
+  border-color: color-mix(in srgb, var(--cn-teal) 55%, transparent);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.app-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.25rem 1.4rem;
+}
+
+/* --- one word, two meanings ----------------------------------------------
+   `white` has to be two different things in this codebase, and Tailwind
+   derives both utilities from a single colour. As a BACKGROUND it is the card
+   surface, which is why the remap points it at `--cn-surface`. As TEXT it is
+   the label on a coloured fill — a button, a badge — where a dark slate on a
+   mid-luminance accent measured 2.08:1.
+
+   Near-black rather than the foreground: these fills are bright accents (teal
+   at 0.72 relative luminance, red at 0.24), so dark-on-accent clears 3:1 on
+   both, while light-on-accent would fail outright on the teal at 1.1:1. Both
+   numbers measured, not assumed. --- */
+.text-white {
+  color: var(--cn-bg);
+}
+
+/* --- charts ---------------------------------------------------------------
+   Recharts paints its own tooltip in inline white and takes no theme, so it
+   is the one surface a token remap cannot reach. Measured: it came back as
+   the only light element on /workload and /activity. --- */
+.recharts-default-tooltip {
+  background: var(--app-raise) !important;
+  border: 1px solid var(--app-hair) !important;
+  color: var(--app-ink) !important;
+  border-radius: 2px;
+  font-size: 0.78rem;
+}
+.recharts-tooltip-label {
+  color: var(--app-ink-mid) !important;
+}
+.recharts-cartesian-axis-tick text {
+  fill: var(--app-ink-mid);
+}
+.recharts-legend-item-text {
+  color: var(--app-ink) !important;
+}
+
+/* --- the page arrival ----------------------------------------------------
+   Same idea as the HUD's opening, and the same rule: it animates content in,
+   it never gates it. The page is rendered and readable from the first frame.
+
+   Keyed on the route in `PageLayout`, so navigating remounts this wrapper and
+   the animation runs from the top — the mechanism the HUD needs an attribute
+   dance for is free here, because the element is genuinely new.
+
+   The stagger walks the page's own top-level sections. Eight is where it
+   stops: past that the last one is late rather than part of one gesture, and
+   most pages have fewer. --- */
+@keyframes app-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.55rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes app-page-sweep {
+  from {
+    transform: translateX(-45%);
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(320%);
+    opacity: 0;
+  }
+}
+
+.app-page {
+  animation: app-page-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.app-page > * {
+  animation: app-page-in 480ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.app-page > *:nth-child(1) { animation-delay: 40ms; }
+.app-page > *:nth-child(2) { animation-delay: 100ms; }
+.app-page > *:nth-child(3) { animation-delay: 160ms; }
+.app-page > *:nth-child(4) { animation-delay: 220ms; }
+.app-page > *:nth-child(5) { animation-delay: 280ms; }
+.app-page > *:nth-child(6) { animation-delay: 340ms; }
+.app-page > *:nth-child(7) { animation-delay: 400ms; }
+.app-page > *:nth-child(n + 8) { animation-delay: 440ms; }
+
+/* One pass of a teal band over the page area, mirroring the HUD's opening.
+   A gradient, never a box-shadow — the glow stays a budget, not a texture. */
+.app-sweep {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+.app-sweep::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 32%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    color-mix(in srgb, var(--cn-teal) 6%, transparent) 45%,
+    color-mix(in srgb, var(--cn-teal) 18%, transparent) 50%,
+    color-mix(in srgb, var(--cn-teal) 6%, transparent) 55%,
+    transparent
+  );
+  animation: app-page-sweep 760ms cubic-bezier(0.35, 0, 0.2, 1) both;
+}
+
+/* Someone who asked the system for less motion gets the page, immediately and
+   still — not a faster version of the same thing. */
+@media (prefers-reduced-motion: reduce) {
+  .app-page,
+  .app-page > * {
+    animation: none;
+  }
+  .app-sweep {
+    display: none;
+  }
+}

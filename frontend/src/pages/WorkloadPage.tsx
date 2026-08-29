@@ -231,7 +231,7 @@ function HalfDaySlotCard({ label, slot }: HalfDaySlotCardProps) {
     return (
       <div className="mb-2 p-2 rounded border border-gray-100 bg-gray-50 text-center">
         <span className="text-xs text-gray-400">{label}</span>
-        <p className="text-xs text-gray-300 mt-1">No data</p>
+        <p className="text-xs text-gray-400 mt-1">No data</p>
       </div>
     );
   }

@@ -9,18 +9,14 @@ export function Header({ title }: HeaderProps) {
   const { session, signOut } = useSession();
 
   return (
-    <header className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4">
-      <h2 className="text-lg font-semibold text-gray-800">{title}</h2>
+    <header className="app-head">
+      <h2 className="app-head__title">{title}</h2>
       <div className="flex items-center gap-4">
         <HeaderSearchBar />
         {session.authenticated && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground text-gray-500">{session.account}</span>
-            <button
-              type="button"
-              className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 transition-colors"
-              onClick={() => signOut()}
-            >
+          <div className="flex items-center gap-3">
+            <span className="app-head__who">{session.account}</span>
+            <button type="button" className="app-head__out" onClick={() => signOut()}>
               Sign out
             </button>
           </div>

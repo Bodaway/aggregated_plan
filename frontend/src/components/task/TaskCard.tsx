@@ -82,9 +82,9 @@ function TimeTrackingRow({
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
       <span title="Remaining">{formatHours(remaining)}</span>
-      <span className="text-gray-300">/</span>
+      <span className="text-gray-400">/</span>
       <span title="Logged">{formatHours(loggedHours)}</span>
-      <span className="text-gray-300">/</span>
+      <span className="text-gray-400">/</span>
       <span title="Estimate">{formatHours(estimate)}</span>
       {progressPct !== null && (
         <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden max-w-16">
@@ -302,8 +302,8 @@ export function TaskCard({
                   key={tag.id}
                   className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium"
                   style={{
-                    backgroundColor: tag.color ? `${tag.color}20` : '#E5E7EB',
-                    color: tag.color ?? '#4B5563',
+                    backgroundColor: tag.color ? `${tag.color}20` : 'var(--app-hair)',
+                    color: tag.color ?? 'var(--app-ink-mid)',
                   }}
                 >
                   {tag.name}

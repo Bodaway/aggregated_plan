@@ -13,18 +13,18 @@ function getStatusDotColor(status: string): string {
   switch (status) {
     case 'SUCCESS':
     case 'SYNCED':
-      return '#10B981'; // green
+      return 'var(--cn-green)'; // green
     case 'SYNCING':
     case 'IN_PROGRESS':
-      return '#F59E0B'; // yellow
+      return 'var(--cn-yellow)'; // yellow
     case 'ERROR':
     case 'FAILED':
-      return '#EF4444'; // red
+      return 'var(--cn-red)'; // red
     case 'NOT_CONFIGURED':
-      return '#9CA3AF'; // grey: nothing is wrong, nothing is configured either
+      return 'var(--app-ink-low)'; // grey: nothing is wrong, nothing is configured either
     case 'IDLE':
     default:
-      return '#9CA3AF'; // gray
+      return 'var(--app-ink-low)'; // gray
   }
 }
 

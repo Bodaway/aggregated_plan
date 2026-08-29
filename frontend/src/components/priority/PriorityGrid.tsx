@@ -32,28 +32,28 @@ const QUADRANT_CONFIGS: readonly QuadrantConfig[] = [
   {
     key: 'urgentImportant',
     label: QUADRANT_LABELS.UrgentImportant,
-    color: '#DC2626',
+    color: 'var(--cn-red)',
     bgColor: 'bg-red-50/50',
     borderColor: 'border-red-200',
   },
   {
     key: 'important',
     label: QUADRANT_LABELS.Important,
-    color: '#2563EB',
+    color: 'var(--cn-teal)',
     bgColor: 'bg-blue-50/50',
     borderColor: 'border-blue-200',
   },
   {
     key: 'urgent',
     label: QUADRANT_LABELS.Urgent,
-    color: '#EA580C',
+    color: 'var(--cn-orange)',
     bgColor: 'bg-orange-50/50',
     borderColor: 'border-orange-200',
   },
   {
     key: 'neither',
     label: QUADRANT_LABELS.Neither,
-    color: '#6B7280',
+    color: 'var(--app-ink-mid)',
     bgColor: 'bg-gray-50/50',
     borderColor: 'border-gray-200',
   },
@@ -155,7 +155,7 @@ export function PriorityGrid({ data, criticalTasks, onMoveTask, onEdit, onDragSt
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
           Urgent
         </span>
-        <span className="mx-4 text-xs text-gray-300">|</span>
+        <span className="mx-4 text-xs text-gray-400">|</span>
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
           Not Urgent
         </span>

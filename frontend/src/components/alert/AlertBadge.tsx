@@ -23,7 +23,7 @@ function getSeverityStyle(severity: string): { bg: string; text: string; border:
 }
 
 function getSeverityDotColor(severity: string): string {
-  return (SEVERITY_COLORS as Record<string, string>)[severity] ?? '#6B7280';
+  return (SEVERITY_COLORS as Record<string, string>)[severity] ?? 'var(--app-ink-mid)';
 }
 
 function getSeverityIcon(severity: string): string {

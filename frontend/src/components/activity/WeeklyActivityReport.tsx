@@ -13,14 +13,14 @@ import { formatDate, getWeekStart, getNextWeek, getPrevWeek, addDays } from '@/l
 import { format } from 'date-fns';
 
 const TASK_COLORS = [
-  '#3B82F6', // blue
-  '#10B981', // emerald
-  '#F59E0B', // amber
-  '#EF4444', // red
-  '#8B5CF6', // violet
-  '#EC4899', // pink
-  '#06B6D4', // cyan
-  '#F97316', // orange
+  'var(--cn-teal)', // blue
+  'var(--cn-green)', // emerald
+  'var(--cn-yellow)', // amber
+  'var(--cn-red)', // red
+  'var(--cn-purple)', // violet
+  'var(--cn-red)', // pink
+  'var(--cn-blue)', // cyan
+  'var(--cn-orange)', // orange
 ];
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -164,18 +164,18 @@ export function WeeklyActivityReport({ currentDate }: WeeklyActivityReportProps)
                     <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
                       <XAxis
                         dataKey="name"
-                        tick={{ fontSize: 11, fill: '#6B7280' }}
+                        tick={{ fontSize: 11, fill: 'var(--app-ink-mid)' }}
                         axisLine={false}
                         tickLine={false}
                       />
                       <YAxis
-                        tick={{ fontSize: 11, fill: '#9CA3AF' }}
+                        tick={{ fontSize: 11, fill: 'var(--app-ink-low)' }}
                         axisLine={false}
                         tickLine={false}
                         unit="h"
                       />
                       <Tooltip
-                        contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #E5E7EB' }}
+                        contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid var(--app-hair)' }}
                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         formatter={((value: number) => `${value.toFixed(1)}h`) as any}
                       />

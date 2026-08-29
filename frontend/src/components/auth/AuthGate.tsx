@@ -18,11 +18,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   if (fetching) {
-    return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>;
+    return <div className="app-ground flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>;
   }
   if (!session.authenticated) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4">
+      <div className="app-ground flex h-screen flex-col items-center justify-center gap-4">
         <h1 className="text-xl font-semibold">Aggregated Plan</h1>
         <p className="text-sm text-muted-foreground">Sign in with your Microsoft account to continue.</p>
         {errorReason && <p className="text-sm text-red-600">Sign-in failed: {errorReason}</p>}

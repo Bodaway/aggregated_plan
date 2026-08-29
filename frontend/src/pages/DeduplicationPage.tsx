@@ -77,7 +77,7 @@ export function DeduplicationPage() {
       {suggestions.length === 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
           <svg
-            className="w-12 h-12 text-gray-300 mx-auto mb-3"
+            className="w-12 h-12 text-gray-400 mx-auto mb-3"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"

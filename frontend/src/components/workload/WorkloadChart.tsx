@@ -68,17 +68,17 @@ export function WorkloadChart({ halfDays, compact = false }: WorkloadChartProps)
   return (
     <ResponsiveContainer width="100%" height={chartHeight}>
       <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--app-hair)" />
         <XAxis
           dataKey="label"
-          tick={{ fontSize: 11, fill: '#6B7280' }}
+          tick={{ fontSize: 11, fill: 'var(--app-ink-mid)' }}
           tickLine={false}
-          axisLine={{ stroke: '#D1D5DB' }}
+          axisLine={{ stroke: 'var(--app-hair)' }}
         />
         <YAxis
-          tick={{ fontSize: 11, fill: '#6B7280' }}
+          tick={{ fontSize: 11, fill: 'var(--app-ink-mid)' }}
           tickLine={false}
-          axisLine={{ stroke: '#D1D5DB' }}
+          axisLine={{ stroke: 'var(--app-hair)' }}
           domain={[0, HALF_DAY_HOURS]}
           label={
             compact
@@ -87,14 +87,14 @@ export function WorkloadChart({ halfDays, compact = false }: WorkloadChartProps)
                   value: 'Hours',
                   angle: -90,
                   position: 'insideLeft',
-                  style: { fontSize: 12, fill: '#6B7280' },
+                  style: { fontSize: 12, fill: 'var(--app-ink-mid)' },
                 }
           }
         />
         <Tooltip
           contentStyle={{
-            backgroundColor: '#FFFFFF',
-            border: '1px solid #E5E7EB',
+            backgroundColor: 'var(--cn-fg)',
+            border: '1px solid var(--app-hair)',
             borderRadius: '8px',
             fontSize: '12px',
           }}
@@ -103,14 +103,14 @@ export function WorkloadChart({ halfDays, compact = false }: WorkloadChartProps)
         <Bar
           dataKey="meetings"
           stackId="workload"
-          fill="#3B82F6"
+          fill="var(--cn-teal)"
           name="Meetings"
           radius={[0, 0, 0, 0]}
         />
         <Bar
           dataKey="available"
           stackId="workload"
-          fill="#10B981"
+          fill="var(--cn-green)"
           name="Available"
           radius={[2, 2, 0, 0]}
         />

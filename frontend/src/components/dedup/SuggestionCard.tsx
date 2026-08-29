@@ -37,7 +37,7 @@ function getConfidenceTextColor(score: number): string {
 /** Displays a single task's summary information. */
 function TaskSide({ task, label }: { readonly task: TaskSummary; readonly label: string }) {
   const sourceColor =
-    (SOURCE_COLORS as Record<string, string>)[task.source] ?? '#6B7280';
+    (SOURCE_COLORS as Record<string, string>)[task.source] ?? 'var(--app-ink-mid)';
 
   return (
     <div className="flex-1 min-w-0">

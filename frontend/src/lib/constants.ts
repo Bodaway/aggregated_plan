@@ -10,16 +10,16 @@ export const QUADRANT_LABELS = {
 } as const;
 
 export const SOURCE_COLORS = {
-  JIRA: '#0052CC',
-  EXCEL: '#217346',
-  OBSIDIAN: '#7C3AED',
-  PERSONAL: '#6B7280',
+  JIRA: 'var(--cn-blue)',
+  EXCEL: 'var(--cn-green)',
+  OBSIDIAN: 'var(--cn-purple)',
+  PERSONAL: 'var(--app-ink-mid)',
 } as const;
 
 export const SEVERITY_COLORS = {
-  CRITICAL: '#DC2626',
-  WARNING: '#F59E0B',
-  INFORMATION: '#3B82F6',
+  CRITICAL: 'var(--cn-red)',
+  WARNING: 'var(--cn-yellow)',
+  INFORMATION: 'var(--cn-teal)',
 } as const;
 
 /**
