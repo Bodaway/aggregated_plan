@@ -1858,6 +1858,43 @@ Les fonctionnalités de timesheet (Plan 2) ont les limitations suivantes, à am�
 
 ---
 
+## 11 bis. Apparence de l'application
+
+### L'application entière porte la langue visuelle du HUD
+
+Les douze onglets ne sont plus un outil clair posé à côté d'un overlay sombre :
+ils lisent la **même palette que le bureau**. Repeindre le thème du poste
+repeint l'application et le HUD ensemble — il n'y a pas deux identités à tenir
+à jour.
+
+Concrètement : fond sombre, police à chasse fixe, libellés en capitales
+espacées, filets d'un pixel plutôt qu'ombres portées, angles nets. L'onglet
+courant est marqué par une arête allumée dans la barre latérale, le même
+langage que le panneau dominant du HUD — une seule chose est vive à la fois.
+
+### Les arrivées
+
+Ouvrir l'overlay et changer d'onglet déclenchent chacun une brève animation
+d'entrée. Elle ne retarde rien : le contenu est affiché et lisible dès la
+première image, l'animation ne fait que l'amener. Quelqu'un qui a demandé moins
+de mouvement à son système reçoit la page immédiatement et immobile.
+
+### La séquence de démarrage
+
+Le petit texte de démarrage du cockpit ne joue qu'**une fois par session**, au
+premier `SUPER+B`. Il a d'abord rejoué à chaque ouverture ; à l'usage, une
+seconde et demie entre la frappe et les données ne le valait pas.
+
+### Lisibilité
+
+Le contraste a été mesuré onglet par onglet plutôt qu'apprécié à l'œil. Le pire
+contraste de l'application est passé de 1,69:1 à 3,27:1, et six onglets sur onze
+ne présentent plus aucun texte sous le seuil AA. Ce qui reste au-dessus de 3:1
+sans atteindre 4,5:1 est exclusivement du libellé court et gras — pastilles,
+compteurs, mots d'état — pour lesquels 3:1 est le seuil applicable.
+
+---
+
 ## 12. Glossaire
 
 | Terme | Définition |

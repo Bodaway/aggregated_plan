@@ -6332,3 +6332,121 @@ outre laisser en base un préfixe de ce qui avait été tapé. En conséquence, 
 n'affiche son message de chargement qu'au **premier** chargement (`loading && rules.length === 0`),
 et `BreakRuleRow` resynchronise son état local quand les valeurs de sa prop `rule` changent : la
 ligne survivant désormais au `refetch`, elle doit suivre ce que le serveur a normalisé.
+
+---
+
+## 22. Identité visuelle : le HUD et les onglets
+
+### 22.1 Une seule palette, deux surfaces
+
+`frontend/src/styles/cybernord.css` est **généré** par `~/.config/theme/apply-theme.sh`
+et ne se modifie jamais à la main : il expose les tokens `--cn-*` du thème du bureau.
+Tout ce qui est peint dans l'application les lit, de sorte que repeindre le thème
+repeint le HUD et les douze onglets ensemble.
+
+Deux feuilles s'appuient dessus :
+
+| Feuille | Portée | Ce qu'elle définit |
+|---|---|---|
+| `pages/hud/hud.css` | la fenêtre overlay seule | grille, panneaux, budget de lueur, échelle typographique, animation d'ouverture |
+| `styles/app-shell.css` | l'application entière | police, filets, ascenseurs, anneau de focus, contrôles de formulaire, coque, arrivée de page |
+
+### 22.2 Le remap de l'échelle Tailwind
+
+L'application a été écrite en thème clair : cartes `bg-white` sur fond `bg-gray-50`,
+texte `text-gray-800`, filets `border-gray-200` — **1253 utilitaires répartis dans
+62 fichiers**. Plutôt que de les réécrire, `tailwind.config.ts` inverse ce que
+l'échelle *signifie* : les rangs bas restent « surface en retrait », les rangs hauts
+restent « encre affirmée », mais les surfaces deviennent sombres et l'encre claire.
+Chaque classe existante garde son intention et bascule d'un coup.
+
+Les rangs d'accent suivent la même logique : 50/100 sont l'accent à peine mêlé au
+fond de page (les pastilles teintées du thème clair), 400 et 500 sont l'accent pur
+(les remplissages), et 600 à 900 remontent vers le premier plan parce que c'est
+avec eux que le code écrit du **texte** — mesurés sur fond sombre à leur valeur
+pure, ils tombaient entre 2,8:1 et 3,2:1.
+
+`borderRadius` et `boxShadow` sont remappés dans le même mouvement : angulaire
+comme le HUD, et la profondeur vient du filet et du palier de surface, pas d'ombres
+portées invisibles sur fond sombre.
+
+### 22.3 Trois choses qu'un remap de classes n'atteint pas
+
+1. **Les contrôles natifs.** Un remap ne touche que ce qui porte une classe ; tout
+   `<input>` qui n'avait jamais eu besoin de fond sous un thème clair héritait du
+   blanc de l'agent utilisateur. `app-shell.css` les habille par sélecteur
+   d'élément, pour que toute classe explicite l'emporte encore, et pose
+   `color-scheme: dark` afin que le moteur peigne aussi ses propres widgets
+   (sélecteurs de date, remplissage automatique, curseur).
+2. **Recharts** peint son infobulle en blanc en ligne et n'accepte aucun thème :
+   elle est reprise par `.recharts-default-tooltip`.
+3. **`text-white`** devait signifier deux choses incompatibles — surface de carte,
+   et texte sur pastille colorée — que Tailwind dérive d'une seule couleur. Le cas
+   texte est corrigé séparément, en quasi-noir : les remplissages concernés sont
+   des accents lumineux, où le sombre sur accent passe, alors que le clair sur
+   accent échouerait franchement sur le teal.
+
+### 22.4 `body` ne porte aucun fond
+
+La fenêtre Tauri est **transparente**. Un `body` opaque annulerait l'overlay entier.
+Le sol est donc peint par ce qui en veut un — `.app-shell` pour les onglets,
+`.app-ground` pour l'écran de connexion — tandis que `hud.css` n'en peint
+délibérément aucun. Un test verrouille cette omission, parce que rien dans le code
+ne la rend évidente.
+
+### 22.5 Les arrivées
+
+Deux animations, une même règle : **elles font entrer le contenu, elles ne le font
+jamais attendre**. La grille et la page sont rendues et lisibles dès la première
+image. C'est la leçon de la séquence de boot, ramenée à une fois par processus pour
+s'être interposée entre la frappe et les données.
+
+| | HUD (`SUPER+B`) | Onglet (navigation) |
+|---|---|---|
+| déclencheur | signal de visibilité de la surface | changement de route |
+| relance | retrait puis repose de `data-open` | l'enveloppe est **clé-ée** sur la route, donc neuve |
+| durée | 1150 ms | ~780 ms |
+
+Le HUD compte trois états et non deux. `armed` place la grille sur la première image
+de l'animation **au moment où elle est masquée** : le compositeur dévoile la fenêtre
+avant que le signal ne prévienne l'application, donc une grille qui n'attendrait que
+le signal serait aperçue terminée, retomberait à zéro et remonterait. `armed` rend la
+grille invisible, ce qui crée un risque symétrique — un signal perdu laisserait un
+overlay vide — couvert par le focus fenêtre, qui ne peut que révéler.
+
+Sous `prefers-reduced-motion`, les deux animations sont **annulées**, pas
+raccourcies, et l'opacité est rétablie en même temps : sans cela il ne resterait
+rien pour révéler la grille armée.
+
+### 22.6 Le signal de visibilité de la surface
+
+`document.visibilityState` ne bouge **jamais** quand Hyprland masque le special
+workspace : mesuré sur le compositeur, la webview se déclare visible pendant tout le
+temps où l'overlay est hors écran. Tous les gates du HUD étaient donc inertes.
+
+`scripts/aplan-hud-toggle` est le seul à savoir, puisque c'est lui qui bascule. Il
+relit l'état auprès du compositeur — jamais « on vient de basculer, donc ça a
+changé », car le workspace peut être basculé autrement — et signale le shell, qui
+republie en événement Tauri `surface-visibility`.
+
+Trois contraintes non évidentes, chacune trouvée à l'exécution :
+
+- **Pas SIGUSR1/SIGUSR2** : JavaScriptCore possède déjà SIGUSR1 pour son
+  ramasse-miettes, et le lui prendre tuait le HUD sur les ouvertures où une collecte
+  tombait. Signaux temps réel (`SIGRTMIN`, `SIGRTMIN+1`), que personne ne réclame.
+- **Un signal reçu pendant l'édition de liens dynamique tombe sur la disposition par
+  défaut, qui termine le processus.** Deux gardes se recouvrent : le script ne
+  signale pas sur le chemin de lancement, et pose `SIG_IGN` avant `exec` — SIG_IGN
+  survit à `exec`, un gestionnaire non.
+- **Tauri v2 refuse `listen()` sans capability.** L'ensemble généré était
+  littéralement `{}` : le Rust émettait avec succès pendant que la page n'entendait
+  rien. `capabilities/default.json` accorde `core:event:default`, et l'échec est
+  désormais bruyant des deux côtés.
+
+### 22.7 Retour au HUD à l'ouverture
+
+L'overlay s'invoque, il ne se parcourt pas : chaque `SUPER+B` repart du HUD, quelle
+que soit la page où il a été fermé. `ReturnToHudOnOpen` est monté **dans** le routeur
+mais **hors** des `Routes`, pour être présent quelle que soit la route courante.
+Réservé à Tauri : dans le navigateur, le signal de visibilité est celui du document,
+qui bascule à chaque changement de bureau ou d'onglet.
