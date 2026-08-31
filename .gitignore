@@ -140,3 +140,5 @@ storybook-static/
 
 # Sauvegardes de base locales (jamais versionnées)
 *.db.bak-*
+*.db-shm.bak-*
+*.db-wal.bak-*
