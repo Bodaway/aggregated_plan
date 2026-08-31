@@ -20,8 +20,10 @@ function formatDuration(minutes: number): string {
 
 export function TimesheetPage() {
   const [date, setDate] = useState<Date>(new Date());
-  const { day, loading, error, reconstruct, setShare, clearShare, resetQuarter, validate, markOff, refetch } =
-    useTimesheet(date);
+  const {
+    day, loading, error, reconstruct, assignLaneGryzzlyTask, setShare, clearShare,
+    resetQuarter, validate, markOff, refetch,
+  } = useTimesheet(date);
   const { projects } = useGryzzlyProjects();
 
   const [refreshMsg, setRefreshMsg] = useState<ReconstructResult | null>(null);
@@ -42,12 +44,24 @@ export function TimesheetPage() {
 
   const onRefresh = () => setConfirmRefresh(true);
 
+  // Reassigning from a lane row rebuilds the day on the spot — no confirmation, since
+  // the user just asked for exactly that change and pinned shares survive a rebuild.
+  // Guarded by the same stale-day check as a manual reconstruct.
+  const onAssignLaneTask = async (taskId: string, gryzzlyTaskId: string | null) => {
+    const requestedDate = formatDate(date);
+    const r = await assignLaneGryzzlyTask(taskId, gryzzlyTaskId);
+    if (selectedDateRef.current === requestedDate) setRefreshMsg(r);
+  };
+
   const confirmReconstruct = async () => {
     setConfirmRefresh(false);
     const requestedDate = formatDate(date);
     const r = await reconstruct();
     if (selectedDateRef.current === requestedDate) setRefreshMsg(r);
   };
+
+  // A validated or submitted day is history: nothing on it is editable any more.
+  const readOnly = day?.status === 'VALIDATED' || day?.status === 'SUBMITTED';
 
   return (
     <div className="space-y-4">
@@ -83,7 +97,13 @@ export function TimesheetPage() {
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-700">
                 Travail concurrent
               </h2>
-              <TimesheetLanes lanes={day.lanes} quarters={day.quarters} projects={projects} />
+              <TimesheetLanes
+                lanes={day.lanes}
+                quarters={day.quarters}
+                projects={projects}
+                readOnly={readOnly}
+                onAssignLaneTask={(taskId, gryzzlyTaskId) => void onAssignLaneTask(taskId, gryzzlyTaskId)}
+              />
               {day.outsideWorkday.length > 0 && (
                 <p className="mt-3 text-xs text-amber-700">
                   ⚠{' '}
@@ -102,7 +122,7 @@ export function TimesheetPage() {
                   quarter={q}
                   projects={projects}
                   roundingIncrement={day.roundingIncrement}
-                  readOnly={day.status === 'VALIDATED' || day.status === 'SUBMITTED'}
+                  readOnly={readOnly}
                   onSetShare={setShare}
                   onClearShare={clearShare}
                   onReset={resetQuarter}

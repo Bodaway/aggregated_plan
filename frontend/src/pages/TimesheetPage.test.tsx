@@ -17,9 +17,9 @@ const day = {
   date: '2026-06-08', status: 'DRAFT', targetHours: 8, roundingIncrement: 0.25,
   totalHours: 8, dayConfidence: 'HIGH', unattributedHours: 0, unresolved: [],
   lanes: [
-    { laneKey: 'task:A', label: 'Tâche A', gryzzlyProjectId: 'p1', outsideMinutes: 0,
+    { laneKey: 'task:A', taskId: 'A', label: 'Tâche A', gryzzlyProjectId: 'p1', outsideMinutes: 0,
       intervals: [{ startMin: 540, endMin: 620 }] },
-    { laneKey: 'task:B', label: 'Tâche B', gryzzlyProjectId: 'p1', outsideMinutes: 94,
+    { laneKey: 'task:B', taskId: 'B', label: 'Tâche B', gryzzlyProjectId: 'p1', outsideMinutes: 94,
       intervals: [{ startMin: 560, endMin: 700 }] },
   ],
   quarters: [
@@ -35,6 +35,7 @@ const day = {
 // Shared mock so the tests can assert on / re-stub the reconstruct call.
 const mocks = vi.hoisted(() => ({
   reconstruct: vi.fn(),
+  assignLaneGryzzlyTask: vi.fn(),
   setShare: vi.fn(),
   resetQuarter: vi.fn(),
 }));
@@ -46,10 +47,23 @@ let unresolvedSignals: UnresolvedSignal[] = [];
 vi.mock('@/hooks/use-timesheet', () => ({
   useTimesheet: () => ({
     day: { ...day, unresolved: unresolvedSignals }, loading: false, error: null,
-    reconstruct: mocks.reconstruct, setShare: mocks.setShare, clearShare: vi.fn(),
+    reconstruct: mocks.reconstruct, assignLaneGryzzlyTask: mocks.assignLaneGryzzlyTask,
+    setShare: mocks.setShare, clearShare: vi.fn(),
     resetQuarter: mocks.resetQuarter, validate: vi.fn(), markOff: vi.fn(), refetch: vi.fn(),
   }),
   useGryzzlyProjects: () => ({ projects: [], loading: false, error: undefined }),
+}));
+
+// The lane picker's list is the shared Gryzzly one; stub its catalog query so the page
+// test needs no urql provider.
+vi.mock('@/hooks/use-gryzzly-tasks', () => ({
+  useGryzzlyTasks: () => ({
+    options: [
+      { gryzzlyTaskId: 't1', name: 'Pilotage', projectName: 'Canal Plus', projectStatus: 'active' },
+    ],
+    fetching: false,
+    error: null,
+  }),
 }));
 
 import { TimesheetPage } from './TimesheetPage';
@@ -62,6 +76,8 @@ describe('TimesheetPage', () => {
     mocks.setShare.mockResolvedValue(null);
     mocks.resetQuarter.mockReset();
     mocks.resetQuarter.mockResolvedValue(null);
+    mocks.assignLaneGryzzlyTask.mockReset();
+    mocks.assignLaneGryzzlyTask.mockResolvedValue({ message: 'Projet Gryzzly mis à jour.', isError: false });
     unresolvedSignals = [];
   });
 
@@ -93,6 +109,18 @@ describe('TimesheetPage', () => {
     render(<TimesheetPage />);
     fireEvent.change(screen.getByLabelText('heures pour Tâche A'), { target: { value: '1.75' } });
     expect(mocks.setShare).toHaveBeenCalledWith(0, 'task:Tâche A', 1.75);
+  });
+
+  /// The fast path this screen exists to offer: spot the wrong project on a lane row,
+  /// fix it there, and see the day rebuilt without a confirmation detour.
+  it('reassigns a lane\'s Gryzzly task from the row and reports the rebuild', async () => {
+    render(<TimesheetPage />);
+    fireEvent.click(screen.getByRole('button', { name: /projet gryzzly de Tâche A/i }));
+    fireEvent.click(screen.getByRole('option', { name: /Pilotage/ }));
+
+    expect(mocks.assignLaneGryzzlyTask).toHaveBeenCalledWith('A', 't1');
+    expect(await screen.findByText(/Projet Gryzzly mis à jour/)).toBeInTheDocument();
+    expect(mocks.reconstruct).not.toHaveBeenCalled();
   });
 
   it('reports the evidence that fell outside the working day', () => {

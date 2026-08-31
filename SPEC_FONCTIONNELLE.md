@@ -911,6 +911,17 @@ puisque la seule vue offerte était celle qui avait déjà perdu l'information.
 - **Travail hors plage horaire signalé.** Les traces dont l'ombre tombe hors des plages
   configurées sont **rapportées** par voie, avec leur durée. L'ancien moteur en jetait
   vingt d'un coup (le 2026-08-10, tout ce qui suivait 17:00) sans trace nulle part.
+- **Correction du projet Gryzzly depuis la voie.** La ligne d'une voie porte le projet
+  qu'elle déclare (ou « sans projet Gryzzly ») ; un clic dessus ouvre le sélecteur de tâches
+  Gryzzly (le même que la carte de tâche, groupé par projet, avec recherche). Le choix
+  **assigne durablement** la tâche Gryzzly à la tâche aplan — donc le `gryzzly_project_id`
+  snapshoté, voir US-007 — puis **reconstruit la journée** sans confirmation : les épingles
+  survivent, et la correction vaut pour tous les jours suivants. Le sélecteur choisit un projet
+  *via une tâche* et non un projet seul : Gryzzly impute les heures sur une tâche, et un
+  projet sans tâche produirait des heures indéclarables. Les voies **sans tâche** (réunion,
+  dépôt Git non rattaché) restent en texte simple — il n'y a pas de tâche à corriger, leur
+  rattachement passe par une règle d'apprentissage. Une journée validée ou soumise n'offre
+  pas le sélecteur.
 - **Lignes projet dérivées.** Le tableau heures×projet est la **somme des parts** par projet
   Gryzzly. Deux tâches du même projet fusionnent ici — le cas normal — et leurs voies restent
   distinctes à l'écran pour que la fusion soit visible avant la déclaration. Il n'existe plus

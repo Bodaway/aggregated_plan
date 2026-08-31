@@ -3729,6 +3729,16 @@ minuit** (`Int`) et non en horodatages : une voie est dessinée contre la grille
 un client qui doit analyser des datetimes pour positionner une barre finira par se tromper de
 fuseau.
 
+`LaneGql.taskId` (`ID`, nullable) porte la tâche aplan derrière la voie. Il est dérivé de la
+clé de voie — `LaneKey::task_id()` côté reconstruction, `LaneKey::parse` côté relecture de
+`lanes_json` — donc sans requête supplémentaire, et vaut `null` pour une réunion, un dépôt Git
+non rattaché ou le résidu non attribué. C'est ce champ qui dit au client quelles lignes
+peuvent offrir une correction du projet Gryzzly : il n'existe pas de mutation qui pose un
+projet *seul* sur une tâche, la correction passe par `assignGryzzlyTask` (§10.7) qui snapshote
+le projet depuis le catalogue. Une clé `task:<uuid>` malformée relit `taskId = null` — même
+tolérance que le reste du parseur de `lanes_json` : la voie se dessine, elle n'est simplement
+pas corrigeable.
+
 Sur relecture d'un brouillon (`from_draft`), les quarts sont reconstitués depuis les lignes
 de parts et les plages configurées. Deux champs ne le sont pas : la confiance propre d'un
 quart et ses heures d'absence sont des propriétés des **traces**, pas de la décision — une
@@ -4933,7 +4943,8 @@ Deux déclencheurs, une seule liste — le corps du menu est partagé pour que l
 | `frontend/src/components/gryzzly/GryzzlyTaskOptionList.tsx` | Corps commun : champ de recherche, regroupement par projet, option « Clear assignment », badges. Monté **uniquement à l'ouverture**, pour que la requête catalogue ne parte pas une fois par puce fermée à l'écran (le dashboard en affiche des dizaines). |
 | `frontend/src/components/gryzzly/GryzzlyTaskPicker.tsx` | Déclencheur pleine largeur du volet d'édition ; liste ancrée en `absolute`. |
 | `frontend/src/components/gryzzly/GryzzlyTaskMenu.tsx` | Déclencheur en puce des cartes de tâche (dashboard), calibré sur `StatusMenu`. |
-| `frontend/src/hooks/use-assign-gryzzly-task.ts` | Mutation `assignGryzzlyTask` partagée (`assign` / `clear`). |
+| `frontend/src/components/timesheet/LaneGryzzlyPicker.tsx` | Déclencheur sur la ligne d'une voie de la feuille de temps : le libellé du projet devient cliquable. Liste en `absolute` — aucun ancêtre d'une voie n'est un conteneur défilant, donc rien à rogner. La liste ne connaît pas la tâche Gryzzly d'origine (une voie ne porte que le projet snapshoté), d'où une action « Retirer le projet Gryzzly » propre au sélecteur plutôt que le « Clear assignment » du corps commun. |
+| `frontend/src/hooks/use-assign-gryzzly-task.ts` | Mutation `assignGryzzlyTask` partagée. `useAssignGryzzlyTask(taskId)` pour une surface liée à une tâche (`assign` / `clear`) ; `useAssignAnyGryzzlyTask()` quand la tâche est choisie à l'appel — les voies réassignent celle dont la ligne parle. Un seul document de mutation. |
 
 `GryzzlyTaskMenu` **portalise** sa liste dans `document.body` en position `fixed` : les colonnes de
 jour du dashboard sont des conteneurs `overflow-hidden` défilants, qui rogneraient un menu positionné
@@ -4947,6 +4958,14 @@ en `absolute`. Trois conséquences assumées, chacune couverte par un test :
 3. Le défilement **réancre** la liste au lieu de la fermer. Fermer sur `scroll` rendait le menu
    inutilisable : la mise au point automatique du champ de recherche fait défiler son propre
    conteneur, donc le menu se refermait aussitôt ouvert. Seule une puce sortie du viewport ferme.
+
+`LaneGryzzlyPicker` hérite du piège 3 sans le portail : il **ne ferme jamais sur `scroll`**, pour la
+même raison. Après une assignation réussie, `useTimesheet.assignLaneGryzzlyTask` **reconstruit la
+journée** — les voies et les parts persistées portent l'ancien `gryzzly_project_id`, un simple
+refetch afficherait donc encore le mauvais projet. La reconstruction est sûre ici parce qu'elle
+reporte les épingles (`pins_of`), et le message de sortie réutilise la ligne de retour de
+l'écran ; le garde-fou de date de l'écran s'applique aussi, pour qu'une assignation résolue après
+un changement de jour ne peigne pas son message sur la nouvelle journée.
 
 ### 10.9 End-of-Day Auto-Reconstruction Scheduler
 

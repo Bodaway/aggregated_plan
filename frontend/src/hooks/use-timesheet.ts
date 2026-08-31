@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useMutation, useQuery } from 'urql';
 
+import { useAssignAnyGryzzlyTask } from '@/hooks/use-assign-gryzzly-task';
 import { formatDate } from '@/lib/date-utils';
 
 export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW';
@@ -23,6 +24,8 @@ export interface LaneInterval {
 /** One task's presence across the day. Lanes OVERLAP — that is the concurrent view. */
 export interface Lane {
   laneKey: string;
+  /** The plan task behind the lane, or null for a meeting / unmatched repo. */
+  taskId: string | null;
   label: string;
   gryzzlyProjectId: string | null;
   intervals: LaneInterval[];
@@ -103,7 +106,7 @@ const DAY_FIELDS = `
   date status targetHours roundingIncrement totalHours dayConfidence unattributedHours
   lines { gryzzlyProjectId projectName hours isPinned confidence sourceRefs }
   unresolved { sourceRef label at }
-  lanes { laneKey label gryzzlyProjectId outsideMinutes intervals { startMin endMin } }
+  lanes { laneKey taskId label gryzzlyProjectId outsideMinutes intervals { startMin endMin } }
   quarters {
     index startMin endMin hours oooHours declarableHours confidence
     shares { laneKey taskId label gryzzlyProjectId presenceMinutes hours isPinned }
@@ -156,6 +159,7 @@ export function useTimesheet(date: Date) {
   const [, execResetQuarter] = useMutation(RESET_QUARTER_MUTATION);
   const [, execValidate] = useMutation(VALIDATE_MUTATION);
   const [, execMarkOff] = useMutation(MARK_DAY_OFF_MUTATION);
+  const assignGryzzlyTask = useAssignAnyGryzzlyTask();
 
   const refetch = useCallback(
     () => reexecute({ requestPolicy: 'network-only' }),
@@ -179,6 +183,26 @@ export function useTimesheet(date: Date) {
     const message = `Reconstruit : ${rebuilt.totalHours}h au total, ${rebuilt.unattributedHours}h non attribuées, ${projectCount} projet(s), ${rebuilt.unresolved.length} signal(aux) non résolu(s).`;
     return { message, isError: false };
   }, [execReconstruct, dateStr, refetch]);
+
+  // Reassigning the Gryzzly task of a lane's task is a DURABLE fix: the backend
+  // snapshots the project onto the task, so every future day resolves it too. Today's
+  // day still has to be rebuilt — lanes and quarter shares carry the old project id in
+  // the database — and a reconstruct is safe here because it preserves pinned shares.
+  const assignLaneGryzzlyTask = useCallback(
+    async (taskId: string, gryzzlyTaskId: string | null): Promise<ReconstructResult> => {
+      const res = await assignGryzzlyTask(taskId, gryzzlyTaskId);
+      if (res.error) {
+        return {
+          message: res.error.graphQLErrors[0]?.message ?? res.error.message,
+          isError: true,
+        };
+      }
+      const rebuilt = await reconstruct();
+      if (rebuilt.isError) return rebuilt;
+      return { message: `Projet Gryzzly mis à jour. ${rebuilt.message}`, isError: false };
+    },
+    [assignGryzzlyTask, reconstruct],
+  );
 
   // Pinning one share re-apportions the rest of its quarter server-side, so every
   // editing call refetches rather than patching the day locally.
@@ -251,6 +275,7 @@ export function useTimesheet(date: Date) {
     loading: result.fetching,
     error: result.error ?? null,
     reconstruct,
+    assignLaneGryzzlyTask,
     setShare,
     clearShare,
     resetQuarter,

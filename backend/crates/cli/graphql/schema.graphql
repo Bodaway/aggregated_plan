@@ -1185,6 +1185,7 @@ One task's presence across the day. Lanes overlap — that is the concurrent vie
 """
 type LaneGql {
 	laneKey: String!
+	taskId: ID
 	label: String!
 	gryzzlyProjectId: String
 	intervals: [LaneIntervalGql!]!

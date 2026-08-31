@@ -1,7 +1,7 @@
 use async_graphql::{SimpleObject, ID};
 use chrono::{NaiveDate, NaiveDateTime};
 
-use domain::rules::presence::Lane;
+use domain::rules::presence::{Lane, LaneKey};
 use domain::rules::quarters::{quarters, QuarterAllocation};
 use domain::rules::reconstruction::{
     OutsideWork, ProjectAllocation, ReconstructedDay, ReconstructionConfig, UnresolvedSignal,
@@ -73,6 +73,10 @@ pub struct LaneIntervalGql {
 #[derive(SimpleObject)]
 pub struct LaneGql {
     pub lane_key: String,
+    /// The plan task this lane is about, when it has one. Meeting and repo lanes carry
+    /// no task, so they have no Gryzzly snapshot a client could correct — which is what
+    /// tells the timesheet screen whether to offer a reassignment control on the row.
+    pub task_id: Option<ID>,
     pub label: String,
     pub gryzzly_project_id: Option<String>,
     pub intervals: Vec<LaneIntervalGql>,
@@ -82,6 +86,7 @@ pub struct LaneGql {
 impl From<Lane> for LaneGql {
     fn from(l: Lane) -> Self {
         Self {
+            task_id: l.key.task_id().map(|id| ID(id.to_string())),
             lane_key: l.key.as_key(),
             label: l.label,
             gryzzly_project_id: l.gryzzly_project_id,
@@ -338,6 +343,9 @@ fn parse_lanes_json(json: &str) -> Option<Vec<LaneGql>> {
             })
             .unwrap_or_default();
         out.push(LaneGql {
+            task_id: LaneKey::parse(&lane_key)
+                .and_then(|k| k.task_id())
+                .map(|id| ID(id.to_string())),
             label: l
                 .get("label")
                 .and_then(|x| x.as_str())
@@ -490,6 +498,31 @@ mod tests {
 
 
 
+
+    #[test]
+    fn parse_lanes_json_exposes_the_task_id_of_task_lanes_only() {
+        // The picker on a lane row can only reassign a lane that HAS a task; a meeting or
+        // an unmatched repo has no task snapshot to write the Gryzzly project onto.
+        let task = Uuid::new_v4();
+        let json = format!(
+            r#"[{{"laneKey":"task:{task}","label":"HUD","intervals":[[540,600]]}},
+                {{"laneKey":"src:mtg:42","label":"Daily","intervals":[]}},
+                {{"laneKey":"unattributed","label":"reste","intervals":[]}}]"#
+        );
+        let lanes = parse_lanes_json(&json).expect("well-formed lanes parse");
+        assert_eq!(lanes[0].task_id, Some(ID(task.to_string())));
+        assert_eq!(lanes[1].task_id, None);
+        assert_eq!(lanes[2].task_id, None);
+    }
+
+    #[test]
+    fn parse_lanes_json_leaves_task_id_empty_on_a_malformed_key() {
+        // Tolerance, same contract as the rest of the parser: a lane key that is not a
+        // valid `task:<uuid>` still draws, it just cannot be reassigned.
+        let json = r#"[{"laneKey":"task:not-a-uuid","label":"x","intervals":[]}]"#;
+        let lanes = parse_lanes_json(json).expect("well-formed lanes parse");
+        assert_eq!(lanes[0].task_id, None);
+    }
 
     #[test]
     fn from_draft_tolerates_missing_or_broken_unresolved_json() {
