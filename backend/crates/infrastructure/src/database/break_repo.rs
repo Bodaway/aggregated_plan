@@ -78,6 +78,8 @@ fn map_event(row: &SqliteRow) -> Result<BreakEvent, RepositoryError> {
         outcome: BreakOutcome::from_str(&outcome_str)
             .ok_or_else(|| RepositoryError::Database(format!("bad outcome '{outcome_str}'")))?,
         responded_at: parse_opt_dt(Row::get(row, "responded_at"))?,
+        started_at: parse_opt_dt(Row::get(row, "started_at"))?,
+        ends_at: parse_opt_dt(Row::get(row, "ends_at"))?,
         created_at: parse_dt(&Row::get::<String, _>(row, "created_at"))?,
     })
 }
@@ -236,8 +238,8 @@ impl BreakEventRepository for SqliteBreakEventRepository {
     async fn create(&self, event: &BreakEvent) -> Result<(), RepositoryError> {
         sqlx::query(
             "INSERT INTO break_events (id, user_id, rule_id, due_at, fired_at, deferred_until, \
-             defer_reason, suppressed_by_meeting_id, outcome, responded_at, created_at) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+             defer_reason, suppressed_by_meeting_id, outcome, responded_at, started_at, \
+             ends_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(event.id.to_string())
         .bind(event.user_id.to_string())
@@ -249,6 +251,8 @@ impl BreakEventRepository for SqliteBreakEventRepository {
         .bind(event.suppressed_by_meeting_id.as_deref())
         .bind(event.outcome.as_str())
         .bind(event.responded_at.map(|d| d.to_rfc3339()))
+        .bind(event.started_at.map(|d| d.to_rfc3339()))
+        .bind(event.ends_at.map(|d| d.to_rfc3339()))
         .bind(event.created_at.to_rfc3339())
         .execute(&self.pool)
         .await
@@ -308,6 +312,62 @@ impl BreakEventRepository for SqliteBreakEventRepository {
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    async fn find_active(&self, user_id: UserId) -> Result<Option<BreakEvent>, RepositoryError> {
+        // `LIMIT 1` guards a state the scheduler makes impossible rather than picking a
+        // winner: one loop, and no break rings while another runs.
+        let row = sqlx::query(
+            "SELECT * FROM break_events WHERE user_id = ? AND outcome = 'pending' \
+             AND started_at IS NOT NULL ORDER BY started_at DESC LIMIT 1",
+        )
+        .bind(user_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        row.as_ref().map(map_event).transpose()
+    }
+
+    async fn start_session(
+        &self,
+        id: BreakEventId,
+        started_at: DateTime<Utc>,
+        ends_at: DateTime<Utc>,
+    ) -> Result<(), RepositoryError> {
+        // The outcome is deliberately untouched: it stays `pending` until the deadline
+        // decides between `taken` and `abandoned`.
+        sqlx::query("UPDATE break_events SET started_at = ?, ends_at = ? WHERE id = ?")
+            .bind(started_at.to_rfc3339())
+            .bind(ends_at.to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn abandon_if_running(
+        &self,
+        user_id: UserId,
+        id: BreakEventId,
+        responded_at: DateTime<Utc>,
+    ) -> Result<bool, RepositoryError> {
+        // The whole arbitration is in the `WHERE`: SQLite applies the conjunction and
+        // the write as one statement, so a row the tick closed a hundredth of a second
+        // ago matches nothing and keeps its `taken`. Reading first and updating after
+        // would let whichever statement landed second win, which here is this one.
+        let result = sqlx::query(
+            "UPDATE break_events SET outcome = 'abandoned', responded_at = ? \
+             WHERE id = ? AND user_id = ? AND outcome = 'pending' \
+             AND started_at IS NOT NULL",
+        )
+        .bind(responded_at.to_rfc3339())
+        .bind(id.to_string())
+        .bind(user_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn counts_between(
@@ -470,6 +530,8 @@ mod tests {
             suppressed_by_meeting_id: None,
             outcome: BreakOutcome::Pending,
             responded_at: None,
+            started_at: None,
+            ends_at: None,
             created_at: at(9, 30),
         };
         events.create(&e).await.unwrap();
@@ -496,6 +558,8 @@ mod tests {
             suppressed_by_meeting_id: Some("outlook-1".into()),
             outcome: BreakOutcome::Pending,
             responded_at: None,
+            started_at: None,
+            ends_at: None,
             created_at: at(9, 30),
         };
         events.create(&open).await.unwrap();
@@ -532,6 +596,8 @@ mod tests {
                         suppressed_by_meeting_id: None,
                         outcome,
                         responded_at: Some(at(10, 1)),
+                        started_at: None,
+                        ends_at: None,
                         created_at: at(10, 0),
                     })
                     .await
@@ -542,6 +608,184 @@ mod tests {
         assert_eq!(counts.len(), 2);
         assert!(counts.contains(&(r.id, BreakOutcome::Taken, 2)));
         assert!(counts.contains(&(r.id, BreakOutcome::Ignored, 1)));
+    }
+
+    fn event(user_id: UserId, rule_id: BreakRuleId, outcome: BreakOutcome) -> BreakEvent {
+        BreakEvent {
+            id: Uuid::new_v4(),
+            user_id,
+            rule_id,
+            due_at: at(10, 0),
+            fired_at: Some(at(10, 0)),
+            deferred_until: None,
+            defer_reason: None,
+            suppressed_by_meeting_id: None,
+            outcome,
+            responded_at: None,
+            started_at: None,
+            ends_at: None,
+            created_at: at(10, 0),
+        }
+    }
+
+    /// The whole point of storing the session rather than holding it in memory is that
+    /// it survives an API restart, which means it has to survive the round trip.
+    #[tokio::test]
+    async fn a_session_round_trips_through_its_two_columns() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+        let mut e = event(user_id, r.id, BreakOutcome::Pending);
+        e.started_at = Some(at(10, 0));
+        e.ends_at = Some(at(10, 5));
+        events.create(&e).await.unwrap();
+        assert_eq!(events.list_open(user_id).await.unwrap(), vec![e]);
+    }
+
+    /// Migration 021 widened the CHECK; without it every abandoned break would abort
+    /// the write and leave the row `pending` for ever.
+    #[tokio::test]
+    async fn the_database_accepts_the_abandoned_outcome() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+        let e = event(user_id, r.id, BreakOutcome::Pending);
+        events.create(&e).await.unwrap();
+        events.set_outcome(e.id, BreakOutcome::Abandoned, Some(at(10, 3))).await.unwrap();
+        let counts = events.counts_between(user_id, at(0, 0), at(23, 59)).await.unwrap();
+        assert_eq!(counts, vec![(r.id, BreakOutcome::Abandoned, 1)]);
+    }
+
+    /// "Active" is the conjunction, not either half: a break that was notified but never
+    /// opened has no session, and a break that is over is no longer on screen.
+    #[tokio::test]
+    async fn find_active_returns_only_the_running_session() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+
+        // Pending, never opened.
+        events.create(&event(user_id, r.id, BreakOutcome::Pending)).await.unwrap();
+        // Opened, then resolved.
+        let mut done = event(user_id, r.id, BreakOutcome::Taken);
+        done.started_at = Some(at(9, 0));
+        done.ends_at = Some(at(9, 5));
+        events.create(&done).await.unwrap();
+        assert_eq!(events.find_active(user_id).await.unwrap(), None);
+
+        let mut live = event(user_id, r.id, BreakOutcome::Pending);
+        live.started_at = Some(at(10, 0));
+        live.ends_at = Some(at(10, 5));
+        events.create(&live).await.unwrap();
+        assert_eq!(events.find_active(user_id).await.unwrap(), Some(live));
+
+        // Another user's break is not this user's.
+        assert_eq!(events.find_active(Uuid::new_v4()).await.unwrap(), None);
+    }
+
+    /// Opening a session writes the two instants and nothing else: `taken` is earned at
+    /// the deadline, so the outcome has to stay `pending` here.
+    #[tokio::test]
+    async fn start_session_stamps_both_instants_and_leaves_the_outcome_alone() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+        let e = event(user_id, r.id, BreakOutcome::Pending);
+        events.create(&e).await.unwrap();
+
+        events.start_session(e.id, at(10, 0), at(10, 5)).await.unwrap();
+
+        let active = events.find_active(user_id).await.unwrap().unwrap();
+        assert_eq!(active.id, e.id);
+        assert_eq!(active.started_at, Some(at(10, 0)));
+        assert_eq!(active.ends_at, Some(at(10, 5)));
+        assert_eq!(active.outcome, BreakOutcome::Pending);
+        assert_eq!(active.responded_at, None);
+    }
+
+    /// "J'y retourne" closes the row, and reports that it is the call that closed it.
+    #[tokio::test]
+    async fn abandon_if_running_closes_the_running_break() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+        let e = event(user_id, r.id, BreakOutcome::Pending);
+        events.create(&e).await.unwrap();
+        events.start_session(e.id, at(10, 0), at(10, 5)).await.unwrap();
+
+        assert!(events.abandon_if_running(user_id, e.id, at(10, 3)).await.unwrap());
+
+        let stored = events.list_open(user_id).await.unwrap();
+        assert!(stored.is_empty(), "the row is no longer pending");
+        let counts = events.counts_between(user_id, at(0, 0), at(23, 59)).await.unwrap();
+        assert_eq!(counts, vec![(r.id, BreakOutcome::Abandoned, 1)]);
+    }
+
+    /// The whole reason this is one statement rather than a read and a write: the tick
+    /// writes `taken` the instant the countdown runs out, and a press that arrives a
+    /// hundredth of a second later must not be able to relabel a break that was served
+    /// to its end. The row is no longer `pending`, so the update matches nothing.
+    #[tokio::test]
+    async fn abandon_if_running_leaves_a_break_that_already_ended_alone() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+        let e = event(user_id, r.id, BreakOutcome::Pending);
+        events.create(&e).await.unwrap();
+        events.start_session(e.id, at(10, 0), at(10, 5)).await.unwrap();
+        events.set_outcome(e.id, BreakOutcome::Taken, Some(at(10, 5))).await.unwrap();
+
+        assert!(!events.abandon_if_running(user_id, e.id, at(10, 5)).await.unwrap());
+
+        let counts = events.counts_between(user_id, at(0, 0), at(23, 59)).await.unwrap();
+        assert_eq!(counts, vec![(r.id, BreakOutcome::Taken, 1)]);
+    }
+
+    /// A row that was notified but never opened is not a break anybody can cut short,
+    /// and another user's break is not this user's to end either.
+    #[tokio::test]
+    async fn abandon_if_running_ignores_rows_that_are_not_a_running_session() {
+        let pool = pool().await;
+        let rules = SqliteBreakRuleRepository::new(pool.clone());
+        let events = SqliteBreakEventRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let r = rule(user_id, BreakCadence::Interval { minutes: 60 });
+        rules.create(&r).await.unwrap();
+
+        let never_opened = event(user_id, r.id, BreakOutcome::Pending);
+        events.create(&never_opened).await.unwrap();
+        assert!(!events
+            .abandon_if_running(user_id, never_opened.id, at(10, 3))
+            .await
+            .unwrap());
+
+        let mut live = event(user_id, r.id, BreakOutcome::Pending);
+        live.started_at = Some(at(10, 0));
+        live.ends_at = Some(at(10, 5));
+        events.create(&live).await.unwrap();
+        assert!(!events
+            .abandon_if_running(Uuid::new_v4(), live.id, at(10, 3))
+            .await
+            .unwrap());
+        assert_eq!(events.find_active(user_id).await.unwrap().map(|e| e.id), Some(live.id));
     }
 
     /// Migration 019 seeds the default routine and 020 retunes the visual cadence, but

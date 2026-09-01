@@ -949,6 +949,7 @@ impl QueryRoot {
                 snoozed: 0,
                 skipped: 0,
                 ignored: 0,
+                abandoned: 0,
                 absorbed: 0,
                 expired: 0,
                 adherence: None,
@@ -965,6 +966,7 @@ impl QueryRoot {
                     BreakOutcome::Absorbed => row.absorbed = n,
                     BreakOutcome::Expired => row.expired = n,
                     BreakOutcome::Pending => {}
+                    BreakOutcome::Abandoned => row.abandoned = n,
                 }
                 if outcome.counts_towards_adherence() {
                     seen += n;
@@ -976,6 +978,50 @@ impl QueryRoot {
             per_rule.push(row);
         }
         Ok(BreakStatsGql { per_rule })
+    }
+
+    /// The break running right now, if one is — the HUD's overlay, polled every two
+    /// seconds while the surface is up.
+    ///
+    /// Three different situations all answer `null`, deliberately: nothing is running,
+    /// the rule was deleted out from under a running break, or the row is incoherent.
+    /// The HUD reads `null` as "show your grid"; an error it can only render as
+    /// nothing at all. A read-only field the overlay lives on is not the place to
+    /// insist on the difference — and the break is over in seconds either way.
+    async fn active_break(&self, ctx: &Context<'_>) -> Result<Option<ActiveBreakGql>> {
+        let user_id = *ctx.data::<UserId>()?;
+        let events = ctx.data::<Arc<dyn BreakEventRepository>>()?;
+        let rules = ctx.data::<Arc<dyn BreakRuleRepository>>()?;
+
+        let Some(event) = events
+            .find_active(user_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+
+        let Some(rule) = rules
+            .get(user_id, event.rule_id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?
+        else {
+            tracing::warn!(
+                "activeBreak: event {} runs on rule {}, which no longer exists",
+                event.id,
+                event.rule_id
+            );
+            return Ok(None);
+        };
+
+        let active = ActiveBreakGql::from_parts(&event, &rule);
+        if active.is_none() {
+            tracing::warn!(
+                "activeBreak: event {} is active with no started_at/ends_at pair",
+                event.id
+            );
+        }
+        Ok(active)
     }
 }
 

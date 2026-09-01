@@ -17,7 +17,24 @@ vi.mock('@/hooks/use-break-rules', () => ({
   useBreakRules: () => ({ stats: { perRule: [] } }),
 }));
 
+// The break screen is the one branch of this page that talks to the API on its
+// own (`endBreak`); `BreakScreen.test.tsx` owns that wiring, so here the page
+// only has to be able to render it.
+vi.mock('urql', () => ({ useMutation: () => [{ fetching: false }, vi.fn()] }));
+const activeBreakMock = vi.fn();
+vi.mock('./useActiveBreak', () => ({ useActiveBreak: () => activeBreakMock() }));
+
 import { HudPage, resetBootSequenceForTests } from './HudPage';
+import type { ActiveBreak } from './useActiveBreak';
+
+const RUNNING_BREAK: ActiveBreak = {
+  eventId: 'evt-1',
+  kind: 'VISUAL',
+  label: 'Pause visuelle',
+  body: 'Regarde au loin 20 s',
+  startedAt: '2026-08-28T09:30:00.000Z',
+  endsAt: '2026-08-28T09:30:30.000Z',
+};
 
 // jsdom applies none of this stylesheet, so the source text is the only way to
 // assert the reduced-motion contract — same technique the block tests use.
@@ -89,6 +106,8 @@ describe('HudPage', () => {
     vi.setSystemTime(new Date('2026-08-28T09:30:00'));
     dashboardMock.mockReset();
     mockDashboard();
+    activeBreakMock.mockReset();
+    activeBreakMock.mockReturnValue(null);
     // The "played" flag lives at module scope so it survives HudPage
     // unmounting when the overlay leaves the HUD route — which means it also
     // survives between tests unless it is cleared here.
@@ -307,6 +326,40 @@ describe('HudPage', () => {
     first.unmount();
 
     renderHudPage();
+    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
+    expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
+  });
+
+  // ─── the break screen ───
+
+  it('takes the surface over with the break screen while a break runs', () => {
+    activeBreakMock.mockReturnValue(RUNNING_BREAK);
+    renderHudPage();
+
+    expect(screen.getByTestId('break-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('hud-grid')).not.toBeInTheDocument();
+  });
+
+  it('skips the boot sequence for a break', () => {
+    // 1.5s of curtain in front of a 30s countdown spends a twentieth of the
+    // break on a splash screen.
+    activeBreakMock.mockReturnValue(RUNNING_BREAK);
+    renderHudPage();
+
+    expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
+    expect(screen.getByTestId('break-screen')).toBeInTheDocument();
+  });
+
+  it('hands the surface back to the grid when the break ends', () => {
+    activeBreakMock.mockReturnValue(RUNNING_BREAK);
+    const { rerender } = renderHudPage();
+    act(() => void vi.advanceTimersByTime(1600));
+
+    activeBreakMock.mockReturnValue(null);
+    rerender(<HudPage />);
+
+    // And straight to the grid: skipping the sequence is not deferring it.
+    expect(screen.queryByTestId('break-screen')).not.toBeInTheDocument();
     expect(screen.queryByTestId('boot-sequence')).not.toBeInTheDocument();
     expect(screen.getByTestId('hud-grid')).toBeInTheDocument();
   });

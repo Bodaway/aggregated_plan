@@ -1396,6 +1396,33 @@ impl application::repositories::BreakRuleRepository for InMemoryBreakRuleReposit
 #[derive(Default)]
 struct InMemoryBreakEventRepository {
     events: Mutex<Vec<BreakEvent>>,
+    /// Scripts the one interleaving a compare-and-swap exists for: the tick's `taken`
+    /// write lands on the running row *between* the mutation's read and the mutation's
+    /// own write. Armed by a test, spent at the top of every write below — so a blind
+    /// `UPDATE` and a conditional one meet exactly the same interleaving, and only the
+    /// conditional one survives it.
+    tick_closes_before_next_write: Mutex<bool>,
+}
+
+impl InMemoryBreakEventRepository {
+    /// Play the tick's write, if a test armed it: the running row becomes `taken`,
+    /// exactly as `serve_break` writes it the moment the countdown runs out.
+    fn play_scripted_tick_write(&self) {
+        let mut armed = self.tick_closes_before_next_write.lock().unwrap();
+        if !*armed {
+            return;
+        }
+        *armed = false;
+        drop(armed);
+        let mut events = self.events.lock().unwrap();
+        if let Some(event) = events
+            .iter_mut()
+            .find(|e| e.outcome == BreakOutcome::Pending && e.started_at.is_some())
+        {
+            event.outcome = BreakOutcome::Taken;
+            event.responded_at = Some(chrono::Utc::now());
+        }
+    }
 }
 
 #[async_trait]
@@ -1424,10 +1451,67 @@ impl application::repositories::BreakEventRepository for InMemoryBreakEventRepos
         outcome: BreakOutcome,
         responded_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<(), RepositoryError> {
+        self.play_scripted_tick_write();
         let mut events = self.events.lock().unwrap();
         if let Some(event) = events.iter_mut().find(|e| e.id == id) {
             event.outcome = outcome;
             event.responded_at = responded_at;
+        }
+        Ok(())
+    }
+
+    /// `max_by_key` on `started_at`, not `find`: the SQL orders by `started_at DESC`,
+    /// and a stub that answered with the oldest row instead would disagree with the
+    /// database on the one shape that matters — two open sessions, which is what a
+    /// second process serving a break looks like.
+    async fn find_active(&self, user_id: UserId) -> Result<Option<BreakEvent>, RepositoryError> {
+        Ok(self
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.user_id == user_id
+                    && e.outcome == BreakOutcome::Pending
+                    && e.started_at.is_some()
+            })
+            .max_by_key(|e| e.started_at)
+            .cloned())
+    }
+
+    /// The conjunction the SQL applies, applied here too. A fake that wrote blindly
+    /// would report every press a success and hide precisely the race this exists for.
+    async fn abandon_if_running(
+        &self,
+        user_id: UserId,
+        id: BreakEventId,
+        responded_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, RepositoryError> {
+        self.play_scripted_tick_write();
+        let mut events = self.events.lock().unwrap();
+        let Some(event) = events.iter_mut().find(|e| {
+            e.id == id
+                && e.user_id == user_id
+                && e.outcome == BreakOutcome::Pending
+                && e.started_at.is_some()
+        }) else {
+            return Ok(false);
+        };
+        event.outcome = BreakOutcome::Abandoned;
+        event.responded_at = Some(responded_at);
+        Ok(true)
+    }
+
+    async fn start_session(
+        &self,
+        id: BreakEventId,
+        started_at: chrono::DateTime<chrono::Utc>,
+        ends_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), RepositoryError> {
+        let mut events = self.events.lock().unwrap();
+        if let Some(event) = events.iter_mut().find(|e| e.id == id) {
+            event.started_at = Some(started_at);
+            event.ends_at = Some(ends_at);
         }
         Ok(())
     }
@@ -1694,6 +1778,8 @@ async fn seed_break_events(
                     suppressed_by_meeting_id: None,
                     outcome: *outcome,
                     responded_at: None,
+                    started_at: None,
+                    ends_at: None,
                     created_at: now,
                 })
                 .await
@@ -1701,6 +1787,66 @@ async fn seed_break_events(
         }
     }
     rule_id
+}
+
+/// Seed one rule and one break already under way on it: outcome still `pending`,
+/// `started_at` posted and `ends_at` frozen — the exact shape `find_active` looks for.
+/// Returns `(rule_id, event_id)` plus the two instants, so a test can compare what
+/// `activeBreak` renders against what was written rather than against a format.
+///
+/// Direct through the repo handles, like `seed_break_events`: opening a session is the
+/// tick's job, and no mutation exposes it.
+async fn seed_running_break(
+    rules: &Arc<InMemoryBreakRuleRepository>,
+    events: &Arc<InMemoryBreakEventRepository>,
+) -> (BreakRuleId, BreakEventId, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let now = chrono::Utc::now();
+    let rule_id: BreakRuleId = Uuid::new_v4();
+    rules
+        .create(&BreakRule {
+            id: rule_id,
+            user_id,
+            kind: BreakKind::Visual,
+            label: "Visuelle".to_string(),
+            body: "Regarde au loin 20 s, relâche les épaules".to_string(),
+            cadence: BreakCadence::Interval { minutes: 20 },
+            duration_seconds: 30,
+            priority: 1,
+            enabled: true,
+            urgency: BreakUrgency::Low,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("seed rule");
+
+    let due_at = chrono::DateTime::parse_from_rfc3339("2026-08-15T10:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let started_at = due_at;
+    let ends_at = due_at + chrono::Duration::seconds(30);
+    let event_id: BreakEventId = Uuid::new_v4();
+    events
+        .create(&BreakEvent {
+            id: event_id,
+            user_id,
+            rule_id,
+            due_at,
+            fired_at: Some(due_at),
+            deferred_until: None,
+            defer_reason: None,
+            suppressed_by_meeting_id: None,
+            outcome: BreakOutcome::Pending,
+            responded_at: None,
+            started_at: Some(started_at),
+            ends_at: Some(ends_at),
+            created_at: now,
+        })
+        .await
+        .expect("seed running break");
+    (rule_id, event_id, started_at, ends_at)
 }
 
 /// Default dependencies, plus one already-created task — for session-binding tests
@@ -5355,6 +5501,219 @@ async fn break_stats_reports_null_adherence_when_nothing_was_seen() {
         )
         .await;
     assert!(res.data.into_json().unwrap()["breakStats"]["perRule"][0]["adherence"].is_null());
+}
+
+// ─── activeBreak / endBreak (break sessions) ───
+
+/// The HUD polls this field all day. With nothing running it must answer `null`, not
+/// an error and not a stale row: the overlay reads `null` as "render the grid".
+#[tokio::test]
+async fn active_break_is_null_when_no_break_is_running() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    // A seeded-but-answered slot proves the `null` means "no session", not "no rows".
+    seed_break_events(&rules, &events, &[(BreakOutcome::Taken, 1)]).await;
+
+    let res = schema.execute("{ activeBreak { eventId } }").await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert!(res.data.into_json().unwrap()["activeBreak"].is_null());
+}
+
+/// The copy the overlay shows — kind, label, body — belongs to the *rule*, never to
+/// the event: the event stores only when the break opened and when it is due to end.
+/// Reading it back from the rule is what lets a reworded rule change the screen.
+#[tokio::test]
+async fn active_break_dresses_the_running_row_with_its_rule_copy() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let (_rule_id, event_id, started_at, ends_at) = seed_running_break(&rules, &events).await;
+
+    let res = schema
+        .execute("{ activeBreak { eventId kind label body startedAt endsAt } }")
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let active = res.data.into_json().unwrap()["activeBreak"].clone();
+    assert_eq!(active["eventId"], event_id.to_string());
+    assert_eq!(active["kind"], "VISUAL");
+    assert_eq!(active["label"], "Visuelle");
+    assert_eq!(active["body"], "Regarde au loin 20 s, relâche les épaules");
+    let parsed = |field: &str| {
+        chrono::DateTime::parse_from_rfc3339(active[field].as_str().expect(field))
+            .expect("an RFC 3339 instant")
+            .with_timezone(&chrono::Utc)
+    };
+    assert_eq!(parsed("startedAt"), started_at);
+    assert_eq!(
+        parsed("endsAt"),
+        ends_at,
+        "the deadline is the frozen one, not one recomputed from the rule"
+    );
+}
+
+/// Deleting a rule while its break runs must not take the whole HUD poll down with
+/// it. The overlay degrades to its grid on `null`; on an error it renders nothing at
+/// all — and the break is over in thirty seconds either way.
+#[tokio::test]
+async fn active_break_degrades_to_null_when_the_rule_is_gone() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let (rule_id, _event_id, _started_at, _ends_at) = seed_running_break(&rules, &events).await;
+    let user_id: UserId = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    rules.delete(user_id, rule_id).await.expect("drop the rule mid-break");
+
+    let res = schema.execute("{ activeBreak { eventId label } }").await;
+    assert!(res.errors.is_empty(), "a missing rule is not an error: {:?}", res.errors);
+    assert!(res.data.into_json().unwrap()["activeBreak"].is_null());
+}
+
+/// A row `find_active` returns with no frozen deadline describes a session that can
+/// never end — nothing for the HUD to count down to. Answer `null` rather than invent
+/// an instant.
+#[tokio::test]
+async fn active_break_is_null_when_the_running_row_has_no_deadline() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    seed_running_break(&rules, &events).await;
+    events.events.lock().unwrap()[0].ends_at = None;
+
+    let res = schema.execute("{ activeBreak { eventId } }").await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert!(res.data.into_json().unwrap()["activeBreak"].is_null());
+}
+
+/// "J'y retourne" cuts the break short. `abandoned`, not `taken`: the notification was
+/// seen and answered, the break simply did not run to its end — which is precisely the
+/// signal the adherence panel exists to show.
+#[tokio::test]
+async fn end_break_writes_abandoned_on_the_running_row() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let (_rule_id, event_id, _started_at, _ends_at) = seed_running_break(&rules, &events).await;
+
+    let res = schema
+        .execute(format!(r#"mutation {{ endBreak(eventId: "{event_id}") }}"#))
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert_eq!(res.data.into_json().unwrap()["endBreak"], true);
+
+    let stored = events.events.lock().unwrap()[0].clone();
+    assert_eq!(stored.outcome, BreakOutcome::Abandoned);
+    assert!(stored.responded_at.is_some(), "the user answered, so the instant is stamped");
+}
+
+/// Idempotence, and which writer wins. The countdown can reach its deadline in the very
+/// second the button is pressed; the tick's write is the one that must stand. So the
+/// second call finds no running row — the first one closed it — and reports `false`
+/// without touching the outcome or restamping `responded_at`.
+#[tokio::test]
+async fn a_second_end_break_reports_false_and_rewrites_nothing() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let (_rule_id, event_id, _started_at, _ends_at) = seed_running_break(&rules, &events).await;
+    let call = format!(r#"mutation {{ endBreak(eventId: "{event_id}") }}"#);
+
+    let first = schema.execute(&call).await;
+    assert_eq!(first.data.into_json().unwrap()["endBreak"], true);
+    let after_first = events.events.lock().unwrap()[0].clone();
+
+    let second = schema.execute(&call).await;
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    assert_eq!(second.data.into_json().unwrap()["endBreak"], false);
+
+    let after_second = events.events.lock().unwrap()[0].clone();
+    assert_eq!(after_second.outcome, after_first.outcome);
+    assert_eq!(
+        after_second.responded_at, after_first.responded_at,
+        "a repeat press must not restamp the instant the break actually ended"
+    );
+}
+
+/// The press and the deadline can land in the same instant, and the tick's write is the
+/// one that has to stand: it is the one that saw the countdown through. A read followed
+/// by an unconditional `UPDATE` cannot arbitrate that — whichever statement reaches the
+/// row second wins, and that is the mutation's. The write itself must test the state it
+/// depends on.
+#[tokio::test]
+async fn a_press_that_lands_after_the_deadline_does_not_overwrite_taken() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    let (_rule_id, event_id, _started_at, _ends_at) = seed_running_break(&rules, &events).await;
+    // The countdown runs out in the very second the button is pressed.
+    *events.tick_closes_before_next_write.lock().unwrap() = true;
+
+    let res = schema
+        .execute(format!(r#"mutation {{ endBreak(eventId: "{event_id}") }}"#))
+        .await;
+
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert_eq!(
+        res.data.into_json().unwrap()["endBreak"], false,
+        "the break was already over when the press arrived"
+    );
+    let stored = events.events.lock().unwrap()[0].clone();
+    assert_eq!(
+        stored.outcome,
+        BreakOutcome::Taken,
+        "a break served to its deadline stays `taken`"
+    );
+}
+
+/// The mutation closes *the* running break, not whichever id it is handed. A HUD left
+/// open on a break that has since ended and been followed by another must not be able
+/// to abandon the new one with the old id.
+#[tokio::test]
+async fn end_break_on_an_id_that_is_not_the_running_one_changes_nothing() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    seed_running_break(&rules, &events).await;
+
+    let stale = Uuid::new_v4();
+    let res = schema
+        .execute(format!(r#"mutation {{ endBreak(eventId: "{stale}") }}"#))
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    assert_eq!(res.data.into_json().unwrap()["endBreak"], false);
+    assert_eq!(
+        events.events.lock().unwrap()[0].outcome,
+        BreakOutcome::Pending,
+        "the running break is untouched"
+    );
+}
+
+/// `abandoned` already lowers adherence — it sits in `seen` — but until it has its own
+/// column the breakdown does not recompose into the ratio above it. A break cut short
+/// is the one thing this panel is for.
+#[tokio::test]
+async fn break_stats_surfaces_abandoned_in_the_breakdown() {
+    let (rules, events) = (Arc::new(InMemoryBreakRuleRepository::default()),
+                           Arc::new(InMemoryBreakEventRepository::default()));
+    let schema = build_test_schema_with_breaks(rules.clone(), events.clone());
+    seed_break_events(
+        &rules,
+        &events,
+        &[(BreakOutcome::Taken, 3), (BreakOutcome::Abandoned, 1)],
+    )
+    .await;
+
+    let res = schema
+        .execute(
+            r#"{ breakStats(from: "2026-08-01T00:00:00+00:00", to: "2026-09-01T00:00:00+00:00") {
+                   perRule { taken abandoned adherence } } }"#,
+        )
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let per = res.data.into_json().unwrap()["breakStats"]["perRule"][0].clone();
+    assert_eq!(per["taken"], 3);
+    assert_eq!(per["abandoned"], 1);
+    assert_eq!(per["adherence"], 0.75, "3 taken out of 4 seen, the abandoned one included");
 }
 
 // ─── nextBreakDue (HUD countdown) ───

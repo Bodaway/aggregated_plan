@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Opens the aplan HUD, or hides it if already there.
 #
+# Called without an argument this toggles -- that is the keyboard shortcut,
+# and it stays exactly as it was. `show` and `hide` name a wanted end state
+# instead and are idempotent: the break scheduler drives those, and it acts on
+# what it believes the state to be, so a blind dispatch would flip the overlay
+# to precisely the wrong side.
+#
 # The HUD is not resident: the first invocation launches the binary, later
 # ones just toggle the special workspace. Cost at rest: zero.
 #
@@ -9,6 +15,15 @@
 # starts hidden either way). So even on first launch we still need the
 # explicit toggle below, or the app would start with nothing on screen.
 set -euo pipefail
+
+MODE="${1:-toggle}"
+case "$MODE" in
+    toggle | show | hide) ;;
+    *)
+        echo "aplan-hud-toggle: unknown command '$MODE' (expected 'show', 'hide', or no argument)" >&2
+        exit 2
+        ;;
+esac
 
 WORKSPACE="aplan"
 BIN="${APLAN_HUD_BIN:-$HOME/appfactory/aggregated_plan/frontend/src-tauri/target/release/aplan-hud}"
@@ -21,6 +36,44 @@ else
 fi
 LOCKFILE="${APLAN_HUD_LOCKFILE:-$DEFAULT_LOCKFILE}"
 
+# HYPRLAND_INSTANCE_SIGNATURE changes at every Hyprland restart, and this
+# script is now also called by aplan-api -- a long-lived user service that
+# keeps the environment it was started with. It would hand `hyprctl` a dead
+# signature, every dispatch would fail, and the break overlay would simply
+# stop appearing without a word anywhere in the logs. So the signature is
+# checked against the runtime directory and re-derived when it no longer
+# names a live instance. Applies to every mode: the keyboard shortcut runs in
+# a fresh shell and is normally fine, but it costs one stat to cover it too.
+HYPR_DIR="${XDG_RUNTIME_DIR:-}/hypr"
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] \
+    || [ ! -e "$HYPR_DIR/$HYPRLAND_INSTANCE_SIGNATURE" ]; then
+    # Newest wins: a Hyprland that died without cleaning up leaves its
+    # instance behind, so the directory can hold several and only the last
+    # one is live. Globbing with `-nt` rather than `ls -t`, which would mean
+    # parsing output to pick a filename.
+    newest=""
+    for candidate in "$HYPR_DIR"/*; do
+        [ -e "$candidate" ] || continue
+        if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then
+            newest="$candidate"
+        fi
+    done
+    if [ -z "$newest" ]; then
+        echo "aplan-hud-toggle: no Hyprland instance under $HYPR_DIR -- not dispatching" >&2
+        exit 1
+    fi
+    export HYPRLAND_INSTANCE_SIGNATURE="${newest##*/}"
+fi
+
+# The state is READ from the compositor rather than tracked here: this script
+# is not the only way the workspace can be shown or hidden (a bare `hyprctl
+# dispatch`, another binding, a rule), so guessing "we just toggled, therefore
+# it flipped" would drift out of sync. `special workspace:` names the
+# workspace in parentheses when one is up, and is bare when none is.
+workspace_shown() {
+    hyprctl monitors | grep -q "special workspace: .*(special:$WORKSPACE)"
+}
+
 # Two rapid presses (e.g. keyboard auto-repeat) can both reach the pgrep
 # check before either is visible to the other; without a lock both would
 # see "absent" and both launch. Serialize the check-then-launch.
@@ -30,6 +83,16 @@ exec 9>"$LOCKFILE"
 # wait here would hang every press for as long as the HUD runs. Give up
 # instead -- a missed toggle is recoverable, a wedged script isn't.
 flock -w 5 9 || exit 0
+
+# Nothing to do when the compositor is already in the wanted state. Read
+# inside the lock, so the answer can't be invalidated by a concurrent
+# invocation between the read and the dispatch below.
+if [ "$MODE" = "show" ] && workspace_shown; then
+    exit 0
+fi
+if [ "$MODE" = "hide" ] && ! workspace_shown; then
+    exit 0
+fi
 
 if ! pgrep -x aplan-hud >/dev/null 2>&1; then
     if [ ! -x "$BIN" ]; then
@@ -69,11 +132,8 @@ hyprctl dispatch togglespecialworkspace "$WORKSPACE"
 # sequence played out behind the curtain where nobody could see it. This
 # script is the only thing that knows, because it is what does the toggling.
 #
-# The state is READ BACK from the compositor rather than tracked here: this
-# script is not the only way the workspace can be shown or hidden (a bare
-# `hyprctl dispatch`, another binding, a rule), so guessing "we just toggled,
-# therefore it flipped" would drift out of sync. `special workspace:` names
-# the workspace in parentheses when one is up, and is bare when none is.
+# Read back after the dispatch for the reason given on `workspace_shown`:
+# the toggle is not the only thing that moves this workspace.
 #
 # Skipped entirely on the launch path. A HUD we just started is still linking
 # and could not act on the signal anyway; it seeds itself as shown, which is
@@ -81,7 +141,7 @@ hyprctl dispatch togglespecialworkspace "$WORKSPACE"
 # press is opening it. Signalling there was the race described above, and not
 # signalling removes it rather than narrowing it.
 if [ -z "${just_launched:-}" ]; then
-    if hyprctl monitors | grep -q "special workspace: .*(special:$WORKSPACE)"; then
+    if workspace_shown; then
         pkill -x --signal RTMIN aplan-hud || true
     else
         pkill -x --signal RTMIN+1 aplan-hud || true

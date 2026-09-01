@@ -54,6 +54,43 @@ pub trait BreakEventRepository: Send + Sync {
         fired_at: DateTime<Utc>,
     ) -> Result<(), RepositoryError>;
 
+    /// The break currently being served, if any: `pending` with a `started_at` on it.
+    ///
+    /// There can only ever be one. The scheduler is a single loop, and no break can
+    /// ring while another is running — which is what lets the HUD ask "what is on
+    /// screen right now" without a key.
+    async fn find_active(&self, user_id: UserId) -> Result<Option<BreakEvent>, RepositoryError>;
+
+    /// Open the session: the user pressed the button. The outcome stays `pending` —
+    /// `taken` is only earned at the deadline — and `ends_at` is frozen here rather
+    /// than recomputed later, so retuning the rule cannot lengthen a running break.
+    async fn start_session(
+        &self,
+        id: BreakEventId,
+        started_at: DateTime<Utc>,
+        ends_at: DateTime<Utc>,
+    ) -> Result<(), RepositoryError>;
+
+    /// Cut the running break short — "J'y retourne" — and report whether this call is
+    /// the one that closed it.
+    ///
+    /// A compare-and-swap, not a read followed by an update, because the tick writes
+    /// `taken` the instant the countdown runs out and that write has to stand: it is
+    /// the one that saw the break through to its end. A press arriving a hundredth of
+    /// a second later finds a row that is no longer `pending`, matches nothing, and
+    /// answers `false`. The same conjunction makes the mutation idempotent for free —
+    /// a second press, or one carrying the id of a break that has since ended, matches
+    /// nothing either.
+    ///
+    /// The tick's own `taken` write stays unconditional, and that asymmetry is the
+    /// point: reaching the deadline is the authority on how the break ended.
+    async fn abandon_if_running(
+        &self,
+        user_id: UserId,
+        id: BreakEventId,
+        responded_at: DateTime<Utc>,
+    ) -> Result<bool, RepositoryError>;
+
     /// `(rule_id, outcome, count)` over `[from, to)`, for the stats panel.
     async fn counts_between(
         &self,

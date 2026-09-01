@@ -168,9 +168,19 @@ pub fn decide(input: BreakTickInput<'_>) -> BreakTick {
 
     // 1. Outside every working window nothing fires, and whatever was still waiting is
     //    cleaned up: a break deferred at 17:55 has no meaning at 19:00.
+    //
+    //    One exemption: a row whose session is still running. A five-minute break opened
+    //    at 16:58 straddles the close of the day, and sweeping it would cancel it
+    //    mid-countdown, on the one tick where the user is doing what the routine asked.
+    //    Whoever is serving that break closes it.
     let in_window = input.windows.iter().any(|w| w.contains(input.now));
     if !in_window {
-        tick.expire = input.open.iter().map(|e| e.id).collect();
+        tick.expire = input
+            .open
+            .iter()
+            .filter(|e| !e.session_is_running(input.now))
+            .map(|e| e.id)
+            .collect();
         return tick;
     }
 
@@ -519,7 +529,32 @@ mod tests {
             suppressed_by_meeting_id: Some("m1".into()),
             outcome: crate::types::BreakOutcome::Pending,
             responded_at: None,
+            started_at: None,
+            ends_at: None,
             created_at: due,
+        }
+    }
+
+    /// A break the user opened: fired, never deferred, and running until `ends_at`.
+    fn session_event(
+        rule_id: BreakRuleId,
+        started: DateTime<Utc>,
+        ends: DateTime<Utc>,
+    ) -> BreakEvent {
+        BreakEvent {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            rule_id,
+            due_at: started,
+            fired_at: Some(started),
+            deferred_until: None,
+            defer_reason: None,
+            suppressed_by_meeting_id: None,
+            outcome: crate::types::BreakOutcome::Pending,
+            responded_at: None,
+            started_at: Some(started),
+            ends_at: Some(ends),
+            created_at: started,
         }
     }
 
@@ -663,6 +698,53 @@ mod tests {
         });
         assert!(tick.fire.is_some(), "the 09:00 due, unblocked, resolves immediately");
         assert!(tick.defer.is_empty());
+    }
+
+    /// A five-minute break opened at 16:58 straddles the close of the day. Expiring it
+    /// would cancel the break mid-countdown, on the one tick where the user is doing
+    /// exactly what the routine asked. The row is held by whoever is serving it, so the
+    /// sweep steps over it and lets that owner close it.
+    #[test]
+    fn a_running_session_survives_the_end_of_the_day_sweep() {
+        let rules = vec![interval_rule(60, 3)];
+        // The window's end is inclusive, so 17:01 is the first tick truly past the day.
+        let w = vec![Window { start: at(13, 0), end: at(17, 0) }];
+        let running = session_event(rules[0].id, at(16, 58), at(17, 3));
+        let waiting = open_event(rules[0].id, at(16, 0), at(16, 30));
+        let open = vec![running.clone(), waiting.clone()];
+        let tick = decide(BreakTickInput {
+            now: at(17, 1),
+            since: at(17, 0),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &[],
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.expire, vec![waiting.id], "only the row nobody is serving is swept");
+        assert!(tick.fire.is_none());
+    }
+
+    /// The exemption is the running session, not the fact of being open: a session whose
+    /// deadline has already passed is nobody's business any more and goes with the rest.
+    #[test]
+    fn a_session_past_its_deadline_is_expired_like_the_rest() {
+        let rules = vec![interval_rule(60, 3)];
+        let w = vec![Window { start: at(13, 0), end: at(17, 0) }];
+        let stale = session_event(rules[0].id, at(16, 50), at(16, 55));
+        let open = vec![stale.clone()];
+        let tick = decide(BreakTickInput {
+            now: at(17, 1),
+            since: at(17, 0),
+            windows: &w,
+            rules: &rules,
+            daily_dues: &[],
+            busy: &[],
+            open: &open,
+            grace: Duration::minutes(3),
+        });
+        assert_eq!(tick.expire, vec![stale.id]);
     }
 
     #[test]

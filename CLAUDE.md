@@ -170,6 +170,24 @@ most one notification per tick, the highest priority, and marks the rest `absorb
 adherence rate (`taken / seen`) excludes `absorbed` and `expired` from both sides — they never
 reached a screen, so counting them would drown a real signal in scheduling noise.
 
+Break sessions (migration `021`): pressing the notification's button no longer records a
+`taken` — it **opens a session**. `break_events.started_at` / `ends_at` are stamped, the
+outcome stays `pending`, and the tick that fired the break holds it open for the whole pause,
+which is why no break can ring during a break. `ends_at` is frozen at the press (not
+recomputed from the rule, so retuning a duration mid-pause cannot lengthen it) and anchored
+on the press rather than on the tick's `now`, because `notify-send --action` implies `--wait`
+and the tick's `now` can be minutes old by then. `taken` is written only at the deadline;
+cutting the pause short from the HUD writes `abandoned`, which **does** count against
+adherence — it was seen and answered. `endBreak` is a compare-and-swap in SQL
+(`WHERE outcome='pending' AND started_at IS NOT NULL`), so the tick's unconditional `taken`
+wins the race by construction rather than by timing. Orphan recovery deliberately claims only
+sessions whose `ends_at` has passed, closing them as `taken`: a live session belongs to
+whoever is serving it, and a blanket recovery let a second API process abandon a running
+pause, turned an NTP step backwards into a false abandon, and docked the adherence rate on
+every restart. The visual lives in the Tauri HUD, shown through `SurfaceController`
+(`application/services`) → `aplan-hud-toggle show|hide`; a surface that will not come up is
+logged, never fatal — a pause without a screen is still a pause.
+
 ## Key Domain Concepts
 
 - **Half-day granularity**: Activity tracking uses morning (08:00-12:00) and afternoon (13:00-17:00) slots

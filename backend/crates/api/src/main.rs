@@ -17,12 +17,12 @@ mod state;
 use uuid::Uuid;
 
 use application::repositories::{BreakEventRepository, BreakRuleRepository};
-use application::services::{NullNotifier, Notifier};
+use application::services::{NullNotifier, NullSurface, Notifier, SurfaceController};
 use graphql::schema::SchemaDeps;
 use infrastructure::database::*;
 use infrastructure::connectors::microsoft::oauth::{MicrosoftOAuth, MicrosoftOAuthConfig};
 use infrastructure::connectors::microsoft::token_provider::RefreshingGraphTokenProvider;
-use infrastructure::notify::NotifySendNotifier;
+use infrastructure::notify::{HudToggleSurface, NotifySendNotifier};
 
 #[derive(Parser)]
 #[command(name = "api", about = "Aggregated Plan API server")]
@@ -278,6 +278,15 @@ async fn main() {
         tracing::info!("no session bus: break notifications will be recorded, not shown");
         Arc::new(NullNotifier)
     };
+    // Same criterion, same reason: without a session bus there is no compositor to
+    // raise the overlay on. The break still runs and is still recorded — the backend
+    // owns the countdown — it simply has nothing to show.
+    let surface: Arc<dyn SurfaceController> = if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok() {
+        Arc::new(HudToggleSurface::new())
+    } else {
+        tracing::info!("no session bus: breaks will run without their overlay");
+        Arc::new(NullSurface)
+    };
     tokio::spawn(jobs::run_break_scheduler(
         jobs::BreakDeps {
             rule_repo: break_rule_repo.clone(),
@@ -285,6 +294,7 @@ async fn main() {
             meeting_repo: meeting_repo.clone(),
             config_repo: config_repo.clone(),
             notifier,
+            surface,
         },
         default_user_id,
     ));

@@ -13,7 +13,7 @@ use application::repositories::{
     SignalMappingRepository, TaskRepository, TimesheetDraftRepository, WorklogRepository,
 };
 use application::services::git_connector::GitConnector;
-use application::services::Notifier;
+use application::services::{Notifier, SurfaceController};
 use application::use_cases::breaks::{run_break_tick, BreakTickDeps};
 use application::use_cases::session_reaper::{reap_idle_sessions, ReapOutcome};
 use application::use_cases::timesheet::run_eod_pass;
@@ -98,15 +98,26 @@ pub struct BreakDeps {
     pub meeting_repo: Arc<dyn MeetingRepository>,
     pub config_repo: Arc<dyn ConfigRepository>,
     pub notifier: Arc<dyn Notifier>,
+    pub surface: Arc<dyn SurfaceController>,
 }
+
+/// How often a running break re-reads its own row while waiting for its deadline.
+///
+/// One second: the row only changes when the user presses "J'y retourne", and a second
+/// is below what anyone perceives as lag on an overlay closing.
+const SESSION_POLL: Duration = Duration::from_secs(1);
 
 /// Long-lived background task: run one break tick for `user_id`, then wait as long as
 /// `RetryPolicy::breaks()` says to — 30 s while healthy, 5 minutes while not.
 ///
 /// The tick itself is what owns the notification, including the wait for the user's
 /// answer: `notify-send --action` implies `--wait`, so a tick that fired a break can
-/// stay open for minutes. That is fine and deliberate — the next tick simply starts
-/// late, and the wall-clock anchoring in `decide` means a late tick loses no dues.
+/// stay open for minutes. It then keeps the floor for the whole break as well — the
+/// countdown belongs to the backend, and the tick is what serves it. That is fine and
+/// deliberate on both counts: the next tick simply starts late, the wall-clock
+/// anchoring in `decide` means a late tick loses no dues, and holding the loop for the
+/// duration of a break is precisely what makes it impossible for a break to ring during
+/// another one.
 pub async fn run_break_scheduler(deps: BreakDeps, user_id: UserId) {
     let policy = RetryPolicy::breaks();
     let mut health = JobHealth::default();
@@ -118,6 +129,8 @@ pub async fn run_break_scheduler(deps: BreakDeps, user_id: UserId) {
                 meetings: deps.meeting_repo.as_ref(),
                 config: deps.config_repo.as_ref(),
                 notifier: deps.notifier.as_ref(),
+                surface: deps.surface.as_ref(),
+                session_poll: SESSION_POLL,
             },
             user_id,
             Utc::now(),
@@ -132,6 +145,7 @@ pub async fn run_break_scheduler(deps: BreakDeps, user_id: UserId) {
                         deferred = report.deferred,
                         absorbed = report.absorbed,
                         expired = report.expired,
+                        recovered = report.recovered,
                         "break tick"
                     );
                 }

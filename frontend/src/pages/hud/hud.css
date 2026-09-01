@@ -22,9 +22,12 @@
   container-type: size;
   container-name: hud;
   overflow: hidden;
-}
 
-.hud {
+  /* The palette lives here rather than on `.hud` because the grid is no
+     longer the only thing that can hold the surface: `.hud-break` takes it
+     over for the length of a break, as a SIBLING of the grid, and a break
+     screen with its own ink would be the second visual language this file
+     exists to prevent. One declaration, both surfaces. */
   --hud-ink: var(--cn-fg);
   --hud-ink-mid: color-mix(in srgb, var(--cn-fg) 55%, var(--cn-dim));
   /* Hairline rules and dividers only — never body or caption text. Against a
@@ -41,7 +44,9 @@
      own bright/dark swing down without erasing it. See the backdrop-filter
      comment on .hud-panel for the model and the numbers. */
   --hud-panel-bg: color-mix(in srgb, var(--cn-bg) 92%, transparent);
+}
 
+.hud {
   position: relative;
   height: 100%;
   width: 100%;
@@ -190,6 +195,9 @@
      without an animation to reveal it there would be nothing to reveal it. */
   .hud[data-open] > *:not(.hud-sweep) { animation: none; opacity: 1; }
   .hud-sweep { display: none; }
+  /* The break ring still empties — it is the information, not decoration —
+     it just steps once a second instead of sliding. */
+  .hud-break__ring-run { transition: none; }
 }
 
 /* --- the destination bar: leaves the HUD for the rest of the app.
@@ -299,7 +307,8 @@
    reading as two more of them. --- */
 .hud-panel,
 .hud-nav,
-.hud-ticker {
+.hud-ticker,
+.hud-break {
   background: var(--hud-panel-bg);
   /* brightness() darkens whatever sits behind the panel before it blends
      with --hud-panel-bg — it fixes the ink-vs-panel CONTRAST RATIO against a
@@ -1003,4 +1012,132 @@
 .hud-ticker__version {
   margin-left: auto;
   white-space: nowrap;
+}
+
+/* ─── the break screen ───────────────────────────────────────────────────
+   What the overlay is for the length of a break: the grid is not rendered
+   behind it, it is not rendered at all. So this is a sibling of `.hud`, not
+   a panel inside it, and it takes its scale, its ink and its occlusion from
+   the same places the grid does — the palette from `.hud-viewport`, the
+   background and backdrop-filter from the shared occlusion rule above.
+
+   The one thing it does not share is the glow budget, and it does not need
+   to: with no grid on screen there is no second hot spot to compete with,
+   and the countdown carries the same --cn-teal text-shadow the Focus
+   chronometer does rather than a box-shadow this file only ever spends
+   once.
+   --- */
+.hud-break {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.1em;
+  padding: 2em;
+  font-family: var(--cn-font);
+  /* Same clamp as the grid: one scale for the surface, whichever of the two
+     is holding it. */
+  font-size: clamp(10px, 0.85cqw, 30px);
+  color: var(--hud-ink);
+  text-align: center;
+}
+
+.hud-break__ring {
+  position: relative;
+  width: 24em;
+  max-width: 55%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+.hud-break__ring-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Starts the arc at twelve o'clock rather than three, where the eye looks
+     for the top of a dial. */
+  transform: rotate(-90deg);
+}
+
+.hud-break__ring-track {
+  fill: none;
+  stroke: var(--hud-hair);
+  stroke-width: 1.2;
+}
+
+.hud-break__ring-run {
+  fill: none;
+  stroke: var(--cn-teal);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  /* Bridges the one-second tick so the ring drains rather than steps. Exactly
+     one tick long: any longer and the arc would lag behind the digits it is
+     drawn around. */
+  transition: stroke-dashoffset 1s linear;
+}
+
+.hud-break__time {
+  position: relative;
+  font-weight: 200;
+  font-size: 4.6em;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--hud-ink);
+  text-shadow:
+    0 0 26px color-mix(in srgb, var(--cn-teal) 70%, transparent),
+    0 0 72px color-mix(in srgb, var(--cn-teal) 30%, transparent);
+}
+
+.hud-break__label {
+  font-size: 1.25em;
+  color: var(--hud-ink);
+}
+
+.hud-break__body {
+  margin: 0;
+  max-width: 32em;
+  font-size: 0.95em;
+  line-height: 1.5;
+  color: var(--hud-ink-mid);
+}
+
+/* The one control on the screen, and deliberately the only thing here that
+   can be clicked or tabbed to: prolonging a break is nobody's problem. */
+.hud-break__action {
+  margin-top: 0.5em;
+  padding: 0.6em 1.8em;
+  font: inherit;
+  font-size: 0.72em;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--cn-teal);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--cn-teal) 35%, transparent);
+  cursor: pointer;
+}
+
+.hud-break__action:hover {
+  border-color: var(--cn-teal);
+}
+
+.hud-break__action:focus-visible {
+  outline: 1px solid var(--cn-teal);
+  outline-offset: 3px;
+}
+
+/* Spent. The backend closes the row and hides the surface at the deadline, so
+   this is only what a second of lingering overlay looks like — it has to read
+   as finished rather than as a countdown that stalled. */
+.hud-break[data-state='done'] .hud-break__ring-run {
+  stroke: var(--hud-hair);
+}
+.hud-break[data-state='done'] .hud-break__time {
+  color: var(--hud-ink-mid);
+  text-shadow: none;
 }

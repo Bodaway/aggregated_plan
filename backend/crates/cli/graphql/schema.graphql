@@ -12,6 +12,25 @@ type AcceptMemoryResultGql {
 }
 
 """
+The break being served right now — what the HUD overlay renders instead of its
+grid.
+
+`kind`, `label` and `body` are read off the **rule**, not off the event: the event
+records only that a break opened and when it is due to end, so rewording a rule
+changes what the next overlay says without migrating anything. `endsAt` is the
+frozen deadline, not `startedAt + durationSeconds` recomputed here — backend and
+HUD read one absolute instant, and retuning the rule mid-break cannot lengthen it.
+"""
+type ActiveBreakGql {
+	eventId: ID!
+	kind: BreakKindGql!
+	label: String!
+	body: String!
+	startedAt: DateTime!
+	endsAt: DateTime!
+}
+
+"""
 A pair of different tasks' slots claiming overlapping time, and how many
 minutes they share. Nothing here corrects the double count — see
 `domain::rules::overlap` — it only reports it; the user arbitrates at the
@@ -214,6 +233,13 @@ type BreakRuleStatsGql {
 	snoozed: Int!
 	skipped: Int!
 	ignored: Int!
+	"""
+	Breaks opened and cut short. Counted in `seen` like the four above — the
+	notification was answered — and reported on its own line because a break the
+	user walked out of is the failure this panel exists to make visible; without
+	the column the breakdown silently fails to recompose into the ratio below it.
+	"""
+	abandoned: Int!
 	absorbed: Int!
 	expired: Int!
 	"""
@@ -723,6 +749,20 @@ type CombinedMutation {
 	Delete a break rule by ID. Returns true on success.
 	"""
 	deleteBreakRule(id: ID!): Boolean!
+	"""
+	Cut the running break short — the overlay's single control, "J'y retourne".
+	`abandoned`, not `taken`: the break was opened and did not reach its deadline.
+	
+	Idempotent, and the idempotence is what settles a race rather than a nicety.
+	The countdown can expire in the very second the button is pressed, and the
+	tick's `taken` write must win: it is the one that saw the deadline pass. So the
+	test is not "does this row exist" but "is this row *still the running one*" —
+	a row the tick has already closed is no longer `pending`, therefore no longer
+	active, therefore `false` with nothing written. A second press sees exactly the
+	same thing and answers exactly the same way, as does a press carrying the id of
+	a break that has since ended.
+	"""
+	endBreak(eventId: ID!): Boolean!
 }
 
 """
@@ -915,11 +955,35 @@ type CombinedQuery {
 	"""
 	breakRules: [BreakRuleGql!]!
 	"""
+	The soonest instant the routine next comes due — the HUD's countdown.
+	
+	The minimum of `next_natural_due_after` over **enabled** rules only, so the
+	HUD never counts down to a rule the settings screen shows as switched off,
+	same filter `run_break_tick` applies before it ever calls `decide`. `null`
+	when nothing remains: every enabled rule is `Daily` (no "next" today — a
+	daily cadence fires once, not on a countdown), or today's working windows
+	are exhausted. Windows come from `resolve_windows`, the same construction
+	the tick itself runs on `workday.*`, so the HUD and the engine can never
+	disagree about what "today" looks like.
+	"""
+	nextBreakDue: DateTime
+	"""
 	Adherence per rule over `[from, to)` — `taken / seen`, where `seen` counts only
 	outcomes the user was actually shown. Absorbed and expired slots never reached
 	a screen, so they are excluded from both sides rather than diluting the rate.
 	"""
 	breakStats(from: String!, to: String!): BreakStatsGql!
+	"""
+	The break running right now, if one is — the HUD's overlay, polled every two
+	seconds while the surface is up.
+	
+	Three different situations all answer `null`, deliberately: nothing is running,
+	the rule was deleted out from under a running break, or the row is incoherent.
+	The HUD reads `null` as "show your grid"; an error it can only render as
+	nothing at all. A read-only field the overlay lives on is not the place to
+	insist on the difference — and the break is over in seconds either way.
+	"""
+	activeBreak: ActiveBreakGql
 }
 
 enum ConfidenceGql {

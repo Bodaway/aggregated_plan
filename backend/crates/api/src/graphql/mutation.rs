@@ -1875,6 +1875,29 @@ impl MutationRoot {
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(true)
     }
+
+    /// Cut the running break short — the overlay's single control, "J'y retourne".
+    /// `abandoned`, not `taken`: the break was opened and did not reach its deadline.
+    ///
+    /// Idempotent, and the idempotence settles a race rather than being a nicety. The
+    /// countdown can run out in the very second the button is pressed, and the tick's
+    /// `taken` write has to win: it is the one that saw the deadline pass. Which is
+    /// why the whole decision is delegated to `abandon_if_running` and made *in the
+    /// write* — reading the row here and updating it after would be a check-then-act,
+    /// and the tick's write, landing between the two, would be overwritten by this
+    /// one. `false` therefore means "the break was not running any more", which covers
+    /// a second press, a press on a break that has since ended, and a press the
+    /// deadline beat by a hundredth of a second, all identically.
+    async fn end_break(&self, ctx: &Context<'_>, event_id: ID) -> Result<bool> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn BreakEventRepository>>()?;
+        let event_id = Uuid::parse_str(&event_id)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid break event ID: {}", e)))?;
+
+        repo.abandon_if_running(user_id, event_id, chrono::Utc::now())
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))
+    }
 }
 
 /// Resolve a memory-reference argument into a concrete id, BEFORE any write.

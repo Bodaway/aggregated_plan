@@ -22,6 +22,7 @@ pub mod brief;
 pub mod session;
 pub mod search;
 pub mod break_rule;
+pub mod active_break;
 
 pub use gryzzly::*;
 pub use task::*;
@@ -47,3 +48,4 @@ pub use brief::*;
 pub use session::*;
 pub use search::*;
 pub use break_rule::*;
+pub use active_break::*;

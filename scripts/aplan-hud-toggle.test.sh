@@ -264,4 +264,204 @@ test_signal_cases
 test_no_signal_on_launch
 test_inherited_fd
 test_missing_binary
+
+# --------------------------------------------------------------------------
+# `show` / `hide`, and the Hyprland signature fallback.
+#
+# These modes are driven by the break scheduler rather than by a finger on a
+# key: it acts on the state it believes the compositor to be in, so what is
+# worth asserting is how many dispatches leave the script -- exactly one when
+# the state has to change, none when it already matches.
+# --------------------------------------------------------------------------
+
+# Same four stubs as run_case, written separately because the cases below vary
+# the mode and the environment instead of the "is the HUD running" question,
+# and because the hyprctl stub has to record the signature it was handed --
+# the fallback is only observable in what hyprctl ends up being called with.
+write_mode_stubs() {
+    local dir="$1" shown="$2"
+    # Always "running": these cases are about the dispatch decision, and the
+    # launch path would add a toggle of its own to the count.
+    cat > "$dir/pgrep" <<'EOF'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$STUB_LOG"
+exit 0
+EOF
+    cat > "$dir/hyprctl" <<EOF
+#!/usr/bin/env bash
+echo "hyprctl \$* [sig=\${HYPRLAND_INSTANCE_SIGNATURE:-none}]" >> "\$STUB_LOG"
+if [ "\$1" = "monitors" ]; then
+$([ "$shown" = "yes" ] \
+    && echo "    printf '\\tspecial workspace: -96 (special:aplan)\\n'" \
+    || echo "    printf '\\tspecial workspace: 0 ()\\n'")
+fi
+EOF
+    cat > "$dir/pkill" <<'EOF'
+#!/usr/bin/env bash
+echo "pkill $*" >> "$STUB_LOG"
+EOF
+    cat > "$dir/aplan-hud" <<'EOF'
+#!/usr/bin/env bash
+echo "launched" >> "$STUB_LOG"
+EOF
+    chmod +x "$dir"/*
+}
+
+# One entry in a fake $XDG_RUNTIME_DIR/hypr. The suite never reads the real
+# one: on a machine with no Hyprland running these cases would otherwise take
+# the "no instance" branch and prove nothing.
+#
+# The mtime is set explicitly rather than by sleeping between mkdirs: the
+# script picks the newest with `-nt`, and two directories created in the same
+# filesystem timestamp tick are neither newer than the other.
+add_instance() {
+    local run="$1" name="$2" epoch="$3"
+    mkdir -p "$run/hypr/$name"
+    touch -m -d "@$epoch" "$run/hypr/$name"
+}
+
+# name | mode ("" = no argument) | shown | expected number of dispatches
+run_mode_case() {
+    local name="$1" mode="$2" shown="$3" expected="$4"
+    local stub; stub="$(mktemp -d)"
+    write_mode_stubs "$stub" "$shown"
+    local run="$stub/run"
+    add_instance "$run" "live_instance" 1700000000
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+    # ${mode:+...} is deliberately unquoted: an empty mode must produce NO
+    # argument at all, which is the keyboard-shortcut call, not an empty one.
+    PATH="$stub:$PATH" XDG_RUNTIME_DIR="$run" HYPRLAND_INSTANCE_SIGNATURE="live_instance" \
+        APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$stub/lock" \
+        "$HERE/aplan-hud-toggle" ${mode:+"$mode"}
+    local rc=$?
+    local dispatches; dispatches=$(grep -c "togglespecialworkspace" "$STUB_LOG")
+    if [ "$rc" -ne 0 ]; then
+        echo "  FAIL $name — rc=$rc, expected 0; log:"; sed 's/^/       /' "$STUB_LOG"
+        FAILED=1
+    elif [ "$dispatches" -ne "$expected" ]; then
+        echo "  FAIL $name — $dispatches dispatch(es), expected $expected; log:"
+        sed 's/^/       /' "$STUB_LOG"
+        FAILED=1
+    else
+        echo "  ok   $name (dispatches=$dispatches)"
+    fi
+    rm -rf "$stub"
+}
+
+# name | mode ("" = no argument) | signature in the environment ("" = none)
+# | signature expected on the wire | instance specs, as name:epoch
+run_fallback_case() {
+    local name="$1" mode="$2" env_sig="$3" expected_sig="$4"; shift 4
+    local stub; stub="$(mktemp -d)"
+    write_mode_stubs "$stub" no
+    local run="$stub/run" spec
+    for spec in "$@"; do
+        add_instance "$run" "${spec%%:*}" "${spec##*:}"
+    done
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+    PATH="$stub:$PATH" XDG_RUNTIME_DIR="$run" HYPRLAND_INSTANCE_SIGNATURE="$env_sig" \
+        APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$stub/lock" \
+        "$HERE/aplan-hud-toggle" ${mode:+"$mode"} >/dev/null 2>&1
+    local rc=$?
+    # Asserted on the dispatch line, not merely on the read-back: what breaks
+    # in production is the dispatch going out under a signature nothing
+    # answers, which fails silently.
+    if [ "$rc" -eq 0 ] && grep -q "togglespecialworkspace .*\[sig=$expected_sig\]" "$STUB_LOG"; then
+        echo "  ok   $name"
+    else
+        echo "  FAIL $name — rc=$rc, expected a dispatch with sig=$expected_sig; log:"
+        sed 's/^/       /' "$STUB_LOG"
+        FAILED=1
+    fi
+    rm -rf "$stub"
+}
+
+test_no_instance() {
+    # Two different shapes of the same situation: the glob matching nothing,
+    # and the parent directory not being there either. Both mean "no live
+    # compositor", and both must refuse to dispatch rather than hand hyprctl
+    # a signature that names nothing.
+    local shape
+    for shape in empty missing; do
+        local name="no Hyprland instance ($shape hypr directory) -> rc 1, no dispatch"
+        local stub; stub="$(mktemp -d)"
+        write_mode_stubs "$stub" no
+        local run="$stub/run"
+        mkdir -p "$run"
+        if [ "$shape" = empty ]; then mkdir -p "$run/hypr"; fi
+        export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+        PATH="$stub:$PATH" XDG_RUNTIME_DIR="$run" HYPRLAND_INSTANCE_SIGNATURE="dead_signature" \
+            APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$stub/lock" \
+            "$HERE/aplan-hud-toggle" show >/dev/null 2>"$stub/stderr"
+        local rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "  FAIL $name — rc=$rc, expected 1"
+            FAILED=1
+        elif grep -q "hyprctl" "$STUB_LOG"; then
+            echo "  FAIL $name — called hyprctl anyway:"; sed 's/^/       /' "$STUB_LOG"
+            FAILED=1
+        elif [ ! -s "$stub/stderr" ]; then
+            echo "  FAIL $name — failed silently, no message on stderr"
+            FAILED=1
+        else
+            echo "  ok   $name"
+        fi
+        rm -rf "$stub"
+    done
+}
+
+test_unknown_argument() {
+    # Exit 2, distinct from the 1 above: the caller passes a mode string, so
+    # "I don't know that word" is a bug in the caller, while "no compositor"
+    # is a runtime condition. A single code would blur the two in the logs.
+    local name="unknown argument -> rc 2, nothing dispatched"
+    local stub; stub="$(mktemp -d)"
+    write_mode_stubs "$stub" no
+    local run="$stub/run"
+    add_instance "$run" "live_instance" 1700000000
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+    PATH="$stub:$PATH" XDG_RUNTIME_DIR="$run" HYPRLAND_INSTANCE_SIGNATURE="live_instance" \
+        APLAN_HUD_BIN="$stub/aplan-hud" APLAN_HUD_LOCKFILE="$stub/lock" \
+        "$HERE/aplan-hud-toggle" wobble >/dev/null 2>"$stub/stderr"
+    local rc=$?
+    if [ "$rc" -ne 2 ]; then
+        echo "  FAIL $name — rc=$rc, expected 2"
+        FAILED=1
+    elif grep -q "hyprctl" "$STUB_LOG"; then
+        echo "  FAIL $name — dispatched on an unknown command:"; sed 's/^/       /' "$STUB_LOG"
+        FAILED=1
+    elif [ ! -s "$stub/stderr" ]; then
+        echo "  FAIL $name — rejected silently, no message on stderr"
+        FAILED=1
+    else
+        echo "  ok   $name"
+    fi
+    rm -rf "$stub"
+}
+
+echo "show/hide are idempotent, read from the compositor"
+run_mode_case "show on an already visible workspace dispatches nothing" show yes 0
+run_mode_case "show on a hidden workspace dispatches once"              show no  1
+run_mode_case "hide on an already hidden workspace dispatches nothing"  hide no  0
+run_mode_case "hide on a visible workspace dispatches once"             hide yes 1
+
+echo "Hyprland signature fallback"
+# The aplan-api case: a long-lived service keeps the environment it started
+# with, Hyprland restarts, and every dispatch would fail without a word.
+run_fallback_case "dead signature -> uses the instance that is there" \
+    show dead_signature live_instance live_instance:1700000000
+run_fallback_case "no signature in the environment -> same fallback" \
+    show "" live_instance live_instance:1700000000
+# The winner is deliberately neither first nor last, in either of the two
+# orders a wrong implementation would land on: it is the middle one
+# alphabetically (which is glob order) AND the middle one by creation. Only
+# reading mtimes picks it, which is the whole point of the `-nt` comparison.
+run_fallback_case "several instances -> the newest one wins" \
+    show dead_signature sig_m sig_z:1700001800 sig_m:1700003600 sig_a:1700000000
+run_fallback_case "the fallback also covers the no-argument shortcut" \
+    "" dead_signature live_instance live_instance:1700000000
+
+test_no_instance
+test_unknown_argument
+
 exit $FAILED

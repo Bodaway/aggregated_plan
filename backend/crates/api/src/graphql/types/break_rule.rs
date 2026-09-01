@@ -145,6 +145,11 @@ pub struct BreakRuleStatsGql {
     pub snoozed: i32,
     pub skipped: i32,
     pub ignored: i32,
+    /// Breaks opened and cut short. Counted in `seen` like the four above — the
+    /// notification was answered — and reported on its own line because a break the
+    /// user walked out of is the failure this panel exists to make visible; without
+    /// the column the breakdown silently fails to recompose into the ratio below it.
+    pub abandoned: i32,
     pub absorbed: i32,
     pub expired: i32,
     /// `taken / seen`, or `null` when nothing was seen. Absorbed and expired slots are

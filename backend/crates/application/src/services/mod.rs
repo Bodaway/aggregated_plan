@@ -7,6 +7,7 @@ pub mod git_connector;
 pub mod memory_retriever;
 pub mod memory_file_source;
 pub mod notifier;
+pub mod surface;
 
 pub use jira_client::*;
 pub use outlook_client::*;
@@ -17,3 +18,4 @@ pub use git_connector::*;
 pub use memory_retriever::*;
 pub use memory_file_source::*;
 pub use notifier::{Notification, NotificationOutcome, Notifier, NullNotifier};
+pub use surface::{NullSurface, SurfaceController};

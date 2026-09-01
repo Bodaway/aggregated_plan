@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSurfaceVisibility } from './useSurfaceVisibility';
 import { useDominantBlock } from './useDominantBlock';
+import { useActiveBreak } from './useActiveBreak';
+import { BreakScreen } from './BreakScreen';
 import { HudNav } from './HudNav';
 import { FocusBlock } from './blocks/FocusBlock';
 import { PressureBlock } from './blocks/PressureBlock';
@@ -130,6 +132,7 @@ function HudGrid() {
 export function HudPage() {
   const [booting, setBooting] = useState(!bootSequencePlayed);
   const visible = useSurfaceVisibility();
+  const activeBreak = useActiveBreak();
 
   // Gated on visibility because the window is born on a hidden Hyprland
   // special workspace: a sequence started at mount would play out behind the
@@ -157,7 +160,15 @@ export function HudPage() {
       className="hud-viewport h-screen w-screen bg-transparent font-cn text-cn-fg"
       data-surface-visible={visible}
     >
-      {booting ? (
+      {/* A break takes the surface ahead of everything, boot sequence
+          included: the overlay was very likely opened BY the break, and 1.5s
+          of curtain in front of a 30s countdown spends a twentieth of the
+          break on a splash screen. The timer above is left running through
+          it — skipping the sequence is not deferring it, so the grid is there
+          the moment the break ends. */}
+      {activeBreak ? (
+        <BreakScreen session={activeBreak} />
+      ) : booting ? (
         <pre data-testid="boot-sequence" className="p-8 text-sm text-cn-teal">
           {BOOT_LINES.join('\n')}
         </pre>

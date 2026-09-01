@@ -22,6 +22,8 @@ pub enum BreakOutcome {
     Absorbed,
     /// Could no longer usefully fire.
     Expired,
+    /// The break was opened and cut short before its deadline.
+    Abandoned,
 }
 
 impl BreakOutcome {
@@ -34,6 +36,7 @@ impl BreakOutcome {
             BreakOutcome::Ignored => "ignored",
             BreakOutcome::Absorbed => "absorbed",
             BreakOutcome::Expired => "expired",
+            BreakOutcome::Abandoned => "abandoned",
         }
     }
 
@@ -46,11 +49,16 @@ impl BreakOutcome {
             "ignored" => Some(BreakOutcome::Ignored),
             "absorbed" => Some(BreakOutcome::Absorbed),
             "expired" => Some(BreakOutcome::Expired),
+            "abandoned" => Some(BreakOutcome::Abandoned),
             _ => None,
         }
     }
 
     /// Whether this outcome describes a break the user was actually shown.
+    ///
+    /// `Abandoned` belongs here: the notification was seen, the user answered it, and
+    /// the break did not run to its end. That is a measured failure, not the
+    /// scheduling noise `Absorbed` and `Expired` describe.
     pub fn counts_towards_adherence(&self) -> bool {
         matches!(
             self,
@@ -58,6 +66,7 @@ impl BreakOutcome {
                 | BreakOutcome::Snoozed
                 | BreakOutcome::Skipped
                 | BreakOutcome::Ignored
+                | BreakOutcome::Abandoned
         )
     }
 }
@@ -104,12 +113,55 @@ pub struct BreakEvent {
     pub suppressed_by_meeting_id: Option<String>,
     pub outcome: BreakOutcome,
     pub responded_at: Option<DateTime<Utc>>,
+    /// When the user opened the break. `None` until they press the button.
+    pub started_at: Option<DateTime<Utc>>,
+    /// The deadline, frozen at `started_at + rule.duration_seconds` when the session
+    /// opens. Frozen rather than recomputed from the rule so that retuning
+    /// `duration_seconds` in the settings screen cannot lengthen a break already
+    /// under way, and so that backend and HUD read one absolute instant instead of
+    /// two counters that can drift apart.
+    pub ends_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+}
+
+impl BreakEvent {
+    /// Whether a break is currently being served on this row. The end-of-day sweep
+    /// reads it to leave such a row alone: its owner will close it.
+    pub fn session_is_running(&self, now: DateTime<Utc>) -> bool {
+        self.started_at.is_some() && self.ends_at.is_some_and(|e| e > now)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use uuid::Uuid;
+
+    fn at(h: u32, m: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 1, h, m, 0).unwrap()
+    }
+
+    fn event(
+        started_at: Option<DateTime<Utc>>,
+        ends_at: Option<DateTime<Utc>>,
+    ) -> BreakEvent {
+        BreakEvent {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            rule_id: Uuid::new_v4(),
+            due_at: at(16, 58),
+            fired_at: Some(at(16, 58)),
+            deferred_until: None,
+            defer_reason: None,
+            suppressed_by_meeting_id: None,
+            outcome: BreakOutcome::Pending,
+            responded_at: None,
+            started_at,
+            ends_at,
+            created_at: at(16, 58),
+        }
+    }
 
     #[test]
     fn outcome_round_trips_through_its_storage_string() {
@@ -121,6 +173,7 @@ mod tests {
             BreakOutcome::Ignored,
             BreakOutcome::Absorbed,
             BreakOutcome::Expired,
+            BreakOutcome::Abandoned,
         ] {
             assert_eq!(BreakOutcome::from_str(o.as_str()), Some(o));
         }
@@ -132,6 +185,31 @@ mod tests {
         for r in [DeferReason::Meeting, DeferReason::Snooze] {
             assert_eq!(DeferReason::from_str(r.as_str()), Some(r));
         }
+    }
+
+    /// An abandoned break is a *measured failure*, not scheduling noise: the
+    /// notification was seen, the user answered it, and the break simply did not run
+    /// to its end. That is the opposite of `absorbed` and `expired`, which never
+    /// reached a screen — so it belongs on both sides of the ratio.
+    #[test]
+    fn abandoned_counts_towards_adherence() {
+        assert_eq!(BreakOutcome::from_str("abandoned"), Some(BreakOutcome::Abandoned));
+        assert_eq!(BreakOutcome::Abandoned.as_str(), "abandoned");
+        assert!(BreakOutcome::Abandoned.counts_towards_adherence());
+    }
+
+    /// A running session is what lets a break outlive the end-of-day sweep, so the
+    /// predicate has to be exact on both halves: no start means no session at all, and
+    /// a deadline already past means the session is over rather than running.
+    #[test]
+    fn a_session_runs_only_between_its_start_and_its_deadline() {
+        let now = at(17, 0);
+        assert!(event(Some(at(16, 58)), Some(at(17, 3))).session_is_running(now));
+        assert!(!event(Some(at(16, 50)), Some(at(16, 55))).session_is_running(now));
+        assert!(!event(None, None).session_is_running(now));
+        // Started, but no deadline was ever frozen: nothing says when it would end,
+        // so nothing is running.
+        assert!(!event(Some(at(16, 58)), None).session_is_running(now));
     }
 
     /// Adherence counts what the user actually saw. `absorbed` never reached a

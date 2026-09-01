@@ -528,7 +528,9 @@ aggregated-plan/
 |       |   +-- ProjectPage.tsx       # v2
 |       |   +-- RetrospectivePage.tsx  # v2
 |       |   +-- hud/                  # Desktop HUD overlay, served only inside the Tauri window
-|       |       +-- HudPage.tsx               # Route `/hud`: boot sequence, CyberNord grid
+|       |       +-- HudPage.tsx               # Route `/hud`: boot sequence, CyberNord grid, break screen
+|       |       +-- BreakScreen.tsx           # Running break: ring, remaining time, "J'y retourne"
+|       |       +-- useActiveBreak.ts         # `activeBreak` poll, gated on surface visibility
 |       |       +-- useSurfaceVisibility.ts   # `document.visibilityState` animation gate
 |       |
 |       +-- components/               # Reusable UI components
@@ -5993,9 +5995,11 @@ The following are documented as future follow-ups:
 
 ## 21. Break Routine
 
-### 21.1 Database Schema — Migration `019_create_break_rules.sql`
+### 21.1 Database Schema — Migrations `019` à `021`
 
-Deux tables : une pour la routine elle-même, une pour la trace de chaque échéance.
+Deux tables : une pour la routine elle-même, une pour la trace de chaque échéance. Le bloc
+ci-dessous montre `break_events` **dans son état courant**, c'est-à-dire après la migration `021` ;
+les deux migrations ultérieures sont décrites juste après.
 
 ```sql
 CREATE TABLE break_rules (
@@ -6031,15 +6035,20 @@ CREATE TABLE break_events (
     defer_reason             TEXT CHECK (defer_reason IS NULL OR defer_reason IN ('meeting','snooze')),
     suppressed_by_meeting_id TEXT,
     outcome                  TEXT NOT NULL
-        CHECK (outcome IN ('pending','taken','snoozed','skipped','ignored','absorbed','expired')),
+        -- 'abandoned' ajoutée par 021, par reconstruction de table.
+        CHECK (outcome IN ('pending','taken','snoozed','skipped','ignored','absorbed','expired','abandoned')),
     responded_at             TEXT,
+    -- Ajoutées par 021 : l'instant où l'utilisateur a pressé « Prendre la pause »,
+    -- et `started_at + rule.duration_seconds` figé à l'ouverture de la session.
+    started_at               TEXT,
+    ends_at                  TEXT,
     created_at               TEXT NOT NULL
 );
 CREATE INDEX idx_break_events_rule_due ON break_events(user_id, rule_id, due_at);
 CREATE INDEX idx_break_events_outcome  ON break_events(user_id, outcome);
 ```
 
-La migration seed quatre règles contre l'identifiant local fixe (`api::state::DEFAULT_USER_ID_STR`)
+La migration `019` seed quatre règles contre l'identifiant local fixe (`api::state::DEFAULT_USER_ID_STR`)
 plutôt que via `SELECT ... FROM users` : aucune migration n'insère jamais dans `users`, un seed
 piloté par une ligne produirait donc silencieusement zéro règle sur une base fraîche. Le contenu
 seedé (intitulés et corps) est en français, puisque c'est ce que l'utilisateur lit dans une popup.
@@ -6052,6 +6061,34 @@ parce que 019 est déjà appliquée sur la base vive et que sqlx valide les somm
 migrations — l'éditer sur place ferait échouer le démarrage. L'`UPDATE` est ciblé sur l'identifiant
 seedé `11111111-1111-4111-8111-000000000001` **et** conditionné à la valeur seedée de 20, pour
 qu'un utilisateur ayant délibérément réglé cette règle dans l'écran de réglages garde son chiffre.
+
+**Migration `021_break_sessions.sql`** — la prise de pause devient un événement qui dure (R78).
+Elle apporte les deux colonnes ci-dessus et l'issue `abandoned` (R79). `ends_at` est **stocké**
+plutôt que dérivé de `started_at + rule.duration_seconds` parce qu'il doit être *figé* : régler la
+durée dans l'écran de réglages pendant une pause ne doit pas rallonger la pause en cours, et le
+backend comme le HUD doivent lire une seule échéance absolue au lieu de deux compteurs qui peuvent
+diverger.
+
+SQLite ne sait pas élargir un `CHECK` en place : c'est donc la reconstruction de table documentée
+(<https://sqlite.org/lang_altertable.html#otherxform>), avec les mêmes écarts assumés que la
+migration `013` :
+
+- les étapes 2 et 11 (`BEGIN` / `COMMIT`) appartiennent à sqlx, qui exécute chaque migration dans
+  une transaction — un échec en cours de route laisse l'ancienne table intacte ;
+- les étapes 1 et 12 (`PRAGMA foreign_keys` off/on) sont délibérément absentes : le pragma est un
+  no-op documenté à l'intérieur d'une transaction, et `break_events` n'est que **table enfant** —
+  rien ne la référence, donc ni le `DROP` ni le `RENAME` ne peuvent orpheliner la clé étrangère
+  d'une autre table. Sa propre clé vers `break_rules(id)` est reconduite à l'identique, cascade
+  comprise : supprimer une règle doit toujours emporter son historique ;
+- l'inventaire (étape 3) ne trouve qu'une table et deux index explicites, aucun déclencheur ni vue,
+  d'où les deux `CREATE INDEX` finaux — `idx_break_events_rule_due` et `idx_break_events_outcome`,
+  recréés verbatim puisque le `DROP TABLE` les a emportés ;
+- l'étape 10 (`PRAGMA foreign_key_check`) ne peut pas faire échouer une migration depuis SQL — elle
+  renvoie des lignes au lieu de lever — elle est donc assertée dans la suite de tests.
+
+La liste de colonnes est écrite en toutes lettres des deux côtés de l'`INSERT` plutôt que via
+`SELECT *` : une copie positionnelle est exactement ce qui transpose silencieusement deux colonnes
+de même type le jour où l'une est insérée au milieu.
 
 ### 21.2 Domain Rule — `domain/src/rules/breaks.rs`
 
@@ -6097,12 +6134,37 @@ l'instant même où la fenêtre de l'après-midi s'ouvre, est une demande parfai
 une borne de début exclusive l'aurait rendue — elle seule — indéclenchable sans le dire. L'étape 1
 lit la même règle : un passage tombant pile à 08:00 est dans la journée de travail, pas après.
 
+`BreakOutcome` porte une septième variante depuis la migration `021` : `Abandoned`, une pause
+ouverte puis coupée avant son terme. `counts_towards_adherence` la range **du côté des issues
+vues** (R79) — la notification a été affichée, l'utilisateur y a répondu, la pause n'est pas allée
+au bout : c'est un échec mesuré, et non le bruit d'ordonnancement que décrivent `Absorbed` et
+`Expired`, exclus des deux côtés.
+
+`BreakEvent` porte les deux instants de la session, `started_at: Option<DateTime<Utc>>` et
+`ends_at: Option<DateTime<Utc>>`, et le prédicat qui les lit :
+
+```rust
+impl BreakEvent {
+    pub fn session_is_running(&self, now: DateTime<Utc>) -> bool {
+        self.started_at.is_some() && self.ends_at.is_some_and(|e| e > now)
+    }
+}
+```
+
+Les **deux** moitiés sont exigées : pas de départ, pas de session du tout ; échéance déjà passée,
+la session est finie et non en cours ; départ sans échéance, rien ne dit quand elle s'arrêterait,
+donc rien ne court. C'est ce prédicat que lit l'étape 1 ci-dessous.
+
 **Ordre de décision, tel qu'implémenté** (l'étape de purge des reports est faite avant la
 constitution des candidats, pour que « un report vivant par règle » reste vrai à l'étape de
 suppression-réunion sans avoir à compter) :
 
 1. **Hors de toute fenêtre de travail** : rien ne se déclenche, et tout ce qui restait ouvert
-   expire (nettoyage de fin de journée).
+   expire (nettoyage de fin de journée) — **sauf une ligne dont la session court encore**. Une
+   pause franche ouverte à 16 h 58 enjambe la fermeture de la journée : la balayer l'annulerait en
+   plein décompte, au seul passage où l'utilisateur fait exactement ce que la routine lui demande.
+   Celui qui sert cette pause la clôra (§21.3). L'exemption porte sur la session *en cours* et non
+   sur le fait d'être ouvert : une session dont l'échéance est déjà passée repart avec le reste.
 2. **Purge des reports périmés** : un report qui ne peut plus battre la prochaine échéance
    naturelle de sa propre règle expire, de même qu'un événement dont la règle a été supprimée
    ou désactivée depuis. Un événement déclenché sans réponse n'est pas de ce ressort — c'est au
@@ -6192,7 +6254,92 @@ clôture la ligne en `expired`, la seule issue exclue des deux côtés de l'adh�
 compter comme `ignored` ferait dire à la statistique que l'utilisateur ignore des pauses qu'il n'a
 jamais pu voir.
 
-### 21.4 Notifier — `application/src/services/notifier.rs`
+#### Session de pause — `serve_break` / `wait_out_break`
+
+Une issue `taken` renvoyée par le notifier n'est plus persistée telle quelle : `apply_outcome` la
+détourne vers `serve_break`, seul chemin qui ouvre une session (R78). Les autres issues closent la
+ligne ici et maintenant, comme elles l'ont toujours fait.
+
+1. **L'horloge est relue à la pression du bouton**, jamais le `now` du passage.
+   `notify-send --action` implique `--wait`, donc entre le début du passage et la réponse de
+   l'utilisateur il peut s'écouler des minutes ; s'ancrer sur le `now` du passage servirait une
+   pause raccourcie d'exactement l'hésitation de l'utilisateur — et, sur une pause visuelle de
+   trente secondes répondue tardivement, une pause déjà terminée à l'instant où elle s'ouvre.
+   `start_session(id, started_at, ends_at)` écrit les deux instants, `ends_at = started_at +
+   rule.duration_seconds`, et **ne touche pas** l'issue : elle reste `pending`.
+2. **La surface est montrée** (`SurfaceController::show`, §21.4).
+3. **L'attente** relit la ligne toutes les `session_poll` — 1 s en production, quelques
+   millisecondes en test. C'est le seul paramètre injecté du dispositif : l'horloge reste la vraie,
+   de sorte que les tests exercent le code de production. Trois sorties :
+   - `now >= ends_at` → `set_outcome(Taken, Some(now))` ;
+   - `find_active` ne renvoie plus cette ligne → un autre écrivain l'a reprise, c'est-à-dire
+     `endBreak` ayant écrit `abandoned` ; l'attente cesse et, surtout, **n'écrit rien par-dessus**
+     ce que l'autre a enregistré ;
+   - le budget de sondages est épuisé → `taken` également, avec un `warn`. Ce troisième cas existe
+     parce que `ends_at` est un instant absolu : une horloge reculée (correction NTP, sortie de
+     veille) rend `now >= ends_at` inatteignable pendant tout l'écart, et la boucle retiendrait
+     l'ordonnanceur exactement aussi longtemps que la correction est grande. Le budget
+     (`max_wait_polls`) vaut deux fois la durée de la pause — une attente qui n'a pas vu son
+     échéance au bout de deux fois la pause a un problème d'horloge, pas une pause lente — et un
+     plancher sur l'intervalle de sondage empêche un appelant passant zéro de transformer la
+     division en boucle non bornée.
+4. **La surface est rabaissée sur *tous* les chemins de sortie, l'échec compris** : le résultat de
+   l'attente est retenu puis propagé *après* le `hide`. Un `?` à l'intérieur de la boucle sautait
+   par-dessus, et une erreur de base d'une milliseconde laissait alors l'écran de pause occuper
+   l'affichage jusqu'au passage suivant.
+5. **`announce_end`** envoie une notification « Pause terminée » d'urgence basse, **sans aucune
+   action** — et ce n'est pas un détail : une action est ce qui met `notify-send` en `--wait`, donc
+   un bouton ici retiendrait l'ordonnanceur jusqu'à ce que quelqu'un clique.
+
+`show_surface` / `hide_surface` **journalisent** l'échec sans jamais le propager : une pause privée
+de son overlay est une pause dégradée, pas une pause ratée, et perdre le passage sur un échec
+cosmétique — alors que la pause est déjà enregistrée — transformerait une petite perte en perte
+totale.
+
+#### Reprise d'une session orpheline — `recover_orphan_session`
+
+Exécutée en tête de `run_break_tick`, avant même la lecture du filigrane. Elle regarde
+`find_active` et **ne clôt qu'une session dont l'échéance est déjà passée**, en `taken` : le
+décompte était lancé et il est allé à son terme tout seul, avec ou sans processus pour le regarder
+— l'appeler autrement serait inventer un abandon que rien n'atteste. Une session encore en cours
+est **laissée à son propriétaire** et repassera ici à un passage ultérieur.
+
+C'est cette attente qui rend la reprise sûre. La prémisse qui justifierait de réclamer la ligne
+tout de suite — « l'ordonnanceur est une boucle unique, donc un passage qui tourne prouve
+qu'aucun passage n'attend cette ligne » — vaut par *processus*, pas par *base* : un
+`cargo run -p api` de développement à côté du service installé, ce qui arrive sur cette machine,
+fait deux processus sur un seul fichier, et le premier passage du second verrait une pause
+parfaitement saine comme une orpheline, écrirait `abandoned` par-dessus et retirerait l'overlay de
+l'écran en plein décompte. Différer coûte au plus un passage et supprime deux nuisances de plus :
+un redémarrage pendant une pause n'inscrit plus d'`abandoned` — qui compte contre l'adhérence, donc
+un déploiement salissait la statistique — et un recul d'horloge n'en fabrique plus non plus.
+
+Reste un seul cas incohérent : `started_at` posé sans `ends_at`. `start_session` écrit les deux
+instants ou aucun, donc rien de légitime ne le produit ; il ne peut être ni attendu ni daté, il est
+donc clos à vue et `abandoned` est tout ce qui reste pour le nommer. Chaque clôture cache la
+surface, incrémente `BreakTickReport::recovered` et laisse une ligne de journal.
+
+#### Repository — `SqliteBreakEventRepository`
+
+Trois opérations s'ajoutent aux existantes, et `map_event` / `create` / les `UPDATE` transportent
+les deux colonnes :
+
+- `find_active(user_id)` — la ligne `pending` portant un `started_at`, s'il y en a une. Il ne peut
+  y en avoir qu'une : l'ordonnanceur est une boucle unique et aucune pause ne sonne pendant une
+  autre, ce qui permet au HUD de demander « qu'y a-t-il à l'écran en ce moment » sans clé. Le
+  `LIMIT 1` garde un état que l'ordonnanceur rend impossible, il ne départage pas.
+- `start_session(id, started_at, ends_at)` — laisse l'issue à `pending` délibérément.
+- `abandon_if_running(user_id, id, responded_at)` — **compare-and-swap**, et non une lecture suivie
+  d'une écriture : tout l'arbitrage est dans le `WHERE` (`id` **et** `user_id` **et**
+  `outcome = 'pending'` **et** `started_at IS NOT NULL`), que SQLite applique avec l'écriture en un
+  seul énoncé. Une ligne que le passage vient de clore en `taken` ne correspond donc à rien et garde
+  son `taken` ; lire d'abord et écrire ensuite laisserait gagner l'énoncé arrivé en second, qui est
+  ici celui-ci. La même conjonction rend la mutation idempotente sans rien de plus, et le `user_id`
+  y figure pour que l'identifiant d'événement seul ne suffise jamais à clore la pause d'autrui.
+  Renvoie `rows_affected() > 0`. L'écriture `taken` du passage reste, elle, inconditionnelle : cette
+  asymétrie *est* la décision — avoir vu passer l'échéance fait autorité.
+
+### 21.4 Notifier et surface — `application/src/services/{notifier.rs, surface.rs}`
 
 ```rust
 pub struct Notification {
@@ -6237,6 +6384,44 @@ d'environnement `DBUS_SESSION_BUS_ADDRESS` est présente, `NotifySendNotifier` ;
 `NullNotifier`, avec une ligne de journal expliquant que les pauses seront enregistrées sans être
 montrées.
 
+#### `SurfaceController` — `application/src/services/surface.rs`
+
+```rust
+#[async_trait]
+pub trait SurfaceController: Send + Sync {
+    async fn show(&self) -> Result<(), AppError>;
+    async fn hide(&self) -> Result<(), AppError>;
+}
+```
+
+Lève et rabaisse la surface de pause — l'écran plein que l'utilisateur regarde à la place de celui
+sur lequel il travaillait. Un trait, et non un appel direct, pour la raison exacte qui fait de
+`Notifier` un trait : la couche application décide *que* la pause est à l'écran, elle ne lance
+jamais le processus qui l'y met — et toute la session peut alors se dérouler sans compositeur dans
+les tests.
+
+- **`HudToggleSurface`** (`infrastructure/src/notify/hud_surface.rs`) — lance
+  `aplan-hud-toggle show` puis `aplan-hud-toggle hide` (§22.6). Un script plutôt qu'un appel au
+  compositeur depuis ici : savoir sur quel workspace vit l'overlay, et quelle instance Hyprland est
+  la bonne, est le métier du script, et il le fait déjà pour le raccourci clavier. Le nom du
+  programme est résolu sur le `PATH` — l'installation packagée comme la copie de travail
+  fonctionnent sans configuration — et se surcharge par la variable d'environnement
+  `APLAN_HUD_TOGGLE`, typiquement un chemin absolu en développement, quand le script n'est installé
+  nulle part où le `PATH` du service atteint. Une variable **vide** est une variable que personne
+  n'a voulu poser : elle retombe sur le défaut, sinon un `APLAN_HUD_TOGGLE=` dans une unité systemd
+  ferait lancer la chaîne vide à chaque pause. `command_line(action, surcharge)` est **pure** et
+  testée directement, comme `notify_send::command_args` ; le `spawn` n'est qu'un enrobage de trois
+  lignes. Un code de retour non nul est **renvoyé**, jamais paniqué : l'appelant le journalise et
+  sert la pause quand même.
+- **`NullSurface`** (`application/src/services/surface.rs`) — ne montre rien, ne cache rien, répond
+  toujours `Ok`. Elle rend un succès et non un échec délibérément : la pause se déroule, l'échéance
+  appartient toujours au backend, et une pause servie sans visuel est une pause dégradée, pas un
+  passage raté.
+
+La sélection suit exactement le même critère que celle du notifier, au même endroit et une seule
+fois : `DBUS_SESSION_BUS_ADDRESS` présente → `HudToggleSurface`, sinon `NullSurface` avec une ligne
+de journal. Sans bus de session il n'y a pas de compositeur sur lequel lever l'overlay.
+
 ### 21.5 API Job — `api/src/jobs.rs::run_break_scheduler`
 
 Jumeau de `run_eod_scheduler` : une boucle qui exécute un passage puis attend le délai que dicte
@@ -6249,6 +6434,14 @@ ici — `decide` s'ancre sur l'horloge murale, donc un passage en retard décale
 échéances suivantes sans en perdre aucune. `expire_after` (la durée de la règle plus cinq
 minutes) borne l'attente et referme le processus enfant, sans quoi une notification jamais
 touchée laisserait fuiter un processus jusqu'au soir.
+
+Depuis R78, le passage garde ensuite la main pendant **toute la pause** : le décompte appartient au
+backend, et c'est le passage qui le sert. Même raisonnement, plus une propriété de plus — retenir
+la boucle le temps d'une pause est précisément ce qui rend impossible qu'une pause sonne pendant
+une autre. Le sondage de la ligne durant l'attente est réglé par `SESSION_POLL = 1 s` : la ligne ne
+change que si l'utilisateur presse *J'y retourne*, et une seconde reste en deçà de ce que
+quiconque perçoit comme un retard sur un overlay qui se ferme. Le compte rendu du passage porte un
+champ de plus, `recovered` (§21.3), journalisé avec les autres.
 
 ### 21.6 GraphQL API
 
@@ -6294,6 +6487,7 @@ type BreakRuleStatsGql {
   snoozed: Int!
   skipped: Int!
   ignored: Int!
+  abandoned: Int!
   absorbed: Int!
   expired: Int!
   adherence: Float   # taken / seen, null si seen == 0 ; absorbed/expired exclus des deux côtés
@@ -6303,16 +6497,27 @@ type BreakStatsGql {
   perRule: [BreakRuleStatsGql!]!
 }
 
+type ActiveBreakGql {
+  eventId: ID!
+  kind: BreakKindGql!
+  label: String!
+  body: String!
+  startedAt: DateTime!
+  endsAt: DateTime!
+}
+
 extend type Query {
   breakRules: [BreakRuleGql!]!
   breakStats(from: String!, to: String!): BreakStatsGql!
   nextBreakDue: DateTime
+  activeBreak: ActiveBreakGql
 }
 
 extend type Mutation {
   createBreakRule(input: BreakRuleInput!): BreakRuleGql!
   updateBreakRule(id: ID!, input: BreakRuleInput!): BreakRuleGql!
   deleteBreakRule(id: ID!): Boolean!
+  endBreak(eventId: ID!): Boolean!
 }
 ```
 
@@ -6322,6 +6527,31 @@ extend type Mutation {
 réglages montre coupée. Les fenêtres viennent de `resolve_windows`, la même construction que le
 passage du job utilise sur `workday.*` : `null` si tout ce qui reste est une règle `Daily` (pas de
 « prochaine » aujourd'hui) ou si les fenêtres du jour sont épuisées.
+
+`abandoned` est reporté sur sa propre ligne de `BreakRuleStatsGql` et compté dans `seen` comme les
+quatre issues au-dessus de lui (R79) : sans cette colonne la ventilation ne se recompose plus en le
+taux qu'elle surmonte, et une pause dont l'utilisateur est sorti est précisément l'échec que le
+panneau existe pour rendre visible.
+
+`activeBreak` est la pause en cours, ou `null` — ce que le HUD interroge toutes les deux secondes
+tant que la surface est levée. `kind`, `label` et `body` sont lus sur la **règle** et non sur
+l'événement, qui n'enregistre que l'ouverture de la pause et son échéance : reformuler une règle
+change donc ce qu'affichera le prochain overlay sans migrer quoi que ce soit. `endsAt` est
+l'échéance figée, jamais `startedAt + durationSeconds` recalculé ici. **Trois** situations
+répondent `null`, délibérément : rien ne tourne, la règle a été supprimée sous une pause en cours,
+ou la ligne est incohérente (`started_at` sans `ends_at`) — les deux dernières laissent un `warn`.
+Le HUD lit `null` comme « affiche ta grille » ; une erreur, il ne saurait que la peindre en rien du
+tout, et un champ en lecture seule dont vit l'overlay n'est pas l'endroit où insister sur la
+différence, la pause étant terminée en quelques secondes de toute façon.
+
+`endBreak(eventId)` coupe la pause en cours — l'unique contrôle de l'overlay, *J'y retourne* — et
+écrit `abandoned`, non `taken`. Elle est **idempotente**, et cette idempotence tranche une course
+plutôt qu'elle n'est un agrément : le décompte peut arriver à zéro dans la seconde même où le
+bouton est pressé, et le `taken` du passage doit gagner puisque c'est lui qui a vu passer
+l'échéance. Toute la décision est donc déléguée à `abandon_if_running` et prise **dans l'écriture**
+(§21.3) ; `false` veut dire « la pause ne courait plus », ce qui couvre à l'identique un second
+appui, un appui sur une pause déjà terminée, et un appui que l'échéance a battu d'un centième de
+seconde. L'appelant n'a rien à en faire : la surface est rabaissée dans tous les cas.
 
 Les scalaires de configuration (§21.3) passent par la mutation `updateConfiguration` **existante**
 — `SettingsPage` a déjà `CONFIG_KEYS` et son bouton de sauvegarde, ce chemin n'est pas dupliqué.
@@ -6351,6 +6581,41 @@ outre laisser en base un préfixe de ce qui avait été tapé. En conséquence, 
 n'affiche son message de chargement qu'au **premier** chargement (`loading && rules.length === 0`),
 et `BreakRuleRow` resynchronise son état local quand les valeurs de sa prop `rule` changent : la
 ligne survivant désormais au `refetch`, elle doit suivre ce que le serveur a normalisé.
+
+##### L'écran de pause
+
+Trois fichiers de plus sous `pages/hud/`, plus les documents urql sous `graphql/` :
+
+- **`useActiveBreak.ts`** interroge `activeBreak` toutes les 2 s, et **seulement pendant que la
+  surface est visible** (§22.6) : le HUD passe l'essentiel de la journée sur un workspace Hyprland
+  masqué, et une requête tournant derrière serait la seule partie de l'overlay à coûter encore
+  quelque chose au repos. C'est le backend qui lève la surface à l'ouverture d'une pause, donc
+  l'événement `surface-visibility` arrive en premier et le sondage démarre par une demande
+  immédiate au lieu d'attendre un intervalle. La session est **abandonnée à la sortie** et non
+  conservée : une pause peut se terminer derrière le rideau, et rouvrir sur un décompte achevé il
+  y a une heure serait un mensonge visible avant même la première réponse. Une erreur réseau ne
+  vaut pas `null` — un aléa sur le fil ne dit rien de la pause, y répondre en fermant l'écran
+  sortirait l'utilisateur d'une pause qui tourne toujours. Le client urql est lu de façon
+  **optionnelle** (`useContext` plutôt que `useClient`, qui lève) : ce hook s'exécute dans
+  `HudPage` au-dessus de la porte de boot, plus tôt que tout autre consommateur de l'overlay, donc
+  c'est le seul endroit où la coque peut se retrouver montée sans la couche de données ; l'absence
+  de client doit s'y lire « aucune pause » et non « overlay qui refuse de peindre ».
+- **`BreakScreen.tsx`** — l'intitulé et le corps de la règle, un anneau SVG en `stroke-dashoffset`
+  qui se vide, le restant en `m:ss`, et le bouton *J'y retourne*. Tout ce qui est affiché est
+  **dérivé de `endsAt` et de l'horloge au rendu ; rien n'est décrémenté**. Un compteur serait plus
+  simple et serait faux : la webview est bridée dès que le compositeur cesse de la composer, des
+  ticks sautent, et un décompte décrémenté annoncerait alors une pause plus longue que celle que le
+  backend chronomètre — lire l'échéance fait qu'une webview affamée est en retard, jamais fausse.
+  Le tick d'horloge est lui aussi coupé quand la surface disparaît, ce qui est sans risque
+  justement parce que l'affichage est une fonction de l'horloge : au retour, il retombe sur la
+  bonne seconde quel que soit le trou. Zéro n'est pas l'affaire de cet écran — le backend possède
+  l'horloge, écrit `taken` à l'échéance et cache la surface. Le rendu se fait dans les tokens de
+  `hud.css` : on suit le langage visuel existant, on n'en invente pas un second.
+- **`HudPage`** rend `<BreakScreen>` **à la place** de la grille dès qu'une pause court, et
+  **court-circuite la séquence de boot** dans ce cas : l'overlay a très probablement été ouvert
+  *par* la pause, et 1,5 s de rideau devant un décompte de 30 s en dépenserait un vingtième en
+  écran de démarrage. Le minuteur de boot continue de tourner derrière — court-circuiter n'est pas
+  différer —, donc la grille est là dès la fin de la pause.
 
 ---
 
@@ -6461,6 +6726,30 @@ Trois contraintes non évidentes, chacune trouvée à l'exécution :
   littéralement `{}` : le Rust émettait avec succès pendant que la page n'entendait
   rien. `capabilities/default.json` accorde `core:event:default`, et l'échec est
   désormais bruyant des deux côtés.
+
+#### `show` / `hide` : le script a désormais deux appelants
+
+Appelé **sans argument**, le script bascule — c'est le raccourci clavier, et il n'a pas
+bougé. Deux sous-commandes le doublent, **`show`** et **`hide`**, qui nomment un état
+final voulu et sont **idempotentes** : c'est l'ordonnanceur de pauses qui les pilote
+(§21.4), et il agit sur ce qu'il *croit* être l'état — une bascule aveugle mettrait donc
+l'overlay précisément du mauvais côté. Chacune relit l'état réel auprès du compositeur
+(`workspace_shown`, la même lecture de `hyprctl monitors` que le retour d'état existant)
+et sort sans rien dispatcher si l'état voulu est déjà celui-là. La lecture se fait
+**dans le verrou** déjà posé, sinon une invocation concurrente pourrait l'invalider entre
+la lecture et le dispatch. Tout autre argument est refusé avec un code 2.
+
+**Le repli de signature**, qui s'applique aux trois modes. `HYPRLAND_INSTANCE_SIGNATURE`
+change à chaque redémarrage de Hyprland, et le script est maintenant aussi appelé par
+`aplan-api` — un service utilisateur au long cours, qui conserve l'environnement avec
+lequel il a démarré. Il tendrait à `hyprctl` une signature morte, chaque dispatch
+échouerait, et l'écran de pause cesserait simplement d'apparaître sans un mot dans les
+journaux. La signature est donc vérifiée contre `$XDG_RUNTIME_DIR/hypr/` et **re-dérivée**
+quand elle ne nomme plus une instance vivante : la plus récente du dossier l'emporte, un
+Hyprland mort sans nettoyer laissant la sienne derrière lui. Aucune instance sous ce
+dossier → message sur `stderr` et code 1, jamais un dispatch au hasard. Le raccourci
+clavier, lui, tourne dans un shell frais et va normalement bien : il paie un `stat` pour
+être couvert aussi.
 
 ### 22.7 Retour au HUD à l'ouverture
 
