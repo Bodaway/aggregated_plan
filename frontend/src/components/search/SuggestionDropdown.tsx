@@ -71,7 +71,7 @@ export function SuggestionDropdown({ listboxId, activeIndex }: Props) {
             role="option"
             aria-selected={active}
             onMouseDown={() => {
-              openTaskInSheet(item.id);
+              void openTaskInSheet(item.id);
               clearQuery();
             }}
             className={

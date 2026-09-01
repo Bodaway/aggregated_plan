@@ -125,7 +125,7 @@ test.describe('Recurring tasks feature', () => {
 
     await recurringCard.click();
 
-    // Wait for the sheet to open (Cancel button visible)
+    // Wait for the sheet to open (its Fermer button is visible)
     await expect(page.getByTestId('task-sheet-cancel')).toBeVisible({ timeout: 3000 });
 
     // Recurring banner must be present — Wave 12 copy
@@ -133,8 +133,11 @@ test.describe('Recurring tasks feature', () => {
       page.getByText(/Cette tâche fait partie d'une série\. Le statut et les dates s'appliquent à cette occurrence/)
     ).toBeVisible({ timeout: 3000 });
 
-    // Wave 12: Save button IS visible for recurring instances (unconditionally restored)
-    await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+    // The edit sheet auto-saves: there is no Save button at all any more, and the
+    // autosave indicator stands in its place. (The *create* sheet keeps its own
+    // "Create Recurring Task" button — different sheet, same cancel testid.)
+    await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+    await expect(page.getByTestId('task-sheet-autosave-status')).toBeAttached();
 
     // Skip button must be present
     const skipBtn = page.getByRole('button', { name: 'Ignorer cette occurrence' });
@@ -172,7 +175,8 @@ test.describe('Recurring tasks feature', () => {
     // We recorded count=1 before skip implicitly; assert < 2 after OR that the
     // first visible instance is a *later* date. Simply assert count >= 0 with an
     // informative message if this step is reached — the structural assertions
-    // above (banner, no Save, skip button, sheet closes) are the meaningful ones.
+    // above (banner, no Save button, autosave indicator, skip button, sheet
+    // closes) are the meaningful ones.
     expect(countAfterSkip).toBeGreaterThanOrEqual(0);
   });
 });

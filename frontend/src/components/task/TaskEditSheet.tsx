@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useTaskEdit } from '@/hooks/use-task-edit';
+import { useTaskEdit, type FullTask } from '@/hooks/use-task-edit';
+import { useAutoSave, type SaveJob } from '@/hooks/use-autosave';
 import { useDelegates } from '@/hooks/use-delegates';
 import { MarkdownEditor } from '@/components/markdown/MarkdownEditor';
 import { WorklogSection } from '@/components/worklog/WorklogSection';
@@ -9,6 +10,9 @@ interface TaskEditSheetProps {
   readonly taskId: string | null;
   readonly onClose: () => void;
   readonly onUpdated?: () => void;
+  /** Hands the owner a way to drain the debounce *before* it re-keys `taskId`:
+   *  a switch that just dropped the queued write would lose it silently. */
+  readonly registerPendingFlush?: (flush: (() => Promise<boolean>) | null) => void;
 }
 
 const URGENCY_OPTIONS = [
@@ -55,6 +59,205 @@ function normalizeEnum(val: string): string {
   return 'MEDIUM';
 }
 
+/** The editable surface of the panel, in the string shape the inputs use. */
+interface FormSnapshot {
+  readonly description: string;
+  readonly notes: string;
+  readonly estimatedHours: string;
+  readonly remainingOverride: string;
+  readonly estimatedOverride: string;
+  readonly urgency: string;
+  readonly impact: string;
+  readonly status: string;
+  readonly plannedDate: string;
+  readonly deadline: string;
+  readonly delegatedTo: string;
+}
+
+const EMPTY_FORM: FormSnapshot = {
+  description: '',
+  notes: '',
+  estimatedHours: '',
+  remainingOverride: '',
+  estimatedOverride: '',
+  urgency: 'MEDIUM',
+  impact: 'MEDIUM',
+  status: 'TODO',
+  plannedDate: '',
+  deadline: '',
+  delegatedTo: '',
+};
+
+function snapshotOf(task: FullTask): FormSnapshot {
+  return {
+    description: task.description ?? '',
+    notes: task.notes ?? '',
+    estimatedHours: task.estimatedHours?.toString() ?? '',
+    remainingOverride: task.remainingHoursOverride?.toString() ?? '',
+    estimatedOverride: task.estimatedHoursOverride?.toString() ?? '',
+    urgency: normalizeEnum(task.urgency),
+    impact: normalizeEnum(task.impact),
+    status: task.status ?? 'TODO',
+    // Extract date portion from ISO datetime; deadline is a plain date, sliced
+    // defensively in case the server widens it.
+    plannedDate: task.plannedStart ? task.plannedStart.slice(0, 10) : '',
+    deadline: task.deadline ? task.deadline.slice(0, 10) : '',
+    delegatedTo: task.delegatedTo ?? '',
+  };
+}
+
+function parseHours(value: string): number | null {
+  return value ? parseFloat(value) : null;
+}
+
+/** Every input key the three mutations accept. Spelled out so a rename breaks the
+ *  map below at compile time instead of silently leaving a field dirty forever. */
+type MutationInputKey =
+  | 'status'
+  | 'notes'
+  | 'plannedStart'
+  | 'deadline'
+  | 'delegatedTo'
+  | 'remainingHoursOverride'
+  | 'estimatedHoursOverride'
+  | 'description'
+  | 'estimatedHours'
+  | 'urgency'
+  | 'impact';
+
+type MutationInput = Partial<Record<MutationInputKey, unknown>>;
+
+/** Mutation input key → the form field it carries, so a partially failed save
+ *  records exactly the fields that reached the server. */
+const SAVED_FIELD_BY_INPUT = {
+  status: 'status',
+  notes: 'notes',
+  plannedStart: 'plannedDate',
+  deadline: 'deadline',
+  delegatedTo: 'delegatedTo',
+  remainingHoursOverride: 'remainingOverride',
+  estimatedHoursOverride: 'estimatedOverride',
+  description: 'description',
+  estimatedHours: 'estimatedHours',
+  urgency: 'urgency',
+  impact: 'impact',
+} satisfies Record<MutationInputKey, keyof FormSnapshot>;
+
+function withSaved(
+  base: FormSnapshot,
+  next: FormSnapshot,
+  changes: MutationInput,
+): FormSnapshot {
+  const patch: Record<string, string> = {};
+  for (const inputKey of Object.keys(changes) as readonly MutationInputKey[]) {
+    const field = SAVED_FIELD_BY_INPUT[inputKey];
+    patch[field] = next[field];
+  }
+  return { ...base, ...patch };
+}
+
+/** How one diff reaches the server: priority has its own mutation, and a recurring
+ *  instance splits between its own occurrence and the series template. */
+interface Change {
+  readonly kind: 'priority' | 'perInstance' | 'template';
+  readonly input: MutationInput;
+}
+
+/** Everything outside the two snapshots that decides the routing — captured with
+ *  them, so a queued write never re-reads a task that has since been replaced. */
+interface EditFlags {
+  readonly isJira: boolean;
+  readonly isRecurring: boolean;
+  readonly canEditDeadline: boolean;
+  readonly recurrenceId: string | null;
+}
+
+/** Pure diff: what the form shows minus what the server is known to hold. */
+function plan(base: FormSnapshot, next: FormSnapshot, flags: EditFlags): readonly Change[] {
+  const { isJira, isRecurring, canEditDeadline, recurrenceId } = flags;
+
+  // Per-instance fields — safe to send via updateTask for both recurring and one-shot.
+  const perInstanceChanges: MutationInput = {};
+  // Template fields — for recurring instances, must go through updateRecurringTask.
+  const templateChanges: MutationInput = {};
+
+  if (next.status !== base.status) {
+    perInstanceChanges.status = next.status;
+  }
+
+  const newNotes = next.notes || null;
+  if (newNotes !== (base.notes || null)) {
+    perInstanceChanges.notes = newNotes;
+  }
+
+  // Planned date is per-instance
+  if (next.plannedDate !== base.plannedDate) {
+    perInstanceChanges.plannedStart = next.plannedDate ? `${next.plannedDate}T08:00:00Z` : null;
+  }
+
+  // Deadline is per-instance, like the planned date, and only ever sent for
+  // personal tasks (R76). Empty string means "clear it" — an explicit null.
+  if (canEditDeadline && next.deadline !== base.deadline) {
+    perInstanceChanges.deadline = next.deadline || null;
+  }
+
+  const newDelegate = next.delegatedTo.trim() || null;
+  if (newDelegate !== (base.delegatedTo.trim() || null)) {
+    perInstanceChanges.delegatedTo = newDelegate;
+  }
+
+  if (isJira) {
+    const newRemaining = parseHours(next.remainingOverride);
+    if (newRemaining !== parseHours(base.remainingOverride)) {
+      perInstanceChanges.remainingHoursOverride = newRemaining;
+    }
+    const newEstOverride = parseHours(next.estimatedOverride);
+    if (newEstOverride !== parseHours(base.estimatedOverride)) {
+      perInstanceChanges.estimatedHoursOverride = newEstOverride;
+    }
+  }
+
+  // Template-level fields — description, urgency/impact, estimated hours
+  const newDesc = next.description || null;
+  if (newDesc !== (base.description || null)) {
+    if (isRecurring) {
+      templateChanges.description = newDesc;
+    } else {
+      perInstanceChanges.description = newDesc;
+    }
+  }
+
+  if (!isJira) {
+    const newEst = parseHours(next.estimatedHours);
+    if (newEst !== parseHours(base.estimatedHours)) {
+      if (isRecurring) {
+        templateChanges.estimatedHours = newEst;
+      } else {
+        perInstanceChanges.estimatedHours = newEst;
+      }
+    }
+  }
+
+  const urgencyChanged = next.urgency !== base.urgency;
+  const impactChanged = next.impact !== base.impact;
+  if (isRecurring) {
+    if (urgencyChanged) templateChanges.urgency = next.urgency;
+    if (impactChanged) templateChanges.impact = next.impact;
+  }
+
+  const changes: Change[] = [];
+  if (!isRecurring && (urgencyChanged || impactChanged)) {
+    changes.push({ kind: 'priority', input: { urgency: next.urgency, impact: next.impact } });
+  }
+  if (Object.keys(perInstanceChanges).length > 0) {
+    changes.push({ kind: 'perInstance', input: perInstanceChanges });
+  }
+  if (isRecurring && recurrenceId && Object.keys(templateChanges).length > 0) {
+    changes.push({ kind: 'template', input: templateChanges });
+  }
+  return changes;
+}
+
 function formatSeconds(seconds: number | null): string {
   if (seconds === null || seconds === undefined) return '-';
   const hours = seconds / 3600;
@@ -62,7 +265,7 @@ function formatSeconds(seconds: number | null): string {
   return `${hours.toFixed(1)}h`;
 }
 
-export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps) {
+export function TaskEditSheet({ taskId, onClose, onUpdated, registerPendingFlush }: TaskEditSheetProps) {
   const { task, loading, updateTask, updatePriority, skipOccurrence, updateRecurringTask } = useTaskEdit(taskId);
   const { delegates } = useDelegates();
   const isOpen = taskId !== null;
@@ -85,31 +288,177 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const [deadline, setDeadline] = useState('');
   const [delegatedTo, setDelegatedTo] = useState('');
   const [titleCopied, setTitleCopied] = useState(false);
+  const [skipFailed, setSkipFailed] = useState(false);
 
-  // Sync form state when task loads
+  // A trigger fires in the same tick as the setState that caused it, so the diff
+  // reads this synchronous mirror of the form instead of the pending state.
+  const formRef = useRef<FormSnapshot>(EMPTY_FORM);
+  // What the server is known to hold. Every mutation triggers a network-only
+  // refetch, so `task` lags behind for a moment and diffing against it would
+  // resend fields — or, worse, re-hydrate over what is being typed.
+  const lastSavedRef = useRef<FormSnapshot | null>(null);
+  const hydratedForIdRef = useRef<string | null>(null);
+
+  // Declared before the hydration effect so it always runs first in a commit:
+  // reopening the same task has to hydrate again, a refetch must not.
   useEffect(() => {
-    if (task) {
-      setDescription(task.description ?? '');
-      setNotes(task.notes ?? '');
-      setEstimatedHours(task.estimatedHours?.toString() ?? '');
-      setRemainingOverride(task.remainingHoursOverride?.toString() ?? '');
-      setEstimatedOverride(task.estimatedHoursOverride?.toString() ?? '');
-      setUrgency(normalizeEnum(task.urgency));
-      setImpact(normalizeEnum(task.impact));
-      setStatus(task.status ?? 'TODO');
-      // Extract date portion from ISO datetime
-      setPlannedDate(task.plannedStart ? task.plannedStart.slice(0, 10) : '');
-      // Deadline is a plain date; slice defensively in case the server widens it.
-      setDeadline(task.deadline ? task.deadline.slice(0, 10) : '');
-      setDelegatedTo(task.delegatedTo ?? '');
+    hydratedForIdRef.current = null;
+  }, [taskId]);
+
+  const dispatch = useCallback(async (
+    id: string,
+    base: FormSnapshot,
+    next: FormSnapshot,
+    flags: EditFlags,
+    onSaved?: (saved: FormSnapshot) => void,
+  ): Promise<boolean> => {
+    const changes = plan(base, next, flags);
+    if (changes.length === 0) return false;
+
+    // Up to three mutations, and the second can fail after the first landed, so the
+    // baseline advances per successful call: what landed is never resent, what
+    // failed is never recorded as saved.
+    let saved = base;
+    let wrote = false;
+    // A throw aborts the remaining mutations on purpose: firing them anyway would
+    // half-apply a change whose shape the user cannot see, and the queued retry
+    // replays whatever is still dirty.
+    try {
+      for (const change of changes) {
+        if (change.kind === 'priority') {
+          await updatePriority(id, next.urgency, next.impact);
+        } else if (change.kind === 'perInstance') {
+          await updateTask(id, change.input);
+        } else if (flags.recurrenceId) {
+          await updateRecurringTask(flags.recurrenceId, change.input);
+        } else {
+          // `plan` never emits a template change without a series id.
+          continue;
+        }
+        wrote = true;
+        saved = withSaved(saved, next, change.input);
+        // Reported before the next await can throw, so a retry of this same job
+        // resends only what failed (R77).
+        onSaved?.(saved);
+        // This can resolve after the panel has moved on: patching another task's
+        // baseline with these values would make its next diff resend them, and on
+        // a recurring task that rewrites the whole series template.
+        if (hydratedForIdRef.current === id) lastSavedRef.current = saved;
+      }
+    } finally {
+      // At least one mutation landed — refresh the searchable list for that part
+      // even when a later one threw.
+      if (wrote) onUpdated?.();
     }
-  }, [task]);
+    return wrote;
+  }, [updateTask, updatePriority, updateRecurringTask, onUpdated]);
+
+  const { status: autoSaveStatus, schedule, flushNow, flushQueued, reset } = useAutoSave();
+
+  // Freeze everything a write needs at the moment the user triggers it — the only
+  // moment `taskId`, `task` and the refs unambiguously describe the same task. The
+  // job that comes out reads nothing live, so a switch to another task can no
+  // longer redirect a pending write onto whatever the panel now shows.
+  const capture = useCallback((patch: Partial<FormSnapshot>): SaveJob | undefined => {
+    formRef.current = { ...formRef.current, ...patch };
+    const id = taskId;
+    const base = lastSavedRef.current;
+    if (!id || !base || hydratedForIdRef.current !== id) return undefined;
+    // `task` carries the routing (Jira? recurring? which series?). urql v4 nulls
+    // `data` on a re-keyed query and the client uses the document cache, so it
+    // cannot be another task's today — the id check guards a future graphcache.
+    if (!task || task.id !== id) return undefined;
+    const next = formRef.current;
+    const flags: EditFlags = { isJira, isRecurring, canEditDeadline, recurrenceId: task.recurrenceId };
+    // The job's own cursor over what it has written, and its fallback baseline once
+    // the panel has moved on. Otherwise the live baseline wins at job start: it
+    // advances only on a *successful* write, so re-reading it drops fields the
+    // server already holds at the same value — no duplicate when a second edit
+    // lands inside the first's round trip — while a field whose captured value
+    // differs still diffs dirty, which is what keeps the retry replaying it (R77).
+    let sent = base;
+    return () => dispatch(
+      id,
+      hydratedForIdRef.current === id ? (lastSavedRef.current ?? sent) : sent,
+      next,
+      flags,
+      (saved) => { sent = saved; },
+    );
+  }, [taskId, task, isJira, isRecurring, canEditDeadline, dispatch]);
+
+  // A finished choice (select, date) writes straight away; anything typed
+  // debounces, or every keystroke would be a mutation.
+  const commit = useCallback((patch: Partial<FormSnapshot>) => {
+    const job = capture(patch);
+    if (job) void flushNow(job, taskId);
+  }, [capture, flushNow, taskId]);
+
+  const draft = useCallback((patch: Partial<FormSnapshot>) => {
+    const job = capture(patch);
+    if (job) schedule(job, taskId);
+  }, [capture, schedule, taskId]);
+
+  const editStatus = useCallback((value: string) => { setStatus(value); commit({ status: value }); }, [commit]);
+  const editUrgency = useCallback((value: string) => { setUrgency(value); commit({ urgency: value }); }, [commit]);
+  const editImpact = useCallback((value: string) => { setImpact(value); commit({ impact: value }); }, [commit]);
+  const editPlannedDate = useCallback((value: string) => { setPlannedDate(value); commit({ plannedDate: value }); }, [commit]);
+  const editDeadline = useCallback((value: string) => { setDeadline(value); commit({ deadline: value }); }, [commit]);
+  const editDelegatedTo = useCallback((value: string) => { setDelegatedTo(value); draft({ delegatedTo: value }); }, [draft]);
+  const editDescription = useCallback((value: string) => { setDescription(value); draft({ description: value }); }, [draft]);
+  const editNotes = useCallback((value: string) => { setNotes(value); draft({ notes: value }); }, [draft]);
+  const editEstimatedHours = useCallback((value: string) => { setEstimatedHours(value); draft({ estimatedHours: value }); }, [draft]);
+  const editRemainingOverride = useCallback((value: string) => { setRemainingOverride(value); draft({ remainingOverride: value }); }, [draft]);
+  const editEstimatedOverride = useCallback((value: string) => { setEstimatedOverride(value); draft({ estimatedOverride: value }); }, [draft]);
+
+  // Hydrate on task identity only: a refetch hands us a new `task` object for the
+  // same task, and re-running here would overwrite the ongoing edit.
+  useEffect(() => {
+    if (!task || task.id !== taskId || hydratedForIdRef.current === task.id) return;
+    // Defence in depth: the owner drains the queue before re-keying `taskId`, so
+    // this is normally a no-op — but any other path that re-keys us would leave a
+    // queued write whose baseline is about to be overwritten below. Untagged on
+    // purpose: the entry belongs to the task being replaced, not to this one.
+    // The drain is async, so the `reset` below can settle first — the hook makes
+    // the reset win over a late requeue rather than us delaying it, which would
+    // cancel anything typed in the meantime.
+    void flushQueued();
+    const snapshot = snapshotOf(task);
+    setDescription(snapshot.description);
+    setNotes(snapshot.notes);
+    setEstimatedHours(snapshot.estimatedHours);
+    setRemainingOverride(snapshot.remainingOverride);
+    setEstimatedOverride(snapshot.estimatedOverride);
+    setUrgency(snapshot.urgency);
+    setImpact(snapshot.impact);
+    setStatus(snapshot.status);
+    setPlannedDate(snapshot.plannedDate);
+    setDeadline(snapshot.deadline);
+    setDelegatedTo(snapshot.delegatedTo);
+    formRef.current = snapshot;
+    lastSavedRef.current = snapshot;
+    hydratedForIdRef.current = task.id;
+    reset();
+  }, [task, taskId, reset, flushQueued]);
+
+  // Closing on a failed write would take the edit with it, so a failure keeps the
+  // panel open on its ⚠ / Réessayer footer instead.
+  const handleClose = useCallback(async () => {
+    if (await flushQueued(taskId)) onClose();
+  }, [flushQueued, taskId, onClose]);
+
+  // The sheet outlives a task switch, so the owner needs the drain handle for as
+  // long as it is mounted.
+  useEffect(() => {
+    registerPendingFlush?.(flushQueued);
+    return () => registerPendingFlush?.(null);
+  }, [registerPendingFlush, flushQueued]);
 
   // Copy-title confirmation: reset when the panel switches task, and on unmount.
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setTitleCopied(false);
+    setSkipFailed(false);
     return () => {
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
@@ -130,121 +479,42 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   }, [task?.title]);
 
   const handleSkipOccurrence = useCallback(async () => {
-    await skipOccurrence();
+    setSkipFailed(false);
+    if (!taskId) return;
+    // A deliberate close, like Fermer: a queued write must land first, and a failed
+    // one keeps the panel open instead of taking the edit down with it.
+    if (!(await flushQueued(taskId))) return;
+    try {
+      await skipOccurrence(taskId);
+    } catch {
+      // The occurrence is still there — keep the panel open and say so rather
+      // than closing on a write that never landed.
+      setSkipFailed(true);
+      return;
+    }
     onUpdated?.();
     onClose();
-  }, [skipOccurrence, onUpdated, onClose]);
-
-  const handleSave = useCallback(async () => {
-    if (!task) return;
-
-    // Per-instance fields — safe to send via updateTask for both recurring and one-shot.
-    const perInstanceChanges: Record<string, unknown> = {};
-    // Template fields — for recurring instances, must go through updateRecurringTask.
-    const templateChanges: Record<string, unknown> = {};
-
-    if (status !== task.status) {
-      perInstanceChanges.status = status;
-    }
-
-    const newNotes = notes || null;
-    if (newNotes !== (task.notes ?? null)) {
-      perInstanceChanges.notes = newNotes;
-    }
-
-    // Planned date is per-instance
-    const currentPlannedDate = task.plannedStart ? task.plannedStart.slice(0, 10) : '';
-    if (plannedDate !== currentPlannedDate) {
-      perInstanceChanges.plannedStart = plannedDate ? `${plannedDate}T08:00:00Z` : null;
-    }
-
-    // Deadline is per-instance, like the planned date, and only ever sent for
-    // personal tasks (R76). Empty string means "clear it" — an explicit null.
-    if (canEditDeadline) {
-      const currentDeadline = task.deadline ? task.deadline.slice(0, 10) : '';
-      if (deadline !== currentDeadline) {
-        perInstanceChanges.deadline = deadline || null;
-      }
-    }
-
-    const newDelegate = delegatedTo.trim() || null;
-    if (newDelegate !== (task.delegatedTo ?? null)) {
-      perInstanceChanges.delegatedTo = newDelegate;
-    }
-
-    if (isJira) {
-      const newRemaining = remainingOverride ? parseFloat(remainingOverride) : null;
-      if (newRemaining !== task.remainingHoursOverride) {
-        perInstanceChanges.remainingHoursOverride = newRemaining;
-      }
-      const newEstOverride = estimatedOverride ? parseFloat(estimatedOverride) : null;
-      if (newEstOverride !== task.estimatedHoursOverride) {
-        perInstanceChanges.estimatedHoursOverride = newEstOverride;
-      }
-    }
-
-    // Template-level fields — description, urgency/impact, estimated hours
-    const newDesc = description || null;
-    if (newDesc !== (task.description ?? null)) {
-      if (isRecurring) {
-        templateChanges.description = newDesc;
-      } else {
-        perInstanceChanges.description = newDesc;
-      }
-    }
-
-    if (!isJira) {
-      const newEst = estimatedHours ? parseFloat(estimatedHours) : null;
-      if (newEst !== task.estimatedHours) {
-        if (isRecurring) {
-          templateChanges.estimatedHours = newEst;
-        } else {
-          perInstanceChanges.estimatedHours = newEst;
-        }
-      }
-    }
-
-    const currentUrgency = normalizeEnum(task.urgency);
-    const currentImpact = normalizeEnum(task.impact);
-    const urgencyChanged = urgency !== currentUrgency;
-    const impactChanged = impact !== currentImpact;
-    if (isRecurring) {
-      if (urgencyChanged) templateChanges.urgency = urgency;
-      if (impactChanged) templateChanges.impact = impact;
-    } else if (urgencyChanged || impactChanged) {
-      await updatePriority(urgency, impact);
-    }
-
-    if (Object.keys(perInstanceChanges).length > 0) {
-      await updateTask(perInstanceChanges);
-    }
-
-    if (isRecurring && task.recurrenceId && Object.keys(templateChanges).length > 0) {
-      await updateRecurringTask(task.recurrenceId, templateChanges);
-    }
-
-    onUpdated?.();
-    onClose();
-  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, deadline, delegatedTo, isJira, isRecurring, canEditDeadline, updateTask, updatePriority, updateRecurringTask, onUpdated, onClose]);
+  }, [taskId, flushQueued, skipOccurrence, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') void handleClose();
     };
     if (isOpen) {
       document.addEventListener('keydown', handleKeyDown);
       return () => document.removeEventListener('keydown', handleKeyDown);
     }
-  }, [isOpen, onClose]);
+  }, [isOpen, handleClose]);
 
   return (
     <>
       {/* Backdrop */}
       {isOpen && (
         <div
+          data-testid="task-sheet-backdrop"
           className="fixed inset-0 bg-black/20 z-40 transition-opacity"
-          onClick={onClose}
+          onClick={() => void handleClose()}
         />
       )}
 
@@ -293,7 +563,8 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                 )}
               </div>
               <button
-                onClick={onClose}
+                data-testid="task-sheet-header-close"
+                onClick={() => void handleClose()}
                 className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-100 transition-colors"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -328,7 +599,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                       <span className="font-medium w-20">Status:</span>
                       <select
                         value={status}
-                        onChange={(e) => setStatus(e.target.value)}
+                        onChange={(e) => editStatus(e.target.value)}
                         className={`rounded-md border px-2 py-0.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-700 border-gray-300'}`}
                       >
                         {STATUS_OPTIONS.map(o => (
@@ -394,13 +665,13 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                       <input
                         type="date"
                         value={plannedDate}
-                        onChange={(e) => setPlannedDate(e.target.value)}
+                        onChange={(e) => editPlannedDate(e.target.value)}
                         className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
                       {plannedDate && (
                         <button
                           type="button"
-                          onClick={() => setPlannedDate('')}
+                          onClick={() => editPlannedDate('')}
                           className="mt-1 text-xs text-gray-400 hover:text-red-500 transition-colors"
                         >
                           Clear planned date
@@ -417,13 +688,13 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                           id="task-deadline"
                           type="date"
                           value={deadline}
-                          onChange={(e) => setDeadline(e.target.value)}
+                          onChange={(e) => editDeadline(e.target.value)}
                           className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         />
                         {deadline && (
                           <button
                             type="button"
-                            onClick={() => setDeadline('')}
+                            onClick={() => editDeadline('')}
                             className="mt-1 text-xs text-gray-400 hover:text-red-500 transition-colors"
                           >
                             Effacer l&apos;échéance
@@ -441,7 +712,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                         type="text"
                         list="delegate-suggestions"
                         value={delegatedTo}
-                        onChange={(e) => setDelegatedTo(e.target.value)}
+                        onChange={(e) => editDelegatedTo(e.target.value)}
                         placeholder="Nobody — type a name to delegate"
                         className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       />
@@ -469,7 +740,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                         <label className="block text-xs font-medium text-gray-700 mb-1">Urgency</label>
                         <select
                           value={urgency}
-                          onChange={(e) => setUrgency(e.target.value)}
+                          onChange={(e) => editUrgency(e.target.value)}
                           className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         >
                           {URGENCY_OPTIONS.map(o => (
@@ -481,7 +752,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                         <label className="block text-xs font-medium text-gray-700 mb-1">Impact</label>
                         <select
                           value={impact}
-                          onChange={(e) => setImpact(e.target.value)}
+                          onChange={(e) => editImpact(e.target.value)}
                           className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         >
                           {IMPACT_OPTIONS.map(o => (
@@ -504,7 +775,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                             step="0.5"
                             min="0"
                             value={remainingOverride}
-                            onChange={(e) => setRemainingOverride(e.target.value)}
+                            onChange={(e) => editRemainingOverride(e.target.value)}
                             placeholder={task.jiraRemainingSeconds !== null ? formatSeconds(task.jiraRemainingSeconds) : '-'}
                             className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           />
@@ -518,7 +789,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                             step="0.5"
                             min="0"
                             value={estimatedOverride}
-                            onChange={(e) => setEstimatedOverride(e.target.value)}
+                            onChange={(e) => editEstimatedOverride(e.target.value)}
                             placeholder={task.jiraOriginalEstimateSeconds !== null ? formatSeconds(task.jiraOriginalEstimateSeconds) : '-'}
                             className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           />
@@ -532,7 +803,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                           step="0.5"
                           min="0"
                           value={estimatedHours}
-                          onChange={(e) => setEstimatedHours(e.target.value)}
+                          onChange={(e) => editEstimatedHours(e.target.value)}
                           placeholder="e.g. 4"
                           className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         />
@@ -550,7 +821,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                       </div>
                       <textarea
                         value={description}
-                        onChange={(e) => setDescription(e.target.value)}
+                        onChange={(e) => editDescription(e.target.value)}
                         rows={8}
                         className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         placeholder="Add a description..."
@@ -563,7 +834,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                       </label>
                       <MarkdownEditor
                         value={notes}
-                        onChange={setNotes}
+                        onChange={editNotes}
                         placeholder="Working notes, decisions, links… (preserved across Jira syncs)"
                       />
                     </div>
@@ -585,34 +856,55 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
             {/* Footer */}
             <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between gap-2">
               {/* Left side: skip button for recurring instances */}
-              <div>
+              <div className="flex items-center gap-2">
                 {isRecurring && (
                   <button
                     type="button"
                     data-testid="task-sheet-skip"
-                    onClick={handleSkipOccurrence}
+                    onClick={() => void handleSkipOccurrence()}
                     className="px-3 py-1.5 text-sm font-medium text-amber-700 border border-amber-300 bg-amber-50 rounded-md hover:bg-amber-100 transition-colors"
                   >
                     Ignorer cette occurrence
                   </button>
                 )}
+                {skipFailed && (
+                  <span data-testid="task-sheet-skip-error" className="text-xs font-medium text-red-700">
+                    ⚠ L&apos;occurrence n&apos;a pas pu être ignorée
+                  </span>
+                )}
               </div>
 
-              {/* Right side: cancel + save */}
-              <div className="flex items-center gap-2">
+              {/* Right side: autosave status + close. There is no Save button, so a
+                  failed write has to shout — silence would be invisible data loss. */}
+              <div className="flex items-center gap-3">
+                <div
+                  data-testid="task-sheet-autosave-status"
+                  aria-live="polite"
+                  className="min-h-[1.25rem] flex items-center gap-1.5 text-xs"
+                >
+                  {autoSaveStatus === 'pending' && <span className="text-gray-400">Modification…</span>}
+                  {autoSaveStatus === 'saving' && <span className="text-gray-500">Enregistrement…</span>}
+                  {autoSaveStatus === 'saved' && <span className="text-green-600">✓ Enregistré</span>}
+                  {autoSaveStatus === 'error' && (
+                    <>
+                      <span className="font-medium text-red-700">⚠ Échec de l&apos;enregistrement</span>
+                      <button
+                        type="button"
+                        data-testid="task-sheet-autosave-retry"
+                        onClick={() => void flushQueued(taskId)}
+                        className="px-2 py-0.5 font-medium text-red-700 border border-red-300 bg-red-50 rounded-md hover:bg-red-100 transition-colors"
+                      >
+                        Réessayer
+                      </button>
+                    </>
+                  )}
+                </div>
                 <button
                   data-testid="task-sheet-cancel"
-                  onClick={onClose}
+                  onClick={() => void handleClose()}
                   className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
                 >
-                  Cancel
-                </button>
-                <button
-                  data-testid="task-sheet-save"
-                  onClick={handleSave}
-                  className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
-                >
-                  Save
+                  Fermer
                 </button>
               </div>
             </div>

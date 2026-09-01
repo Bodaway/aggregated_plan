@@ -6574,3 +6574,191 @@ L'échéance devient éditable dans `TaskEditSheet` et `TaskCreateSheet` **uniqu
 `source === 'PERSONAL'`. Sur les autres sources, `sync.rs` réaffecte `task.deadline` sans
 condition à chaque passage : offrir le champ produirait une saisie détruite au cycle
 suivant, sans message.
+
+---
+
+## 24. Auto-enregistrement du panneau d'édition de tâche
+
+Le panneau `TaskEditSheet` n'a plus de bouton *Save* (R77). La conversion tient en trois
+pièces, dont deux ne sont pas l'auto-enregistrement lui-même mais ce qu'il rend nécessaire.
+
+### 24.1 `frontend/src/hooks/use-autosave.ts`
+
+Un ordonnanceur d'écriture, sans aucune connaissance du formulaire :
+
+```ts
+export type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+export const DEFAULT_AUTOSAVE_DELAY_MS = 700;
+
+/** Rend `true` s'il a émis au moins une écriture, `false` s'il n'y avait rien à écrire. */
+export type SaveJob = () => Promise<boolean>;
+
+export function useAutoSave(options?: { readonly delayMs?: number }): {
+  readonly status: AutoSaveStatus;
+  readonly schedule: (job: SaveJob) => void;      // remplace le job en file et réarme le délai
+  readonly flushNow: (job?: SaveJob) => Promise<boolean>;  // annule le délai, écrit, rend l'issue
+  readonly flushQueued: () => Promise<boolean>;   // vide la file sans en ajouter
+  readonly reset: () => void;                     // annule le délai, jette la file, repasse à `idle`
+};
+```
+
+**L'ordonnanceur ne connaît pas le formulaire : il transporte un job.** C'est le point structurant,
+et il vient d'un défaut de la première version — l'écriture en attente y était liée à un rappel gardé
+en ref, donc à la tâche courante **au moment où le délai expirait**, et non à celle sur laquelle la
+saisie avait eu lieu. Un `schedule` ne réarme donc pas un rappel ambiant : il met en file un thunk
+qui a figé sa cible.
+
+`flushNow` **rend l'issue du cycle** (`true` propre — « rien à écrire » compris —, `false` en échec) : `runCycle` avale l'exception pour poser l'état `error`, donc la promesse ne rejette jamais et un appelant qui se contenterait de l'attendre ne saurait pas distinguer une écriture passée d'une écriture perdue. C'est ce booléen qui autorise ou non la fermeture du panneau. Le chemin de coalescence propage l'issue du cycle **de queue**, pas celle du cycle en vol.
+
+`schedule` est un **debounce, pas un throttle** : une salve de frappes produit un seul appel,
+`delayMs` après la dernière, chaque `schedule` remplaçant le job en file. Deux cycles d'écriture
+ne se chevauchent jamais ; un job échoué **retourne en file**, sans quoi *Réessayer* et la
+fermeture-après-échec seraient des non-opérations silencieuses. Un `flushNow` sur file vide rend
+l'issue du cycle **en vol** plutôt que `true` : une écriture immédiate en échec doit continuer de
+bloquer la fermeture. Et un job qui rend `false` — rien à écrire — laisse l'état à `idle` : afficher
+« ✓ Enregistré » sans avoir rien écrit était le mensonge qui rendait la perte de données invisible. Le démontage
+annule le délai **sans** écrire : React ne peut pas attendre un démontage, c'est donc le
+composant qui pousse dans son gestionnaire de fermeture.
+
+### 24.2 Les deux régimes de déclenchement
+
+| Champs | Déclencheur | Raison |
+|--------|-------------|--------|
+| `status`, `urgency`, `impact`, `plannedDate`, `deadline` | `flushNow()` immédiat | Un sélecteur ou un champ date quitté est un choix complet ; différer n'apporte rien. |
+| `description`, `notes`, `estimatedHours`, `remainingOverride`, `estimatedOverride`, `delegatedTo` | `schedule()` (700 ms) | Un texte à moitié tapé n'est pas une valeur. `delegatedTo` est ici bien qu'il offre des suggestions : c'est un `input` + `datalist`, pas un `select`, donc l'écrire immédiatement vaudrait une mutation par touche. |
+
+L'état local est posé **avant** le déclenchement, pour que la frappe ne dépende jamais du
+réseau. Le delta est calculé sur `formRef`, un miroir synchrone du formulaire : un déclencheur
+part dans le même tick que le `setState` qui l'a causé, donc l'état React n'est pas encore à jour.
+
+`handleClose` ne ferme que si l'écriture a abouti — `if (await flushNow()) onClose();` — et il est
+câblé aux **quatre** sorties : bouton *Fermer*, touche Escape, clic sur le backdrop, ✕ de l'en-tête.
+Sur échec, le panneau reste ouvert sur son message et son bouton *Réessayer*.
+
+### 24.2bis La cible est capturée à la frappe, jamais lue au déclenchement
+
+`commit` et `draft` figent `{ id, base, next, flags }` à l'instant du déclenchement — le seul moment
+où `taskId`, `task`, `formRef` et `lastSavedRef` désignent sans ambiguïté la tâche sur laquelle on
+tape — et remettent un thunk nullaire à l'ordonnanceur. **Aucun job en file ne relit `taskId`,
+`task` ou `formRef` au moment de partir** : c'est cela, et non un garde mieux placé, qui rend
+impossible l'écriture d'une saisie sur une autre tâche.
+
+Le diff est scindé : `plan(base, next, flags) → readonly Change[]` est **pure** — aucun ref, aucun
+`task` —, et `dispatch` déroule les changements. Une seule exception à la règle de non-relecture, et
+elle est nécessaire : `dispatch` relit `lastSavedRef` **au démarrage du job**, gardé par
+`hydratedForIdRef.current === id`, et retombe sinon sur la référence capturée. C'est sans risque
+parce que `lastSavedRef` n'avance que sur écriture **réussie** — il n'y a donc rien à annuler en cas
+d'échec — et parce que seul le *baseline* est rafraîchi, jamais le `next` capturé : un rafraîchissement
+ne peut que retirer du diff un champ que le serveur détient **avec la même valeur**. Sans cette
+relecture, une écriture immédiate encore en vol suivie d'une seconde édition faisait replanifier depuis
+une référence non avancée et renvoyait un champ déjà écrit.
+
+**Bascule de tâche.** `openTaskInSheet` attend le flush sortant et **annule la bascule si l'écriture
+échoue**, exactement comme `handleClose` refuse de fermer ; le panneau lui confie son `flushQueued`
+par une prop de rappel, plutôt que d'élargir le contexte de recherche. L'échec sortant n'alimente
+délibérément **pas** `status` : le pied du panneau décrirait alors la nouvelle tâche, « Échec »
+attribuerait l'erreur à la mauvaise et *Réessayer* viderait une file vide. Bloquer la bascule **est**
+le mécanisme ; il n'y a pas de seconde surface d'erreur. L'hydratation appelle encore `flushQueued`
+avant d'écraser les refs, par précaution pour tout autre chemin qui réaffecterait `taskId`.
+
+**Abandon sur échec.** `dispatch` s'arrête à la première mutation en échec au lieu de poursuivre les
+suivantes : continuer produirait une modification à moitié appliquée dont l'utilisateur ne peut pas
+lire la forme, alors que le job remis en file rejoue exactement ce qui est resté sale.
+
+### 24.3 Ce que l'auto-enregistrement casse, et le correctif
+
+`use-task-edit.ts` fait `reexecute({ requestPolicy: 'network-only' })` après **chaque**
+mutation, et l'effet d'hydratation du panneau réécrivait tous les champs du formulaire à
+chaque nouvel objet `task`. Sous auto-enregistrement, cela produit deux défauts distincts :
+
+1. le rechargement réécrit le champ sous le curseur — la frappe de l'utilisateur est perdue ;
+2. entre la mutation et l'arrivée du rechargement, `task` est périmé, donc le delta calculé
+   contre lui est faux et renvoie des champs déjà écrits.
+
+Le correctif est de retirer à `task` son rôle de référence pour l'écriture :
+
+- **`lastSavedRef`** — instantané des valeurs que le serveur est connu détenir. Le delta se
+  calcule contre lui, et il est mis à jour après chaque écriture réussie. Le résultat ne
+  dépend donc plus du moment où le rechargement atterrit.
+- **`hydratedForIdRef`** — l'hydratation du formulaire ne s'exécute que lorsque
+  **l'identité** de la tâche change (`task.id`), pas à chaque nouvel objet. Un `reset()` de
+  l'ordonnanceur accompagne ce basculement.
+
+Les champs **dérivés** (`quadrant`, `effectiveRemainingHours`, `effectiveEstimatedHours`,
+`jiraStatus`, le bloc Gryzzly, `WorklogSection`) continuent de lire `task` directement : ils
+ne sont pas dans le formulaire, et ce sont eux que le rechargement doit rafraîchir.
+
+Le routage des mutations est inchangé — champs par instance via `updateTask`, priorité via
+`updatePriority`, champs de gabarit d'une récurrente via `updateRecurringTask`. Seul le
+déclencheur change. Corollaire assumé : sur une récurrente, la description saisie réécrit le
+gabarit de la série 700 ms plus tard, sans le clic qui rendait l'acte explicite.
+
+### 24.4 Pied du panneau
+
+Le bouton `task-sheet-save` disparaît ; le bouton restant garde `data-testid="task-sheet-cancel"`
+et devient *Fermer*. À sa gauche, `task-sheet-autosave-status` rend l'état de l'ordonnanceur, et
+l'état `error` porte un `task-sheet-autosave-retry` (*Réessayer* → `flushNow()`). Cet état
+d'échec est structurel, pas cosmétique : privé de bouton d'enregistrement, l'utilisateur n'a
+plus aucun autre moyen d'apprendre qu'une écriture n'est pas passée.
+
+### 24.5 Faire exister l'échec — `use-task-edit.ts`
+
+urql **résout** une mutation en portant l'erreur dans `result.error` au lieu de rejeter. Les quatre
+mutations du panneau attendaient la promesse sans la consulter : un appelant ne pouvait donc pas
+distinguer une écriture qui avait atterri d'une qui n'avait pas eu lieu, et l'état `error` du § 24.4
+était inatteignable. Chacune (`updateTask`, `updatePriority`, `updateRecurringTask`, `skipOccurrence`)
+lève désormais une `TaskMutationError` **avant** le `reexecute` — sur une écriture échouée rien n'a
+changé côté serveur, un rechargement n'y apprendrait rien et ne coûterait qu'un aller-retour.
+`flush` laisse l'exception remonter jusqu'à `useAutoSave`, qui la convertit en état `error` ;
+`handleSkipOccurrence`, lui, l'attrape, garde le panneau ouvert et affiche
+`task-sheet-skip-error` — fermer sur une occurrence toujours présente serait un mensonge muet ; il
+pousse par ailleurs l'édition en attente **avant** d'agir, et renonce si cette écriture échoue.
+
+Les mutations prennent enfin un **identifiant explicite** (`updateTask(id, input)`,
+`updatePriority(id, …)`, `skipOccurrence(id)`) au lieu de fermer sur le `taskId` courant, et leur
+garde « pas de tâche ouverte » **lève** au lieu de rendre la main en silence : une promesse résolue
+signifiant désormais « le serveur l'a », une non-opération muette ferait enregistrer comme écrite
+une modification jamais partie.
+
+### 24.6 Échec partiel d'une écriture
+
+Un `flush` porte jusqu'à trois mutations, et la deuxième peut échouer après que la première a abouti.
+L'instantané de référence avance donc **par mutation réussie** : `markSaved(changes)` ne fusionne
+dans `lastSavedRef` que les champs portés par ce jeu de modifications, via la table
+`SAVED_FIELD_BY_INPUT` qui traduit une clé d'entrée de mutation en champ de formulaire
+(`plannedStart → plannedDate`, etc.). Sans ce découpage, un unique `lastSavedRef.current = next` en
+fin de parcours produirait l'un des deux défauts symétriques : la partie passée est renvoyée à la
+tentative suivante, ou — bien pire — la partie échouée est enregistrée comme sauvegardée et
+disparaît définitivement. `onUpdated?.()` est appelé dans un `finally`, conditionné au fait que
+l'instantané ait bougé : la liste est rafraîchie pour ce qui a atterri, même si une mutation
+ultérieure a levé.
+
+L'écriture dans `lastSavedRef` est en outre **verrouillée sur l'identité de la tâche**
+(`hydratedForIdRef.current === id`). Sans ce verrou, une mutation de A qui se résout après que les
+données de B ont atterri vient patcher la référence de B avec les valeurs de A : la comparaison
+suivante croit sales des champs de B qui ne le sont pas et les renvoie — et sur un B récurrent, cela
+réécrit le gabarit de la série entière. C'est le même verrou que celui de la relecture du baseline
+(§ 24.2bis), et il sert la même propriété : un job n'écrit et ne lit que la tâche qu'il a capturée.
+
+### 24.7 Deux verrous sur la file d'attente
+
+Aucun des deux ne protège un chemin atteignable aujourd'hui — les deux voies qui réaffectent
+`taskId` attendent le drain — mais tous deux gardent la classe de défaut que tout le § 24.2bis
+combat : un job qui survit à la tâche qui l'a produit.
+
+**L'entrée en file porte son propriétaire.** Une écriture échouée retourne en file, étiquetée de
+l'identifiant pour lequel elle a été capturée. Sans l'étiquette, un cycle qui échoue *après* que le
+panneau a changé de tâche laisserait le job de A en file sous le pied de page de B : *Réessayer*
+rejouerait l'écriture de A, et le `schedule` suivant sur B l'écarterait en silence. Seule une
+**divergence certaine** — deux propriétaires connus et différents — fait refuser l'entrée, si bien
+que le drain de l'hydratation, délibérément non étiqueté, peut encore vider l'entrée de la tâche
+sortante ; la fermeture, la reprise et le saut d'occurrence, eux, passent leur `taskId`.
+
+**Un compteur de génération arbitre `reset` contre la remise en file.** `reset()` est synchrone,
+alors que le drain est asynchrone : un `reset` déclenché entre le départ d'un cycle et son échec
+serait suivi d'une remise en file qui ressusciterait ce que le `reset` venait de jeter. Chaque
+`reset` incrémente donc une génération, et un cycle refuse de se remettre en file à travers une
+génération — le `reset` gagne. **Retarder le `reset` jusqu'à la résolution du drain aurait été la
+solution évidente et fausse** : elle annule toute édition faite dans l'intervalle (18 tests le
+démontrent). Un job mis en file depuis l'échec supersède également l'entrée refusée, les
+instantanés étant cumulatifs.

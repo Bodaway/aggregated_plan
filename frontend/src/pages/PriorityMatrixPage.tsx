@@ -77,7 +77,7 @@ export function PriorityMatrixPage() {
   };
 
   const handleEdit = useCallback((taskId: string) => {
-    openTaskInSheet(taskId);
+    void openTaskInSheet(taskId);
   }, [openTaskInSheet]);
 
   if (error) {

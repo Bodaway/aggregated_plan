@@ -670,7 +670,7 @@ export function DashboardPage() {
             onDragCancel={onDragCancel}
           >
             <div className="flex gap-3">
-              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={openTaskInSheet} width={unplannedWidth} onResize={handleUnplannedResize} />
+              <UnplannedSidebar tasks={unplannedTasks} onTaskClick={(id) => void openTaskInSheet(id)} width={unplannedWidth} onResize={handleUnplannedResize} />
               <div className="flex-1 min-w-0">
                 <div style={{ display: 'grid', gridTemplateColumns: `repeat(${workingDays.length}, minmax(0, 1fr))`, gap: '0.5rem' }}>
                   {weekDays.map(day => {
@@ -681,7 +681,7 @@ export function DashboardPage() {
                         date={day}
                         tasks={tasksByDate[dayStr] ?? []}
                         meetings={meetingsByDate[dayStr] ?? []}
-                        onTaskClick={openTaskInSheet}
+                        onTaskClick={(id) => void openTaskInSheet(id)}
                         isDragging={activeTaskId !== null}
                         onAddTask={() => setCreatingForDate(dayStr)}
                         workingHoursPerDay={data?.workingHoursPerDay ?? DAILY_CAPACITY_HOURS_FALLBACK}

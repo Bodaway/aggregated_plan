@@ -245,7 +245,7 @@ export function TriagePage() {
                   key={task.id}
                   task={task}
                   onDismiss={() => dismissTask(task.id)}
-                  onEdit={openTaskInSheet}
+                  onEdit={(id) => void openTaskInSheet(id)}
                 />
               ))
             )}
@@ -263,7 +263,7 @@ export function TriagePage() {
               </p>
             ) : (
               followedTasks.map(task => (
-                <DraggableTaskCard key={task.id} task={task} onEdit={openTaskInSheet} />
+                <DraggableTaskCard key={task.id} task={task} onEdit={(id) => void openTaskInSheet(id)} />
               ))
             )}
           </DroppableColumn>

@@ -75,12 +75,14 @@ describe('SearchProvider', () => {
     expect(getCtx().matchedIds.size).toBe(0);
   });
 
-  it('openTaskInSheet + closeSheet drive openTaskId', () => {
+  // openTaskInSheet awaits the outgoing panel flush before it switches, so the
+  // state change can land a microtask late — drive it through an async act.
+  it('openTaskInSheet + closeSheet drive openTaskId', async () => {
     const { getCtx } = renderWithProvider();
     expect(getCtx().openTaskId).toBeNull();
-    act(() => getCtx().openTaskInSheet('1'));
+    await act(async () => { getCtx().openTaskInSheet('1'); });
     expect(getCtx().openTaskId).toBe('1');
-    act(() => getCtx().closeSheet());
+    await act(async () => { getCtx().closeSheet(); });
     expect(getCtx().openTaskId).toBeNull();
   });
 });

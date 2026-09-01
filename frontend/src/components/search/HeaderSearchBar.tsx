@@ -72,7 +72,7 @@ export function HeaderSearchBar() {
       e.preventDefault();
       const picked = matches[activeIndex];
       if (picked) {
-        openTaskInSheet(picked.item.id);
+        void openTaskInSheet(picked.item.id);
         clearQuery();
       }
     }
