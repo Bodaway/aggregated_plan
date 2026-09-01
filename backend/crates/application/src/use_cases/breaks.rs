@@ -18,7 +18,13 @@ const KEY_LAST_TICK: &str = "aplan.breaks.last_tick";
 
 const DEFAULT_GRACE_MINUTES: i64 = 3;
 const DEFAULT_SNOOZE_MINUTES: i64 = 10;
-const DEFAULT_SHOW_AS: &str = "busy,oof";
+/// Every status Outlook can put on a real appointment. The narrow `busy,oof` this used
+/// to be let `tentative` and `free` meetings through, and both are ordinary meetings in
+/// practice — an unanswered invitation is still attended, and recurring internal points
+/// are routinely marked `free`. The asymmetry settles it: a break deferred to the end of
+/// a meeting costs a few minutes, a popup during one costs the meeting. Users who want
+/// the narrow reading set `aplan.breaks.suppressing_show_as` themselves.
+const DEFAULT_SHOW_AS: &str = "busy,oof,tentative,free";
 
 pub struct BreakTickDeps<'a> {
     pub rules: &'a dyn BreakRuleRepository,
@@ -819,7 +825,10 @@ mod tests {
                 (KEY_ENABLED, "true"),
                 (KEY_GRACE, "3"),
                 (KEY_SNOOZE, "10"),
-                (KEY_SHOW_AS, "busy,oof"),
+                // KEY_SHOW_AS is deliberately left unset: seeding it pinned the fixture
+                // to a list the product does not ship, and that is exactly how a default
+                // that ignored half the calendar went unnoticed. Tests that care about
+                // the narrowing set it themselves.
             ] {
                 config.set(user_id, key, value).await.unwrap();
             }
@@ -1106,11 +1115,51 @@ mod tests {
         assert!(events[0].fired_at.is_none());
     }
 
-    /// Only meetings whose show_as is in the configured list suppress.
+    /// A calendar entry is a meeting whatever Outlook thinks of the user's availability.
+    /// `tentative` marks an invitation that has not been answered, not one that will not
+    /// be attended: the weekly the user sits through every Monday is `tentative`.
     #[tokio::test]
-    async fn a_free_meeting_does_not_suppress() {
+    async fn a_tentative_meeting_suppresses() {
+        let fixture = Fixture::new().await;
+        fixture.add_meeting("m1", at(8, 20), at(9, 0), Some("tentative")).await;
+        fixture.set_last_tick(at(8, 29)).await;
+        let report = fixture.tick(at(8, 30)).await.unwrap();
+        assert!(report.fired.is_none());
+        assert_eq!(report.deferred, 1);
+    }
+
+    /// `free` reads as "does not block my calendar", which recurring internal meetings
+    /// are routinely marked. It said nothing about whether the user is in the room, and
+    /// taking it as permission to fire is what put a popup on screen mid-meeting.
+    #[tokio::test]
+    async fn a_free_meeting_suppresses() {
         let fixture = Fixture::new().await;
         fixture.add_meeting("m1", at(8, 20), at(9, 0), Some("free")).await;
+        fixture.set_last_tick(at(8, 29)).await;
+        let report = fixture.tick(at(8, 30)).await.unwrap();
+        assert!(report.fired.is_none());
+        assert_eq!(report.deferred, 1);
+    }
+
+    /// Only meetings whose show_as is in the configured list suppress.
+    #[tokio::test]
+    async fn a_meeting_with_an_unlisted_show_as_does_not_suppress() {
+        let fixture = Fixture::new().await;
+        fixture
+            .add_meeting("m1", at(8, 20), at(9, 0), Some("workingElsewhere"))
+            .await;
+        fixture.set_last_tick(at(8, 29)).await;
+        let report = fixture.tick(at(8, 30)).await.unwrap();
+        assert!(report.fired.is_some());
+    }
+
+    /// The list stays a knob. The default is wide because a missed break costs less than
+    /// a popup during a client call, but narrowing it back down still decides the tick.
+    #[tokio::test]
+    async fn a_narrowed_show_as_list_lets_a_tentative_meeting_through() {
+        let fixture = Fixture::new().await;
+        fixture.set_config(KEY_SHOW_AS, "busy").await;
+        fixture.add_meeting("m1", at(8, 20), at(9, 0), Some("tentative")).await;
         fixture.set_last_tick(at(8, 29)).await;
         let report = fixture.tick(at(8, 30)).await.unwrap();
         assert!(report.fired.is_some());
