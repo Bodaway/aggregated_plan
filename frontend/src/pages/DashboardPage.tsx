@@ -30,6 +30,7 @@ import { TaskCreateSheet } from '@/components/task/TaskCreateSheet';
 import { SelectionToMemory } from '@/components/memory/SelectionToMemory';
 import { useMemoryCapture } from '@/hooks/use-memory';
 import { getTaskHours } from '@/lib/task-hours';
+import { overdueRank } from '@/lib/overdue';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,10 +48,34 @@ const UPDATE_TASK_MUTATION = `
 // ─── Helpers (module-level, no deps) ─────────────────────────────────────────
 
 /** Returns the "planned date" key (YYYY-MM-DD) for routing a task to a day column. */
-function getTaskDate(t: DashboardTask): string {
+export function getTaskDate(t: DashboardTask): string {
+  // A delay brings the task up to today whatever its dates say (R74); those
+  // dates stay untouched, which is the whole point of dropping the carry-forward.
+  if (t.overdueKind !== 'NONE') return formatDate(new Date());
   if (t.plannedStart) return t.plannedStart.slice(0, 10);
   if (t.deadline) return t.deadline;
   return formatDate(new Date());
+}
+
+/**
+ * Day-column order (R74): the gravest delay leads — DEADLINE, then PLANNED —
+ * then urgency and impact descending. Overdue tasks are mixed in with the day's
+ * real work rather than boxed apart: the question is "what do I do today".
+ */
+export function compareDayTasks(a: DashboardTask, b: DashboardTask): number {
+  const byDelay = overdueRank(b.overdueKind) - overdueRank(a.overdueKind);
+  if (byDelay !== 0) return byDelay;
+  if (b.urgency !== a.urgency) return b.urgency - a.urgency; // urgency desc
+  return b.impact - a.impact;                                 // impact desc
+}
+
+/**
+ * Clone of `task` re-planned to `plannedStart`, with the delay dropped: the
+ * server re-derives it on the next read, and keeping the stale one would send
+ * `getTaskDate` — and the card with it — straight back to today's column.
+ */
+function replanned(task: DashboardTask, plannedStart: string | null): DashboardTask {
+  return { ...task, plannedStart, overdueKind: 'NONE', overdueDays: null };
 }
 
 function isUnplanned(t: DashboardTask): boolean {
@@ -103,7 +128,7 @@ function moveBetweenDays(
   fromDate: string,
   toDate: string,
 ): Record<string, DashboardTask[]> {
-  const updated: DashboardTask = { ...task, plannedStart: `${toDate}T08:00:00Z` };
+  const updated: DashboardTask = replanned(task, `${toDate}T08:00:00Z`);
   return {
     ...prev,
     [fromDate]: (prev[fromDate] ?? []).filter(t => t.id !== task.id),
@@ -147,6 +172,8 @@ function DraggableTaskCard({
         effectiveEstimatedHours={task.effectiveEstimatedHours}
         jiraTimeSpentSeconds={task.jiraTimeSpentSeconds}
         gryzzlyTask={task.gryzzlyTask ?? null}
+        overdueKind={task.overdueKind}
+        overdueDays={task.overdueDays}
         compact
         onClick={disabled ? undefined : () => onTaskClick(task.id)}
       />
@@ -252,10 +279,7 @@ function DayColumn({ date, tasks, meetings, onTaskClick, isDragging, onAddTask, 
 
   const today = isToday(date);
 
-  const sortedTasks = [...tasks].sort((a, b) => {
-    if (b.urgency !== a.urgency) return b.urgency - a.urgency; // urgency desc
-    return b.impact - a.impact;                                 // impact desc
-  });
+  const sortedTasks = [...tasks].sort(compareDayTasks);
 
   const sortedMeetings = [...meetings].sort(
     (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
@@ -501,7 +525,7 @@ export function DashboardPage() {
         ...prev,
         [fromDate]: (prev[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
       }));
-      setUnplannedTasks(prev => [...prev, { ...draggedTask, plannedStart: null }]);
+      setUnplannedTasks(prev => [...prev, replanned(draggedTask, null)]);
       executeUpdate({ id: draggedTask.id, input: { plannedStart: null } })
         .then(r => { if (r.error || !r.data) restore(); })
         .catch(restore)
@@ -511,7 +535,7 @@ export function DashboardPage() {
             ...serverSnapshotRef.current,
             [fromDate]: (serverSnapshotRef.current[fromDate] ?? []).filter(t => t.id !== draggedTask.id),
           };
-          serverUnplannedRef.current = [...serverUnplannedRef.current, { ...draggedTask, plannedStart: null }];
+          serverUnplannedRef.current = [...serverUnplannedRef.current, replanned(draggedTask, null)];
         });
       return;
     }
@@ -525,7 +549,7 @@ export function DashboardPage() {
       // Case 2: unplanned → day
       isMutatingRef.current = true;
       setUnplannedTasks(prev => prev.filter(t => t.id !== draggedTask.id));
-      const scheduled = { ...draggedTask, plannedStart: `${newDate}T08:00:00Z` };
+      const scheduled = replanned(draggedTask, `${newDate}T08:00:00Z`);
       setTasksByDate(prev => ({
         ...prev,
         [newDate]: [...(prev[newDate] ?? []), scheduled],
@@ -685,6 +709,8 @@ export function DashboardPage() {
                     effectiveRemainingHours={draggingTaskRef.current.effectiveRemainingHours}
                     effectiveEstimatedHours={draggingTaskRef.current.effectiveEstimatedHours}
                     jiraTimeSpentSeconds={draggingTaskRef.current.jiraTimeSpentSeconds}
+                    overdueKind={draggingTaskRef.current.overdueKind}
+                    overdueDays={draggingTaskRef.current.overdueDays}
                     compact
                   />
                 </div>

@@ -378,22 +378,25 @@ impl TaskRepository for SqliteTaskRepository {
         Ok(tasks)
     }
 
-    async fn find_planned_before(
+    async fn find_overdue(
         &self,
         user_id: UserId,
-        before_date: NaiveDate,
+        today: NaiveDate,
     ) -> Result<Vec<Task>, RepositoryError> {
-        let before_str = before_date.format("%Y-%m-%d").to_string();
+        let today_str = today.format("%Y-%m-%d").to_string();
         let rows = sqlx::query(
-            "SELECT * FROM tasks \
-             WHERE user_id = ? \
-               AND planned_start IS NOT NULL \
-               AND date(planned_start) < ? \
-               AND status NOT IN ('done', 'cancelled') \
-             ORDER BY planned_start",
+            "SELECT t.* FROM tasks t \
+             WHERE t.user_id = ? \
+               AND t.status NOT IN ('done', 'cancelled') \
+               AND t.id NOT IN (SELECT tl.task_id_secondary FROM task_links tl \
+                                WHERE tl.link_type IN ('auto_merged', 'manual_merged')) \
+               AND ( (t.planned_start IS NOT NULL AND date(t.planned_start) < ?) \
+                  OR (t.deadline IS NOT NULL AND t.deadline < ?) ) \
+             ORDER BY COALESCE(t.deadline, date(t.planned_start))",
         )
         .bind(user_id.to_string())
-        .bind(&before_str)
+        .bind(&today_str)
+        .bind(&today_str)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| RepositoryError::Database(e.to_string()))?;
@@ -1156,7 +1159,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_planned_before_returns_only_active_past_tasks() {
+    async fn find_overdue_returns_only_active_past_tasks() {
         let pool = setup().await;
         let repo = SqliteTaskRepository::new(pool);
 
@@ -1165,27 +1168,31 @@ mod tests {
 
         // Active task planned last Monday — should be returned
         let mut stale = make_task("Stale");
+        stale.deadline = None;
         stale.planned_start = Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc());
         stale.status = TaskStatus::Todo;
         repo.save(&stale).await.unwrap();
 
         // Done task planned last Monday — must NOT be returned
         let mut done = make_task("Done");
+        done.deadline = None;
         done.planned_start = Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc());
         done.status = TaskStatus::Done;
         repo.save(&done).await.unwrap();
 
         // Task planned this Monday — must NOT be returned
         let mut current = make_task("Current");
+        current.deadline = None;
         current.planned_start = Some(this_monday.and_hms_opt(8, 0, 0).unwrap().and_utc());
         current.status = TaskStatus::Todo;
         repo.save(&current).await.unwrap();
 
-        // Task with no planned_start — must NOT be returned
-        let no_date = make_task("No Date");
+        // Task with neither planned_start nor deadline — must NOT be returned
+        let mut no_date = make_task("No Date");
+        no_date.deadline = None;
         repo.save(&no_date).await.unwrap();
 
-        let results = repo.find_planned_before(user_id(), this_monday).await.unwrap();
+        let results = repo.find_overdue(user_id(), this_monday).await.unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Stale");
@@ -1503,35 +1510,111 @@ mod tests {
         assert_eq!(loaded.gryzzly_project_id.as_deref(), Some("p-9"));
     }
 
-    // Test 10: find_planned_before excludes BOTH Done AND Cancelled tasks (BLOCKER regression)
+    // Test 10: find_overdue excludes BOTH Done AND Cancelled tasks (BLOCKER regression)
     #[tokio::test]
-    async fn find_planned_before_excludes_done_and_cancelled() {
+    async fn find_overdue_excludes_done_and_cancelled() {
         let pool = setup().await;
         let repo = SqliteTaskRepository::new(pool);
 
         let past = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
-        let cutoff = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
 
         let mut todo_task = make_task("Todo past");
+        todo_task.deadline = None;
         todo_task.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
         todo_task.status = TaskStatus::Todo;
         repo.save(&todo_task).await.unwrap();
 
         let mut done_task = make_task("Done past");
+        done_task.deadline = None;
         done_task.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
         done_task.status = TaskStatus::Done;
         repo.save(&done_task).await.unwrap();
 
         let mut cancelled_task = make_task("Cancelled past");
+        cancelled_task.deadline = None;
         cancelled_task.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
         cancelled_task.status = TaskStatus::Cancelled;
         repo.save(&cancelled_task).await.unwrap();
 
-        let results = repo.find_planned_before(user_id(), cutoff).await.unwrap();
+        let results = repo.find_overdue(user_id(), today).await.unwrap();
 
         // Only the Todo task must be returned
         assert_eq!(results.len(), 1, "Expected 1 result, got: {:?}", results.iter().map(|t| &t.title).collect::<Vec<_>>());
         assert_eq!(results[0].title, "Todo past");
+    }
+
+    // R73/R74: a task with NO planned_start but an overrun deadline is overdue. The old
+    // `find_planned_before` clause `planned_start IS NOT NULL` made those structurally
+    // invisible.
+    #[tokio::test]
+    async fn find_overdue_returns_tasks_with_only_a_past_deadline() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+
+        let mut broken_commitment = make_task("Deadline passed");
+        broken_commitment.planned_start = None;
+        broken_commitment.deadline = Some(NaiveDate::from_ymd_opt(2026, 4, 15).unwrap());
+        repo.save(&broken_commitment).await.unwrap();
+
+        let mut still_ahead = make_task("Deadline ahead");
+        still_ahead.planned_start = None;
+        still_ahead.deadline = Some(NaiveDate::from_ymd_opt(2026, 4, 25).unwrap());
+        repo.save(&still_ahead).await.unwrap();
+
+        // Deadline exactly today is not overdue — the day is not over.
+        let mut due_today = make_task("Deadline today");
+        due_today.planned_start = None;
+        due_today.deadline = Some(today);
+        repo.save(&due_today).await.unwrap();
+
+        let results = repo.find_overdue(user_id(), today).await.unwrap();
+
+        assert_eq!(results.len(), 1, "got: {:?}", results.iter().map(|t| &t.title).collect::<Vec<_>>());
+        assert_eq!(results[0].title, "Deadline passed");
+    }
+
+    // R74: the loser of a merge no longer exists for the user, so it cannot be late.
+    #[tokio::test]
+    async fn find_overdue_excludes_merged_losers() {
+        use crate::database::task_link_repo::SqliteTaskLinkRepository;
+        use application::repositories::TaskLinkRepository;
+
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+        let link_repo = SqliteTaskLinkRepository::new(pool.clone());
+
+        let past = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 4, 20).unwrap();
+
+        let mut survivor = make_task("Survivor");
+        survivor.deadline = None;
+        survivor.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        repo.save(&survivor).await.unwrap();
+
+        let mut loser = make_task("Merged loser");
+        loser.deadline = None;
+        loser.planned_start = Some(past.and_hms_opt(8, 0, 0).unwrap().and_utc());
+        repo.save(&loser).await.unwrap();
+
+        link_repo
+            .save(&TaskLink {
+                id: Uuid::new_v4(),
+                task_id_primary: survivor.id,
+                task_id_secondary: loser.id,
+                link_type: TaskLinkType::AutoMerged,
+                confidence_score: Some(1.0),
+                created_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let results = repo.find_overdue(user_id(), today).await.unwrap();
+
+        assert_eq!(results.len(), 1, "got: {:?}", results.iter().map(|t| &t.title).collect::<Vec<_>>());
+        assert_eq!(results[0].title, "Survivor");
     }
 
     // ─── Cascade-preservation regression tests ───

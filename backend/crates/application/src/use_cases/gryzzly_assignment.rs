@@ -98,10 +98,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn find_planned_before(
+        async fn find_overdue(
             &self,
             _user_id: UserId,
-            _before_date: chrono::NaiveDate,
+            _today: chrono::NaiveDate,
         ) -> Result<Vec<Task>, RepositoryError> {
             unimplemented!()
         }

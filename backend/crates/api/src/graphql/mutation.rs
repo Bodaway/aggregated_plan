@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, MaybeUndefined, Object, Result, ID};
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 use domain::types::common::{ImpactLevel, UrgencyLevel};
 use domain::types::{BreakRule, TimesheetStatus, UserId};
 use uuid::Uuid;
@@ -579,25 +579,6 @@ impl MutationRoot {
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(outcome.into())
-    }
-
-    /// Carry forward all active tasks whose planned_start is before the current
-    /// Monday to that Monday at 08:00 UTC. Returns the number of tasks updated.
-    async fn carry_forward_tasks(&self, ctx: &Context<'_>) -> Result<i32> {
-        let user_id = ctx.data::<UserId>()?;
-        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
-
-        let today = chrono::Utc::now().date_naive();
-        // Find the most recent Monday (or today if today is Monday)
-        let days_since_monday = today.weekday().num_days_from_monday();
-        let current_monday = today - chrono::Duration::days(days_since_monday as i64);
-
-        let count =
-            task_management::carry_forward_tasks(task_repo.as_ref(), *user_id, current_monday)
-                .await
-                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-
-        Ok(count as i32)
     }
 
     /// Set the tracking state of a task (inbox/followed/dismissed).
@@ -2088,7 +2069,11 @@ fn convert_update_input(
         description: input.description.map(Some),
         notes: input.notes.map(Some),
         project_id,
-        deadline: input.deadline.map(Some),
+        deadline: match input.deadline {
+            MaybeUndefined::Value(d) => Some(Some(d)),
+            MaybeUndefined::Null      => Some(None),
+            MaybeUndefined::Undefined => None,
+        },
         planned_start: match input.planned_start {
             MaybeUndefined::Value(dt) => Some(Some(dt)),
             MaybeUndefined::Null      => Some(None),

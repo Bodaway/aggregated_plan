@@ -38,6 +38,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
   const [impact, setImpact] = useState('MEDIUM');
   const [description, setDescription] = useState('');
   const [notes, setNotes] = useState('');
+  const [deadline, setDeadline] = useState('');
   const [recurrence, setRecurrence] = useState<RecurrenceConfig>(null);
 
   // Reset form when sheet opens
@@ -49,6 +50,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
       setImpact('MEDIUM');
       setDescription('');
       setNotes('');
+      setDeadline('');
       setRecurrence(null);
     }
   }, [isOpen]);
@@ -100,6 +102,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
         impact,
         description: description.trim() || undefined,
         notes: notes.trim() || undefined,
+        deadline: deadline || undefined,
       });
 
       if (!result.error) {
@@ -107,7 +110,7 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
         onClose();
       }
     }
-  }, [title, estimatedHours, urgency, impact, description, notes, plannedDate, isLoading, recurrence, createTask, createRecurringTask, onCreated, onClose]);
+  }, [title, estimatedHours, urgency, impact, description, notes, deadline, plannedDate, isLoading, recurrence, createTask, createRecurringTask, onCreated, onClose]);
 
   return (
     <>
@@ -164,6 +167,32 @@ export function TaskCreateSheet({ plannedDate, onClose, onCreated }: TaskCreateS
                     <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0121 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
                   </svg>
                   <span>Planned for <strong>{plannedDate}</strong></span>
+                </div>
+              )}
+
+              {/* Deadline — R76: a new task is always Source::Personal, so it owns
+                  its deadline. A recurring template has none. */}
+              {recurrence === null && (
+                <div>
+                  <label htmlFor="new-task-deadline" className="block text-xs font-medium text-gray-700 mb-1">
+                    Échéance
+                  </label>
+                  <input
+                    id="new-task-deadline"
+                    type="date"
+                    value={deadline}
+                    onChange={e => setDeadline(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  {deadline && (
+                    <button
+                      type="button"
+                      onClick={() => setDeadline('')}
+                      className="mt-1 text-xs text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      Effacer l&apos;échéance
+                    </button>
+                  )}
                 </div>
               )}
 

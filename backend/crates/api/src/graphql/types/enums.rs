@@ -1,5 +1,6 @@
 use async_graphql::Enum;
 use application::use_cases::timesheet::DayOffScope;
+use domain::rules::overdue::Overdue;
 use domain::types;
 
 /// GraphQL enum for task source.
@@ -528,6 +529,24 @@ impl From<DayOffScopeGql> for DayOffScope {
             DayOffScopeGql::Full => DayOffScope::Full,
             DayOffScopeGql::Morning => DayOffScope::Morning,
             DayOffScopeGql::Afternoon => DayOffScope::Afternoon,
+        }
+    }
+}
+
+/// R73: which commitment a task is late on. `None` when it is not late at all.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum OverdueKindGql {
+    None,
+    Planned,
+    Deadline,
+}
+
+impl From<Overdue> for OverdueKindGql {
+    fn from(o: Overdue) -> Self {
+        match o {
+            Overdue::None => OverdueKindGql::None,
+            Overdue::Planned { .. } => OverdueKindGql::Planned,
+            Overdue::Deadline { .. } => OverdueKindGql::Deadline,
         }
     }
 }

@@ -504,10 +504,10 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn find_planned_before(
+        async fn find_overdue(
             &self,
             user_id: UserId,
-            before_date: NaiveDate,
+            today: NaiveDate,
         ) -> Result<Vec<Task>, RepositoryError> {
             Ok(self
                 .tasks
@@ -517,9 +517,11 @@ mod tests {
                 .filter(|t| {
                     t.user_id == user_id
                         && t.status != TaskStatus::Done
-                        && t.planned_start
-                            .map(|dt| dt.date_naive() < before_date)
+                        && t.status != TaskStatus::Cancelled
+                        && (t.planned_start
+                            .map(|dt| dt.date_naive() < today)
                             .unwrap_or(false)
+                            || t.deadline.map(|d| d < today).unwrap_or(false))
                 })
                 .cloned()
                 .collect())

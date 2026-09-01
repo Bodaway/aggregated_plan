@@ -286,38 +286,6 @@ pub async fn set_tracking_state_batch(
     Ok(results)
 }
 
-/// Carry forward tasks whose planned_start is before `current_monday` to that Monday.
-///
-/// Only non-Done tasks are rescheduled. Recurring instances (those with a non-null
-/// `recurrence_id`) are exempt — their scheduling is managed by the recurrence engine.
-/// Returns the number of tasks updated.
-pub async fn carry_forward_tasks(
-    task_repo: &dyn TaskRepository,
-    user_id: UserId,
-    current_monday: NaiveDate,
-) -> Result<usize, AppError> {
-    let tasks = task_repo
-        .find_planned_before(user_id, current_monday)
-        .await?;
-
-    // Recurring instances are exempt from carry-forward: they represent a specific
-    // occurrence slot and must not be silently rescheduled by this mechanism.
-    let tasks: Vec<_> = tasks.into_iter().filter(|t| t.recurrence_id.is_none()).collect();
-
-    let new_start = current_monday
-        .and_hms_opt(8, 0, 0)
-        .expect("valid time")
-        .and_utc();
-
-    let count = tasks.len();
-    for mut task in tasks {
-        task.planned_start = Some(new_start);
-        task.updated_at = Utc::now();
-        task_repo.save(&task).await?;
-    }
-    Ok(count)
-}
-
 /// Mark a task as completed.
 pub async fn complete_task(
     task_repo: &dyn TaskRepository,
@@ -439,10 +407,10 @@ mod tests {
                 .collect())
         }
 
-        async fn find_planned_before(
+        async fn find_overdue(
             &self,
             user_id: UserId,
-            before_date: NaiveDate,
+            today: NaiveDate,
         ) -> Result<Vec<Task>, RepositoryError> {
             let tasks = self.tasks.lock().unwrap();
             Ok(tasks
@@ -451,9 +419,10 @@ mod tests {
                     t.user_id == user_id
                         && t.status != TaskStatus::Done
                         && t.status != TaskStatus::Cancelled
-                        && t.planned_start
-                            .map(|dt| dt.date_naive() < before_date)
+                        && (t.planned_start
+                            .map(|dt| dt.date_naive() < today)
                             .unwrap_or(false)
+                            || t.deadline.map(|d| d < today).unwrap_or(false))
                 })
                 .cloned()
                 .collect())
@@ -1088,55 +1057,6 @@ mod tests {
         task
     }
 
-    // Test 11: carry_forward_tasks does NOT move recurring instances.
-    #[tokio::test]
-    async fn carry_forward_skips_recurring_instances() {
-        let repo = InMemoryTaskRepository::new();
-        let last_monday = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
-        let this_monday = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
-
-        // Regular stale task — SHOULD be moved.
-        let stale_input = CreateTaskInput {
-            title: "Stale".to_string(),
-            description: None,
-            notes: None,
-            project_id: None,
-            deadline: None,
-            planned_start: Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
-            planned_end: None,
-            estimated_hours: None,
-            impact: None,
-            urgency: None,
-            tags: vec![],
-        };
-        let stale = create_personal_task(&repo, test_user_id(), stale_input, today())
-            .await
-            .unwrap();
-
-        // Recurring stale task — must NOT be moved.
-        let recurring =
-            make_recurring_task(&repo, test_user_id(), Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()));
-
-        let count = carry_forward_tasks(&repo, test_user_id(), this_monday)
-            .await
-            .unwrap();
-
-        // Only the regular stale task is counted.
-        assert_eq!(count, 1);
-
-        // Regular stale task was moved.
-        let updated_stale = repo.find_by_id(stale.id).await.unwrap().unwrap();
-        assert_eq!(updated_stale.planned_start.unwrap().date_naive(), this_monday);
-
-        // Recurring task was NOT moved.
-        let unchanged_recurring = repo.find_by_id(recurring.id).await.unwrap().unwrap();
-        assert_eq!(
-            unchanged_recurring.planned_start.unwrap().date_naive(),
-            last_monday,
-            "recurring instance must not be carried forward"
-        );
-    }
-
     // Test 12: update_task rejects recurring instances when template-only fields are provided.
     #[tokio::test]
     async fn update_task_rejects_recurring_instance() {
@@ -1303,96 +1223,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn carry_forward_moves_past_week_tasks_to_monday() {
-        let repo = InMemoryTaskRepository::new();
-        let last_monday = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
-        let this_monday = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
-
-        // Task planned last Monday — should be carried forward
-        let stale = CreateTaskInput {
-            title: "Stale Task".to_string(),
-            description: None,
-            notes: None,
-            project_id: None,
-            deadline: None,
-            planned_start: Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
-            planned_end: None,
-            estimated_hours: None,
-            impact: None,
-            urgency: None,
-            tags: vec![],
-        };
-        let stale_task = create_personal_task(&repo, test_user_id(), stale, today())
-            .await
-            .unwrap();
-
-        // Done task from last week — must NOT be moved
-        let done = CreateTaskInput {
-            title: "Done Task".to_string(),
-            description: None,
-            notes: None,
-            project_id: None,
-            deadline: None,
-            planned_start: Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
-            planned_end: None,
-            estimated_hours: None,
-            impact: None,
-            urgency: None,
-            tags: vec![],
-        };
-        let done_task = create_personal_task(&repo, test_user_id(), done, today())
-            .await
-            .unwrap();
-        // Mark as done
-        complete_task(&repo, done_task.id).await.unwrap();
-
-        // Task already on current Monday — must NOT be affected
-        let current = CreateTaskInput {
-            title: "Current Task".to_string(),
-            description: None,
-            notes: None,
-            project_id: None,
-            deadline: None,
-            planned_start: Some(this_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
-            planned_end: None,
-            estimated_hours: None,
-            impact: None,
-            urgency: None,
-            tags: vec![],
-        };
-        let current_task = create_personal_task(&repo, test_user_id(), current, today())
-            .await
-            .unwrap();
-
-        let count = carry_forward_tasks(&repo, test_user_id(), this_monday)
-            .await
-            .unwrap();
-
-        assert_eq!(count, 1, "only the stale active task should be moved");
-
-        let updated = repo.find_by_id(stale_task.id).await.unwrap().unwrap();
-        assert_eq!(
-            updated.planned_start.unwrap().date_naive(),
-            this_monday,
-            "stale task should be rescheduled to current Monday"
-        );
-
-        let done_after = repo.find_by_id(done_task.id).await.unwrap().unwrap();
-        assert_eq!(
-            done_after.planned_start.unwrap().date_naive(),
-            last_monday,
-            "done task should not be moved"
-        );
-
-        let current_after = repo.find_by_id(current_task.id).await.unwrap().unwrap();
-        assert_eq!(
-            current_after.planned_start.unwrap().date_naive(),
-            this_monday,
-            "current week task unchanged"
-        );
-    }
-
-    #[tokio::test]
     async fn update_task_sets_and_clears_delegated_to() {
         let repo = InMemoryTaskRepository::new();
         let input = CreateTaskInput {
@@ -1483,68 +1313,5 @@ mod tests {
         let result = update_task(&repo, recurring.id, update, today()).await;
         assert!(result.is_ok(), "delegated_to on recurring instance should succeed");
         assert_eq!(result.unwrap().delegated_to.as_deref(), Some("Marie"));
-    }
-
-    // Deferred test 11 from Wave 3A: carry_forward must not carry Cancelled tasks.
-    #[tokio::test]
-    async fn carry_forward_does_not_carry_cancelled_tasks() {
-        let repo = InMemoryTaskRepository::new();
-        let last_monday = NaiveDate::from_ymd_opt(2026, 4, 6).unwrap();
-        let this_monday = NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
-
-        // Create a task in the past with status = Cancelled, no recurrence_id.
-        let now = Utc::now();
-        let cancelled_task = Task {
-            id: Uuid::new_v4(),
-            user_id: test_user_id(),
-            title: "Cancelled task".to_string(),
-            description: None,
-            notes: None,
-            source: Source::Personal,
-            source_id: None,
-            jira_status: None,
-            status: TaskStatus::Cancelled,
-            project_id: None,
-            assignee: None,
-            delegated_to: None,
-            deadline: None,
-            planned_start: Some(last_monday.and_hms_opt(8, 0, 0).unwrap().and_utc()),
-            planned_end: None,
-            estimated_hours: None,
-            urgency: UrgencyLevel::Low,
-            urgency_manual: false,
-            impact: ImpactLevel::Low,
-            tags: vec![],
-            tracking_state: TrackingState::Followed,
-            jira_remaining_seconds: None,
-            jira_original_estimate_seconds: None,
-            jira_time_spent_seconds: None,
-            remaining_hours_override: None,
-            estimated_hours_override: None,
-            recurrence_id: None,
-            occurrence_date: None,
-            gryzzly_task_id: None,
-            gryzzly_project_id: None,
-            created_at: now,
-            updated_at: now,
-        };
-        {
-            let mut store = repo.tasks.lock().unwrap();
-            store.insert(cancelled_task.id, cancelled_task.clone());
-        }
-
-        let count = carry_forward_tasks(&repo, test_user_id(), this_monday)
-            .await
-            .unwrap();
-
-        // Cancelled task must not be carried forward.
-        assert_eq!(count, 0, "cancelled task should not be carried forward");
-
-        let after = repo.find_by_id(cancelled_task.id).await.unwrap().unwrap();
-        assert_eq!(
-            after.planned_start.unwrap().date_naive(),
-            last_monday,
-            "cancelled task planned_start must remain unchanged"
-        );
     }
 }

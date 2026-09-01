@@ -490,11 +490,6 @@ type CombinedMutation {
 	"""
 	repairOrphanedSlots(input: RepairOrphanedSlotsInput!): SlotRepairResultGql!
 	"""
-	Carry forward all active tasks whose planned_start is before the current
-	Monday to that Monday at 08:00 UTC. Returns the number of tasks updated.
-	"""
-	carryForwardTasks: Int!
-	"""
 	Set the tracking state of a task (inbox/followed/dismissed).
 	"""
 	setTrackingState(taskId: ID!, state: TrackingStateGql!): TaskGql!
@@ -1376,6 +1371,15 @@ ISO 8601 combined date and time without timezone.
 scalar NaiveDateTime
 
 """
+R73: which commitment a task is late on. `None` when it is not late at all.
+"""
+enum OverdueKindGql {
+	NONE
+	PLANNED
+	DEADLINE
+}
+
+"""
 Evidence that fell outside the working windows — surfaced so the user can decide,
 rather than dropped where nobody can see it.
 """
@@ -2002,6 +2006,16 @@ type TaskGql {
 	Computed Eisenhower quadrant based on urgency and impact.
 	"""
 	quadrant: QuadrantGql!
+	"""
+	R73: which commitment this task is late on, as of the server's day. Derived at
+	read time — lateness is never persisted.
+	"""
+	overdueKind: OverdueKindGql!
+	"""
+	R73: calendar days elapsed since the overrun date of `overdueKind`.
+	Null when the task is not late.
+	"""
+	overdueDays: Int
 	createdAt: DateTime!
 	updatedAt: DateTime!
 	"""
@@ -2151,7 +2165,10 @@ input UpdateTaskInput {
 	description: String
 	notes: String
 	projectId: ID
-	deadline: NaiveDate
+	"""
+	Set a date to change the deadline, explicit null to clear, omit to leave unchanged.
+	"""
+	deadline: NaiveDate = null
 	plannedStart: DateTime = null
 	plannedEnd: DateTime
 	estimatedHours: Float

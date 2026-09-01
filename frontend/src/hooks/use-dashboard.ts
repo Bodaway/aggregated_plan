@@ -1,6 +1,7 @@
-import { useEffect, useMemo } from 'react';
-import { useMutation, useQuery } from 'urql';
+import { useMemo } from 'react';
+import { useQuery } from 'urql';
 import { AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
+import { type OverdueKind } from '@/lib/overdue';
 
 const URGENCY_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 const IMPACT_NUM: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
@@ -42,6 +43,10 @@ export interface DashboardTask {
   /** Null when unassigned. Selected here so the card can retarget the Gryzzly
    *  task inline, without opening the edit sheet. */
   readonly gryzzlyTask: AssignedGryzzlyTask | null;
+  /** Delay qualified server-side at read time (R73) — never a stored state. */
+  readonly overdueKind: OverdueKind;
+  /** Calendar days since the date of the retained level; null when on time. */
+  readonly overdueDays: number | null;
 }
 
 export interface DashboardMeeting {
@@ -110,12 +115,6 @@ export interface DailyDashboardData {
   readonly workingDays: readonly number[];
 }
 
-const CARRY_FORWARD_MUTATION = `
-  mutation CarryForwardTasks {
-    carryForwardTasks
-  }
-`;
-
 const DASHBOARD_QUERY = `
   query DailyDashboard($date: String!) {
     dailyDashboard(date: $date) {
@@ -146,6 +145,8 @@ const DASHBOARD_QUERY = `
           projectStatus
           stale
         }
+        overdueKind
+        overdueDays
       }
       meetings {
         id
@@ -193,21 +194,11 @@ const DASHBOARD_QUERY = `
 `;
 
 export function useDashboard(date: string) {
-  const [, executeCarryForward] = useMutation<{ carryForwardTasks: number }>(CARRY_FORWARD_MUTATION);
-
   const [result, reexecute] = useQuery<{ dailyDashboard: DailyDashboardData }>({
     query: DASHBOARD_QUERY,
     variables: { date },
     requestPolicy: 'cache-and-network',
   });
-
-  // On mount, carry forward any tasks stuck in a past week, then refresh.
-  useEffect(() => {
-    executeCarryForward({}).then(() => {
-      reexecute({ requestPolicy: 'network-only' });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const raw = result.data?.dailyDashboard ?? null;
   const data = useMemo(

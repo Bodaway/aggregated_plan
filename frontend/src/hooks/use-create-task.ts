@@ -7,6 +7,7 @@ const CREATE_TASK_MUTATION = `
       id
       title
       plannedStart
+      deadline
       status
       urgency
       impact
@@ -18,6 +19,7 @@ const CREATE_TASK_MUTATION = `
 export interface NewTaskInput {
   title: string;
   plannedStart?: string;   // ISO 8601 e.g. "2026-03-12T08:00:00Z"
+  deadline?: string;       // plain date "YYYY-MM-DD"; omit to leave it unset
   estimatedHours?: number;
   urgency?: string;        // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
   impact?: string;

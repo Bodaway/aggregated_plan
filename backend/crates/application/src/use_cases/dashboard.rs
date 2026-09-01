@@ -99,6 +99,18 @@ pub async fn get_daily_dashboard(
     let week_end = week_start + Duration::days(max_offset);
     let mut tasks = task_repo.find_by_date_range(user_id, week_start, week_end).await?;
 
+    // R74: overdue tasks are shown on today's column whatever week their dates put them
+    // in, so the load must reach past `[week_start, week_end]`. Without this widening,
+    // dropping the carry-forward would not move overdue tasks — it would hide them.
+    // They also feed `compute_weekly_workload` below, exactly as the carry-forward made
+    // them weigh once it had dragged them into the current week.
+    let overdue = task_repo.find_overdue(user_id, date).await?;
+    for t in overdue {
+        if !tasks.iter().any(|existing| existing.id == t.id) {
+            tasks.push(t);
+        }
+    }
+
     // Also include unplanned followed active tasks (no planned_start and no deadline)
     // These will appear on "today" in the frontend
     let active_filter = TaskFilter {
@@ -891,5 +903,333 @@ mod tests {
         let sunday = monday + Duration::days(6);
         assert_eq!(result.half_days[0].date, saturday);
         assert_eq!(result.half_days[2].date, sunday);
+    }
+
+    use async_trait::async_trait;
+    use domain::rules::overdue::{classify, Overdue};
+    use domain::types::recurrence::RecurrenceTemplateId;
+
+    use crate::errors::RepositoryError;
+
+    fn test_user_id() -> UserId {
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid uuid")
+    }
+
+    fn make_task(title: &str, planned_start: Option<NaiveDate>, estimated_hours: f32) -> Task {
+        let now = Utc::now();
+        Task {
+            id: Uuid::new_v4(),
+            user_id: test_user_id(),
+            title: title.to_string(),
+            description: None,
+            notes: None,
+            source: Source::Personal,
+            source_id: None,
+            jira_status: None,
+            status: TaskStatus::Todo,
+            project_id: None,
+            assignee: None,
+            delegated_to: None,
+            deadline: None,
+            planned_start: planned_start
+                .map(|d| d.and_hms_opt(8, 0, 0).expect("valid time").and_utc()),
+            planned_end: None,
+            estimated_hours: Some(estimated_hours),
+            urgency: UrgencyLevel::Medium,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            tags: Vec::new(),
+            tracking_state: TrackingState::Followed,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: None,
+            occurrence_date: None,
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    struct MemTaskRepo {
+        tasks: Vec<Task>,
+    }
+
+    #[async_trait]
+    impl TaskRepository for MemTaskRepo {
+        async fn find_by_id(&self, id: TaskId) -> Result<Option<Task>, RepositoryError> {
+            Ok(self.tasks.iter().find(|t| t.id == id).cloned())
+        }
+
+        async fn find_by_user(
+            &self,
+            _user_id: UserId,
+            _filter: &TaskFilter,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn find_by_source(
+            &self,
+            _user_id: UserId,
+            _source: Source,
+            _source_id: &str,
+        ) -> Result<Option<Task>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn find_by_date_range(
+            &self,
+            user_id: UserId,
+            start: NaiveDate,
+            end: NaiveDate,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(self
+                .tasks
+                .iter()
+                .filter(|t| {
+                    t.user_id == user_id
+                        && (t.deadline.map(|d| d >= start && d <= end).unwrap_or(false)
+                            || t.planned_start
+                                .map(|dt| {
+                                    let d = dt.date_naive();
+                                    d >= start && d <= end
+                                })
+                                .unwrap_or(false))
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn find_overdue(
+            &self,
+            user_id: UserId,
+            today: NaiveDate,
+        ) -> Result<Vec<Task>, RepositoryError> {
+            Ok(self
+                .tasks
+                .iter()
+                .filter(|t| {
+                    t.user_id == user_id
+                        && classify(t.planned_start, t.deadline, t.status, today) != Overdue::None
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn save(&self, _task: &Task) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn save_batch(&self, _tasks: &[Task]) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _id: TaskId) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn delete_stale_by_source(
+            &self,
+            _user_id: UserId,
+            _source: Source,
+            _keep_ids: &[String],
+        ) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
+
+        async fn find_by_recurrence_slot(
+            &self,
+            _template_id: RecurrenceTemplateId,
+            _occurrence_date: NaiveDate,
+        ) -> Result<Option<Task>, RepositoryError> {
+            Ok(None)
+        }
+    }
+
+    struct StubMeetingRepo;
+
+    #[async_trait]
+    impl MeetingRepository for StubMeetingRepo {
+        async fn find_by_id(&self, _id: MeetingId) -> Result<Option<Meeting>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn update(&self, _meeting: &Meeting) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn find_by_user_and_date(
+            &self,
+            _user_id: UserId,
+            _date: NaiveDate,
+        ) -> Result<Vec<Meeting>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn find_by_user_and_range(
+            &self,
+            _user_id: UserId,
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> Result<Vec<Meeting>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn upsert_batch(&self, _meetings: &[Meeting]) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn delete_stale(
+            &self,
+            _user_id: UserId,
+            _current_outlook_ids: &[String],
+        ) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
+
+        async fn find_by_project(
+            &self,
+            _user_id: UserId,
+            _project_id: ProjectId,
+        ) -> Result<Vec<Meeting>, RepositoryError> {
+            Ok(vec![])
+        }
+    }
+
+    struct StubAlertRepo;
+
+    #[async_trait]
+    impl AlertRepository for StubAlertRepo {
+        async fn find_by_id(&self, _id: AlertId) -> Result<Option<Alert>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn find_unresolved(&self, _user_id: UserId) -> Result<Vec<Alert>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn find_by_user(
+            &self,
+            _user_id: UserId,
+            _resolved: Option<bool>,
+        ) -> Result<Vec<Alert>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn save(&self, _alert: &Alert) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn save_batch(&self, _alerts: &[Alert]) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn update(&self, _alert: &Alert) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+
+        async fn delete_resolved(&self, _user_id: UserId) -> Result<u64, RepositoryError> {
+            Ok(0)
+        }
+    }
+
+    struct StubSyncRepo;
+
+    #[async_trait]
+    impl SyncStatusRepository for StubSyncRepo {
+        async fn find_by_user(&self, _user_id: UserId) -> Result<Vec<SyncStatus>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn upsert(&self, _status: &SyncStatus) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    struct StubConfigRepo;
+
+    #[async_trait]
+    impl ConfigRepository for StubConfigRepo {
+        async fn get(&self, _user_id: UserId, _key: &str) -> Result<Option<String>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn get_all(&self, _user_id: UserId) -> Result<Vec<(String, String)>, RepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn set(&self, _user_id: UserId, _key: &str, _value: &str) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    // R74: the dashboard only scanned `[week_start, week_end]`. Now that nothing rewrites
+    // `planned_start`, a task left behind two weeks ago must still surface today — and
+    // still weigh on the week, exactly as the carry-forward made it weigh.
+    #[tokio::test]
+    async fn daily_dashboard_surfaces_a_task_overdue_by_two_weeks() {
+        let today = NaiveDate::from_ymd_opt(2026, 4, 15).expect("valid date"); // Wednesday
+        let two_weeks_ago = NaiveDate::from_ymd_opt(2026, 4, 1).expect("valid date");
+
+        let stale = make_task("Left behind", Some(two_weeks_ago), 3.0);
+        let this_week = make_task("Planned today", Some(today), 2.0);
+        let stale_id = stale.id;
+
+        let task_repo = MemTaskRepo { tasks: vec![stale, this_week] };
+
+        let dashboard = get_daily_dashboard(
+            &task_repo,
+            &StubMeetingRepo,
+            &StubAlertRepo,
+            &StubSyncRepo,
+            &StubConfigRepo,
+            test_user_id(),
+            today,
+        )
+        .await
+        .expect("dashboard");
+
+        assert!(
+            dashboard.tasks.iter().any(|t| t.id == stale_id),
+            "a task planned two weeks ago must still be loaded"
+        );
+        assert_eq!(dashboard.tasks.len(), 2, "no duplicate, no loss");
+        assert_eq!(
+            dashboard.weekly_workload.total_planned, 5.0,
+            "the overdue task must weigh on the current week"
+        );
+    }
+
+    // The overdue query and the week query overlap on tasks already planned this week:
+    // merging must dedupe by id rather than count them twice.
+    #[tokio::test]
+    async fn daily_dashboard_does_not_duplicate_a_task_overdue_within_the_week() {
+        let today = NaiveDate::from_ymd_opt(2026, 4, 15).expect("valid date"); // Wednesday
+        let monday = NaiveDate::from_ymd_opt(2026, 4, 13).expect("valid date");
+
+        let slipped = make_task("Slipped since Monday", Some(monday), 4.0);
+        let slipped_id = slipped.id;
+
+        let task_repo = MemTaskRepo { tasks: vec![slipped] };
+
+        let dashboard = get_daily_dashboard(
+            &task_repo,
+            &StubMeetingRepo,
+            &StubAlertRepo,
+            &StubSyncRepo,
+            &StubConfigRepo,
+            test_user_id(),
+            today,
+        )
+        .await
+        .expect("dashboard");
+
+        assert_eq!(dashboard.tasks.len(), 1);
+        assert_eq!(dashboard.tasks[0].id, slipped_id);
+        assert_eq!(dashboard.weekly_workload.total_planned, 4.0);
     }
 }

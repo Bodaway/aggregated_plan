@@ -39,6 +39,15 @@ const STATUS_STYLES: Record<string, string> = {
   BLOCKED: 'bg-red-50 text-red-700 border-red-300',
 };
 
+/** Upstream systems that own the deadline of the tasks they feed (R76). */
+const SOURCE_LABELS: Record<string, string> = {
+  JIRA: 'Jira',
+  EXCEL: 'Excel',
+  OUTLOOK: 'Outlook',
+  OBSIDIAN: 'Obsidian',
+  GRYZZLY: 'Gryzzly',
+};
+
 /** GraphQL returns urgency/impact as enum strings (LOW, MEDIUM, HIGH, CRITICAL). */
 function normalizeEnum(val: string): string {
   const upper = String(val).toUpperCase();
@@ -59,6 +68,9 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const isOpen = taskId !== null;
   const isJira = task?.source === 'JIRA' || task?.source === 'EXCEL';
   const isRecurring = task?.isRecurring ?? false;
+  // R76: sync.rs reassigns `deadline` unconditionally on every pass, so a manual
+  // edit on a synced task would be destroyed at the next cycle. Personal tasks only.
+  const canEditDeadline = task?.source === 'PERSONAL';
 
   // Local form state
   const [description, setDescription] = useState('');
@@ -70,6 +82,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
   const [impact, setImpact] = useState('MEDIUM');
   const [status, setStatus] = useState('TODO');
   const [plannedDate, setPlannedDate] = useState('');
+  const [deadline, setDeadline] = useState('');
   const [delegatedTo, setDelegatedTo] = useState('');
   const [titleCopied, setTitleCopied] = useState(false);
 
@@ -86,6 +99,8 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
       setStatus(task.status ?? 'TODO');
       // Extract date portion from ISO datetime
       setPlannedDate(task.plannedStart ? task.plannedStart.slice(0, 10) : '');
+      // Deadline is a plain date; slice defensively in case the server widens it.
+      setDeadline(task.deadline ? task.deadline.slice(0, 10) : '');
       setDelegatedTo(task.delegatedTo ?? '');
     }
   }, [task]);
@@ -141,6 +156,15 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
     const currentPlannedDate = task.plannedStart ? task.plannedStart.slice(0, 10) : '';
     if (plannedDate !== currentPlannedDate) {
       perInstanceChanges.plannedStart = plannedDate ? `${plannedDate}T08:00:00Z` : null;
+    }
+
+    // Deadline is per-instance, like the planned date, and only ever sent for
+    // personal tasks (R76). Empty string means "clear it" — an explicit null.
+    if (canEditDeadline) {
+      const currentDeadline = task.deadline ? task.deadline.slice(0, 10) : '';
+      if (deadline !== currentDeadline) {
+        perInstanceChanges.deadline = deadline || null;
+      }
     }
 
     const newDelegate = delegatedTo.trim() || null;
@@ -201,7 +225,7 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
 
     onUpdated?.();
     onClose();
-  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, delegatedTo, isJira, isRecurring, updateTask, updatePriority, updateRecurringTask, onUpdated, onClose]);
+  }, [task, status, description, notes, estimatedHours, remainingOverride, estimatedOverride, urgency, impact, plannedDate, deadline, delegatedTo, isJira, isRecurring, canEditDeadline, updateTask, updatePriority, updateRecurringTask, onUpdated, onClose]);
 
   // Close on Escape
   useEffect(() => {
@@ -323,10 +347,15 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                         <span>{task.assignee}</span>
                       </div>
                     )}
-                    {task.deadline && (
-                      <div className="flex items-center gap-2 text-sm text-gray-600">
-                        <span className="font-medium w-20">Deadline:</span>
-                        <span>{task.deadline}</span>
+                    {!canEditDeadline && task.deadline && (
+                      <div className="flex items-start gap-2 text-sm text-gray-600">
+                        <span className="font-medium w-20 flex-shrink-0">Échéance:</span>
+                        <span>
+                          {task.deadline}
+                          <span className="ml-1.5 text-xs text-gray-400">
+                            — définie par {SOURCE_LABELS[task.source] ?? task.source}, réécrite à chaque synchronisation
+                          </span>
+                        </span>
                       </div>
                     )}
                     {task.project?.name && (
@@ -378,6 +407,30 @@ export function TaskEditSheet({ taskId, onClose, onUpdated }: TaskEditSheetProps
                         </button>
                       )}
                     </div>
+
+                    {canEditDeadline && (
+                      <div>
+                        <label htmlFor="task-deadline" className="block text-xs font-medium text-gray-700 mb-1">
+                          Échéance
+                        </label>
+                        <input
+                          id="task-deadline"
+                          type="date"
+                          value={deadline}
+                          onChange={(e) => setDeadline(e.target.value)}
+                          className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                        {deadline && (
+                          <button
+                            type="button"
+                            onClick={() => setDeadline('')}
+                            className="mt-1 text-xs text-gray-400 hover:text-red-500 transition-colors"
+                          >
+                            Effacer l&apos;échéance
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     <div>
                       <label htmlFor="task-delegated-to" className="block text-xs font-medium text-gray-700 mb-1">

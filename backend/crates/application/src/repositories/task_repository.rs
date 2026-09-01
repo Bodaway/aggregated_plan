@@ -68,12 +68,13 @@ pub trait TaskRepository: Send + Sync {
         end: NaiveDate,
     ) -> Result<Vec<Task>, RepositoryError>;
 
-    /// Find active tasks whose planned_start is strictly before `before_date`.
-    /// "Active" means status is not Done.
-    async fn find_planned_before(
+    /// R73/R74: find the active tasks that are overdue as of `today` — either their
+    /// `planned_start` or their `deadline` is strictly before it. Losers of a merge are
+    /// excluded: they no longer exist for the user, so they cannot be late.
+    async fn find_overdue(
         &self,
         user_id: UserId,
-        before_date: NaiveDate,
+        today: NaiveDate,
     ) -> Result<Vec<Task>, RepositoryError>;
 
     /// Save a new task or update an existing one.

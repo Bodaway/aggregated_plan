@@ -2,6 +2,7 @@ import { SOURCE_COLORS, QUADRANT_LABELS } from '@/lib/constants';
 import { useSearch } from '@/lib/search/SearchProvider';
 import { GryzzlyTaskMenu } from '@/components/gryzzly/GryzzlyTaskMenu';
 import { AssignedGryzzlyTask } from '@/lib/gryzzly-picker-options';
+import { overdueBadgeLabel, overdueStyle, overdueTitle, type OverdueKind } from '@/lib/overdue';
 import { StatusMenu } from './StatusMenu';
 
 interface TaskTag {
@@ -36,6 +37,10 @@ export interface TaskCardProps {
    *  assigned" when in truth nothing was asked for); `null` means selected and
    *  unassigned, which does draw the chip in its empty state. */
   readonly gryzzlyTask?: AssignedGryzzlyTask | null;
+  /** Delay qualified by the server (R73). Absent means the caller does not
+   *  select it — the card is then painted as on time, never as unknown. */
+  readonly overdueKind?: OverdueKind;
+  readonly overdueDays?: number | null;
   readonly compact?: boolean;
   readonly onClick?: () => void;
 }
@@ -98,6 +103,19 @@ function TimeTrackingRow({
   );
 }
 
+/** The deadline line, identical in both renderings — the compact card needs it
+ *  too, otherwise a `-5j` badge has nothing to be read against (R75). */
+function DeadlineLine({ deadline }: { readonly deadline: string }) {
+  return (
+    <span className="flex items-center gap-1 text-xs text-gray-500">
+      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
+      </svg>
+      {deadline}
+    </span>
+  );
+}
+
 function urgencyBorderClass(urgency: number): string {
   if (urgency >= 4) return 'border-l-red-600';   // Critical
   if (urgency === 3) return 'border-l-orange-600'; // High
@@ -134,6 +152,8 @@ export function TaskCard({
   jiraTimeSpentSeconds,
   isRecurring = false,
   gryzzlyTask,
+  overdueKind,
+  overdueDays,
   compact = false,
   onClick,
 }: TaskCardProps) {
@@ -153,12 +173,29 @@ export function TaskCard({
       : 'opacity-40 grayscale-[30%]';
   const sourceColor = getSourceColor(source);
 
+  // The delay layers on top of the urgency border, it never replaces it (R74):
+  // the tint takes the surface and the ring the outline, so both read at once.
+  // The search ring, being transient, wins over the overdue one — two `ring-*`
+  // utilities on the same element would otherwise fight for one CSS variable.
+  const overdue = overdueStyle(overdueKind);
+  const surfaceClass = overdue ? overdue.background : 'bg-white';
+  const overdueRingClass = overdue && !(highlightActive && isMatch) ? overdue.ring : '';
+  const overdueBadge = overdue ? (
+    <span
+      data-testid="overdue-badge"
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${overdue.badge}`}
+      title={overdueTitle(overdueKind, overdueDays)}
+    >
+      {overdueBadgeLabel(overdueDays)}
+    </span>
+  ) : null;
+
   if (compact) {
     return (
       <div
         data-testid="task-card-root"
         data-task-id={id}
-        className={`bg-white rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
+        className={`${surfaceClass} rounded-md border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} ${overdueRingClass} p-2.5 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
         onClick={handleRootClick}
       >
         {/* Top row: source ID + remaining hours */}
@@ -171,6 +208,7 @@ export function TaskCard({
             {sourceId && (
               <span className="text-xs font-mono font-medium text-blue-600">{sourceId}</span>
             )}
+            {overdueBadge}
           </div>
           {effectiveRemainingHours !== null && effectiveRemainingHours !== undefined && (
             <span className="text-xs text-gray-500">{formatHours(effectiveRemainingHours)}</span>
@@ -178,10 +216,11 @@ export function TaskCard({
         </div>
         {/* Title */}
         <h4 className="text-sm font-medium text-gray-900 mb-1 leading-tight truncate">{title}</h4>
-        {/* Bottom row: status menu + Gryzzly chip + assignee + recurring icon */}
+        {/* Bottom row: status menu + Gryzzly chip + deadline + assignee + recurring icon */}
         <div className="flex flex-wrap items-center gap-1.5">
           <StatusMenu taskId={id} status={status} />
           {gryzzlyTask !== undefined && <GryzzlyTaskMenu taskId={id} assigned={gryzzlyTask} />}
+          {deadline && <DeadlineLine deadline={deadline} />}
           {assignee && (
             <span className="text-xs text-gray-400 truncate">{assignee}</span>
           )}
@@ -211,7 +250,7 @@ export function TaskCard({
     <div
       data-testid="task-card-root"
       data-task-id={id}
-      className={`bg-white rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
+      className={`${surfaceClass} rounded-lg border border-gray-200 border-l-4 ${urgencyBorderClass(urgency)} ${overdueRingClass} p-4 hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer' : ''} ${highlightClasses}`}
       onClick={handleRootClick}
     >
       <div className="flex items-start justify-between gap-2">
@@ -228,6 +267,7 @@ export function TaskCard({
               </span>
             )}
             <h3 className="text-sm font-medium text-gray-900 truncate">{title}</h3>
+            {overdueBadge}
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 mb-2">
@@ -264,14 +304,7 @@ export function TaskCard({
                 </svg>
               </span>
             )}
-            {deadline && (
-              <span className="flex items-center gap-1">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
-                </svg>
-                {deadline}
-              </span>
-            )}
+            {deadline && <DeadlineLine deadline={deadline} />}
             {assignee && (
               <span className="flex items-center gap-1">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

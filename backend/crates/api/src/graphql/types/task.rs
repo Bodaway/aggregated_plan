@@ -4,6 +4,7 @@ use async_graphql::{Context, InputObject, MaybeUndefined, Object, SimpleObject, 
 use chrono::{DateTime, NaiveDate, Utc};
 
 use application::repositories::GryzzlyCatalogRepository;
+use domain::rules::overdue::{classify, Overdue};
 use domain::rules::priority::determine_quadrant;
 use domain::types::Task;
 
@@ -109,6 +110,21 @@ impl TaskGql {
         determine_quadrant(self.0.urgency, self.0.impact).into()
     }
 
+    /// R73: which commitment this task is late on, as of the server's day. Derived at
+    /// read time — lateness is never persisted.
+    async fn overdue_kind(&self) -> OverdueKindGql {
+        self.overdue().into()
+    }
+
+    /// R73: calendar days elapsed since the overrun date of `overdueKind`.
+    /// Null when the task is not late.
+    async fn overdue_days(&self) -> Option<i32> {
+        match self.overdue() {
+            Overdue::None => None,
+            Overdue::Planned { days } | Overdue::Deadline { days } => Some(days as i32),
+        }
+    }
+
     async fn created_at(&self) -> DateTime<Utc> {
         self.0.created_at
     }
@@ -199,6 +215,18 @@ impl TaskGql {
     }
 }
 
+impl TaskGql {
+    /// Single evaluation point for R73, shared by the two derived resolvers.
+    fn overdue(&self) -> Overdue {
+        classify(
+            self.0.planned_start,
+            self.0.deadline,
+            self.0.status,
+            Utc::now().date_naive(),
+        )
+    }
+}
+
 /// Input for creating a new task.
 #[derive(InputObject, Debug)]
 pub struct CreateTaskInput {
@@ -222,7 +250,9 @@ pub struct UpdateTaskInput {
     pub description: Option<String>,
     pub notes: Option<String>,
     pub project_id: Option<ID>,
-    pub deadline: Option<NaiveDate>,
+    /// Set a date to change the deadline, explicit null to clear, omit to leave unchanged.
+    #[graphql(default)]
+    pub deadline: MaybeUndefined<NaiveDate>,
     #[graphql(default)]
     pub planned_start: MaybeUndefined<DateTime<Utc>>,
     pub planned_end: Option<DateTime<Utc>>,

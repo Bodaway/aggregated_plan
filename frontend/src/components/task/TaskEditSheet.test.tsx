@@ -320,3 +320,188 @@ describe('copy title', () => {
     expect(screen.queryByRole('button', { name: /copied/i })).toBeNull();
   });
 });
+
+// ── Tests: deadline editing (R76) ─────────────────────────────────────────────
+//
+// `UpdateTaskInput.deadline` is a `MaybeUndefined` (SPEC_TECHNIQUE §23.4):
+// omitted means "leave it alone", `null` means "clear it", a value means "set
+// it". The three are distinct on the wire, and conflating the first two would
+// silently wipe deadlines on every save — hence the key-presence assertions
+// rather than value comparisons.
+
+const PERSONAL_TASK: FullTask = { ...BASE_TASK, source: 'PERSONAL' };
+
+type Payload = Record<string, unknown>;
+
+/** The single `updateTask` payload of the last save. */
+function savedPayload(): Payload {
+  expect(mockUpdateTask).toHaveBeenCalledOnce();
+  const calls = mockUpdateTask.mock.calls as unknown as Payload[][];
+  return calls[0][0];
+}
+
+function deadlineInput(): HTMLInputElement {
+  return screen.getByLabelText('Échéance') as HTMLInputElement;
+}
+
+describe('TaskEditSheet — deadline field visibility (R76)', () => {
+  beforeEach(() => {
+    mockUpdateTask.mockClear();
+  });
+
+  it('offers the date input on a personal task', () => {
+    mockTask = PERSONAL_TASK;
+    renderSheet();
+
+    expect(deadlineInput()).toHaveAttribute('type', 'date');
+  });
+
+  it('prefills the input with the current deadline', () => {
+    mockTask = { ...PERSONAL_TASK, deadline: '2026-09-30' };
+    renderSheet();
+
+    expect(deadlineInput().value).toBe('2026-09-30');
+  });
+
+  it.each([
+    ['JIRA', 'Jira'],
+    ['EXCEL', 'Excel'],
+    ['OUTLOOK', 'Outlook'],
+  ])('offers no date input on a %s task, and says who owns the deadline', (source, label) => {
+    mockTask = { ...BASE_TASK, source, deadline: '2026-09-30' };
+    renderSheet();
+
+    expect(screen.queryByLabelText('Échéance')).toBeNull();
+    expect(document.getElementById('task-deadline')).toBeNull();
+    // The value is still shown, annotated with the system that rewrites it.
+    expect(screen.getByText('2026-09-30')).toBeInTheDocument();
+    expect(
+      screen.getByText(new RegExp(`définie par ${label}, réécrite à chaque synchronisation`)),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no deadline row at all on a synced task that has none', () => {
+    mockTask = { ...BASE_TASK, source: 'JIRA', deadline: null };
+    renderSheet();
+
+    expect(screen.queryByLabelText('Échéance')).toBeNull();
+    expect(screen.queryByText(/définie par/)).toBeNull();
+  });
+
+  it('offers the clear button only once a deadline is set', () => {
+    mockTask = PERSONAL_TASK;
+    renderSheet();
+    expect(screen.queryByRole('button', { name: /effacer l’échéance|effacer l'échéance/i })).toBeNull();
+
+    fireEvent.change(deadlineInput(), { target: { value: '2026-10-15' } });
+
+    expect(screen.getByRole('button', { name: /effacer l’échéance|effacer l'échéance/i })).toBeInTheDocument();
+  });
+});
+
+describe('TaskEditSheet — deadline on the wire (R76)', () => {
+  beforeEach(() => {
+    mockUpdateTask.mockClear();
+  });
+
+  it('omits the key entirely when the field was never touched', async () => {
+    // The dangerous case: `deadline: null` here would clear a real deadline on
+    // every unrelated save. Absence and null are NOT interchangeable.
+    mockTask = { ...PERSONAL_TASK, deadline: '2026-09-30', notes: 'x' };
+    renderSheet();
+
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'y' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect('deadline' in savedPayload()).toBe(false);
+  });
+
+  it('omits the key when the field is re-typed to the value it already had', async () => {
+    mockTask = { ...PERSONAL_TASK, deadline: '2026-09-30', notes: 'x' };
+    renderSheet();
+
+    fireEvent.change(deadlineInput(), { target: { value: '2026-09-30' } });
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'y' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect('deadline' in savedPayload()).toBe(false);
+  });
+
+  it('sends an explicit null when the user clears the deadline', async () => {
+    mockTask = { ...PERSONAL_TASK, deadline: '2026-09-30' };
+    renderSheet();
+
+    fireEvent.click(screen.getByRole('button', { name: /effacer l’échéance|effacer l'échéance/i }));
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    const payload = savedPayload();
+    expect('deadline' in payload).toBe(true);
+    expect(payload.deadline).toBeNull();
+  });
+
+  it('sends an explicit null when the input itself is emptied', async () => {
+    mockTask = { ...PERSONAL_TASK, deadline: '2026-09-30' };
+    renderSheet();
+
+    fireEvent.change(deadlineInput(), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect(savedPayload().deadline).toBeNull();
+  });
+
+  it('sends the plain date when the user sets a deadline', async () => {
+    mockTask = PERSONAL_TASK;
+    renderSheet();
+
+    fireEvent.change(deadlineInput(), { target: { value: '2026-10-15' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect(savedPayload().deadline).toBe('2026-10-15');
+  });
+
+  it('sends the plain date when the user moves an existing deadline', async () => {
+    mockTask = { ...PERSONAL_TASK, deadline: '2026-09-30' };
+    renderSheet();
+
+    fireEvent.change(deadlineInput(), { target: { value: '2026-10-15' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect(savedPayload().deadline).toBe('2026-10-15');
+  });
+
+  it('never sends a deadline for a synced task, whatever else changes', async () => {
+    // The guard is `canEditDeadline`, not the mere absence of the input.
+    mockTask = { ...BASE_TASK, source: 'JIRA', deadline: '2026-09-30', notes: 'x' };
+    renderSheet();
+
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'y' } });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalled());
+    expect('deadline' in savedPayload()).toBe(false);
+  });
+
+  it('keeps the deadline out of the recurring-template mutation', async () => {
+    // The deadline is per-instance, like the planned date: a series has none.
+    mockTask = { ...RECURRING_TASK, source: 'PERSONAL' };
+    mockUpdateRecurringTask.mockClear();
+    renderSheet();
+
+    fireEvent.change(deadlineInput(), { target: { value: '2026-10-15' } });
+    fireEvent.change(screen.getByPlaceholderText('Add a description...'), {
+      target: { value: 'Série mise à jour' },
+    });
+    fireEvent.click(screen.getByTestId('task-sheet-save'));
+
+    await waitFor(() => expect(mockUpdateRecurringTask).toHaveBeenCalledOnce());
+    const recurringCalls = mockUpdateRecurringTask.mock.calls as unknown as [string, Payload][];
+    expect('deadline' in recurringCalls[0][1]).toBe(false);
+    expect(savedPayload().deadline).toBe('2026-10-15');
+  });
+});

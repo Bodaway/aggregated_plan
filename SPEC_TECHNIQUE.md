@@ -5903,7 +5903,7 @@ pub async fn materialize_due_occurrences(user_id, today, horizon_days, recurrenc
     -> Result<usize, AppError>;   // returns count of new instances created
 ```
 
-`carry_forward_tasks` in `task_management.rs` is modified to filter out tasks where `recurrence_id.is_some()` before applying the Monday-rebase logic (R34). `update_task` and `delete_task` return `AppError::Forbidden` when called on a task with a non-null `recurrence_id`; callers must use `update_recurring_task` / `cancel_recurrence` instead.
+`carry_forward_tasks` no longer exists — the Monday-rebase mechanism it implemented, along with its `recurrence_id` exemption, was removed in favour of display-time overdue detection (see §23; R34, R72–R74). `update_task` and `delete_task` return `AppError::Forbidden` when called on a task with a non-null `recurrence_id`; callers must use `update_recurring_task` / `cancel_recurrence` instead.
 
 ### 20.4 GraphQL API
 
@@ -6151,7 +6151,7 @@ ensemble absurdes.
 | `aplan.breaks.enabled` | Booléen | `true` | Interrupteur maître |
 | `aplan.breaks.meeting_grace_minutes` | Entier | `3` | Délai après la fin d'une réunion avant qu'une pause reportée se déclenche |
 | `aplan.breaks.snooze_minutes` | Entier | `10` | Horizon du bouton *Plus tard* (règles à 60 min et plus, et règles quotidiennes — les seules à le porter) |
-| `aplan.breaks.suppressing_show_as` | Texte (CSV) | `busy,oof` | Valeurs Outlook `show_as` qui suppriment une pause |
+| `aplan.breaks.suppressing_show_as` | Texte (CSV) | `busy,oof,tentative,free` | Valeurs Outlook `show_as` qui suppriment une pause. Toute entrée de l'agenda supprime par défaut ; l'asymétrie tranche : une pause reportée coûte quelques minutes, une notification en pleine réunion coûte la réunion. |
 | `aplan.breaks.last_tick` | Texte (ISO 8601) | — | Écrit par le job ; sert de `since` au passage suivant |
 
 #### `run_break_tick`
@@ -6469,3 +6469,108 @@ que soit la page où il a été fermé. `ReturnToHudOnOpen` est monté **dans** 
 mais **hors** des `Routes`, pour être présent quelle que soit la route courante.
 Réservé à Tauri : dans le navigateur, le signal de visibilité est celui du document,
 qui bascule à chaque changement de bureau ou d'onglet.
+
+---
+
+## 23. Retard : constat à l'affichage, jamais réécriture
+
+Le report au lundi est supprimé (R72). Ce qu'il produisait — voir aujourd'hui ce qui
+traîne — est reconstruit sans toucher aux dates : le retard devient une **qualification
+calculée**, dérivée à chaque lecture, et non un état persisté.
+
+### 23.1 Règle de domaine — `domain/src/rules/overdue.rs`
+
+Fonction pure, sans I/O, seule autorité sur ce que « en retard » veut dire :
+
+```rust
+pub enum Overdue {
+    None,
+    Planned  { days: i64 },   // plannedStart dépassé — décalage de planification
+    Deadline { days: i64 },   // deadline dépassée   — engagement rompu
+}
+
+pub fn classify(
+    planned_start: Option<DateTime<Utc>>,
+    deadline: Option<NaiveDate>,
+    status: TaskStatus,
+    today: NaiveDate,
+) -> Overdue;
+```
+
+`Deadline` l'emporte quand les deux sont vrais (R73) : le plus grave absorbe le moindre,
+au lieu d'empiler deux marqueurs sur une carte. `Done` et `Cancelled` rendent toujours
+`None`. `days` compte les jours calendaires écoulés depuis la date du niveau retenu —
+calendaires et non ouvrés, parce qu'un engagement rompu ne se suspend pas le week-end.
+
+### 23.2 Repository — `find_planned_before` devient `find_overdue`
+
+`find_planned_before` n'avait qu'un appelant réel, le report qu'on supprime. Plutôt que
+d'ajouter une méthode au trait `TaskRepository`, elle est **remplacée** :
+
+```sql
+SELECT t.* FROM tasks t
+WHERE t.user_id = ?
+  AND t.status NOT IN ('done','cancelled')
+  AND t.id NOT IN (SELECT tl.task_id_secondary FROM task_links tl
+                   WHERE tl.link_type IN ('auto_merged','manual_merged'))
+  AND ( (t.planned_start IS NOT NULL AND date(t.planned_start) < ?)
+     OR (t.deadline IS NOT NULL AND t.deadline < ?) )
+ORDER BY COALESCE(t.deadline, date(t.planned_start))
+```
+
+Deux écarts assumés avec l'ancienne requête. L'exclusion des doublons fusionnés, que
+`find_by_date_range` appliquait déjà et que `find_planned_before` omettait — un doublon
+perdant remontait donc en retard alors qu'il n'existe plus pour l'utilisateur. Et la
+disjonction sur `deadline`, qui rattrape les tâches **sans** `planned_start` mais à
+échéance dépassée : l'ancienne clause `planned_start IS NOT NULL` les rendait
+structurellement invisibles.
+
+### 23.3 Dashboard — élargissement du chargement
+
+`get_daily_dashboard` ne balayait que `[week_start, week_end]`. Sans élargissement,
+supprimer le report ne déplacerait pas les tâches en retard : il les ferait disparaître.
+Le cas d'usage fusionne donc `find_overdue(today)` avec les tâches de la semaine,
+dédupliqué par `id`. Les tâches en retard entrent dans `compute_weekly_workload` au même
+titre que les autres — parité stricte avec le report, qui les rapatriait dans la semaine
+courante et les faisait donc déjà peser.
+
+### 23.4 GraphQL
+
+`TaskGql` — le type que sert le dashboard — expose deux champs dérivés, calculés côté
+serveur pour que la règle reste dans le domaine et ne soit pas dupliquée dans le client :
+
+```graphql
+enum OverdueKindGql { NONE, PLANNED, DEADLINE }
+
+type TaskGql {
+  overdueKind: OverdueKindGql!
+  overdueDays: Int          # null quand overdueKind = NONE
+}
+```
+
+Le suffixe `Gql` suit la convention locale (`SourceGql`, `QuadrantGql`) ; les noms de
+champs vus par le client — `overdueKind`, `overdueDays` — n'en portent pas. Le « jour
+courant » de la qualification est celui du serveur (`Utc::now().date_naive()`).
+
+`UpdateTaskInput.deadline` passe de `Option<NaiveDate>` à `MaybeUndefined<NaiveDate>`
+(R76). Le mapping vers le cas d'usage — dont l'entrée est déjà un `Option<Option<NaiveDate>>`
+capable d'effacer — faisait `.map(Some)`, ce qui écrasait la distinction entre « absent »
+et « null » : l'effacement était inexprimable depuis l'API alors que la couche métier
+savait le faire.
+
+### 23.5 Rendu
+
+`getTaskDate` route sur aujourd'hui dès que `overdueKind != NONE`, avant de retomber sur
+`plannedStart ?? deadline`. Le tri de la colonne du jour place `DEADLINE`, puis `PLANNED`,
+puis l'urgence décroissante.
+
+La branche `compact` de `TaskCard` gagne l'échéance, qu'elle recevait en prop sans jamais
+la peindre (R75), et le marqueur de retard. Contrainte de superposition : la bordure
+gauche épaisse code **déjà** l'urgence (`urgencyBorderClass`). Le retard ne l'écrase pas —
+il s'ajoute par un anneau et un fond teintés, rouge pour `DEADLINE`, ambre pour `PLANNED`,
+plus une pastille `⚠ -Nj`. Les deux dimensions restent lisibles simultanément.
+
+L'échéance devient éditable dans `TaskEditSheet` et `TaskCreateSheet` **uniquement** si
+`source === 'PERSONAL'`. Sur les autres sources, `sync.rs` réaffecte `task.deadline` sans
+condition à chaque passage : offrir le champ produirait une saisie détruite au cycle
+suivant, sans message.

@@ -94,6 +94,7 @@ const UPDATE_TASK_MUTATION = `
       impact
       quadrant
       estimatedHours
+      deadline
       plannedStart
       remainingHoursOverride
       estimatedHoursOverride

@@ -1161,10 +1161,10 @@ mod tests {
         ) -> Result<Vec<Task>, RepositoryError> {
             Ok(vec![])
         }
-        async fn find_planned_before(
+        async fn find_overdue(
             &self,
             _user_id: UserId,
-            _before_date: NaiveDate,
+            _today: NaiveDate,
         ) -> Result<Vec<Task>, RepositoryError> {
             Ok(vec![])
         }

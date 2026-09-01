@@ -148,3 +148,85 @@ describe('TaskCreateSheet — weekly/Friday recurrence', () => {
     expect(screen.getByRole('button', { name: 'Create Recurring Task' })).toBeTruthy();
   });
 });
+
+// ── Tests: deadline (R76) ─────────────────────────────────────────────────────
+//
+// A task created here is always `Source::Personal`, so it owns its deadline.
+// A recurring template has none — `CreateRecurringTaskInput` cannot carry one —
+// so the field disappears as soon as a recurrence is picked.
+
+function pickWeeklyRecurrence() {
+  fireEvent.change(screen.getByRole('combobox', { name: /récurrence/i }), {
+    target: { value: 'weekly' },
+  });
+}
+
+describe('TaskCreateSheet — deadline field', () => {
+  it('offers a date input while no recurrence is picked', () => {
+    renderSheet('2026-04-27');
+
+    expect(screen.getByLabelText('Échéance')).toHaveAttribute('type', 'date');
+  });
+
+  it('hides the field once a recurrence is picked', () => {
+    renderSheet('2026-04-27');
+    expect(screen.getByLabelText('Échéance')).toBeTruthy();
+
+    pickWeeklyRecurrence();
+
+    expect(screen.queryByLabelText('Échéance')).toBeNull();
+  });
+
+  it('brings the field back when the recurrence is dropped', () => {
+    renderSheet('2026-04-27');
+    pickWeeklyRecurrence();
+
+    fireEvent.change(screen.getByRole('combobox', { name: /récurrence/i }), {
+      target: { value: 'none' },
+    });
+
+    expect(screen.getByLabelText('Échéance')).toBeTruthy();
+  });
+
+  it('sends the plain date when one is entered', async () => {
+    renderSheet('2026-04-27');
+    fillTitle('Tâche avec échéance');
+    fireEvent.change(screen.getByLabelText('Échéance'), { target: { value: '2026-10-15' } });
+    clickSave();
+
+    await waitFor(() => expect(mockCreateTask).toHaveBeenCalledOnce());
+    expect((capturedCreateTaskInput as Record<string, unknown>).deadline).toBe('2026-10-15');
+  });
+
+  it('leaves the deadline undefined when the field is untouched', async () => {
+    renderSheet('2026-04-27');
+    fillTitle('Tâche sans échéance');
+    clickSave();
+
+    await waitFor(() => expect(mockCreateTask).toHaveBeenCalledOnce());
+    expect((capturedCreateTaskInput as Record<string, unknown>).deadline).toBeUndefined();
+  });
+
+  it('leaves the deadline undefined when it is set then cleared', async () => {
+    renderSheet('2026-04-27');
+    fillTitle('Tâche hésitante');
+    fireEvent.change(screen.getByLabelText('Échéance'), { target: { value: '2026-10-15' } });
+    fireEvent.click(screen.getByRole('button', { name: /effacer l’échéance|effacer l'échéance/i }));
+    clickSave();
+
+    await waitFor(() => expect(mockCreateTask).toHaveBeenCalledOnce());
+    expect((capturedCreateTaskInput as Record<string, unknown>).deadline).toBeUndefined();
+  });
+
+  it('sends no deadline on the recurring branch', async () => {
+    renderSheet('2026-04-27');
+    fillTitle('Série hebdomadaire');
+    fireEvent.change(screen.getByLabelText('Échéance'), { target: { value: '2026-10-15' } });
+    pickWeeklyRecurrence();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Recurring Task' }));
+
+    await waitFor(() => expect(mockCreateRecurringTask).toHaveBeenCalledOnce());
+    expect(mockCreateTask).not.toHaveBeenCalled();
+    expect(capturedCreateRecurringTaskInput as Record<string, unknown>).not.toHaveProperty('deadline');
+  });
+});
