@@ -187,6 +187,28 @@ impl RecurrenceRepository for SqliteRecurrenceRepository {
         Ok(templates)
     }
 
+    async fn find_by_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<RecurrenceTemplate>, RepositoryError> {
+        let rows = sqlx::query("SELECT * FROM task_recurrences WHERE user_id = ?")
+            .bind(user_id.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        let mut templates: Vec<RecurrenceTemplate> =
+            rows.iter().map(map_template_row).collect::<Result<_, _>>()?;
+
+        // Load tags per template — same rule as find_active_by_user: skip this and
+        // templates come back with `tags` silently empty.
+        for t in templates.iter_mut() {
+            t.tags = load_tags_for_template(&self.pool, &t.id).await?;
+        }
+
+        Ok(templates)
+    }
+
     async fn save(&self, template: &RecurrenceTemplate) -> Result<(), RepositoryError> {
         let rule_json = serde_json::to_string(&template.rule)
             .map_err(|e| RepositoryError::Database(format!("Failed to serialize rule: {}", e)))?;
@@ -411,6 +433,28 @@ mod tests {
         let results = repo.find_active_by_user(user_id()).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, active.id);
+    }
+
+    // Test: find_by_user returns deactivated templates, find_active_by_user does not
+    #[tokio::test]
+    async fn find_by_user_includes_inactive_templates() {
+        let pool = setup().await;
+        let repo = SqliteRecurrenceRepository::new(pool);
+
+        let active = make_template(RecurrenceRule::Daily { interval: 1 });
+        let mut inactive = make_template(RecurrenceRule::Daily { interval: 2 });
+        inactive.title = "Inactive".to_string();
+
+        repo.save(&active).await.unwrap();
+        repo.save(&inactive).await.unwrap();
+        repo.deactivate(inactive.id).await.unwrap();
+
+        let only_active = repo.find_active_by_user(user_id()).await.unwrap();
+        assert_eq!(only_active.len(), 1, "find_active_by_user must still hide the deactivated one");
+
+        let all = repo.find_by_user(user_id()).await.unwrap();
+        assert_eq!(all.len(), 2, "find_by_user must return the deactivated template as well");
+        assert!(all.iter().any(|t| t.id == inactive.id && !t.active));
     }
 
     // Test 6: Tags persist through save and are returned by find_by_id

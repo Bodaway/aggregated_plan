@@ -436,6 +436,18 @@ mod tests {
                 .collect())
         }
 
+        async fn find_by_user(
+            &self,
+            user_id: UserId,
+        ) -> Result<Vec<RecurrenceTemplate>, RepositoryError> {
+            let store = self.templates.lock().unwrap();
+            Ok(store
+                .values()
+                .filter(|t| t.user_id == user_id)
+                .cloned()
+                .collect())
+        }
+
         async fn save(&self, template: &RecurrenceTemplate) -> Result<(), RepositoryError> {
             let mut store = self.templates.lock().unwrap();
             store.insert(template.id, template.clone());

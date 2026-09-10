@@ -19,6 +19,17 @@ pub trait RecurrenceRepository: Send + Sync {
         user_id: UserId,
     ) -> Result<Vec<RecurrenceTemplate>, RepositoryError>;
 
+    /// Find every template for a user, **active and deactivated alike**.
+    ///
+    /// Distinct from [`find_active_by_user`] on purpose: a deactivated template
+    /// still owns the instances it generated, and those instances still need
+    /// sweeping. Filtering them out here is what would leave a cancelled series'
+    /// stale occurrences visible forever.
+    async fn find_by_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<RecurrenceTemplate>, RepositoryError>;
+
     /// Save a new template or update an existing one.
     async fn save(&self, template: &RecurrenceTemplate) -> Result<(), RepositoryError>;
 
