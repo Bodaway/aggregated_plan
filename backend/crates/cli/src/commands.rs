@@ -1279,7 +1279,13 @@ pub fn show(api_url: &str, json: bool, task: &str, worklog: WorklogAmount) -> Ex
     ExitCode::Success
 }
 
-pub fn ls(api_url: &str, json: bool, status: &[StatusArg], triage: &[TriageArg]) -> ExitCode {
+pub fn ls(
+    api_url: &str,
+    json: bool,
+    status: &[StatusArg],
+    triage: &[TriageArg],
+    all_occurrences: bool,
+) -> ExitCode {
     let client = Client::new(api_url.to_string());
 
     // Build filter. If user passed nothing, apply the default: followed only,
@@ -1345,6 +1351,9 @@ pub fn ls(api_url: &str, json: bool, status: &[StatusArg], triage: &[TriageArg])
 
     let result = client.run::<ListTasks>(list_tasks::Variables {
         filter: Some(filter),
+        // `None` rather than `Some(false)`: the server's default is to collapse, so
+        // leaving it unset says "the usual view" instead of restating it.
+        all_occurrences: if all_occurrences { Some(true) } else { None },
     });
     match result {
         Ok(r) => {

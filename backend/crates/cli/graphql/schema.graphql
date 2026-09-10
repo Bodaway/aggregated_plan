@@ -804,8 +804,12 @@ type CombinedQuery {
 	task(id: ID!): TaskGql
 	"""
 	Fetch tasks with optional filtering and cursor-based pagination.
+	
+	A recurring series contributes only its latest due occurrence unless
+	`allOccurrences` is true -- the escape hatch for a caller that wants the
+	whole series, such as an audit of what a recurrence has generated.
 	"""
-	tasks(filter: TaskFilterInput, first: Int! = 50, after: String): TaskConnection!
+	tasks(filter: TaskFilterInput, first: Int! = 50, after: String, allOccurrences: Boolean): TaskConnection!
 	"""
 	Fetch all projects for the current user.
 	"""

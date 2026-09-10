@@ -108,9 +108,11 @@ fn main() -> ExitCode {
             args.session.as_deref(),
             keep_running,
         ),
-        cli::Commands::Ls { status, triage } => {
-            commands::ls(&args.api_url, args.json, &status, &triage)
-        }
+        cli::Commands::Ls {
+            status,
+            triage,
+            all_occurrences,
+        } => commands::ls(&args.api_url, args.json, &status, &triage, all_occurrences),
         cli::Commands::Show { task, worklog } => {
             commands::show(&args.api_url, args.json, &task, worklog)
         }

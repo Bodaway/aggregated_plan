@@ -298,6 +298,37 @@ impl TaskRepository for SqliteTaskRepository {
             bind_values.push(format!("%{}%", needle.to_lowercase()));
         }
 
+        if let Some(today) = filter.collapse_recurrences {
+            // A series contributes only its latest occurrence at or before `today`.
+            // The subquery repeats the outer query's merge exclusion on purpose: if
+            // the latest due occurrence is the losing side of a merge, MAX would
+            // return its date, the outer filter would then remove that row, and no
+            // older occurrence would match -- the whole series would vanish.
+            //
+            // A series entirely in the future makes the subquery NULL, and
+            // `t.occurrence_date = NULL` is false in SQL, so it contributes nothing.
+            // That is the intended reading of "what is to be done now".
+            sql.push_str(
+                " AND ( \
+                   t.recurrence_id IS NULL \
+                   OR t.occurrence_date = ( \
+                        SELECT MAX(t2.occurrence_date) FROM tasks t2 \
+                        WHERE t2.recurrence_id = t.recurrence_id \
+                          AND t2.user_id = t.user_id \
+                          AND t2.occurrence_date <= ? \
+                          AND t2.id NOT IN ( \
+                            SELECT tl2.task_id_secondary FROM task_links tl2 \
+                            WHERE tl2.link_type IN ('auto_merged','manual_merged') \
+                          ) \
+                      ) \
+                 )",
+            );
+            // `occurrence_date` is stored as ISO TEXT, so the comparison is
+            // lexicographic and only correct in this exact format -- the same one
+            // the deadline binds above already use.
+            bind_values.push(today.format("%Y-%m-%d").to_string());
+        }
+
         sql.push_str(" ORDER BY t.created_at DESC");
 
         let mut query = sqlx::query(&sql);
@@ -629,6 +660,8 @@ mod tests {
     use crate::database::connection::create_sqlite_pool;
     use crate::database::tag_repo::SqliteTagRepository;
     use application::repositories::TagRepository;
+    use chrono::Duration;
+    use domain::types::recurrence::RecurrenceTemplateId;
 
     async fn setup() -> SqlitePool {
         let pool = create_sqlite_pool("sqlite::memory:").await.unwrap();
@@ -687,6 +720,52 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    /// Insert a recurrence template row directly. `tasks.recurrence_id` is a
+    /// foreign key and `setup()` turns enforcement on, so an occurrence cannot be
+    /// seeded without its template existing first.
+    async fn insert_template(pool: &SqlitePool, id: RecurrenceTemplateId) {
+        sqlx::query(
+            "INSERT INTO task_recurrences (id, user_id, title, urgency, urgency_manual, impact, \
+             rule_json, starts_on, active, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(user_id().to_string())
+        .bind("A recurring subject")
+        .bind(2)
+        .bind(0)
+        .bind(2)
+        .bind(r#"{"kind":"daily","interval":1}"#)
+        .bind("2026-01-01")
+        .bind(1)
+        .bind("2026-01-01T00:00:00+00:00")
+        .bind("2026-01-01T00:00:00+00:00")
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Seed one occurrence of `template` dated `occurrence_date`, returning its id.
+    async fn insert_occurrence(
+        repo: &SqliteTaskRepository,
+        template: RecurrenceTemplateId,
+        occurrence_date: NaiveDate,
+    ) -> TaskId {
+        let mut task = make_task(&format!("Occurrence {occurrence_date}"));
+        task.deadline = None;
+        task.recurrence_id = Some(template);
+        task.occurrence_date = Some(occurrence_date);
+        repo.save(&task).await.unwrap();
+        task.id
+    }
+
+    /// Seed a task that belongs to no series — the collapse must never touch it.
+    async fn insert_plain_task(repo: &SqliteTaskRepository, title: &str) -> TaskId {
+        let task = make_task(title);
+        repo.save(&task).await.unwrap();
+        task.id
     }
 
     #[tokio::test]
@@ -1945,4 +2024,137 @@ mod tests {
         assert!(repo.find_by_id(excel.id).await.unwrap().is_some());
         assert!(repo.find_by_id(personal.id).await.unwrap().is_some());
     }
+
+    // ── L'effondrement : une série ne montre que son occurrence due la plus récente ──
+
+    #[tokio::test]
+    async fn collapse_keeps_only_the_latest_due_occurrence() {
+        let pool = setup().await;
+        let template = RecurrenceTemplateId::new();
+        insert_template(&pool, template).await;
+        let repo = SqliteTaskRepository::new(pool);
+        let today = Utc::now().date_naive();
+
+        let old = insert_occurrence(&repo, template, today - Duration::days(7)).await;
+        let latest = insert_occurrence(&repo, template, today - Duration::days(1)).await;
+        let future = insert_occurrence(&repo, template, today + Duration::days(3)).await;
+
+        let found = repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+        let ids: Vec<TaskId> = found.iter().map(|t| t.id).collect();
+
+        assert!(ids.contains(&latest), "the latest due occurrence must survive");
+        assert!(
+            !ids.contains(&old),
+            "an older due occurrence must be collapsed away"
+        );
+        assert!(
+            !ids.contains(&future),
+            "a future occurrence is not what is to be done now"
+        );
+    }
+
+    #[tokio::test]
+    async fn collapse_never_touches_non_recurring_tasks() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let a = insert_plain_task(&repo, "one").await;
+        let b = insert_plain_task(&repo, "two").await;
+
+        let found = repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+        let ids: Vec<TaskId> = found.iter().map(|t| t.id).collect();
+        assert!(
+            ids.contains(&a) && ids.contains(&b),
+            "tasks outside a series are outside the rule"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fully_future_series_shows_nothing() {
+        let pool = setup().await;
+        let template = RecurrenceTemplateId::new();
+        insert_template(&pool, template).await;
+        let repo = SqliteTaskRepository::new(pool);
+        let today = Utc::now().date_naive();
+
+        insert_occurrence(&repo, template, today + Duration::days(1)).await;
+        insert_occurrence(&repo, template, today + Duration::days(2)).await;
+
+        let found = repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+        assert!(
+            found.is_empty(),
+            "nothing is due yet, so nothing is shown, got {found:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn opting_out_returns_every_occurrence() {
+        let pool = setup().await;
+        let template = RecurrenceTemplateId::new();
+        insert_template(&pool, template).await;
+        let repo = SqliteTaskRepository::new(pool);
+        let today = Utc::now().date_naive();
+
+        insert_occurrence(&repo, template, today - Duration::days(7)).await;
+        insert_occurrence(&repo, template, today - Duration::days(1)).await;
+        insert_occurrence(&repo, template, today + Duration::days(3)).await;
+
+        let filter = TaskFilter {
+            collapse_recurrences: None,
+            ..TaskFilter::empty()
+        };
+        let found = repo.find_by_user(user_id(), &filter).await.unwrap();
+        assert_eq!(found.len(), 3, "opting out shows the whole series");
+    }
+
+    /// The outer query already drops the losing side of a merge. The collapse
+    /// subquery must drop it too: if the latest due occurrence is a merge loser,
+    /// `MAX` returns its date, the outer filter removes the row, and no older
+    /// occurrence matches — the whole series would vanish.
+    #[tokio::test]
+    async fn collapse_ignores_a_merged_away_occurrence() {
+        let pool = setup().await;
+        let template = RecurrenceTemplateId::new();
+        insert_template(&pool, template).await;
+        let repo = SqliteTaskRepository::new(pool.clone());
+        let today = Utc::now().date_naive();
+
+        let kept = insert_occurrence(&repo, template, today - Duration::days(3)).await;
+        let merged_away = insert_occurrence(&repo, template, today - Duration::days(1)).await;
+
+        // `merged_away` is the secondary of a merge, so the outer query hides it.
+        sqlx::query(
+            "INSERT INTO task_links (id, task_id_primary, task_id_secondary, link_type, created_at) \
+             VALUES (?, ?, ?, 'auto_merged', ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(kept.to_string())
+        .bind(merged_away.to_string())
+        .bind("2026-01-01T00:00:00+00:00")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let found = repo
+            .find_by_user(user_id(), &TaskFilter::empty())
+            .await
+            .unwrap();
+        let ids: Vec<TaskId> = found.iter().map(|t| t.id).collect();
+
+        assert!(
+            ids.contains(&kept),
+            "the series must still show its latest occurrence that is not merged away"
+        );
+        assert!(!ids.contains(&merged_away), "a merge loser stays hidden");
+    }
+
 }

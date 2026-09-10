@@ -19,10 +19,36 @@ pub struct TaskFilter {
     pub source_id: Option<String>,
     /// Case-insensitive substring match against `tasks.title`.
     pub title_contains: Option<String>,
+    /// When set, a recurring series contributes at most one row: the occurrence
+    /// with the greatest `occurrence_date` among those at or before the given day.
+    /// Future occurrences of the materialization horizon are hidden, and a series
+    /// whose occurrences all lie ahead contributes nothing. `None` disables the
+    /// rule and returns every occurrence.
+    ///
+    /// A date rather than a flag on purpose: the day is the caller's to decide, and
+    /// the repository has no business reading a clock -- `find_overdue` already
+    /// takes its `today` as an argument for the same reason.
+    ///
+    /// The collapse picks that row **without looking at status**; the caller's
+    /// status filter then applies to the row that survived. The reverse order --
+    /// filter first, collapse after -- would resurrect exactly the old occurrences
+    /// this exists to hide.
+    ///
+    /// Tasks with a NULL `recurrence_id` are outside the rule and always returned.
+    pub collapse_recurrences: Option<NaiveDate>,
 }
 
 impl TaskFilter {
-    /// Create an empty filter that matches all tasks.
+    /// A filter that matches every task, **except** that a recurring series is
+    /// collapsed onto its latest due occurrence -- see [`collapse_recurrences`].
+    /// Collapsing is the default because the ordinary question a list answers is
+    /// "what is to be done now", and a series' older occurrences are noise against
+    /// it. A caller that means the whole series sets the field to `None`.
+    ///
+    /// The day comes from `Utc::now()`, the same convention the GraphQL layer
+    /// already uses for "today".
+    ///
+    /// [`collapse_recurrences`]: TaskFilter::collapse_recurrences
     pub fn empty() -> Self {
         TaskFilter {
             status: None,
@@ -35,6 +61,7 @@ impl TaskFilter {
             tracking_state: None,
             source_id: None,
             title_contains: None,
+            collapse_recurrences: Some(chrono::Utc::now().date_naive()),
         }
     }
 }

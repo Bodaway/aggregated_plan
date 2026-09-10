@@ -104,8 +104,17 @@ pub async fn search(
     // FTS5 document spanning title and body together, so a task must behave the
     // same way or the same query matches differently depending on which entity
     // it happens to hit — the exact defect `search` exists to remove.
+    // `collapse_recurrences: None` on purpose: the collapse is a display rule for
+    // "what is to be done now", and search answers the opposite question -- where
+    // did I see this. A search that cannot find a past occurrence of a series is a
+    // regression with no escape hatch for the caller, since this path takes no
+    // filter from the user.
+    let search_filter = TaskFilter {
+        collapse_recurrences: None,
+        ..TaskFilter::empty()
+    };
     let mut tasks: Vec<SearchHit> = task_repo
-        .find_by_user(user_id, &TaskFilter::empty())
+        .find_by_user(user_id, &search_filter)
         .await?
         .into_iter()
         .filter(|t| matches(&task_haystack(t), &terms))

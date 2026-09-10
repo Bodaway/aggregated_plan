@@ -83,19 +83,27 @@ impl QueryRoot {
     }
 
     /// Fetch tasks with optional filtering and cursor-based pagination.
+    ///
+    /// A recurring series contributes only its latest due occurrence unless
+    /// `allOccurrences` is true -- the escape hatch for a caller that wants the
+    /// whole series, such as an audit of what a recurrence has generated.
     async fn tasks(
         &self,
         ctx: &Context<'_>,
         filter: Option<TaskFilterInput>,
         #[graphql(default = 50)] first: i32,
         after: Option<String>,
+        all_occurrences: Option<bool>,
     ) -> Result<TaskConnection> {
         trigger_lazy_materialization(ctx).await;
 
         let user_id = ctx.data::<UserId>()?;
         let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
 
-        let domain_filter = convert_task_filter(filter);
+        let mut domain_filter = convert_task_filter(filter);
+        if all_occurrences.unwrap_or(false) {
+            domain_filter.collapse_recurrences = None;
+        }
 
         let all_tasks = task_management::get_tasks(task_repo.as_ref(), *user_id, &domain_filter)
             .await
@@ -461,8 +469,12 @@ impl QueryRoot {
         let tag_repo = ctx.data::<Arc<dyn application::repositories::TagRepository>>()?;
         let project_repo = ctx.data::<Arc<dyn application::repositories::ProjectRepository>>()?;
 
+        // `collapse_recurrences: None` for the same reason as `search`: this is the
+        // unpaginated haystack a client filters itself, so collapsing here would
+        // make a past occurrence of a series unfindable rather than merely hidden.
         let filter = TaskFilter {
             tracking_state: Some(vec![TrackingState::Inbox, TrackingState::Followed]),
+            collapse_recurrences: None,
             ..TaskFilter::empty()
         };
 
@@ -1073,6 +1085,10 @@ fn convert_task_filter(input: Option<TaskFilterInput>) -> TaskFilter {
             }),
             source_id: f.source_id,
             title_contains: f.title_contains,
+            // Carried from `empty()` rather than taken from the input: collapsing is
+            // not a user-facing filter field, it is a display rule the `tasks` query
+            // overrides through its own `allOccurrences` argument.
+            collapse_recurrences: TaskFilter::empty().collapse_recurrences,
         },
     }
 }

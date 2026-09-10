@@ -235,6 +235,9 @@ pub enum Commands {
         /// Filter by tracking state. Repeat to allow multiple.
         #[arg(long, value_enum)]
         triage: Vec<TriageArg>,
+        /// Show every occurrence of a recurring task, not just the latest due one.
+        #[arg(long)]
+        all_occurrences: bool,
     },
     /// Delete a task.
     Rm { task: String },
