@@ -133,6 +133,10 @@ storybook-static/
 .aider*
 .superpowers/
 
+# Worktrees créés par Claude Code. Seul `worktrees/` est ignoré, pas `.claude/`
+# entier : `.claude/skills/` est versionné.
+.claude/worktrees/
+
 # SQLite runtime database + WAL sidecar files (dev/local only)
 *.db
 *.db-shm
