@@ -206,3 +206,22 @@ logged, never fatal — a pause without a screen is still a pause.
 - Task tags live in a junction table `task_tags`, not as a column on the tasks table
 - Specifications are written in French; code and comments should be in English
 - Backend serves on port 3001, frontend on port 3000
+- **Never exercise the GraphQL API against `http://127.0.0.1:3001` to test anything.**
+  That port serves the real `aggregated_plan.db`. Two recurrence templates created by
+  live test calls left 42 dead tasks behind, piling up as overdue cards for four
+  months, and a past recurrence occurrence was removable by no path at all. To
+  exercise the API by hand, run an instance on a throwaway database:
+  `DATABASE_URL=sqlite:///tmp/aplan-dev.db cargo run -p api`. The listening port is
+  **hardcoded** to 3001 (`api/src/main.rs`, no env override), so that instance cannot
+  coexist with the installed one — stop the service first
+  (`systemctl --user stop aplan-api.service`), work against the throwaway database,
+  then restart it. The same applies to the Playwright suite:
+  `frontend/e2e/` reads `APLAN_E2E_GRAPHQL_URL` and skips entirely when it is unset,
+  precisely so a bare `pnpm test:e2e` cannot write into the cockpit's own data.
+  Note that `frontend/playwright.config.ts` still starts its backend with
+  `cargo run -p api` and `reuseExistingServer: !CI`, so a UI-driven write from
+  another spec can still reach the real database — set the variable and point it at a
+  throwaway instance.
+- `cargo run -p api -- export-schema` builds the database pool **before** printing the
+  SDL, so regenerating `crates/cli/graphql/schema.graphql` applies any pending
+  migration to the real database. It prints to stdout — redirect it explicitly.

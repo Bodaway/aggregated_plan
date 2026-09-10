@@ -5871,6 +5871,11 @@ pub trait RecurrenceRepository: Send + Sync {
         -> RepositoryResult<Option<RecurrenceTemplate>>;
     async fn find_active_by_user(&self, user_id: UserId)
         -> RepositoryResult<Vec<RecurrenceTemplate>>;
+    /// Every template of the user, **active and deactivated alike**. Distinct from
+    /// `find_active_by_user` on purpose: a deactivated template still owns the
+    /// instances it generated, and those still need sweeping.
+    async fn find_by_user(&self, user_id: UserId)
+        -> RepositoryResult<Vec<RecurrenceTemplate>>;
     async fn save(&self, template: &RecurrenceTemplate) -> RepositoryResult<()>;
     async fn deactivate(&self, id: RecurrenceTemplateId) -> RepositoryResult<()>;
 }
@@ -5982,14 +5987,87 @@ extend type Mutation {
 | `frontend/src/pages/PriorityMatrixPage.tsx` | Filter `status === 'done' && isRecurring` from matrix display |
 | `frontend/src/hooks/use-task-edit.ts` | Branch on `task.recurrenceId` to call `updateRecurringTask` |
 
-### 20.5 Out of scope (MVP)
+### 20.5 Balayage du passé, effondrement à l'affichage et job d'entretien
+
+Le moteur savait créer des occurrences et annuler celles du futur ; il ne savait pas balayer le
+passé. Sur la base réelle, deux modèles de test avaient laissé 38 occurrences hebdomadaires
+périmées s'empiler comme cartes en retard, et aucun chemin ne permettait de les retirer :
+`deleteTask` refuse toute instance récurrente, `cancelRecurrence` ne touchait que
+`occurrence_date >= today`, `skipOccurrence` change un statut sans supprimer.
+
+Le statut terminal d'une occurrence périmée est le `TaskStatus::Cancelled` existant. Aucune
+migration, aucune variante d'enum ajoutée : élargir le `CHECK (status IN …)` de `tasks` aurait
+demandé une reconstruction de table, et c'est un `CHECK` à trois valeurs face à un enum à quatre
+variantes qui a fait échouer silencieusement le job de fin de journée pendant des semaines
+(corrigé par la migration `013`).
+
+**Clamp de la fenêtre de matérialisation.** `materialize_due_occurrences` calcule désormais
+
+```rust
+let from = from.max(template.starts_on).max(today);
+```
+
+Rien ne bornait `from` à `today` : un modèle dont le filigrane avait 123 jours aurait généré, au
+premier tick du job, 123 jours d'occurrences passées. Le balayage les aurait aussitôt annulées,
+mais les lignes auraient été créées — brancher le job sans ce clamp reproduisait en une nuit le
+problème qu'il nettoie.
+
+**`sweep_stale_occurrences`.** Parcourt les modèles via `find_by_user`, donc désactivés compris.
+Toute instance dont `occurrence_date < today` et dont le statut n'est ni `Done` ni `Cancelled`
+passe à `Cancelled` — sauf celles portant des entrées de worklog. La présence de worklog est lue
+par `WorklogRepository::find_task_ids_with_entries`, une vérification d'existence par tâche en un
+seul appel groupé, **jamais** par `find_by_recurrence` : celui-ci plafonne à
+`WORKLOG_FILTER_MAX_LIMIT = 1000` entrées triées `logged_at DESC`, si bien que sa queue tronquée
+est la plus ancienne — exactement les instances que le balayage traite.
+
+**`TaskFilter::collapse_recurrences: Option<NaiveDate>`.** Quand le champ porte une date, une
+série ne contribue que l'occurrence de `MAX(occurrence_date)` parmi celles `<= ` cette date.
+`TaskFilter::empty()` la pose à `Some(Utc::now().date_naive())`, la même convention que la couche
+GraphQL emploie déjà pour « aujourd'hui ». Une date et non un booléen : le jour appartient à
+l'appelant et le repository n'a pas à lire d'horloge — `find_overdue` prend déjà son `today` en
+argument.
+
+L'effondrement choisit sa ligne **sans regarder le statut**, et le filtre de statut de l'appelant
+s'applique ensuite à la ligne retenue. L'ordre inverse — filtrer puis effondrer — ferait
+réapparaître exactement les vieilles occurrences que la règle masque.
+
+Le sous-select répète l'exclusion des perdants de fusion (`auto_merged` / `manual_merged`) que
+porte la requête externe. Sans elle, si la dernière occurrence due est le côté perdant d'une
+fusion, `MAX` rend sa date, la requête externe retire la ligne, aucune occurrence plus ancienne ne
+correspond, et la série entière disparaît.
+
+`search` (`use_cases/search.rs`) et `searchableTasks` (`query.rs`) posent explicitement
+`collapse_recurrences: None`. Ces deux chemins ne reçoivent aucun filtre de l'appelant, et une
+recherche incapable de retrouver une occurrence passée serait une régression sans échappatoire.
+La sortie de secours publique est l'argument `allOccurrences: Boolean` de la query `tasks` et le
+flag `aplan ls --all-occurrences`.
+
+**`cancelRecurrence` : de `Int!` à `CancelRecurrenceResultGql!`.** Le verbe rend maintenant deux
+décomptes, `deleted` et `cancelled`. Une instance passée sans temps loggé est supprimée ; une
+instance passée qui en porte est annulée et jamais détruite, le temps loggé remontant jusqu'à la
+facture client. Un décompte unique aurait masqué le seul signal disant qu'une preuve de travail a
+été préservée.
+
+**Job d'entretien.** `run_recurrence_pass` matérialise l'horizon puis balaie, dans cet ordre : le
+balayage ne touchant que `occurrence_date < today`, le créneau du jour tout juste créé est hors de
+sa portée par construction plutôt que par chronométrage. Le scheduler (`api/src/jobs.rs`,
+`run_recurrence_scheduler`) est le quatrième à côté de l'EOD, des pauses et du reaper de sessions,
+avec sa propre `JobHealth` pour que ses échecs ne nourrissent pas le back-off d'un autre job.
+`RetryPolicy::recurrence()` pose une base d'une heure et un plafond de deux, plus lent que tous
+les autres parce que son unité de travail est la journée.
+
+**Garde-fou de la base de développement.** La suite Playwright `frontend/e2e/recurring-tasks.spec.ts`
+visait `http://localhost:3001/graphql`, donc la vraie base : chaque exécution y créait un modèle et
+jusqu'à quinze occurrences, et son nettoyage n'était pas vérifié. Elle lit désormais son endpoint
+dans `APLAN_E2E_GRAPHQL_URL` et se skippe entièrement si la variable est absente.
+
+### 20.6 Out of scope (MVP)
 
 The following are documented as future follow-ups:
 - Edit-this-occurrence-only (per-instance override without touching the template).
 - Pause/resume a series.
 - Worklog re-attribution between sibling instances.
 - True user-local timezone recurrence (current anchor: 08:00 UTC ≈ 10:00 Paris; ~1h DST drift twice/year is acceptable for a single-user local tool).
-- Background cron materialization (currently lazy on read; no instance generated when the app is idle).
 
 ---
 
