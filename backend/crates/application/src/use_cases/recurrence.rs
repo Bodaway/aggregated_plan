@@ -449,6 +449,74 @@ pub async fn skip_occurrence(
     Ok(task)
 }
 
+/// Close every occurrence the calendar has left behind.
+///
+/// An instance whose `occurrence_date` is strictly before `today` and whose status
+/// is neither `Done` nor `Cancelled` becomes `Cancelled`. Everything else is left
+/// exactly as it is: today's and future occurrences are still actionable, and a
+/// `Done` or `Cancelled` instance already records a decision this sweep has no
+/// business overwriting.
+///
+/// Walks **every** template of the user, deactivated ones included: cancelling a
+/// series does not remove the instances it already generated, and those still need
+/// closing.
+///
+/// Never sweeps an instance that carries evidence of real work: a stale, still-open
+/// occurrence with at least one worklog entry is left exactly as it is, and does
+/// not count toward the returned total. Cancelling it anyway would drop it out of
+/// every task view, and if the developer put it back to `Todo` by hand the very
+/// next sweep would cancel it again — every tick, forever. This is a single batched
+/// presence check across every candidate, never `WorklogRepository::find_by_recurrence`'s
+/// capped, newest-first page: see `find_task_ids_with_entries`'s doc comment for why.
+///
+/// Returns the number of instances swept.
+pub async fn sweep_stale_occurrences(
+    rec_repo: &dyn RecurrenceRepository,
+    task_repo: &dyn TaskRepository,
+    worklog_repo: &dyn WorklogRepository,
+    user_id: UserId,
+    today: NaiveDate,
+) -> Result<usize, AppError> {
+    let templates = rec_repo.find_by_user(user_id).await?;
+
+    // Gather every stale, still-open instance across every template first, so the
+    // worklog presence check below is one batched call instead of one per template.
+    let mut candidates: Vec<Task> = Vec::new();
+    for template in templates {
+        for task in task_repo.find_by_recurrence(template.id).await? {
+            let Some(occ) = task.occurrence_date else {
+                continue;
+            };
+            if occ >= today {
+                continue;
+            }
+            if matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled) {
+                continue;
+            }
+            candidates.push(task);
+        }
+    }
+
+    let task_ids: Vec<TaskId> = candidates.iter().map(|task| task.id).collect();
+    let logged_task_ids = worklog_repo
+        .find_task_ids_with_entries(user_id, &task_ids)
+        .await?;
+
+    let mut swept = 0usize;
+    for mut task in candidates {
+        if logged_task_ids.contains(&task.id) {
+            continue;
+        }
+
+        task.status = TaskStatus::Cancelled;
+        task.updated_at = Utc::now();
+        task_repo.save(&task).await?;
+        swept += 1;
+    }
+
+    Ok(swept)
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1599,6 +1667,114 @@ mod tests {
         assert!(
             matches!(result, Err(AppError::NotFound(_))),
             "expected NotFound for wrong owner, got {result:?}"
+        );
+    }
+
+    // ── Le balayage ferme tout ce qui est périmé et non clos ──────────────────
+    #[tokio::test]
+    async fn sweep_cancels_every_stale_open_status() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+
+        let stale_todo = save_instance(&task_repo, &template, today - Duration::days(5), TaskStatus::Todo).await;
+        let stale_wip = save_instance(&task_repo, &template, today - Duration::days(4), TaskStatus::InProgress).await;
+        let stale_blocked = save_instance(&task_repo, &template, today - Duration::days(3), TaskStatus::Blocked).await;
+
+        let swept = sweep_stale_occurrences(&rec_repo, &task_repo, &worklog_repo, test_user_id(), today)
+            .await
+            .unwrap();
+
+        assert_eq!(swept, 3);
+        for id in [stale_todo, stale_wip, stale_blocked] {
+            let t = task_repo.find_by_id(id).await.unwrap().unwrap();
+            assert_eq!(t.status, TaskStatus::Cancelled);
+        }
+    }
+
+    // ── Ce que le balayage ne touche jamais ───────────────────────────────────
+    #[tokio::test]
+    async fn sweep_leaves_closed_current_and_future_alone() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+
+        let done = save_instance(&task_repo, &template, today - Duration::days(5), TaskStatus::Done).await;
+        let already = save_instance(&task_repo, &template, today - Duration::days(4), TaskStatus::Cancelled).await;
+        let current = save_instance(&task_repo, &template, today, TaskStatus::Todo).await;
+        let future = save_instance(&task_repo, &template, today + Duration::days(2), TaskStatus::Todo).await;
+
+        let swept = sweep_stale_occurrences(&rec_repo, &task_repo, &worklog_repo, test_user_id(), today)
+            .await
+            .unwrap();
+
+        assert_eq!(swept, 0);
+        assert_eq!(task_repo.find_by_id(done).await.unwrap().unwrap().status, TaskStatus::Done);
+        assert_eq!(task_repo.find_by_id(already).await.unwrap().unwrap().status, TaskStatus::Cancelled);
+        assert_eq!(task_repo.find_by_id(current).await.unwrap().unwrap().status, TaskStatus::Todo);
+        assert_eq!(task_repo.find_by_id(future).await.unwrap().unwrap().status, TaskStatus::Todo);
+    }
+
+    // ── Un template désactivé laisse des instances à balayer ──────────────────
+    #[tokio::test]
+    async fn sweep_reaches_instances_of_deactivated_templates() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+        let stale = save_instance(&task_repo, &template, today - Duration::days(5), TaskStatus::Todo).await;
+        rec_repo.deactivate(template.id).await.unwrap();
+
+        let swept = sweep_stale_occurrences(&rec_repo, &task_repo, &worklog_repo, test_user_id(), today)
+            .await
+            .unwrap();
+
+        assert_eq!(swept, 1, "deactivating a series must not strand its stale instances");
+        assert_eq!(
+            task_repo.find_by_id(stale).await.unwrap().unwrap().status,
+            TaskStatus::Cancelled
+        );
+    }
+
+    // ── Une occurrence qui porte du temps loggé survit au balayage ────────────
+    #[tokio::test]
+    async fn sweep_skips_stale_occurrence_carrying_worklog_entries() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+
+        let worked = save_instance(&task_repo, &template, today - Duration::days(5), TaskStatus::Todo).await;
+        let untouched = save_instance(&task_repo, &template, today - Duration::days(4), TaskStatus::Todo).await;
+        worklog_repo.push_entry_for_task(test_user_id(), worked).await;
+
+        let swept = sweep_stale_occurrences(&rec_repo, &task_repo, &worklog_repo, test_user_id(), today)
+            .await
+            .unwrap();
+
+        assert_eq!(swept, 1, "the instance carrying logged time must not count as swept");
+        assert_eq!(
+            task_repo.find_by_id(worked).await.unwrap().unwrap().status,
+            TaskStatus::Todo,
+            "an occurrence with worklog entries must survive the sweep untouched"
+        );
+        assert_eq!(
+            task_repo.find_by_id(untouched).await.unwrap().unwrap().status,
+            TaskStatus::Cancelled
         );
     }
 }
