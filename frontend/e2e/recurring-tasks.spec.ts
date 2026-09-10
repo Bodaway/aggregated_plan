@@ -1,8 +1,21 @@
 import { test, expect, request as pwRequest } from '@playwright/test';
 
-const GRAPHQL_URL = 'http://localhost:3001/graphql';
+// This suite creates a recurring template plus up to 15 real task rows per
+// run (createRecurringTask materializes 14 days of occurrences server-side),
+// and its cleanup calls cancelRecurrence over raw GraphQL. There is no
+// sandboxing here: whatever GRAPHQL_URL points at receives real writes. It
+// must therefore never default to a developer's own backend/aggregated_plan.db.
+const GRAPHQL_URL = process.env.APLAN_E2E_GRAPHQL_URL ?? '';
 
 test.describe('Recurring tasks feature', () => {
+  test.skip(
+    !GRAPHQL_URL,
+    'Set APLAN_E2E_GRAPHQL_URL to a throwaway GraphQL endpoint (e.g. a disposable ' +
+      'backend/DB started just for this run) before running this suite. It creates a ' +
+      'recurring template plus up to 15 real task rows — never point it at your own ' +
+      'aggregated_plan.db / http://localhost:3001/graphql.',
+  );
+
   // Title set at the start of each test; consumed by afterEach for cleanup.
   let taskTitle = '';
 
@@ -20,6 +33,11 @@ test.describe('Recurring tasks feature', () => {
         },
       });
       const body = await res.json();
+      expect(
+        res.ok() && !body.errors,
+        `cleanup query for "${taskTitle}" failed: ${JSON.stringify(body.errors ?? body)}`,
+      ).toBe(true);
+
       const templateIds: string[] = Array.from(
         new Set(
           (body.data?.tasks?.edges ?? [])
@@ -30,12 +48,19 @@ test.describe('Recurring tasks feature', () => {
         ),
       );
       for (const id of templateIds) {
-        await api.post(GRAPHQL_URL, {
+        // cancelRecurrence returns { deleted, cancelled } (instance counts),
+        // not a bare Int — a leaf selection would be a validation error.
+        const cancelRes = await api.post(GRAPHQL_URL, {
           data: {
-            query: 'mutation($id: ID!){ cancelRecurrence(id: $id) }',
+            query: 'mutation($id: ID!){ cancelRecurrence(id: $id) { deleted cancelled } }',
             variables: { id },
           },
         });
+        const cancelBody = await cancelRes.json();
+        expect(
+          cancelRes.ok() && !cancelBody.errors && cancelBody.data?.cancelRecurrence != null,
+          `cancelRecurrence cleanup failed for template ${id}: ${JSON.stringify(cancelBody.errors ?? cancelBody)}`,
+        ).toBe(true);
       }
     } finally {
       await api.dispose();
