@@ -460,6 +460,10 @@ pub enum RecurrenceCmd {
         /// Task reference: UUID, Jira key, or fuzzy title.
         task: String,
     },
+    /// Close every past occurrence still open, across every series. An occurrence
+    /// carrying worklog entries is left alone: cancelling it would drop a record of
+    /// real work out of every task view.
+    Sweep,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1074,6 +1078,29 @@ mod tests {
             }
             other => panic!("expected Recurrence/Skip, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_recurrence_sweep() {
+        match parse(&["aplan", "recurrence", "sweep"])
+            .expect("parses")
+            .command
+        {
+            Commands::Recurrence {
+                cmd: RecurrenceCmd::Sweep,
+            } => {}
+            other => panic!("expected Recurrence/Sweep, got {other:?}"),
+        }
+    }
+
+    /// `sweep` takes no subject. It decides for itself which occurrences to close,
+    /// so a stray argument is a mistake worth refusing rather than ignoring.
+    #[test]
+    fn recurrence_sweep_refuses_an_argument() {
+        assert!(
+            parse(&["aplan", "recurrence", "sweep", "abc123"]).is_err(),
+            "sweep must not silently swallow a subject"
+        );
     }
 
     #[test]

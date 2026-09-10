@@ -631,6 +631,14 @@ type CombinedMutation {
 	"""
 	cancelRecurrence(id: ID!): CancelRecurrenceResultGql!
 	"""
+	Close every recurrence occurrence the calendar has left behind: a past
+	instance still open becomes cancelled. Walks deactivated series too, since
+	cancelling a series leaves its instances behind. An occurrence carrying
+	worklog entries is left alone — cancelling it would drop a record of real
+	work out of every task view. Returns how many were swept.
+	"""
+	sweepStaleOccurrences: Int!
+	"""
 	Skip (cancel) a single recurring task occurrence. Returns the updated task.
 	"""
 	skipOccurrence(taskId: ID!): TaskGql!

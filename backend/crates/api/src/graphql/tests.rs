@@ -114,6 +114,25 @@ impl TaskRepository for InMemoryTaskRepository {
         Ok(vec![])
     }
 
+    /// Overridden on purpose. `TaskRepository::find_by_recurrence` carries a default
+    /// implementation returning an empty vec, so a double that inherits it makes any
+    /// test of the sweep vacuous: the sweep would find no candidate and report zero
+    /// while asserting nothing. Mirrors the SQLite implementation, occurrence order
+    /// included (`task_repo.rs:590`).
+    async fn find_by_recurrence(
+        &self,
+        template_id: domain::types::recurrence::RecurrenceTemplateId,
+    ) -> Result<Vec<Task>, RepositoryError> {
+        let tasks = self.tasks.lock().unwrap();
+        let mut found: Vec<Task> = tasks
+            .values()
+            .filter(|task| task.recurrence_id == Some(template_id))
+            .cloned()
+            .collect();
+        found.sort_by_key(|task| task.occurrence_date);
+        Ok(found)
+    }
+
     async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
         let mut tasks = self.tasks.lock().unwrap();
         tasks.insert(task.id, task.clone());
@@ -517,6 +536,27 @@ impl application::repositories::WorklogRepository for InMemoryWorklogRepository 
     ) -> Result<(), RepositoryError> {
         self.entries.lock().unwrap().push(entry.clone());
         Ok(())
+    }
+
+    /// Overridden because the trait's default fails loudly, and the sweep resolver
+    /// consults this to decide which stale occurrences carry evidence of real work.
+    /// A presence check per task, exactly like the SQLite implementation, so no
+    /// ordering or page size can hide an entry.
+    async fn find_task_ids_with_entries(
+        &self,
+        user_id: UserId,
+        task_ids: &[TaskId],
+    ) -> Result<std::collections::HashSet<TaskId>, RepositoryError> {
+        let entries = self.entries.lock().unwrap();
+        Ok(task_ids
+            .iter()
+            .copied()
+            .filter(|task_id| {
+                entries
+                    .iter()
+                    .any(|entry| entry.user_id == user_id && entry.task_id == *task_id)
+            })
+            .collect())
     }
     async fn update(
         &self,
@@ -1829,6 +1869,72 @@ fn build_test_schema_with_recurrence(
         Arc::new(InMemoryBreakEventRepository::default()),
         recurrence_repo,
     )
+}
+
+/// Same as [`build_test_schema_with_recurrence`], but the caller keeps the task
+/// repository handle too — the sweep resolver reads templates and their instances,
+/// so a test of it has to seed both sides.
+fn build_test_schema_with_recurrence_and_tasks(
+    recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+) -> TestSchema {
+    build_test_schema_with_memory(
+        Arc::new(InMemoryWorklogRepository::new()),
+        task_repo,
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+        Arc::new(InMemoryMemoryStore::default()),
+        Arc::new(InMemorySessionRepository::default()),
+        Arc::new(InMemoryBreakRuleRepository::default()),
+        Arc::new(InMemoryBreakEventRepository::default()),
+        recurrence_repo,
+    )
+}
+
+/// Build one recurrence instance fixture: a task bound to `template_id` and dated
+/// `occurrence_date`, at the status the caller wants to test the sweep against.
+fn make_recurrence_instance(
+    user_id: UserId,
+    template_id: domain::types::recurrence::RecurrenceTemplateId,
+    title: &str,
+    occurrence_date: NaiveDate,
+    status: TaskStatus,
+) -> Task {
+    let now = chrono::Utc::now();
+    Task {
+        id: Uuid::new_v4(),
+        user_id,
+        title: title.to_string(),
+        description: None,
+        notes: None,
+        source: Source::Personal,
+        source_id: None,
+        jira_status: None,
+        status,
+        project_id: None,
+        assignee: None,
+        delegated_to: None,
+        deadline: None,
+        planned_start: None,
+        planned_end: None,
+        estimated_hours: None,
+        urgency: UrgencyLevel::Medium,
+        urgency_manual: false,
+        impact: ImpactLevel::Medium,
+        tags: vec![],
+        tracking_state: TrackingState::Followed,
+        jira_remaining_seconds: None,
+        jira_original_estimate_seconds: None,
+        jira_time_spent_seconds: None,
+        remaining_hours_override: None,
+        estimated_hours_override: None,
+        recurrence_id: Some(template_id),
+        occurrence_date: Some(occurrence_date),
+        gryzzly_task_id: None,
+        gryzzly_project_id: None,
+        created_at: now,
+        updated_at: now,
+    }
 }
 
 /// Build a recurrence template fixture with fixed, uninteresting defaults, letting a
@@ -6118,4 +6224,78 @@ async fn recurrence_templates_include_inactive_returns_both() {
         .find(|t| t["title"] == "Active weekly report")
         .expect("the active template must still be present");
     assert_eq!(active_entry["active"], true);
+}
+
+/// `sweepStaleOccurrences` must close the past instance still open and leave every
+/// other one exactly as it was: today's, the future's, and one already `Done`.
+///
+/// The instances are seeded directly rather than materialized through
+/// `createRecurringTask`, because `materialize_due_occurrences` is clamped on
+/// `today` and can no longer create a past occurrence at all — a test that asked
+/// the engine for one would seed nothing and assert nothing.
+#[tokio::test]
+async fn sweep_stale_occurrences_closes_a_past_open_instance() {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let today = chrono::Utc::now().date_naive();
+
+    let rec_repo = Arc::new(InMemoryRecurrenceRepository::default());
+    let template = make_recurrence_template(user_id, "Weekly sweep subject", true);
+    rec_repo.save(&template).await.unwrap();
+
+    let task_repo = Arc::new(InMemoryTaskRepository::new());
+    let stale = make_recurrence_instance(
+        user_id,
+        template.id,
+        "Stale and open",
+        today - chrono::Duration::days(7),
+        TaskStatus::Todo,
+    );
+    let stale_done = make_recurrence_instance(
+        user_id,
+        template.id,
+        "Stale but done",
+        today - chrono::Duration::days(14),
+        TaskStatus::Done,
+    );
+    let future = make_recurrence_instance(
+        user_id,
+        template.id,
+        "Still to come",
+        today + chrono::Duration::days(7),
+        TaskStatus::Todo,
+    );
+    for task in [&stale, &stale_done, &future] {
+        task_repo.save(task).await.unwrap();
+    }
+
+    let schema = build_test_schema_with_recurrence_and_tasks(rec_repo, task_repo.clone());
+    let res = schema.execute("mutation { sweepStaleOccurrences }").await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+
+    let swept = res.data.into_json().unwrap()["sweepStaleOccurrences"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(swept, 1, "only the past open instance may be swept");
+
+    assert_eq!(
+        task_repo.find_by_id(stale.id).await.unwrap().unwrap().status,
+        TaskStatus::Cancelled,
+        "the past open instance must end up cancelled"
+    );
+    assert_eq!(
+        task_repo
+            .find_by_id(stale_done.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Done,
+        "a past instance already done records a decision the sweep must not overwrite"
+    );
+    assert_eq!(
+        task_repo.find_by_id(future.id).await.unwrap().unwrap().status,
+        TaskStatus::Todo,
+        "a future instance is still actionable"
+    );
 }

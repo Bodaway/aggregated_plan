@@ -1,19 +1,23 @@
-//! `aplan recurrence list|cancel|skip` — the maintenance surface for recurring-task
-//! templates. `sweep` is deliberately not here: it drives the stale-occurrence use
-//! case (a later task), while these three verbs only ever touch what a human names.
+//! `aplan recurrence list|cancel|skip|sweep` — the maintenance surface for
+//! recurring-task templates.
 //!
 //! ```text
 //! aplan recurrence list                  # every template, active and deactivated alike
 //! aplan recurrence cancel <template>      # deactivate a series, sweep its instances
 //! aplan recurrence skip <task>             # cancel a single occurrence, series lives on
+//! aplan recurrence sweep                   # close every past occurrence still open
 //! ```
+//!
+//! The first three verbs act on what a human names; `sweep` is the only one that
+//! decides on its own which occurrences to close, which is why it reports a count
+//! rather than a subject.
 
 use crate::client::{Client, ClientError};
 use crate::lookup::{resolve_task, LookupError};
 use crate::output::{print_json, ExitCode};
 use crate::queries::{
-    cancel_recurrence, recurrence_templates, skip_occurrence, CancelRecurrence,
-    RecurrenceTemplates, SkipOccurrence,
+    cancel_recurrence, recurrence_templates, skip_occurrence, sweep_stale_occurrences,
+    CancelRecurrence, RecurrenceTemplates, SkipOccurrence, SweepStaleOccurrences,
 };
 
 /// Map a transport/GraphQL failure onto the exit-code contract.
@@ -257,6 +261,39 @@ pub fn skip(api_url: &str, json: bool, task: &str) -> ExitCode {
                 "\u{2713} occurrence skipped \u{2014} {} is now {:?}",
                 out.title, out.status
             );
+            ExitCode::Success
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            exit_code_for(&e)
+        }
+    }
+}
+
+/// `aplan recurrence sweep`
+pub fn sweep(api_url: &str, json: bool) -> ExitCode {
+    let client = Client::new(api_url.to_string());
+
+    match client.run::<SweepStaleOccurrences>(sweep_stale_occurrences::Variables {}) {
+        Ok(r) => {
+            if json {
+                if let Err(e) = print_json(&r.raw) {
+                    eprintln!("error writing output: {e}");
+                    return ExitCode::Generic;
+                }
+                return ExitCode::Success;
+            }
+
+            let swept = r.data.sweep_stale_occurrences;
+            if swept == 0 {
+                // Not a failure, and worth saying out loud: the sweep is meant to be
+                // run repeatedly, so its ordinary result is nothing to do.
+                println!("\u{2713} nothing to sweep \u{2014} no past occurrence left open");
+            } else {
+                println!(
+                    "\u{2713} {swept} past occurrence(s) closed \u{2014} occurrences carrying logged time were left alone"
+                );
+            }
             ExitCode::Success
         }
         Err(e) => {

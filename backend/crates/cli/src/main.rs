@@ -81,6 +81,7 @@ fn main() -> ExitCode {
             cli::RecurrenceCmd::Skip { task } => {
                 recurrence_cmd::skip(&args.api_url, args.json, &task)
             }
+            cli::RecurrenceCmd::Sweep => recurrence_cmd::sweep(&args.api_url, args.json),
         },
         cli::Commands::Log { text, task, at } => commands::log(
             &args.api_url,

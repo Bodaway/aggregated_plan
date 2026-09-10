@@ -1260,6 +1260,31 @@ impl MutationRoot {
         })
     }
 
+    /// Close every recurrence occurrence the calendar has left behind: a past
+    /// instance still open becomes cancelled. Walks deactivated series too, since
+    /// cancelling a series leaves its instances behind. An occurrence carrying
+    /// worklog entries is left alone — cancelling it would drop a record of real
+    /// work out of every task view. Returns how many were swept.
+    async fn sweep_stale_occurrences(&self, ctx: &Context<'_>) -> Result<i32> {
+        let user_id = ctx.data::<UserId>()?;
+        let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
+        let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
+        let today = chrono::Utc::now().date_naive();
+
+        let swept = recurrence_uc::sweep_stale_occurrences(
+            rec_repo.as_ref(),
+            task_repo.as_ref(),
+            worklog_repo.as_ref(),
+            *user_id,
+            today,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(swept as i32)
+    }
+
     /// Skip (cancel) a single recurring task occurrence. Returns the updated task.
     async fn skip_occurrence(&self, ctx: &Context<'_>, task_id: ID) -> Result<TaskGql> {
         let user_id = ctx.data::<UserId>()?;

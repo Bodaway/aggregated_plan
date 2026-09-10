@@ -274,6 +274,16 @@ pub struct CancelRecurrence;
 )]
 pub struct SkipOccurrence;
 
+/// `aplan recurrence sweep`: closes every past occurrence still open, across every
+/// series, leaving the ones that carry logged time alone.
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/sweep_stale_occurrences.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct SweepStaleOccurrences;
+
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
