@@ -663,6 +663,77 @@ impl application::repositories::RecurrenceRepository for StubRecurrenceRepositor
     }
 }
 
+/// Real `find_active_by_user` vs `find_by_user` split, unlike `StubRecurrenceRepository`
+/// (which answers both with an empty vector and therefore cannot distinguish them). Used
+/// only by resolver tests that need a fixture holding both an active and a deactivated
+/// template — `StubRecurrenceRepository` keeps its existing all-empty behaviour for every
+/// other test that depends on it.
+#[derive(Default)]
+struct InMemoryRecurrenceRepository {
+    templates: Mutex<Vec<domain::types::recurrence::RecurrenceTemplate>>,
+}
+
+#[async_trait]
+impl application::repositories::RecurrenceRepository for InMemoryRecurrenceRepository {
+    async fn find_by_id(
+        &self,
+        id: domain::types::recurrence::RecurrenceTemplateId,
+    ) -> Result<Option<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
+        Ok(self.templates.lock().unwrap().iter().find(|t| t.id == id).cloned())
+    }
+
+    async fn find_active_by_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
+        Ok(self
+            .templates
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.user_id == user_id && t.active)
+            .cloned()
+            .collect())
+    }
+
+    async fn find_by_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
+        Ok(self
+            .templates
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.user_id == user_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn save(
+        &self,
+        template: &domain::types::recurrence::RecurrenceTemplate,
+    ) -> Result<(), RepositoryError> {
+        let mut templates = self.templates.lock().unwrap();
+        if let Some(existing) = templates.iter_mut().find(|t| t.id == template.id) {
+            *existing = template.clone();
+        } else {
+            templates.push(template.clone());
+        }
+        Ok(())
+    }
+
+    async fn deactivate(
+        &self,
+        id: domain::types::recurrence::RecurrenceTemplateId,
+    ) -> Result<(), RepositoryError> {
+        if let Some(existing) = self.templates.lock().unwrap().iter_mut().find(|t| t.id == id) {
+            existing.active = false;
+        }
+        Ok(())
+    }
+}
+
 struct StubGraphTokenProvider;
 #[async_trait]
 impl application::services::GraphTokenProvider for StubGraphTokenProvider {
@@ -1599,15 +1670,18 @@ fn build_test_schema_with(
         Arc::new(InMemorySessionRepository::default()),
         Arc::new(InMemoryBreakRuleRepository::default()),
         Arc::new(InMemoryBreakEventRepository::default()),
+        Arc::new(StubRecurrenceRepository),
     )
 }
 
 /// Same as `build_test_schema_with`, plus an explicit semantic-memory store, so a
 /// memory test can keep a handle on it and seed rows the resolvers cannot produce
 /// (already invalidated, already rejected), an explicit session repo, so an
-/// I2 test can swap in one that fails on `touch`, and the two break-routine repos,
-/// so a Task 9 stats test can keep a handle on the event store — exactly why this
-/// builder exists at all rather than `build_test_schema_with` alone.
+/// I2 test can swap in one that fails on `touch`, the two break-routine repos,
+/// so a Task 9 stats test can keep a handle on the event store, and an explicit
+/// recurrence repo, so a resolver test can seed active *and* deactivated templates
+/// — `StubRecurrenceRepository` answers both `find_active_by_user` and
+/// `find_by_user` with an empty vector, which cannot distinguish the two branches.
 fn build_test_schema_with_memory(
     worklog_repo: Arc<dyn application::repositories::WorklogRepository>,
     task_repo: Arc<dyn TaskRepository>,
@@ -1617,6 +1691,7 @@ fn build_test_schema_with_memory(
     session_repo: Arc<dyn application::repositories::SessionRepository>,
     break_rule_repo: Arc<dyn application::repositories::BreakRuleRepository>,
     break_event_repo: Arc<dyn application::repositories::BreakEventRepository>,
+    recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository>,
 ) -> TestSchema {
     let default_user_id: UserId =
         Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
@@ -1630,8 +1705,6 @@ fn build_test_schema_with_memory(
     let task_link_repo: Arc<dyn TaskLinkRepository> = Arc::new(StubTaskLinkRepository);
     let sync_repo: Arc<dyn SyncStatusRepository> = Arc::new(StubSyncStatusRepository);
     let config_repo: Arc<dyn ConfigRepository> = Arc::new(StubConfigRepository::new());
-    let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
-        Arc::new(StubRecurrenceRepository);
     let graph_token_provider: Arc<dyn application::services::GraphTokenProvider> =
         Arc::new(StubGraphTokenProvider);
     let signal_mapping_repo: Arc<dyn application::repositories::SignalMappingRepository> =
@@ -1696,6 +1769,7 @@ fn build_memory_test_schema() -> (TestSchema, Arc<InMemoryMemoryStore>) {
         Arc::new(InMemorySessionRepository::default()),
         Arc::new(InMemoryBreakRuleRepository::default()),
         Arc::new(InMemoryBreakEventRepository::default()),
+        Arc::new(StubRecurrenceRepository),
     );
     (schema, memory_store)
 }
@@ -1713,6 +1787,7 @@ fn build_test_schema_with_failing_session_touch() -> TestSchema {
         Arc::new(FailingTouchSessionRepository::new()),
         Arc::new(InMemoryBreakRuleRepository::default()),
         Arc::new(InMemoryBreakEventRepository::default()),
+        Arc::new(StubRecurrenceRepository),
     )
 }
 
@@ -1733,7 +1808,60 @@ fn build_test_schema_with_breaks(
         Arc::new(InMemorySessionRepository::default()),
         break_rules,
         break_events,
+        Arc::new(StubRecurrenceRepository),
     )
+}
+
+/// Default dependencies, except the recurrence repo is caller-supplied — a
+/// resolver test needs a fixture holding both an active and a deactivated
+/// template, which `StubRecurrenceRepository` (always empty) cannot provide.
+fn build_test_schema_with_recurrence(
+    recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository>,
+) -> TestSchema {
+    build_test_schema_with_memory(
+        Arc::new(InMemoryWorklogRepository::new()),
+        Arc::new(InMemoryTaskRepository::new()),
+        Arc::new(InMemoryGryzzlyCatalogRepository::new()),
+        Arc::new(InMemoryTimesheetDraftRepository::new()),
+        Arc::new(InMemoryMemoryStore::default()),
+        Arc::new(InMemorySessionRepository::default()),
+        Arc::new(InMemoryBreakRuleRepository::default()),
+        Arc::new(InMemoryBreakEventRepository::default()),
+        recurrence_repo,
+    )
+}
+
+/// Build a recurrence template fixture with fixed, uninteresting defaults, letting a
+/// test vary only what it actually cares about (title and active flag) — for the
+/// `recurrenceTemplates` resolver test, which needs one active and one deactivated
+/// template to tell the two repository methods apart.
+fn make_recurrence_template(
+    user_id: UserId,
+    title: &str,
+    active: bool,
+) -> domain::types::recurrence::RecurrenceTemplate {
+    let now = chrono::Utc::now();
+    domain::types::recurrence::RecurrenceTemplate {
+        id: domain::types::recurrence::RecurrenceTemplateId::new(),
+        user_id,
+        title: title.to_string(),
+        description: None,
+        notes: None,
+        project_id: None,
+        urgency: UrgencyLevel::Medium,
+        urgency_manual: false,
+        impact: ImpactLevel::Medium,
+        estimated_hours: None,
+        tags: vec![],
+        rule: domain::types::recurrence::RecurrenceRule::Daily { interval: 1 },
+        starts_on: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        ends_on: None,
+        max_occurrences: None,
+        last_generated_through: None,
+        active,
+        created_at: now,
+        updated_at: now,
+    }
 }
 
 /// Seed one break rule and, per `(outcome, count)` pair, that many events with that
@@ -4692,6 +4820,7 @@ async fn set_session_mode_off_flushes_the_bound_task_before_clearing_it() {
         Arc::new(OrderRecordingSessionRepository::new(order.clone())),
         Arc::new(InMemoryBreakRuleRepository::default()),
         Arc::new(InMemoryBreakEventRepository::default()),
+        Arc::new(StubRecurrenceRepository),
     );
 
     let created = schema
@@ -5912,4 +6041,81 @@ async fn next_break_due_ignores_a_disabled_rule() {
         res.data.into_json().unwrap()["nextBreakDue"].is_null(),
         "a disabled rule must not arm the countdown"
     );
+}
+
+// ─── `recurrenceTemplates` resolver: `includeInactive` branch ───
+//
+// The fixture below deliberately holds one active AND one deactivated template for
+// the same user: a fixture with no deactivated template at all would let either test
+// pass regardless of which repository method the resolver actually calls, proving
+// nothing about the branch.
+
+/// `includeInactive` omitted — the schema default (`false`) — must call
+/// `find_active_by_user` and therefore exclude the deactivated template, not just
+/// happen to have none to exclude.
+#[tokio::test]
+async fn recurrence_templates_default_excludes_deactivated() {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let repo = Arc::new(InMemoryRecurrenceRepository::default());
+    let active = make_recurrence_template(user_id, "Active weekly report", true);
+    let inactive = make_recurrence_template(user_id, "Cancelled retro", false);
+    repo.save(&active).await.unwrap();
+    repo.save(&inactive).await.unwrap();
+    let schema = build_test_schema_with_recurrence(repo);
+
+    let res = schema
+        .execute("{ recurrenceTemplates { title active } }")
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let data = res.data.into_json().unwrap();
+    let templates = data["recurrenceTemplates"].as_array().unwrap();
+
+    assert_eq!(
+        templates.len(),
+        1,
+        "default query must return only the active template, got {templates:?}"
+    );
+    assert_eq!(templates[0]["title"], "Active weekly report");
+    assert_eq!(templates[0]["active"], true);
+}
+
+/// `includeInactive: true` must call `find_by_user` and return active and
+/// deactivated templates alike, the deactivated one identifiable through its own
+/// `active` field.
+#[tokio::test]
+async fn recurrence_templates_include_inactive_returns_both() {
+    let user_id: UserId =
+        Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid default UUID");
+    let repo = Arc::new(InMemoryRecurrenceRepository::default());
+    let active = make_recurrence_template(user_id, "Active weekly report", true);
+    let inactive = make_recurrence_template(user_id, "Cancelled retro", false);
+    repo.save(&active).await.unwrap();
+    repo.save(&inactive).await.unwrap();
+    let schema = build_test_schema_with_recurrence(repo);
+
+    let res = schema
+        .execute("{ recurrenceTemplates(includeInactive: true) { title active } }")
+        .await;
+    assert!(res.errors.is_empty(), "{:?}", res.errors);
+    let data = res.data.into_json().unwrap();
+    let templates = data["recurrenceTemplates"].as_array().unwrap();
+
+    assert_eq!(
+        templates.len(),
+        2,
+        "includeInactive: true must return both templates, got {templates:?}"
+    );
+
+    let inactive_entry = templates
+        .iter()
+        .find(|t| t["title"] == "Cancelled retro")
+        .expect("the deactivated template must be present");
+    assert_eq!(inactive_entry["active"], false);
+
+    let active_entry = templates
+        .iter()
+        .find(|t| t["title"] == "Active weekly report")
+        .expect("the active template must still be present");
+    assert_eq!(active_entry["active"], true);
 }
