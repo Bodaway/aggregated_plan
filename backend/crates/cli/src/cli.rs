@@ -160,6 +160,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SlotsCmd,
     },
+    /// Inspect and act on recurring-task templates.
+    Recurrence {
+        #[command(subcommand)]
+        cmd: RecurrenceCmd,
+    },
     /// Append a timestamped entry to the worklog of the active task (or --task TARGET).
     Log {
         /// Entry text. Variadic — multiple words are joined with spaces.
@@ -436,6 +441,24 @@ pub enum SlotsCmd {
         /// The local day to rebuild, YYYY-MM-DD.
         #[arg(long)]
         date: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RecurrenceCmd {
+    /// List active recurrence templates.
+    List,
+    /// Cancel a series: deactivate the template, delete the instances that carry
+    /// no logged time, and mark the rest cancelled. Instances carrying logged
+    /// time are never deleted — that time reaches the client invoice.
+    Cancel {
+        /// Template id (a prefix is enough when it is unambiguous).
+        template: String,
+    },
+    /// Skip a single occurrence: its status becomes cancelled, the series lives on.
+    Skip {
+        /// Task reference: UUID, Jira key, or fuzzy title.
+        task: String,
     },
 }
 
@@ -1010,6 +1033,46 @@ mod tests {
         ] {
             let err = parse(&args).expect_err("both ends are required");
             assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        }
+    }
+
+    #[test]
+    fn parses_recurrence_list() {
+        assert!(matches!(
+            parse(&["aplan", "recurrence", "list"]).expect("parses").command,
+            Commands::Recurrence {
+                cmd: RecurrenceCmd::List
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_recurrence_cancel() {
+        match parse(&["aplan", "recurrence", "cancel", "abc123"])
+            .expect("parses")
+            .command
+        {
+            Commands::Recurrence {
+                cmd: RecurrenceCmd::Cancel { template },
+            } => {
+                assert_eq!(template, "abc123");
+            }
+            other => panic!("expected Recurrence/Cancel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recurrence_skip() {
+        match parse(&["aplan", "recurrence", "skip", "AP-123"])
+            .expect("parses")
+            .command
+        {
+            Commands::Recurrence {
+                cmd: RecurrenceCmd::Skip { task },
+            } => {
+                assert_eq!(task, "AP-123");
+            }
+            other => panic!("expected Recurrence/Skip, got {other:?}"),
         }
     }
 

@@ -247,6 +247,33 @@ pub struct ReattributeWorklog;
 )]
 pub struct RepairOrphanedSlots;
 
+/// The read side of `aplan recurrence list`: every active recurrence template.
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/recurrence_templates.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct RecurrenceTemplates;
+
+/// `aplan recurrence cancel`: deactivates the template and sweeps its instances.
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/cancel_recurrence.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct CancelRecurrence;
+
+/// `aplan recurrence skip`: cancels a single occurrence, series untouched.
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/skip_occurrence.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct SkipOccurrence;
+
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",

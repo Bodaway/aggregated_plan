@@ -1,0 +1,6 @@
+mutation CancelRecurrence($id: ID!) {
+  cancelRecurrence(id: $id) {
+    deleted
+    cancelled
+  }
+}

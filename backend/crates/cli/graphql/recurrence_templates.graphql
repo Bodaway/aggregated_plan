@@ -1,0 +1,10 @@
+query RecurrenceTemplates {
+  recurrenceTemplates {
+    id
+    title
+    active
+    startsOn
+    endsOn
+    lastGeneratedThrough
+  }
+}

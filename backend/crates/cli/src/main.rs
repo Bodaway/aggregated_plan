@@ -11,6 +11,7 @@ mod memory_cmd;
 mod output;
 mod queries;
 mod reattribute_cmd;
+mod recurrence_cmd;
 mod search_cmd;
 mod session_cmd;
 mod slots_cmd;
@@ -70,6 +71,15 @@ fn main() -> ExitCode {
             }
             cli::SlotsCmd::Rebuild { task, date } => {
                 slots_cmd::rebuild(&args.api_url, args.json, &task, &date)
+            }
+        },
+        cli::Commands::Recurrence { cmd } => match cmd {
+            cli::RecurrenceCmd::List => recurrence_cmd::list(&args.api_url, args.json),
+            cli::RecurrenceCmd::Cancel { template } => {
+                recurrence_cmd::cancel(&args.api_url, args.json, &template)
+            }
+            cli::RecurrenceCmd::Skip { task } => {
+                recurrence_cmd::skip(&args.api_url, args.json, &task)
             }
         },
         cli::Commands::Log { text, task, at } => commands::log(

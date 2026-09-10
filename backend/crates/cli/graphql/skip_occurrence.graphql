@@ -1,0 +1,7 @@
+mutation SkipOccurrence($taskId: ID!) {
+  skipOccurrence(taskId: $taskId) {
+    id
+    title
+    status
+  }
+}
