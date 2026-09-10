@@ -866,9 +866,16 @@ type CombinedQuery {
 	"""
 	searchableTasks: [SearchableTaskGql!]!
 	"""
-	List all active recurrence templates for the current user.
+	List recurrence templates for the current user.
+	
+	Active only by default — existing callers (the frontend's template list)
+	see no change. `includeInactive: true` also returns deactivated templates,
+	via `RecurrenceRepository::find_by_user` (added for the sweep use case):
+	a deactivated template still owns instances that may need addressing, so
+	`aplan recurrence list`/`cancel` opt into it explicitly rather than this
+	query switching wholesale, which would also change what the frontend shows.
 	"""
-	recurrenceTemplates: [RecurrenceTemplateGql!]!
+	recurrenceTemplates(includeInactive: Boolean! = false): [RecurrenceTemplateGql!]!
 	"""
 	Get user configuration as a JSON-like list of key-value pairs.
 	"""

@@ -1,5 +1,5 @@
-query RecurrenceTemplates {
-  recurrenceTemplates {
+query RecurrenceTemplates($includeInactive: Boolean!) {
+  recurrenceTemplates(includeInactive: $includeInactive) {
     id
     title
     active

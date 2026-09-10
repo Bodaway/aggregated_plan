@@ -505,15 +505,28 @@ impl QueryRoot {
             .collect())
     }
 
-    /// List all active recurrence templates for the current user.
-    async fn recurrence_templates(&self, ctx: &Context<'_>) -> Result<Vec<RecurrenceTemplateGql>> {
+    /// List recurrence templates for the current user.
+    ///
+    /// Active only by default — existing callers (the frontend's template list)
+    /// see no change. `includeInactive: true` also returns deactivated templates,
+    /// via `RecurrenceRepository::find_by_user` (added for the sweep use case):
+    /// a deactivated template still owns instances that may need addressing, so
+    /// `aplan recurrence list`/`cancel` opt into it explicitly rather than this
+    /// query switching wholesale, which would also change what the frontend shows.
+    async fn recurrence_templates(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = false)] include_inactive: bool,
+    ) -> Result<Vec<RecurrenceTemplateGql>> {
         let user_id = ctx.data::<UserId>()?;
         let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
 
-        let templates = rec_repo
-            .find_active_by_user(*user_id)
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let templates = if include_inactive {
+            rec_repo.find_by_user(*user_id).await
+        } else {
+            rec_repo.find_active_by_user(*user_id).await
+        }
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
         Ok(templates.into_iter().map(RecurrenceTemplateGql).collect())
     }

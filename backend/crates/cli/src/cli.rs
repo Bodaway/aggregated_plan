@@ -446,7 +446,7 @@ pub enum SlotsCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum RecurrenceCmd {
-    /// List active recurrence templates.
+    /// List every recurrence template, active and deactivated alike.
     List,
     /// Cancel a series: deactivate the template, delete the instances that carry
     /// no logged time, and mark the rest cancelled. Instances carrying logged

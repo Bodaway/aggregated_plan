@@ -3,7 +3,7 @@
 //! case (a later task), while these three verbs only ever touch what a human names.
 //!
 //! ```text
-//! aplan recurrence list                  # every active template
+//! aplan recurrence list                  # every template, active and deactivated alike
 //! aplan recurrence cancel <template>      # deactivate a series, sweep its instances
 //! aplan recurrence skip <task>             # cancel a single occurrence, series lives on
 //! ```
@@ -39,6 +39,19 @@ fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// The bullet and the spelled-out word `list` renders for a template's state.
+///
+/// Two signals, not one: a lone bullet is easy to misread at a glance, and a
+/// deactivated template rendering almost identically to an active one is
+/// exactly the trap `list` must not fall into now that it shows both.
+fn template_state(active: bool) -> (&'static str, &'static str) {
+    if active {
+        ("\u{25cf}", "active")
+    } else {
+        ("\u{25cb}", "deactivated")
+    }
+}
+
 /// Resolve a user-supplied `(id, title)` needle against every candidate's id
 /// prefix — case-insensitively, since a retyped short id is easy to miscase.
 ///
@@ -71,15 +84,24 @@ fn select_by_id_prefix<'a>(
 /// Resolve a `cancel` template argument (a full id or an unambiguous prefix)
 /// into the full template id `cancelRecurrence` requires. The mutation itself
 /// only accepts a well-formed id — there is no prefix resolution server side —
-/// so this fetches the active-template list and matches client-side, exactly
-/// like `memory_cmd::resolve_project` does for `--project`.
+/// so this fetches the template list and matches client-side, exactly like
+/// `memory_cmd::resolve_project` does for `--project`.
+///
+/// Fetches with `includeInactive: true`: `cancel_recurrence` is the sole writer
+/// of `active = false` today, but the sweep use case is about to make
+/// deactivation routine, and a deactivated template must stay addressable —
+/// an active-only fetch here would make it permanently unreachable and turn
+/// "no recurrence template matches" into a false claim about a template that
+/// still exists, merely filtered out.
 fn resolve_template(client: &Client, token: &str) -> Result<String, LookupError> {
     let needle = token.trim();
     if needle.is_empty() {
         return Err(LookupError::NotFound(token.to_string()));
     }
     let templates = client
-        .run::<RecurrenceTemplates>(recurrence_templates::Variables {})?
+        .run::<RecurrenceTemplates>(recurrence_templates::Variables {
+            include_inactive: true,
+        })?
         .data
         .recurrence_templates;
     select_by_id_prefix(
@@ -91,6 +113,12 @@ fn resolve_template(client: &Client, token: &str) -> Result<String, LookupError>
 /// `resolve_template`'s failure worded for a template rather than a task: the
 /// shared `LookupError::NotFound` message says "no task matches", which is
 /// wrong here. Mirrors `memory_cmd::describe_project_error`.
+///
+/// Deliberately does not say "no *active* recurrence template matches" (or any
+/// other qualifier): `resolve_template` already searched active and
+/// deactivated templates alike (`includeInactive: true`), so a plain "no
+/// recurrence template matches" is the accurate claim in both directions —
+/// qualifying it either way would misstate what was actually searched.
 fn describe_template_error(error: &LookupError) -> String {
     match error {
         LookupError::NotFound(token) => format!("no recurrence template matches `{token}`"),
@@ -98,10 +126,17 @@ fn describe_template_error(error: &LookupError) -> String {
     }
 }
 
-/// `aplan recurrence list`
+/// `aplan recurrence list` — active and deactivated templates alike.
+///
+/// `includeInactive: true` is what makes a deactivated template visible at all:
+/// left at the query's default, a cancelled series would disappear from this
+/// list the moment `cancel` deactivated it, with nothing telling the operator
+/// it still exists (or still owns instances a sweep might need to reach).
 pub fn list(api_url: &str, json: bool) -> ExitCode {
     let client = Client::new(api_url.to_string());
-    match client.run::<RecurrenceTemplates>(recurrence_templates::Variables {}) {
+    match client.run::<RecurrenceTemplates>(recurrence_templates::Variables {
+        include_inactive: true,
+    }) {
         Ok(r) => {
             if json {
                 if let Err(e) = print_json(&r.raw) {
@@ -123,7 +158,7 @@ pub fn list(api_url: &str, json: bool) -> ExitCode {
                 if templates.len() == 1 { "" } else { "s" }
             );
             for t in templates {
-                let bullet = if t.active { "\u{25cf}" } else { "\u{25cb}" };
+                let (bullet, state) = template_state(t.active);
                 let span = match &t.ends_on {
                     Some(ends_on) => format!("{} \u{2192} {}", t.starts_on, ends_on),
                     None => format!("{} \u{2192} (open-ended)", t.starts_on),
@@ -133,7 +168,7 @@ pub fn list(api_url: &str, json: bool) -> ExitCode {
                     .as_deref()
                     .unwrap_or("never generated");
                 println!(
-                    "{bullet} {}  {}  {}  generated through {}",
+                    "{bullet} {}  {}  [{state}]  {}  generated through {}",
                     short(&t.id),
                     t.title,
                     span,
@@ -238,6 +273,19 @@ mod tests {
     #[test]
     fn an_id_is_shortened_to_a_typable_prefix() {
         assert_eq!(short("b6a62457-3a64-43f5-9a96-833c95667cc6"), "b6a62457");
+    }
+
+    /// The regression `list` must not repeat: once it shows deactivated
+    /// templates too (finding A/B), the two states must render as visibly
+    /// different — not just a bullet that is easy to miss at a glance.
+    #[test]
+    fn an_active_and_a_deactivated_template_render_differently() {
+        let (active_bullet, active_word) = template_state(true);
+        let (inactive_bullet, inactive_word) = template_state(false);
+        assert_ne!(active_bullet, inactive_bullet);
+        assert_ne!(active_word, inactive_word);
+        assert_eq!(active_word, "active");
+        assert_eq!(inactive_word, "deactivated");
     }
 
     #[test]
