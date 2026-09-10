@@ -37,7 +37,10 @@ mutation UpdateRecurringTask($id: ID!, $input: UpdateRecurringTaskInput!) {
 }
 
 mutation CancelRecurrence($id: ID!) {
-  cancelRecurrence(id: $id)
+  cancelRecurrence(id: $id) {
+    deleted
+    cancelled
+  }
 }
 
 mutation SkipOccurrence($taskId: ID!) {

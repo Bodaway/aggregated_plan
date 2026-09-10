@@ -1226,23 +1226,27 @@ impl MutationRoot {
         Ok(RecurrenceTemplateGql(template))
     }
 
-    /// Cancel a recurring task series. Deactivates the template and deletes
-    /// all future Todo instances. Returns the count of deleted instances.
-    async fn cancel_recurrence(&self, ctx: &Context<'_>, id: ID) -> Result<i32> {
+    /// Cancel a recurring task series. Deactivates the template, deletes every
+    /// instance that carries no logged time — future *and* past — and marks the
+    /// rest cancelled. Logged time reaches the client invoice, so an instance
+    /// carrying it is never deleted.
+    async fn cancel_recurrence(&self, ctx: &Context<'_>, id: ID) -> Result<CancelRecurrenceResultGql> {
         use domain::types::recurrence::RecurrenceTemplateId;
 
         let user_id = ctx.data::<UserId>()?;
         let rec_repo = ctx.data::<Arc<dyn RecurrenceRepository>>()?;
         let task_repo = ctx.data::<Arc<dyn TaskRepository>>()?;
+        let worklog_repo = ctx.data::<Arc<dyn WorklogRepository>>()?;
         let today = chrono::Utc::now().date_naive();
 
         let template_id = id
             .parse::<RecurrenceTemplateId>()
             .map_err(|e| async_graphql::Error::new(format!("Invalid template ID: {e}")))?;
 
-        let deleted = recurrence_uc::cancel_recurrence(
+        let outcome = recurrence_uc::cancel_recurrence(
             rec_repo.as_ref(),
             task_repo.as_ref(),
+            worklog_repo.as_ref(),
             template_id,
             *user_id,
             today,
@@ -1250,7 +1254,10 @@ impl MutationRoot {
         .await
         .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
-        Ok(deleted as i32)
+        Ok(CancelRecurrenceResultGql {
+            deleted: outcome.deleted as i32,
+            cancelled: outcome.cancelled as i32,
+        })
     }
 
     /// Skip (cancel) a single recurring task occurrence. Returns the updated task.

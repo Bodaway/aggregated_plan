@@ -359,6 +359,20 @@ enum BriefVariantGql {
 	MORNING
 }
 
+"""
+Result of cancelling a recurrence series.
+"""
+type CancelRecurrenceResultGql {
+	"""
+	Instances removed outright (no logged time).
+	"""
+	deleted: Int!
+	"""
+	Instances kept and marked cancelled because they carry logged time.
+	"""
+	cancelled: Int!
+}
+
 type ClaudeSessionGql {
 	"""
 	The Claude Code session id. A `String`, not an `ID`: it is minted by another
@@ -610,10 +624,12 @@ type CombinedMutation {
 	"""
 	updateRecurringTask(id: ID!, input: UpdateRecurringTaskInput!): RecurrenceTemplateGql!
 	"""
-	Cancel a recurring task series. Deactivates the template and deletes
-	all future Todo instances. Returns the count of deleted instances.
+	Cancel a recurring task series. Deactivates the template, deletes every
+	instance that carries no logged time — future *and* past — and marks the
+	rest cancelled. Logged time reaches the client invoice, so an instance
+	carrying it is never deleted.
 	"""
-	cancelRecurrence(id: ID!): Int!
+	cancelRecurrence(id: ID!): CancelRecurrenceResultGql!
 	"""
 	Skip (cancel) a single recurring task occurrence. Returns the updated task.
 	"""
@@ -753,14 +769,15 @@ type CombinedMutation {
 	Cut the running break short — the overlay's single control, "J'y retourne".
 	`abandoned`, not `taken`: the break was opened and did not reach its deadline.
 	
-	Idempotent, and the idempotence is what settles a race rather than a nicety.
-	The countdown can expire in the very second the button is pressed, and the
-	tick's `taken` write must win: it is the one that saw the deadline pass. So the
-	test is not "does this row exist" but "is this row *still the running one*" —
-	a row the tick has already closed is no longer `pending`, therefore no longer
-	active, therefore `false` with nothing written. A second press sees exactly the
-	same thing and answers exactly the same way, as does a press carrying the id of
-	a break that has since ended.
+	Idempotent, and the idempotence settles a race rather than being a nicety. The
+	countdown can run out in the very second the button is pressed, and the tick's
+	`taken` write has to win: it is the one that saw the deadline pass. Which is
+	why the whole decision is delegated to `abandon_if_running` and made *in the
+	write* — reading the row here and updating it after would be a check-then-act,
+	and the tick's write, landing between the two, would be overwritten by this
+	one. `false` therefore means "the break was not running any more", which covers
+	a second press, a press on a break that has since ended, and a press the
+	deadline beat by a hundredth of a second, all identically.
 	"""
 	endBreak(eventId: ID!): Boolean!
 }
@@ -1244,6 +1261,11 @@ One task's presence across the day. Lanes overlap — that is the concurrent vie
 """
 type LaneGql {
 	laneKey: String!
+	"""
+	The plan task this lane is about, when it has one. Meeting and repo lanes carry
+	no task, so they have no Gryzzly snapshot a client could correct — which is what
+	tells the timesheet screen whether to offer a reassignment control on the row.
+	"""
 	taskId: ID
 	label: String!
 	gryzzlyProjectId: String
@@ -1435,15 +1457,6 @@ ISO 8601 combined date and time without timezone.
 scalar NaiveDateTime
 
 """
-R73: which commitment a task is late on. `None` when it is not late at all.
-"""
-enum OverdueKindGql {
-	NONE
-	PLANNED
-	DEADLINE
-}
-
-"""
 Evidence that fell outside the working windows — surfaced so the user can decide,
 rather than dropped where nobody can see it.
 """
@@ -1451,6 +1464,15 @@ type OutsideWorkGql {
 	laneKey: String!
 	label: String!
 	minutes: Int!
+}
+
+"""
+R73: which commitment a task is late on. `None` when it is not late at all.
+"""
+enum OverdueKindGql {
+	NONE
+	PLANNED
+	DEADLINE
 }
 
 """

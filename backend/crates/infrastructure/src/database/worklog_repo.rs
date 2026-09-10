@@ -202,6 +202,46 @@ impl WorklogRepository for SqliteWorklogRepository {
         rows.iter().map(map_row).collect()
     }
 
+    /// One `SELECT DISTINCT task_id ... WHERE task_id IN (...)` per chunk of
+    /// `MARK_CHUNK_SIZE` ids, never a page of entries: presence of *any* row is
+    /// exactly what an `IN` + `DISTINCT` answers, regardless of how many entries a
+    /// task or the wider series has logged. Nothing here is ordered or limited, so
+    /// there is nothing to truncate.
+    async fn find_task_ids_with_entries(
+        &self,
+        user_id: UserId,
+        task_ids: &[TaskId],
+    ) -> Result<std::collections::HashSet<TaskId>, RepositoryError> {
+        let mut found = std::collections::HashSet::new();
+        if task_ids.is_empty() {
+            return Ok(found);
+        }
+
+        for chunk in task_ids.chunks(MARK_CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT DISTINCT task_id FROM worklog_entries
+                  WHERE user_id = ? AND task_id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql).bind(user_id.to_string());
+            for id in chunk {
+                q = q.bind(id.to_string());
+            }
+            let rows = q
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+            for row in &rows {
+                let task_id_str: String = Row::get(row, "task_id");
+                let task_id = Uuid::parse_str(&task_id_str)
+                    .map_err(|e| RepositoryError::Database(e.to_string()))?;
+                found.insert(task_id);
+            }
+        }
+
+        Ok(found)
+    }
+
     /// Ids are stored hyphenated and lowercase, so a plain prefix `LIKE` matches at
     /// any width — the same contract the memory reference resolves under.
     ///

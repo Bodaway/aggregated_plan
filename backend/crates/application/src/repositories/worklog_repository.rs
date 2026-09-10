@@ -68,6 +68,35 @@ pub trait WorklogRepository: Send + Sync {
         offset: u32,
     ) -> Result<Vec<WorklogEntry>, RepositoryError>;
 
+    /// Which of the given tasks have at least one logged worklog entry.
+    ///
+    /// Deliberately **not** built on top of [`find_by_recurrence`], which pages
+    /// through entries newest-first and caps at [`WORKLOG_FILTER_MAX_LIMIT`]: on a
+    /// series busy enough to exceed that cap, the truncated tail is exactly the
+    /// *oldest* entries — the ones attached to the past instances a caller like
+    /// `cancel_recurrence` is sweeping. Reading that capped page would make an old,
+    /// genuinely-worked instance look untouched. This is a presence check per task,
+    /// so it cannot be hidden by pagination or ordering.
+    ///
+    /// Returns the subset of `task_ids` that carries at least one entry, scoped to
+    /// `user_id`.
+    ///
+    /// Loud default, same rationale as the rest of this trait: a double that
+    /// silently found nothing would make a task that carries logged time look
+    /// deletable.
+    ///
+    /// [`find_by_recurrence`]: WorklogRepository::find_by_recurrence
+    /// [`WORKLOG_FILTER_MAX_LIMIT`]: crate::repositories::worklog_repository::WORKLOG_FILTER_MAX_LIMIT
+    async fn find_task_ids_with_entries(
+        &self,
+        _user_id: UserId,
+        _task_ids: &[TaskId],
+    ) -> Result<std::collections::HashSet<TaskId>, RepositoryError> {
+        Err(RepositoryError::Database(
+            "find_task_ids_with_entries is not implemented by this repository".into(),
+        ))
+    }
+
     /// The entries the consolidation job has not read yet: `consolidated_at IS
     /// NULL`, scoped to the user, **oldest first**.
     ///

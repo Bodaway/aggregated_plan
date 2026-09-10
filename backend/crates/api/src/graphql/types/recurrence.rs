@@ -391,3 +391,14 @@ pub struct UpdateRecurringTaskInput {
     pub ends_on: Option<Option<NaiveDate>>,
     pub max_occurrences: Option<Option<i32>>,
 }
+
+// ─── CancelRecurrenceResultGql output type ────────────────────────────────────
+
+/// Result of cancelling a recurrence series.
+#[derive(SimpleObject)]
+pub struct CancelRecurrenceResultGql {
+    /// Instances removed outright (no logged time).
+    pub deleted: i32,
+    /// Instances kept and marked cancelled because they carry logged time.
+    pub cancelled: i32,
+}

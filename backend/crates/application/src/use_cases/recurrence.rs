@@ -7,7 +7,7 @@ use domain::types::task::Task;
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::repositories::{RecurrenceRepository, TaskRepository};
+use crate::repositories::{RecurrenceRepository, TaskRepository, WorklogRepository};
 
 // ─── Input DTOs ──────────────────────────────────────────────────────────────
 
@@ -187,16 +187,36 @@ pub async fn update_recurring_task(
     Ok(updated)
 }
 
-/// Soft-delete a recurrence template and delete all future Todo instances.
+/// What a cancellation actually did to the series' instances.
 ///
-/// Returns the count of task instances deleted.
+/// Two counters rather than one, because the two outcomes are not
+/// interchangeable: `deleted` rows are gone, `cancelled` rows are still there and
+/// still carry their worklog entries. A caller that reports only a total cannot
+/// tell the user which of their history survived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CancelRecurrenceOutcome {
+    /// Instances removed outright: they carried no logged time.
+    pub deleted: usize,
+    /// Instances kept but marked `Cancelled`: they carried logged time, which
+    /// reaches the client invoice and must never be destroyed by a cleanup.
+    pub cancelled: usize,
+}
+
+/// Soft-delete a recurrence template and sweep its instances: every not-yet-due
+/// `Todo` slot in the future is deleted (unchanged behaviour), and every `Todo`
+/// instance in the past is either deleted — if it carries no logged time — or
+/// marked `Cancelled` and kept, when it does. `Done` and already-`Cancelled`
+/// instances are history and are never touched.
+///
+/// Returns how many instances were deleted outright versus kept-but-cancelled.
 pub async fn cancel_recurrence(
     rec_repo: &dyn RecurrenceRepository,
     task_repo: &dyn TaskRepository,
+    worklog_repo: &dyn WorklogRepository,
     id: RecurrenceTemplateId,
     caller_user_id: UserId,
     today: NaiveDate,
-) -> Result<usize, AppError> {
+) -> Result<CancelRecurrenceOutcome, AppError> {
     // Verify the template exists and belongs to the caller.
     // Return NotFound (not Forbidden) to avoid leaking existence of templates
     // owned by other users.
@@ -212,24 +232,58 @@ pub async fn cancel_recurrence(
     rec_repo.deactivate(id).await?;
 
     let instances = task_repo.find_by_recurrence(id).await?;
-    let mut deleted = 0usize;
-    for task in instances {
-        if task.status == TaskStatus::Todo {
-            if let Some(occ) = task.occurrence_date {
-                if occ >= today {
-                    task_repo.delete(task.id).await?;
-                    deleted += 1;
-                }
+
+    // Every instance's presence is checked individually — never through
+    // `WorklogRepository::find_by_recurrence`'s capped, newest-first page, which
+    // would truncate away exactly the oldest entries this sweep cares about. See
+    // `find_task_ids_with_entries`'s doc comment for why.
+    let task_ids: Vec<TaskId> = instances.iter().map(|task| task.id).collect();
+    let logged_task_ids = worklog_repo
+        .find_task_ids_with_entries(caller_user_id, &task_ids)
+        .await?;
+
+    let mut outcome = CancelRecurrenceOutcome::default();
+
+    for mut task in instances {
+        let Some(occ) = task.occurrence_date else {
+            continue;
+        };
+
+        // Already closed by a human decision — leave it exactly as it is.
+        if matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled) {
+            continue;
+        }
+
+        if occ >= today {
+            // Unchanged behaviour on the future: a not-yet-due Todo slot is
+            // simply removed when the series is cancelled.
+            if task.status == TaskStatus::Todo {
+                task_repo.delete(task.id).await?;
+                outcome.deleted += 1;
             }
+            continue;
+        }
+
+        if logged_task_ids.contains(&task.id) {
+            task.status = TaskStatus::Cancelled;
+            task.updated_at = Utc::now();
+            task_repo.save(&task).await?;
+            outcome.cancelled += 1;
+        } else {
+            task_repo.delete(task.id).await?;
+            outcome.deleted += 1;
         }
     }
-    Ok(deleted)
+
+    Ok(outcome)
 }
 
 /// Materialize task instances for all active templates owned by `user_id`.
 ///
 /// For each active template the function computes the generation window:
-/// - `from = max(starts_on, last_generated_through + 1 day)` — never regenerate already-created slots
+/// - `from = max(starts_on, last_generated_through + 1 day, today)` — never regenerate
+///   already-created slots, and never backfill a watermark that fell behind: a missed
+///   occurrence is a historical fact, not something to regenerate
 /// - `to   = today + horizon_days`
 ///
 /// Occurrences are then truncated according to `ends_on` (if set) and `max_occurrences`
@@ -401,11 +455,14 @@ pub async fn skip_occurrence(
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use chrono::DateTime;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    use domain::types::worklog::{WorklogEntry, WorklogEntryId};
+
     use crate::errors::RepositoryError;
-    use crate::repositories::TaskFilter;
+    use crate::repositories::{TaskFilter, WorklogFilter, WORKLOG_FILTER_MAX_LIMIT};
 
     // ── In-memory RecurrenceRepository ────────────────────────────────────────
 
@@ -606,6 +663,118 @@ mod tests {
         }
     }
 
+    // ── In-memory WorklogRepository ────────────────────────────────────────────
+    //
+    // Minimal double: only `find_task_ids_with_entries` is real, since that is
+    // the only method `cancel_recurrence` calls. Everything else either returns
+    // an empty default or is `unimplemented!()` — a test that needs more than
+    // presence-checking has no business exercising `cancel_recurrence`'s tests
+    // through this double.
+
+    struct InMemoryWorklogRepository {
+        entries: Mutex<Vec<WorklogEntry>>,
+    }
+
+    impl InMemoryWorklogRepository {
+        fn new() -> Self {
+            Self {
+                entries: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Record that `task_id` carries at least one logged entry. The body and
+        /// exact timestamp are irrelevant to every test that uses this — only
+        /// presence matters — so `Utc::now()` is good enough.
+        async fn push_entry_for_task(&self, user_id: UserId, task_id: TaskId) {
+            self.push_entry_for_task_at(user_id, task_id, Utc::now()).await;
+        }
+
+        /// Same as `push_entry_for_task`, but with an explicit `logged_at`. Needed
+        /// by the test proving presence survives a series with more than
+        /// `WORKLOG_FILTER_MAX_LIMIT` entries: it must control which entry is
+        /// oldest to show that ordering cannot hide it.
+        async fn push_entry_for_task_at(
+            &self,
+            user_id: UserId,
+            task_id: TaskId,
+            logged_at: DateTime<Utc>,
+        ) {
+            let now = Utc::now();
+            self.entries.lock().unwrap().push(WorklogEntry {
+                id: Uuid::new_v4(),
+                user_id,
+                task_id,
+                body: "worked".to_string(),
+                logged_at,
+                created_at: now,
+                updated_at: now,
+                session_id: None,
+            });
+        }
+    }
+
+    #[async_trait]
+    impl WorklogRepository for InMemoryWorklogRepository {
+        async fn create(&self, _entry: &WorklogEntry) -> Result<(), RepositoryError> {
+            unimplemented!("not exercised by cancel_recurrence tests")
+        }
+
+        async fn update(&self, _entry: &WorklogEntry) -> Result<(), RepositoryError> {
+            unimplemented!("not exercised by cancel_recurrence tests")
+        }
+
+        async fn delete(
+            &self,
+            _id: WorklogEntryId,
+            _user_id: UserId,
+        ) -> Result<bool, RepositoryError> {
+            unimplemented!("not exercised by cancel_recurrence tests")
+        }
+
+        async fn find_by_id(
+            &self,
+            _id: WorklogEntryId,
+            _user_id: UserId,
+        ) -> Result<Option<WorklogEntry>, RepositoryError> {
+            Ok(None)
+        }
+
+        async fn list(
+            &self,
+            _user_id: UserId,
+            _filter: &WorklogFilter,
+        ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+            Ok(Vec::new())
+        }
+
+        async fn find_by_recurrence(
+            &self,
+            _user_id: UserId,
+            _template_id: RecurrenceTemplateId,
+            _limit: u32,
+            _offset: u32,
+        ) -> Result<Vec<WorklogEntry>, RepositoryError> {
+            Ok(Vec::new())
+        }
+
+        async fn find_task_ids_with_entries(
+            &self,
+            user_id: UserId,
+            task_ids: &[TaskId],
+        ) -> Result<std::collections::HashSet<TaskId>, RepositoryError> {
+            let wanted: std::collections::HashSet<TaskId> =
+                task_ids.iter().copied().collect();
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.user_id == user_id && wanted.contains(&entry.task_id))
+                .map(|entry| entry.task_id)
+                .collect())
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn test_user_id() -> UserId {
@@ -669,16 +838,13 @@ mod tests {
         }
     }
 
-    // `materialize_due_occurrences` no longer backfills the past (see the clamp
-    // below), so tests that need a pre-existing past instance to check it survives
-    // an update/cancel must seed it directly instead of relying on materialize.
-    async fn seed_past_instance(
-        task_repo: &InMemoryTaskRepository,
-        template: &RecurrenceTemplate,
-        date: NaiveDate,
-    ) {
+    // Build a `Todo` instance for `template` at `date`, matching the shape
+    // `materialize_due_occurrences` produces. Shared by every test that needs an
+    // instance without going through materialization (which is now clamped to
+    // never backfill the past — see the clamp below).
+    fn instance_from_template(template: &RecurrenceTemplate, date: NaiveDate) -> Task {
         let now = Utc::now();
-        let task = Task {
+        Task {
             id: Uuid::new_v4(),
             user_id: template.user_id,
             title: template.title.clone(),
@@ -711,8 +877,31 @@ mod tests {
             gryzzly_project_id: None,
             created_at: now,
             updated_at: now,
-        };
+        }
+    }
+
+    async fn seed_past_instance(
+        task_repo: &InMemoryTaskRepository,
+        template: &RecurrenceTemplate,
+        date: NaiveDate,
+    ) {
+        let task = instance_from_template(template, date);
         task_repo.save(&task).await.unwrap();
+    }
+
+    // Seed an instance with an explicit status, returning its id. Used by the
+    // `cancel_recurrence` past-sweep tests to set up `Todo` instances that are
+    // then, depending on the test, checked for deletion or cancellation.
+    async fn save_instance(
+        repo: &InMemoryTaskRepository,
+        template: &RecurrenceTemplate,
+        occurrence_date: NaiveDate,
+        status: TaskStatus,
+    ) -> TaskId {
+        let mut task = instance_from_template(template, occurrence_date);
+        task.status = status;
+        repo.save(&task).await.unwrap();
+        task.id
     }
 
     // ── Le clamp : un watermark périmé ne rejoue jamais le passé ──────────────
@@ -1039,11 +1228,12 @@ mod tests {
         assert_eq!(preserved.unwrap().status, TaskStatus::InProgress);
     }
 
-    // ── Test 8: cancel_recurrence deactivates + deletes future Todo ───────────
+    // ── Test 8: cancel_recurrence deactivates + sweeps every Todo instance ────
     #[tokio::test]
     async fn test_8_cancel_recurrence() {
         let rec_repo = InMemoryRecurrenceRepository::new();
         let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
 
         // Template starting 3 days ago so we have both past and future instances.
         let starts = today() - Duration::days(3);
@@ -1053,7 +1243,7 @@ mod tests {
 
         // `materialize_due_occurrences` is now clamped to never backfill before
         // today, so the past instance this test needs (to check cancel_recurrence
-        // leaves history alone) must be seeded directly.
+        // now sweeps it too, absent logged time) must be seeded directly.
         seed_past_instance(&task_repo, &template, starts).await;
 
         materialize_due_occurrences(&rec_repo, &task_repo, test_user_id(), today(), 7)
@@ -1061,31 +1251,178 @@ mod tests {
             .unwrap();
 
         let all_before = task_instances(&task_repo);
-        let future_todo_before: usize = all_before
+        let todo_before: usize = all_before
             .iter()
-            .filter(|t| {
-                t.status == TaskStatus::Todo
-                    && t.occurrence_date.map(|d| d >= today()).unwrap_or(false)
-            })
+            .filter(|t| t.status == TaskStatus::Todo)
             .count();
-        assert!(future_todo_before > 0);
+        assert!(todo_before > 0);
 
-        let deleted = cancel_recurrence(&rec_repo, &task_repo, template.id, test_user_id(), today())
-            .await
-            .unwrap();
+        let outcome = cancel_recurrence(
+            &rec_repo,
+            &task_repo,
+            &worklog_repo,
+            template.id,
+            test_user_id(),
+            today(),
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(deleted, future_todo_before);
+        // No worklog was ever logged, so every Todo instance — past and future
+        // alike — is deleted outright, not just the future ones.
+        assert_eq!(outcome.deleted, todo_before);
+        assert_eq!(outcome.cancelled, 0);
 
         // Template is deactivated.
         let tmpl = rec_repo.find_by_id(template.id).await.unwrap().unwrap();
         assert!(!tmpl.active, "template must be deactivated");
 
-        // Past instances still exist.
+        // The seeded past instance carried no logged time, so it is gone too.
         let past_after: usize = task_instances(&task_repo)
             .iter()
             .filter(|t| t.occurrence_date.map(|d| d < today()).unwrap_or(false))
             .count();
-        assert!(past_after > 0, "past instances should be preserved");
+        assert_eq!(
+            past_after, 0,
+            "a past Todo instance without logged time is swept, not preserved"
+        );
+    }
+
+    // ── Purge du passé : sans temps loggé, on supprime ────────────────────────
+    #[tokio::test]
+    async fn cancel_recurrence_deletes_past_instances_without_worklog() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+        let stale = save_instance(&task_repo, &template, today - Duration::days(10), TaskStatus::Todo).await;
+
+        let outcome = cancel_recurrence(
+            &rec_repo, &task_repo, &worklog_repo, template.id, test_user_id(), today,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.deleted, 1);
+        assert_eq!(outcome.cancelled, 0);
+        assert!(task_repo.find_by_id(stale).await.unwrap().is_none());
+    }
+
+    // ── Purge du passé : avec temps loggé, on annule mais on garde ────────────
+    #[tokio::test]
+    async fn cancel_recurrence_preserves_past_instances_carrying_worklog() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+        let worked = save_instance(&task_repo, &template, today - Duration::days(10), TaskStatus::Todo).await;
+        worklog_repo.push_entry_for_task(test_user_id(), worked).await;
+
+        let outcome = cancel_recurrence(
+            &rec_repo, &task_repo, &worklog_repo, template.id, test_user_id(), today,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.deleted, 0, "logged time is billing evidence, never deleted");
+        assert_eq!(outcome.cancelled, 1);
+
+        let kept = task_repo.find_by_id(worked).await.unwrap().expect("still there");
+        assert_eq!(kept.status, TaskStatus::Cancelled);
+    }
+
+    // ── Le comportement sur le futur ne change pas ────────────────────────────
+    #[tokio::test]
+    async fn cancel_recurrence_still_deletes_future_todo_instances() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today);
+        rec_repo.save(&template).await.unwrap();
+        let future = save_instance(&task_repo, &template, today + Duration::days(3), TaskStatus::Todo).await;
+        let done = save_instance(&task_repo, &template, today + Duration::days(4), TaskStatus::Done).await;
+
+        let outcome = cancel_recurrence(
+            &rec_repo, &task_repo, &worklog_repo, template.id, test_user_id(), today,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.deleted, 1);
+        assert!(task_repo.find_by_id(future).await.unwrap().is_none());
+        assert!(task_repo.find_by_id(done).await.unwrap().is_some(), "a Done instance is history");
+    }
+
+    // ── Ruling: presence cannot be decided from a single capped, newest-first
+    // page. `WorklogRepository::find_by_recurrence` truncates at
+    // `WORKLOG_FILTER_MAX_LIMIT`, ordered `logged_at DESC` — on a series with
+    // more entries than that, the truncated tail is exactly the *oldest*
+    // entries, i.e. the ones attached to the past instance this test seeds
+    // first. `cancel_recurrence` must still find it. ─────────────────────────
+    #[tokio::test]
+    async fn cancel_recurrence_finds_logged_time_beyond_worklog_filter_max_limit() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today - Duration::days(30));
+        rec_repo.save(&template).await.unwrap();
+        let worked = save_instance(&task_repo, &template, today - Duration::days(10), TaskStatus::Todo).await;
+
+        // The instance's own entry is logged a year ago: it is the single oldest
+        // entry the series will have, so a page ordered `logged_at DESC` and
+        // capped at `WORKLOG_FILTER_MAX_LIMIT` would push it out first.
+        worklog_repo
+            .push_entry_for_task_at(test_user_id(), worked, Utc::now() - Duration::days(365))
+            .await;
+
+        // Flood the same series with more than the cap in fresher entries, each
+        // on its own instance, so the series holds more than
+        // `WORKLOG_FILTER_MAX_LIMIT` entries in total.
+        for i in 0..WORKLOG_FILTER_MAX_LIMIT {
+            let filler = save_instance(
+                &task_repo,
+                &template,
+                today - Duration::days(9),
+                TaskStatus::Todo,
+            )
+            .await;
+            worklog_repo
+                .push_entry_for_task_at(
+                    test_user_id(),
+                    filler,
+                    Utc::now() - Duration::days(1) + Duration::seconds(i as i64),
+                )
+                .await;
+        }
+
+        let outcome = cancel_recurrence(
+            &rec_repo, &task_repo, &worklog_repo, template.id, test_user_id(), today,
+        )
+        .await
+        .unwrap();
+
+        // Every instance carries logged time (the seeded one plus the fillers),
+        // so every one of them is cancelled, none is deleted — including the
+        // seeded instance whose entry is the oldest in the whole series.
+        assert_eq!(outcome.deleted, 0);
+        assert_eq!(
+            outcome.cancelled,
+            1 + WORKLOG_FILTER_MAX_LIMIT as usize,
+            "the oldest entry must still be found although the series logged \
+             more than WORKLOG_FILTER_MAX_LIMIT entries"
+        );
+        let kept = task_repo.find_by_id(worked).await.unwrap().expect("still there");
+        assert_eq!(kept.status, TaskStatus::Cancelled);
     }
 
     // ── Test 9: skip_occurrence sets status to Cancelled ─────────────────────
@@ -1213,13 +1550,21 @@ mod tests {
     async fn test_12_cancel_recurrence_rejects_wrong_owner() {
         let rec_repo = InMemoryRecurrenceRepository::new();
         let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
 
         let template = create_recurring_task(&rec_repo, daily_input(today()))
             .await
             .unwrap();
 
-        let result =
-            cancel_recurrence(&rec_repo, &task_repo, template.id, other_user_id(), today()).await;
+        let result = cancel_recurrence(
+            &rec_repo,
+            &task_repo,
+            &worklog_repo,
+            template.id,
+            other_user_id(),
+            today(),
+        )
+        .await;
 
         assert!(
             matches!(result, Err(AppError::NotFound(_))),
