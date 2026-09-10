@@ -643,6 +643,12 @@ impl application::repositories::RecurrenceRepository for StubRecurrenceRepositor
     ) -> Result<Vec<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
         Ok(vec![])
     }
+    async fn find_by_user(
+        &self,
+        _user_id: UserId,
+    ) -> Result<Vec<domain::types::recurrence::RecurrenceTemplate>, RepositoryError> {
+        Ok(vec![])
+    }
     async fn save(
         &self,
         _template: &domain::types::recurrence::RecurrenceTemplate,
