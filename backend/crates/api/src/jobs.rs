@@ -9,12 +9,14 @@ use application::jobs::{
 };
 use application::repositories::{
     ActivitySlotRepository, AlertRepository, BreakEventRepository, BreakRuleRepository,
-    ConfigRepository, GryzzlyCatalogRepository, MeetingRepository, SessionRepository,
-    SignalMappingRepository, TaskRepository, TimesheetDraftRepository, WorklogRepository,
+    ConfigRepository, GryzzlyCatalogRepository, MeetingRepository, RecurrenceRepository,
+    SessionRepository, SignalMappingRepository, TaskRepository, TimesheetDraftRepository,
+    WorklogRepository,
 };
 use application::services::git_connector::GitConnector;
 use application::services::{Notifier, SurfaceController};
 use application::use_cases::breaks::{run_break_tick, BreakTickDeps};
+use application::use_cases::recurrence::run_recurrence_pass;
 use application::use_cases::session_reaper::{reap_idle_sessions, ReapOutcome};
 use application::use_cases::timesheet::run_eod_pass;
 use domain::types::UserId;
@@ -320,6 +322,68 @@ pub async fn run_session_reaper_scheduler(deps: SessionReaperDeps, user_id: User
         let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
         health = next_health;
         report("idle-session reap", decision.log, failure.as_deref(), decision.retry_in);
+
+        tokio::time::sleep(decision.retry_in).await;
+    }
+}
+
+/// Dependencies the recurrence maintenance scheduler needs.
+pub struct RecurrenceDeps {
+    pub rec_repo: Arc<dyn RecurrenceRepository>,
+    pub task_repo: Arc<dyn TaskRepository>,
+    pub worklog_repo: Arc<dyn WorklogRepository>,
+}
+
+/// How far ahead occurrences are materialized. Matches the horizon
+/// `update_recurring_task` already uses, so a series looks the same whether it was
+/// last touched by an edit or by this job.
+const RECURRENCE_HORIZON_DAYS: i64 = 14;
+
+/// Long-lived background task: materialize the horizon, sweep what the calendar
+/// left behind, then wait as long as `RetryPolicy::recurrence()` says to.
+///
+/// Errors are logged, never fatal -- a series that fails to materialize means a
+/// slot appearing late, not a reason to take the API down. Its own loop with its
+/// own `JobHealth`, for the same reason the reaper has one: this job's failures
+/// have nothing to do with the end-of-day job's git/Gryzzly integration, so they
+/// must never feed that back-off signal.
+pub async fn run_recurrence_scheduler(deps: RecurrenceDeps, user_id: UserId) {
+    let policy = RetryPolicy::recurrence();
+    let mut health = JobHealth::default();
+    loop {
+        let attempt = run_recurrence_pass(
+            deps.rec_repo.as_ref(),
+            deps.task_repo.as_ref(),
+            deps.worklog_repo.as_ref(),
+            user_id,
+            Utc::now().date_naive(),
+            RECURRENCE_HORIZON_DAYS,
+        )
+        .await;
+
+        if let Ok(outcome) = &attempt {
+            if outcome.materialized > 0 || outcome.swept > 0 {
+                tracing::info!(
+                    materialized = outcome.materialized,
+                    swept = outcome.swept,
+                    "recurrence maintenance pass completed"
+                );
+            }
+        }
+
+        let failure = attempt.as_ref().err().map(ToString::to_string);
+        let observed = match &failure {
+            Some(signature) => AttemptOutcome::Failed { signature },
+            None => AttemptOutcome::Succeeded,
+        };
+        let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
+        health = next_health;
+        report(
+            "recurrence maintenance",
+            decision.log,
+            failure.as_deref(),
+            decision.retry_in,
+        );
 
         tokio::time::sleep(decision.retry_in).await;
     }

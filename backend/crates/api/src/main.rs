@@ -121,6 +121,9 @@ async fn main() {
     // Build repository instances
     let task_repo: Arc<dyn application::repositories::TaskRepository> =
         Arc::new(SqliteTaskRepository::new(db_pool.clone()));
+    // Cloned here for the same reason as `recurrence_repo_for_jobs` below: both are
+    // moved into the schema builder further down.
+    let task_repo_for_jobs = task_repo.clone();
     let meeting_repo: Arc<dyn application::repositories::MeetingRepository> =
         Arc::new(SqliteMeetingRepository::new(db_pool.clone()));
     let project_repo: Arc<dyn application::repositories::ProjectRepository> =
@@ -146,6 +149,10 @@ async fn main() {
 
     let recurrence_repo: Arc<dyn application::repositories::RecurrenceRepository> =
         Arc::new(SqliteRecurrenceRepository::new(db_pool.clone()));
+    // Cloned here, not below: `recurrence_repo` is *moved* into the schema builder
+    // further down, so a clone written after that line would not compile. Same
+    // manoeuvre the break scheduler already documents.
+    let recurrence_repo_for_jobs = recurrence_repo.clone();
     let gryzzly_catalog_repo: Arc<dyn application::repositories::GryzzlyCatalogRepository> =
         Arc::new(SqliteGryzzlyCatalogRepository::new(db_pool.clone()));
     let timesheet_draft_repo: Arc<dyn application::repositories::TimesheetDraftRepository> =
@@ -306,6 +313,15 @@ async fn main() {
         config_repo: config_repo.clone(),
     };
     tokio::spawn(jobs::run_session_reaper_scheduler(session_reaper_deps, default_user_id));
+
+    tokio::spawn(jobs::run_recurrence_scheduler(
+        jobs::RecurrenceDeps {
+            rec_repo: recurrence_repo_for_jobs,
+            task_repo: task_repo_for_jobs,
+            worklog_repo: worklog_repo.clone(),
+        },
+        default_user_id,
+    ));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
     tracing::info!("Server running on http://{}", addr);

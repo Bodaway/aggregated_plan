@@ -517,6 +517,39 @@ pub async fn sweep_stale_occurrences(
     Ok(swept)
 }
 
+/// What one maintenance tick did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecurrencePassOutcome {
+    pub materialized: usize,
+    pub swept: usize,
+}
+
+/// One maintenance tick over the user's recurring series: materialize the horizon
+/// ahead, then close what the calendar left behind.
+///
+/// The order matters and is not interchangeable. Materializing first means the
+/// sweep runs against a set that already contains today's fresh slot — and since
+/// the sweep only touches `occurrence_date < today`, that slot is out of its reach
+/// by construction. Sweeping first would work too, but leaves the invariant resting
+/// on timing rather than on the comparison; this way a tick can never close what it
+/// has just opened.
+pub async fn run_recurrence_pass(
+    rec_repo: &dyn RecurrenceRepository,
+    task_repo: &dyn TaskRepository,
+    worklog_repo: &dyn WorklogRepository,
+    user_id: UserId,
+    today: NaiveDate,
+    horizon_days: i64,
+) -> Result<RecurrencePassOutcome, AppError> {
+    let materialized =
+        materialize_due_occurrences(rec_repo, task_repo, user_id, today, horizon_days).await?;
+    let swept = sweep_stale_occurrences(rec_repo, task_repo, worklog_repo, user_id, today).await?;
+    Ok(RecurrencePassOutcome {
+        materialized,
+        swept,
+    })
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1777,4 +1810,69 @@ mod tests {
             TaskStatus::Cancelled
         );
     }
+
+    // ── L'ordre du tick : matérialiser puis balayer, jamais l'inverse ─────────
+    #[tokio::test]
+    async fn pass_materializes_then_sweeps_without_eating_todays_slot() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let mut template = daily_template(test_user_id(), today - Duration::days(200));
+        template.last_generated_through = Some(today - Duration::days(123));
+        rec_repo.save(&template).await.unwrap();
+        let stale =
+            save_instance(&task_repo, &template, today - Duration::days(9), TaskStatus::Todo).await;
+
+        let outcome = run_recurrence_pass(
+            &rec_repo,
+            &task_repo,
+            &worklog_repo,
+            test_user_id(),
+            today,
+            14,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.materialized > 0, "the horizon ahead is materialized");
+        assert_eq!(outcome.swept, 1, "only the pre-existing stale instance is swept");
+        assert_eq!(
+            task_repo.find_by_id(stale).await.unwrap().unwrap().status,
+            TaskStatus::Cancelled
+        );
+
+        // Nothing the pass just created may have been swept by its own sweep.
+        for task in task_repo.find_by_recurrence(template.id).await.unwrap() {
+            let occ = task.occurrence_date.expect("instance carries an occurrence date");
+            if occ >= today {
+                assert_eq!(task.status, TaskStatus::Todo, "a fresh slot must stay open");
+            }
+        }
+    }
+
+    // ── Idempotence sur deux ticks du même jour ───────────────────────────────
+    #[tokio::test]
+    async fn a_second_pass_the_same_day_is_a_no_op() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let worklog_repo = InMemoryWorklogRepository::new();
+        let today = today();
+
+        let template = daily_template(test_user_id(), today);
+        rec_repo.save(&template).await.unwrap();
+
+        run_recurrence_pass(&rec_repo, &task_repo, &worklog_repo, test_user_id(), today, 14)
+            .await
+            .unwrap();
+        let second =
+            run_recurrence_pass(&rec_repo, &task_repo, &worklog_repo, test_user_id(), today, 14)
+                .await
+                .unwrap();
+
+        assert_eq!(second.materialized, 0);
+        assert_eq!(second.swept, 0);
+    }
+
 }

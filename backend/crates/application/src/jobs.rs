@@ -77,6 +77,22 @@ impl RetryPolicy {
             reminder_every: 12,
         }
     }
+
+    /// The recurrence maintenance job: a pass every hour while healthy, backing off
+    /// to two hours. Slower than every other job here on purpose -- its unit of work
+    /// is the day. An occurrence materializes once per day and a stale one stays
+    /// stale, so a late tick costs nothing but a slot appearing an hour later, which
+    /// is why nothing here justifies `end_of_day()`'s 5-minute base. Same escalation
+    /// shape as the others: the third consecutive failure escalates, and an ongoing
+    /// outage reminds every twelfth attempt.
+    pub const fn recurrence() -> Self {
+        Self {
+            base: Duration::from_secs(60 * 60),
+            ceiling: Duration::from_secs(2 * 60 * 60),
+            escalate_after: 3,
+            reminder_every: 12,
+        }
+    }
 }
 
 /// What one attempt produced, as far as the policy is concerned.
