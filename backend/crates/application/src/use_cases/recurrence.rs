@@ -259,8 +259,15 @@ pub async fn materialize_due_occurrences(
             Some(last) => last + Duration::days(1),
             None => template.starts_on,
         };
-        // Clamp: never go before starts_on.
-        let from = from.max(template.starts_on);
+        // Clamp on both ends: never before starts_on, and never before today.
+        //
+        // The `today` bound is not cosmetic. `last_generated_through` can be months
+        // stale on a template nobody materialized (the engine had no scheduler until
+        // this change), and without this clamp the first tick would backfill every
+        // occurrence since that watermark — recreating in one night exactly the pile
+        // of dead instances this work exists to remove. A missed occurrence is a
+        // historical fact, not something to regenerate.
+        let from = from.max(template.starts_on).max(today);
 
         if from > to {
             // Already fully generated through the horizon.
@@ -638,6 +645,107 @@ mod tests {
         v
     }
 
+    fn daily_template(user_id: UserId, starts_on: NaiveDate) -> RecurrenceTemplate {
+        RecurrenceTemplate {
+            id: RecurrenceTemplateId::new(),
+            user_id,
+            title: "Daily Standup".to_string(),
+            description: None,
+            notes: None,
+            project_id: None,
+            urgency: UrgencyLevel::Medium,
+            urgency_manual: false,
+            impact: ImpactLevel::Medium,
+            estimated_hours: None,
+            tags: Vec::new(),
+            rule: RecurrenceRule::Daily { interval: 1 },
+            starts_on,
+            ends_on: None,
+            max_occurrences: None,
+            last_generated_through: None,
+            active: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // `materialize_due_occurrences` no longer backfills the past (see the clamp
+    // below), so tests that need a pre-existing past instance to check it survives
+    // an update/cancel must seed it directly instead of relying on materialize.
+    async fn seed_past_instance(
+        task_repo: &InMemoryTaskRepository,
+        template: &RecurrenceTemplate,
+        date: NaiveDate,
+    ) {
+        let now = Utc::now();
+        let task = Task {
+            id: Uuid::new_v4(),
+            user_id: template.user_id,
+            title: template.title.clone(),
+            description: template.description.clone(),
+            notes: template.notes.clone(),
+            source: Source::Personal,
+            source_id: None,
+            jira_status: None,
+            status: TaskStatus::Todo,
+            project_id: template.project_id,
+            assignee: None,
+            delegated_to: None,
+            deadline: None,
+            planned_start: Some(date.and_hms_opt(8, 0, 0).expect("valid time").and_utc()),
+            planned_end: None,
+            estimated_hours: template.estimated_hours,
+            urgency: template.urgency,
+            urgency_manual: template.urgency_manual,
+            impact: template.impact,
+            tags: template.tags.clone(),
+            tracking_state: TrackingState::Followed,
+            jira_remaining_seconds: None,
+            jira_original_estimate_seconds: None,
+            jira_time_spent_seconds: None,
+            remaining_hours_override: None,
+            estimated_hours_override: None,
+            recurrence_id: Some(template.id),
+            occurrence_date: Some(date),
+            gryzzly_task_id: None,
+            gryzzly_project_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        task_repo.save(&task).await.unwrap();
+    }
+
+    // ── Le clamp : un watermark périmé ne rejoue jamais le passé ──────────────
+    #[tokio::test]
+    async fn materialize_never_creates_occurrences_before_today() {
+        let rec_repo = InMemoryRecurrenceRepository::new();
+        let task_repo = InMemoryTaskRepository::new();
+        let today = today();
+
+        // A daily template whose watermark stopped 123 days ago — the exact shape of
+        // the two test templates found polluting the database on 2026-09-01.
+        let mut template = daily_template(test_user_id(), today - Duration::days(200));
+        template.last_generated_through = Some(today - Duration::days(123));
+        rec_repo.save(&template).await.unwrap();
+
+        materialize_due_occurrences(&rec_repo, &task_repo, test_user_id(), today, 14)
+            .await
+            .unwrap();
+
+        let instances = task_repo.find_by_recurrence(template.id).await.unwrap();
+        assert!(
+            !instances.is_empty(),
+            "the horizon ahead of today must still be materialized"
+        );
+        for task in &instances {
+            let occ = task.occurrence_date.expect("instance carries an occurrence date");
+            assert!(
+                occ >= today,
+                "materialization must never backfill the past, got {occ} < {today}"
+            );
+        }
+    }
+
     // ── Test 1: materialize daily template, horizon 14 ────────────────────────
     // Daily interval=1 starting today, horizon=14 → occurrences_in returns today + 14 days = 15.
     #[tokio::test]
@@ -806,7 +914,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Materialize past + future.
+        // `materialize_due_occurrences` is now clamped to never backfill before
+        // today (see the clamp in that function), so the past instance this test
+        // needs to check survival of an update must be seeded directly rather than
+        // produced by materialization.
+        seed_past_instance(&task_repo, &template, starts).await;
+
+        // Materialize the future window.
         materialize_due_occurrences(&rec_repo, &task_repo, test_user_id(), today(), 14)
             .await
             .unwrap();
@@ -936,6 +1050,11 @@ mod tests {
         let template = create_recurring_task(&rec_repo, daily_input(starts))
             .await
             .unwrap();
+
+        // `materialize_due_occurrences` is now clamped to never backfill before
+        // today, so the past instance this test needs (to check cancel_recurrence
+        // leaves history alone) must be seeded directly.
+        seed_past_instance(&task_repo, &template, starts).await;
 
         materialize_due_occurrences(&rec_repo, &task_repo, test_user_id(), today(), 7)
             .await
