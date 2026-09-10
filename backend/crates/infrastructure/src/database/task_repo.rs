@@ -382,9 +382,16 @@ impl TaskRepository for SqliteTaskRepository {
         let start_str = start.format("%Y-%m-%d").to_string();
         let end_str = end.format("%Y-%m-%d").to_string();
         // Exclude merged losers (task_id_secondary of AutoMerged/ManualMerged links).
+        //
+        // `tracking_state = 'followed'` inline, because this method takes no
+        // `TaskFilter` and so cannot inherit the default `TaskFilter::empty()`
+        // carries. Without it the week grid shows tasks the user never triaged and
+        // tasks they explicitly dismissed. Search and the triage tab are the only
+        // views that see the other two states, and neither comes through here.
         let rows = sqlx::query(
             "SELECT t.* FROM tasks t \
              WHERE t.user_id = ? \
+               AND t.tracking_state = 'followed' \
              AND t.id NOT IN ( \
                SELECT tl.task_id_secondary FROM task_links tl \
                WHERE tl.link_type IN ('auto_merged','manual_merged') \
@@ -419,6 +426,7 @@ impl TaskRepository for SqliteTaskRepository {
             "SELECT t.* FROM tasks t \
              WHERE t.user_id = ? \
                AND t.status NOT IN ('done', 'cancelled') \
+               AND t.tracking_state = 'followed' \
                AND t.id NOT IN (SELECT tl.task_id_secondary FROM task_links tl \
                                 WHERE tl.link_type IN ('auto_merged', 'manual_merged')) \
                AND ( (t.planned_start IS NOT NULL AND date(t.planned_start) < ?) \
@@ -707,7 +715,12 @@ mod tests {
             urgency_manual: false,
             impact: ImpactLevel::High,
             tags: Vec::new(),
-            tracking_state: TrackingState::Inbox,
+            // `Followed`, not `Inbox`: this fixture stands for an ordinary task the
+            // user works with, and the app-wide rule is that only followed tasks
+            // reach a view. An `Inbox` fixture made every generic test here invisible
+            // to `find_by_user(TaskFilter::empty())`. The tests whose subject IS the
+            // tracking state set it explicitly.
+            tracking_state: TrackingState::Followed,
             jira_remaining_seconds: None,
             jira_original_estimate_seconds: None,
             jira_time_spent_seconds: None,
@@ -2155,6 +2168,79 @@ mod tests {
             "the series must still show its latest occurrence that is not merged away"
         );
         assert!(!ids.contains(&merged_away), "a merge loser stays hidden");
+    }
+
+
+    // ── Le tracking state est général : ni inbox ni dismissed dans les vues ──────
+
+    /// `find_overdue` and `find_by_date_range` take no `TaskFilter`, so the default
+    /// that `TaskFilter::empty()` carries cannot reach them. They filter on their
+    /// own, or the dashboard shows tasks the user never triaged and tasks they
+    /// explicitly dismissed -- which is exactly what it did.
+    #[tokio::test]
+    async fn find_overdue_only_returns_followed_tasks() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+        let today = Utc::now().date_naive();
+        let overdue_day = today - Duration::days(3);
+
+        let mut followed = make_task("followed and late");
+        followed.tracking_state = TrackingState::Followed;
+        followed.deadline = Some(overdue_day);
+        repo.save(&followed).await.unwrap();
+
+        let mut inbox = make_task("never triaged");
+        inbox.tracking_state = TrackingState::Inbox;
+        inbox.deadline = Some(overdue_day);
+        repo.save(&inbox).await.unwrap();
+
+        let mut dismissed = make_task("explicitly dismissed");
+        dismissed.tracking_state = TrackingState::Dismissed;
+        dismissed.deadline = Some(overdue_day);
+        repo.save(&dismissed).await.unwrap();
+
+        let found = repo.find_overdue(user_id(), today).await.unwrap();
+        let ids: Vec<TaskId> = found.iter().map(|t| t.id).collect();
+
+        assert!(ids.contains(&followed.id), "a followed overdue task is the point");
+        assert!(
+            !ids.contains(&inbox.id),
+            "an untriaged task must not appear on the current day"
+        );
+        assert!(
+            !ids.contains(&dismissed.id),
+            "a dismissed task was dismissed on purpose"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_by_date_range_only_returns_followed_tasks() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+        let day = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
+        let planned = day.and_hms_opt(8, 0, 0).unwrap().and_utc();
+
+        let mut followed = make_task("followed and planned");
+        followed.tracking_state = TrackingState::Followed;
+        followed.planned_start = Some(planned);
+        repo.save(&followed).await.unwrap();
+
+        let mut inbox = make_task("untriaged but planned");
+        inbox.tracking_state = TrackingState::Inbox;
+        inbox.planned_start = Some(planned);
+        repo.save(&inbox).await.unwrap();
+
+        let mut dismissed = make_task("dismissed but planned");
+        dismissed.tracking_state = TrackingState::Dismissed;
+        dismissed.planned_start = Some(planned);
+        repo.save(&dismissed).await.unwrap();
+
+        let found = repo.find_by_date_range(user_id(), day, day).await.unwrap();
+        let ids: Vec<TaskId> = found.iter().map(|t| t.id).collect();
+
+        assert!(ids.contains(&followed.id));
+        assert!(!ids.contains(&inbox.id), "the week grid is not a triage queue");
+        assert!(!ids.contains(&dismissed.id));
     }
 
 }

@@ -48,6 +48,15 @@ impl TaskFilter {
     /// The day comes from `Utc::now()`, the same convention the GraphQL layer
     /// already uses for "today".
     ///
+    /// It also restricts to `tracking_state = Followed`. The tracking state is a
+    /// general rule across the app, not a per-view choice: a task the user never
+    /// triaged and a task they explicitly dismissed have no business appearing in
+    /// the dashboard, the priority matrix, the alerts or the morning brief. Two
+    /// kinds of caller opt out by setting the field to `None` -- search, which must
+    /// find a task whatever its state, and deduplication, whose whole job is to
+    /// match freshly synced `Inbox` tasks against followed ones. The triage views
+    /// opt out by naming the states they want.
+    ///
     /// [`collapse_recurrences`]: TaskFilter::collapse_recurrences
     pub fn empty() -> Self {
         TaskFilter {
@@ -58,10 +67,10 @@ impl TaskFilter {
             deadline_before: None,
             deadline_after: None,
             tag_ids: None,
-            tracking_state: None,
             source_id: None,
             title_contains: None,
             collapse_recurrences: Some(chrono::Utc::now().date_naive()),
+            tracking_state: Some(vec![TrackingState::Followed]),
         }
     }
 }

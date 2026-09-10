@@ -30,6 +30,11 @@ pub async fn find_suggestions(
     // 1. Get all active tasks for the user
     let filter = TaskFilter {
         status: Some(vec![TaskStatus::Todo, TaskStatus::InProgress]),
+        // Deduplication is the one non-search caller that needs every tracking
+        // state: its whole job is matching freshly synced `Inbox` tasks against
+        // followed ones, and the followed-only default would leave it comparing
+        // followed tasks with each other.
+        tracking_state: None,
         ..TaskFilter::empty()
     };
     let tasks = task_repo.find_by_user(user_id, &filter).await?;

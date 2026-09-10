@@ -682,7 +682,7 @@ Ni `aplan flush` ni `aplan reattribute` ne pouvaient les atteindre : le premier 
 - L'utilisateur peut rejeter une tâche de la boîte de réception (bouton ×, état « dismissed »)
 - L'utilisateur peut annuler le suivi d'une tâche suivie (retour en boîte de réception)
 - Un bouton « Tout suivre » permet de suivre toutes les tâches de la boîte de réception en une action
-- Le dashboard quotidien n'affiche que les tâches suivies (état « followed »)
+- Le dashboard quotidien n'affiche que les tâches suivies (état « followed ») — cas particulier de la règle générale R84
 - Les tâches créées manuellement sont automatiquement en état « followed »
 - Chaque carte de tâche affiche : clé Jira, titre, statut, assigné, échéance (si présente)
 
@@ -855,7 +855,7 @@ Ni `aplan flush` ni `aplan reattribute` ne pouvaient les atteindre : le premier 
 - À partir de 2 caractères saisis, les tâches correspondantes sur l'écran courant sont mises en évidence (anneau bleu) et les tâches non correspondantes sont atténuées visuellement.
 - Un menu déroulant affiche les meilleures correspondances ; cliquer sur une suggestion ouvre le panneau d'édition de la tâche sans navigation d'écran.
 - La recherche est floue (fuzzy) et porte sur : le titre, la clé Jira (`sourceId`), les tags, le projet, l'assigné et la description.
-- Les tâches écartées (état `dismissed`) sont exclues des résultats.
+- La recherche est **exemptée** du filtre général d'état de suivi (R84) : elle retourne les tâches `inbox`, `followed` **et** `dismissed`. Écarter une tâche la retire de toutes les vues ; la retirer aussi de la recherche la rendrait inatteignable au lieu de simplement rangée, sans aucun chemin pour revenir dessus.
 
 **Priorité** : Must (MVP v1)
 
@@ -1518,6 +1518,7 @@ garde de joignabilité rende une panne visible au lieu d'être la panne.
 | **R82** | **Annulation d'une série** : annuler un modèle de récurrence le désactive, **supprime** les occurrences qui ne portent aucun temps loggé — futures comme passées — et **annule** celles qui en portent, sans jamais les détruire. Le temps loggé remonte jusqu'à la facture client : il n'est pas détruit pour faire du ménage. L'opération rend deux décomptes distincts, le nombre de supprimées et le nombre d'annulées, afin que la préservation d'une preuve de travail soit visible et non silencieuse. |
 | **R42** | **Changement de statut rapide** : le statut d'une tâche (récurrente ou non) est modifiable en un clic depuis la carte de tâche via un menu déroulant intégré (`StatusMenu`), sans ouvrir le panneau d'édition. |
 | **R83** | **Job d'entretien des récurrences** : un job de fond exécute une passe horaire par utilisateur — il matérialise l'horizon, **puis** balaie les occurrences périmées, dans cet ordre. L'ordre n'est pas interchangeable : le balayage ne touchant que les dates strictement antérieures à aujourd'hui, le créneau du jour tout juste créé est hors de sa portée par construction plutôt que par chronométrage, et un passage ne peut donc pas fermer ce qu'il vient d'ouvrir. La cadence est horaire alors que l'unité de travail est la journée : un passage tardif ne coûte qu'un créneau apparaissant une heure plus tard. Un échec est journalisé et jamais fatal — une série qui ne se matérialise pas est un créneau en retard, pas une raison d'arrêter l'API. |
+| **R84** | **Filtre général de l'état de suivi** : toutes les vues de l'application ne montrent que les tâches `followed`. Une tâche jamais triée (`inbox`) et une tâche écartée (`dismissed`) n'ont rien à faire dans le dashboard, la matrice de priorité, la charge, les alertes ou le brief du matin. Le filtre est porté par le défaut du filtre de tâches, donc hérité sans que chaque vue ait à le redemander, et les deux chemins de lecture qui n'en passent pas par lui — les tâches en retard et la grille de la semaine — l'appliquent dans leur propre requête. **Trois exceptions**, et trois seulement : (a) la **recherche**, qui doit retrouver une tâche quel que soit son état, faute de quoi une tâche écartée devient inatteignable ; (b) l'**onglet Triage**, dont l'objet même est de montrer la boîte de réception, et qui nomme explicitement les états qu'il veut ; (c) le **dédoublonnage**, dont le travail est d'apparier les tâches fraîchement synchronisées — donc `inbox` — avec les tâches suivies. |
 
 ### 7.9 Mémoire sémantique et rappel
 

@@ -3336,7 +3336,7 @@ async fn tasks_query_filters_by_source_id() {
 }
 
 #[tokio::test]
-async fn searchable_tasks_excludes_dismissed() {
+async fn searchable_tasks_includes_every_tracking_state() {
     let schema = build_test_schema();
 
     // Inbox (default) — included
@@ -3387,10 +3387,17 @@ async fn searchable_tasks_excludes_dismissed() {
         .map(|t| t["title"].as_str().unwrap().to_string())
         .collect();
 
-    assert_eq!(titles.len(), 2);
+    assert_eq!(
+        titles.len(),
+        3,
+        "search is exempt from the followed-only rule, got {titles:?}"
+    );
     assert!(titles.contains(&"Inbox task".to_string()));
     assert!(titles.contains(&"Followed task".to_string()));
-    assert!(!titles.contains(&"Dismissed task".to_string()));
+    assert!(
+        titles.contains(&"Dismissed task".to_string()),
+        "a dismissed task stays findable, or dismissing it makes it unreachable"
+    );
 }
 
 #[tokio::test]

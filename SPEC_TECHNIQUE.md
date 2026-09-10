@@ -6056,6 +6056,28 @@ avec sa propre `JobHealth` pour que ses échecs ne nourrissent pas le back-off d
 `RetryPolicy::recurrence()` pose une base d'une heure et un plafond de deux, plus lent que tous
 les autres parce que son unité de travail est la journée.
 
+**Filtre général de l'état de suivi.** `TaskFilter::empty()` pose aussi
+`tracking_state: Some(vec![Followed])`. L'état de suivi est une règle transversale, pas un choix
+par vue : les cas d'usage internes (`alerts`, `brief`, `priority`, `dashboard`) l'héritent sans le
+redemander. Les deux méthodes qui ne prennent pas de `TaskFilter` — `find_overdue` et
+`find_by_date_range` — portent `t.tracking_state = 'followed'` dans leur propre SQL, faute de quoi
+le dashboard affichait des tâches jamais triées et des tâches explicitement écartées : c'est par
+là que la fuite passait.
+
+Trois appelants s'en excluent en posant `tracking_state: None`. `search`
+(`use_cases/search.rs`) et `searchableTasks` (`query.rs`) parce que la recherche doit retrouver
+une tâche quel que soit son état — `searchableTasks` excluait auparavant les `dismissed`, ce qui
+rendait une tâche écartée inatteignable dans toute l'interface. `find_duplicate_candidates`
+(`use_cases/deduplication.rs`) parce que son travail est d'apparier les tâches fraîchement
+synchronisées, qui arrivent en `inbox`, avec les tâches suivies : le défaut l'aurait laissé
+comparer des tâches suivies entre elles. La query GraphQL `tasks` reste pilotée par le client —
+`convert_task_filter` ne substitue pas le défaut à un filtre fourni — ce qui laisse l'onglet Triage
+nommer ses états (`['INBOX']`, `['FOLLOWED']`) et le sélecteur de tâches chercher partout.
+
+La fixture `make_task()` des tests de `task_repo` naît désormais `Followed` et non `Inbox` : elle
+représente une tâche ordinaire, et une fixture `inbox` rendait invisibles les vingt-et-un tests
+génériques qui interrogent `find_by_user(TaskFilter::empty())`.
+
 **Garde-fou de la base de développement.** La suite Playwright `frontend/e2e/recurring-tasks.spec.ts`
 visait `http://localhost:3001/graphql`, donc la vraie base : chaque exécution y créait un modèle et
 jusqu'à quinze occurrences, et son nettoyage n'était pas vérifié. Elle lit désormais son endpoint

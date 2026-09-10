@@ -454,15 +454,20 @@ impl QueryRoot {
         Ok(WeeklyActivitySummaryGql(summary))
     }
 
-    /// All non-dismissed tasks for the current user, projected to a lean
-    /// payload for client-side fuzzy search. Unpaginated on purpose.
+    /// Every task of the current user, **whatever its tracking state**, projected
+    /// to a lean payload for client-side fuzzy search. Unpaginated on purpose.
+    ///
+    /// It used to exclude `Dismissed`. Search is exempt from the app-wide
+    /// followed-only rule precisely because it is the last way back to a task:
+    /// dismissing one hid it from every view, and hiding it from search too made it
+    /// unreachable rather than merely out of the way.
     async fn searchable_tasks(
         &self,
         ctx: &Context<'_>,
     ) -> Result<Vec<crate::graphql::types::SearchableTaskGql>> {
         use std::collections::HashMap;
         use application::repositories::TaskFilter;
-        use domain::types::{TrackingState, TagId, ProjectId};
+        use domain::types::{ProjectId, TagId};
 
         let user_id = *ctx.data::<UserId>()?;
         let task_repo = ctx.data::<Arc<dyn application::repositories::TaskRepository>>()?;
@@ -472,8 +477,12 @@ impl QueryRoot {
         // `collapse_recurrences: None` for the same reason as `search`: this is the
         // unpaginated haystack a client filters itself, so collapsing here would
         // make a past occurrence of a series unfindable rather than merely hidden.
+        // Both fields `None`: this is the unpaginated haystack a client filters
+        // itself, so anything hidden here is unfindable rather than merely absent
+        // from a view. It used to name Inbox + Followed, which already made a
+        // dismissed task unsearchable.
         let filter = TaskFilter {
-            tracking_state: Some(vec![TrackingState::Inbox, TrackingState::Followed]),
+            tracking_state: None,
             collapse_recurrences: None,
             ..TaskFilter::empty()
         };

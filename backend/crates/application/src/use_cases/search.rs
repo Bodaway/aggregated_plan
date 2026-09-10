@@ -111,6 +111,10 @@ pub async fn search(
     // filter from the user.
     let search_filter = TaskFilter {
         collapse_recurrences: None,
+        // Search must find a task whatever its tracking state: "where did I see
+        // this" is not "what am I working on". The general followed-only default
+        // would make an untriaged or dismissed task unfindable, not merely hidden.
+        tracking_state: None,
         ..TaskFilter::empty()
     };
     let mut tasks: Vec<SearchHit> = task_repo
