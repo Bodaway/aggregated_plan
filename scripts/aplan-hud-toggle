@@ -26,7 +26,38 @@ case "$MODE" in
 esac
 
 WORKSPACE="aplan"
-BIN="${APLAN_HUD_BIN:-$HOME/appfactory/aggregated_plan/frontend/src-tauri/target/release/aplan-hud}"
+
+# Where the release binary lands is a property of the machine, not of the
+# repository, so it is resolved rather than hardcoded. Since 2026-09-10 this
+# one exports CARGO_TARGET_DIR (build artifacts moved off @home, which snapper
+# was snapshotting hourly until it hit ENOSPC), and cargo has written nothing
+# in-tree since: the in-tree default this used to carry alone named a path
+# that no longer exists, and every press died on the check below, onto a
+# stderr that nothing reads -- the HUD simply stopped opening.
+#
+# Order matters. An explicit APLAN_HUD_BIN always wins, because that is what
+# the tests and any hand invocation use. Otherwise the configured target
+# directory comes first: a checkout built both ways keeps a stale in-tree
+# copy for as long as nobody deletes it, while cargo only ever refreshes the
+# configured one. The in-tree path stays as the fallback for a checkout built
+# without CARGO_TARGET_DIR, and is also what gets named in the error when
+# neither exists.
+resolve_bin() {
+    if [ -n "${APLAN_HUD_BIN:-}" ]; then
+        printf '%s' "$APLAN_HUD_BIN"
+        return
+    fi
+    local in_tree="$HOME/appfactory/aggregated_plan/frontend/src-tauri/target/release/aplan-hud"
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+        local configured="$CARGO_TARGET_DIR/release/aplan-hud"
+        if [ -x "$configured" ] || [ ! -x "$in_tree" ]; then
+            printf '%s' "$configured"
+            return
+        fi
+    fi
+    printf '%s' "$in_tree"
+}
+BIN="$(resolve_bin)"
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
     DEFAULT_LOCKFILE="$XDG_RUNTIME_DIR/aplan-hud-toggle.lock"
 else

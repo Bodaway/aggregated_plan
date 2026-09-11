@@ -5528,6 +5528,17 @@ overlay window against the Vite dev server) and `hud:build` (`tauri build
 toggles the `special:aplan` workspace on every press after (see §6 of
 `docs/plans/2026-08-27-hud-overlay-tauri-design.md` for the windowrule).
 
+Le binaire lancé n'est pas cherché à un chemin fixe. `aplan-hud-toggle` retient,
+dans l'ordre : `APLAN_HUD_BIN` s'il est posé (invocation manuelle et tests),
+puis `$CARGO_TARGET_DIR/release/aplan-hud`, puis la copie dans l'arbre
+(`frontend/src-tauri/target/release/aplan-hud`). Le répertoire configuré passe
+avant l'arbre parce qu'un dépôt compilé des deux façons garde une copie
+in-tree périmée que cargo ne rafraîchit plus. Cette résolution existe parce que
+`CARGO_TARGET_DIR` est exporté sur le poste (artefacts de build sortis de
+`@home`, que snapper photographiait toutes les heures) : le défaut in-tree seul
+désignait alors un chemin inexistant, et chaque appui échouait sur un stderr
+que personne ne lit — le HUD ne s'ouvrait tout simplement plus.
+
 ### 17.2 Production Build (Local)
 
 ```bash

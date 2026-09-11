@@ -464,4 +464,101 @@ run_fallback_case "the fallback also covers the no-argument shortcut" \
 test_no_instance
 test_unknown_argument
 
+# --------------------------------------------------------------------------
+# Where the binary is looked up when the caller names no APLAN_HUD_BIN.
+#
+# Every case above passes APLAN_HUD_BIN, so the default was the one path no
+# test covered -- and it is the only path the two real callers take: the
+# SUPER+B binding and aplan-api's SurfaceController both invoke this script
+# bare. The default named an in-tree target/ directory, which stopped
+# existing on 2026-09-10 when CARGO_TARGET_DIR moved every build artifact off
+# @home (snapper was snapshotting them hourly, ENOSPC). Every press then
+# failed with "missing or not executable" onto a stderr nobody reads.
+# --------------------------------------------------------------------------
+run_default_bin_case() {
+    local name="$1" which="$2" set_cargo="$3" expected="$4"
+    local stub; stub="$(mktemp -d)"
+    cat > "$stub/pgrep" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    cat > "$stub/hyprctl" <<'EOF'
+#!/usr/bin/env bash
+echo "hyprctl $*" >> "$STUB_LOG"
+[ "$1" = "monitors" ] && printf '\tspecial workspace: 0 ()\n'
+EOF
+    cat > "$stub/pkill" <<'EOF'
+#!/usr/bin/env bash
+echo "pkill $*" >> "$STUB_LOG"
+EOF
+    chmod +x "$stub/pgrep" "$stub/hyprctl" "$stub/pkill"
+
+    # The two candidate locations, each with a binary that says which one of
+    # them ran -- the assertion is on identity, not merely on "something
+    # launched", so a resolution that picks the wrong one still fails.
+    local home="$stub/home"
+    local intree="$home/appfactory/aggregated_plan/frontend/src-tauri/target/release"
+    local shared="$stub/shared/release"
+    local tag
+    for tag in intree shared; do
+        local dir; [ "$tag" = intree ] && dir="$intree" || dir="$shared"
+        case "$which" in
+            "$tag" | both) ;;
+            *) continue ;;
+        esac
+        mkdir -p "$dir"
+        cat > "$dir/aplan-hud" <<EOF
+#!/usr/bin/env bash
+echo "launched $tag" >> "\$STUB_LOG"
+EOF
+        chmod +x "$dir/aplan-hud"
+    done
+
+    local run="$stub/run"
+    add_instance "$run" "live_instance" 1700000000
+    export STUB_LOG="$stub/log"; : > "$STUB_LOG"
+
+    # Both variables are explicitly cleared, not merely left unset. The
+    # suite exports APLAN_HUD_BIN in earlier cases, and CARGO_TARGET_DIR is
+    # exported by this very machine's ~/.zshenv -- letting either leak in
+    # masks the resolution under test, and the "no CARGO_TARGET_DIR" case
+    # then resolved to the developer's real build and launched the real HUD
+    # on their screen mid-suite.
+    local -a env_vars=(
+        PATH="$stub:$PATH" HOME="$home"
+        XDG_RUNTIME_DIR="$run" HYPRLAND_INSTANCE_SIGNATURE="live_instance"
+        APLAN_HUD_LOCKFILE="$stub/lock"
+    )
+    [ -n "$set_cargo" ] && env_vars+=(CARGO_TARGET_DIR="$stub/shared")
+    env -u APLAN_HUD_BIN -u CARGO_TARGET_DIR "${env_vars[@]}" \
+        "$HERE/aplan-hud-toggle" >/dev/null 2>"$stub/stderr"
+
+    # Same reason as run_case: the launch is backgrounded and disowned, so
+    # the marker can land after the script returns.
+    local waited=0
+    until grep -q "^launched " "$STUB_LOG" 2>/dev/null || [ "$waited" -ge 20 ]; do
+        sleep 0.05
+        waited=$((waited + 1))
+    done
+    if grep -q "^launched $expected\$" "$STUB_LOG"; then
+        echo "  ok   $name"
+    else
+        echo "  FAIL $name — expected 'launched $expected'; log:"; sed 's/^/       /' "$STUB_LOG"
+        [ -s "$stub/stderr" ] && sed 's/^/       stderr: /' "$stub/stderr"
+        FAILED=1
+    fi
+    rm -rf "$stub"
+}
+
+echo "default binary resolution (no APLAN_HUD_BIN)"
+run_default_bin_case "CARGO_TARGET_DIR set -> launches from the shared target dir" \
+    shared yes shared
+run_default_bin_case "no CARGO_TARGET_DIR -> falls back to the in-tree build" \
+    intree "" intree
+# A checkout that was built both ways keeps a stale in-tree copy for as long
+# as nobody deletes it, while cargo only ever refreshes the configured one.
+# Preferring the stale binary would reintroduce the bug in slow motion.
+run_default_bin_case "both present -> the configured target dir wins over the stale in-tree copy" \
+    both yes shared
+
 exit $FAILED
