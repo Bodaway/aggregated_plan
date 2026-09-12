@@ -11,6 +11,14 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    proxy: {
+      // Le client est devenu relatif (voir api-origin.ts). En dev le front est
+      // sur 3000 et l'API sur 3001 : ce proxy recrée l'origine unique que
+      // l'API fournit elle-même en production. `/graphql/sse` (client
+      // graphql-sse) est un préfixe de `/graphql`, donc cette même entrée le
+      // couvre aussi -- pas besoin de `ws: true`, l'SSE reste du HTTP simple.
+      '/graphql': { target: 'http://127.0.0.1:3001', changeOrigin: false },
+    },
   },
   test: {
     globals: true,
