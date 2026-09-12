@@ -168,6 +168,7 @@ pub async fn sync_jira(
                     occurrence_date: None,
                     gryzzly_task_id: None,
                     gryzzly_project_id: None,
+                    client_request_id: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -487,6 +488,7 @@ pub async fn sync_excel(
                     occurrence_date: None,
                     gryzzly_task_id: None,
                     gryzzly_project_id: None,
+                    client_request_id: None,
                     created_at: now,
                     updated_at: now,
                 };
@@ -1273,6 +1275,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -1351,6 +1354,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: Some("g-1".to_string()),
             gryzzly_project_id: Some("p-1".to_string()),
+            client_request_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -1420,6 +1424,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: now,
             updated_at: now,
         }

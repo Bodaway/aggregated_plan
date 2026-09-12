@@ -873,8 +873,13 @@ type CombinedQuery {
 	"""
 	weeklyActivitySummary(weekStart: NaiveDate!): WeeklyActivitySummaryGql!
 	"""
-	All non-dismissed tasks for the current user, projected to a lean
-	payload for client-side fuzzy search. Unpaginated on purpose.
+	Every task of the current user, **whatever its tracking state**, projected
+	to a lean payload for client-side fuzzy search. Unpaginated on purpose.
+	
+	It used to exclude `Dismissed`. Search is exempt from the app-wide
+	followed-only rule precisely because it is the last way back to a task:
+	dismissing one hid it from every view, and hiding it from search too made it
+	unreachable rather than merely out of the way.
 	"""
 	searchableTasks: [SearchableTaskGql!]!
 	"""
@@ -1096,6 +1101,10 @@ input CreateTaskInput {
 	impact: ImpactLevelGql
 	urgency: UrgencyLevelGql
 	tagIds: [ID!]
+	"""
+	Clé d'idempotence de la capture mobile hors-ligne ; ignorer côté desktop.
+	"""
+	clientRequestId: String
 }
 
 """

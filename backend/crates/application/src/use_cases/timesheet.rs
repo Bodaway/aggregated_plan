@@ -1588,6 +1588,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: Some("gt1".to_string()),
             gryzzly_project_id: Some(project_id.to_string()),
+            client_request_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

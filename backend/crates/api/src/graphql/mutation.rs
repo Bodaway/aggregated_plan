@@ -2092,6 +2092,7 @@ fn convert_create_input(
         impact: input.impact.map(|i| i.into()),
         urgency: input.urgency.map(|u| u.into()),
         tags: tag_ids,
+        client_request_id: input.client_request_id,
     })
 }
 

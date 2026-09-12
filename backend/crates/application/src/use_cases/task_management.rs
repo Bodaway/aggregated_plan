@@ -7,6 +7,7 @@ use crate::errors::AppError;
 use crate::repositories::*;
 
 /// Input data for creating a new personal task.
+#[derive(Default)]
 pub struct CreateTaskInput {
     pub title: String,
     pub description: Option<String>,
@@ -19,6 +20,9 @@ pub struct CreateTaskInput {
     pub impact: Option<ImpactLevel>,
     pub urgency: Option<UrgencyLevel>,
     pub tags: Vec<TagId>,
+    /// Clé d'idempotence de la capture mobile hors-ligne. `None` sur le chemin
+    /// desktop, qui n'en a pas besoin.
+    pub client_request_id: Option<String>,
 }
 
 /// Input data for updating an existing task.
@@ -48,6 +52,15 @@ pub async fn create_personal_task(
     input: CreateTaskInput,
     today: NaiveDate,
 ) -> Result<Task, AppError> {
+    // Rejeu de la file hors-ligne : si la clé est déjà connue, on rend la
+    // tâche existante. L'index UNIQUE reste le garde-fou d'une vraie course ;
+    // ce chemin-ci évite juste d'y arriver dans le cas courant.
+    if let Some(key) = input.client_request_id.as_deref() {
+        if let Some(existing) = task_repo.find_by_client_request_id(user_id, key).await? {
+            return Ok(existing);
+        }
+    }
+
     let now = Utc::now();
 
     let (urgency, urgency_manual) = match input.urgency {
@@ -88,6 +101,7 @@ pub async fn create_personal_task(
         occurrence_date: None,
         gryzzly_task_id: None,
         gryzzly_project_id: None,
+        client_request_id: input.client_request_id,
         created_at: now,
         updated_at: now,
     };
@@ -322,6 +336,13 @@ mod tests {
                 tasks: Mutex::new(HashMap::new()),
             }
         }
+
+        /// Test-only helper: total number of stored tasks, to make "did the
+        /// replay create a duplicate" an observable count rather than an
+        /// inference from IDs alone.
+        async fn count(&self) -> usize {
+            self.tasks.lock().unwrap().len()
+        }
     }
 
     #[async_trait]
@@ -428,6 +449,21 @@ mod tests {
                 .collect())
         }
 
+        async fn find_by_client_request_id(
+            &self,
+            user_id: UserId,
+            client_request_id: &str,
+        ) -> Result<Option<Task>, RepositoryError> {
+            let tasks = self.tasks.lock().unwrap();
+            Ok(tasks
+                .values()
+                .find(|t| {
+                    t.user_id == user_id
+                        && t.client_request_id.as_deref() == Some(client_request_id)
+                })
+                .cloned())
+        }
+
         async fn save(&self, task: &Task) -> Result<(), RepositoryError> {
             let mut tasks = self.tasks.lock().unwrap();
             tasks.insert(task.id, task.clone());
@@ -476,6 +512,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let task = create_personal_task(&repo, test_user_id(), input, today())
@@ -505,6 +542,7 @@ mod tests {
             impact: Some(ImpactLevel::Critical),
             urgency: Some(UrgencyLevel::High),
             tags: vec![],
+            client_request_id: None,
         };
 
         let task = create_personal_task(&repo, test_user_id(), input, today())
@@ -533,6 +571,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let task = create_personal_task(&repo, test_user_id(), input, today())
@@ -558,6 +597,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -592,6 +632,7 @@ mod tests {
                 impact: None,
                 urgency: None,
                 tags: vec![],
+                client_request_id: None,
             };
             create_personal_task(&repo, test_user_id(), input, today())
                 .await
@@ -619,6 +660,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -695,6 +737,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -743,6 +786,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -777,6 +821,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -810,6 +855,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -860,6 +906,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let created = create_personal_task(&repo, test_user_id(), input, today())
@@ -929,6 +976,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
 
         let task = create_personal_task(&repo, user_id, input, today).await.unwrap();
@@ -953,6 +1001,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
         let created = create_personal_task(&repo, test_user_id(), input, today())
             .await
@@ -980,6 +1029,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
         let created = create_personal_task(&repo, test_user_id(), input, today())
             .await
@@ -1049,6 +1099,7 @@ mod tests {
             occurrence_date: planned_start.map(|dt| dt.date_naive()),
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -1237,6 +1288,7 @@ mod tests {
             impact: None,
             urgency: None,
             tags: vec![],
+            client_request_id: None,
         };
         let created = create_personal_task(&repo, test_user_id(), input, today())
             .await
@@ -1313,5 +1365,45 @@ mod tests {
         let result = update_task(&repo, recurring.id, update, today()).await;
         assert!(result.is_ok(), "delegated_to on recurring instance should succeed");
         assert_eq!(result.unwrap().delegated_to.as_deref(), Some("Marie"));
+    }
+
+    // ─── client_request_id idempotency (offline capture replay) ───
+
+    #[tokio::test]
+    async fn same_client_request_id_creates_only_one_task() {
+        let repo = InMemoryTaskRepository::new();
+        let user = test_user_id();
+        let day = today();
+        let input = || CreateTaskInput {
+            title: "Capté dans le métro".into(),
+            client_request_id: Some("6f1e1d6e-0000-4000-8000-000000000001".into()),
+            ..CreateTaskInput::default()
+        };
+
+        let first = create_personal_task(&repo, user, input(), day).await.unwrap();
+        let second = create_personal_task(&repo, user, input(), day).await.unwrap();
+
+        // Le rejeu doit être un no-op observable : même tâche, pas une erreur que
+        // le client aurait à interpréter, et surtout pas un doublon.
+        assert_eq!(first.id, second.id);
+        assert_eq!(repo.count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn absent_client_request_id_still_creates_each_time() {
+        let repo = InMemoryTaskRepository::new();
+        let user = test_user_id();
+        let day = today();
+        let mk = || CreateTaskInput {
+            title: "Sans clé".into(),
+            ..CreateTaskInput::default()
+        };
+
+        let a = create_personal_task(&repo, user, mk(), day).await.unwrap();
+        let b = create_personal_task(&repo, user, mk(), day).await.unwrap();
+
+        // Le chemin desktop ne change pas de comportement.
+        assert_ne!(a.id, b.id);
+        assert_eq!(repo.count().await, 2);
     }
 }

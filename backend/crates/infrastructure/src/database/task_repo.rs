@@ -130,6 +130,7 @@ fn map_task_row(row: &SqliteRow) -> Result<Task, RepositoryError> {
         },
         gryzzly_task_id: row.try_get("gryzzly_task_id").ok().flatten(),
         gryzzly_project_id: row.try_get("gryzzly_project_id").ok().flatten(),
+        client_request_id: row.try_get("client_request_id").ok().flatten(),
         created_at: parse_datetime(&created_at_str)?,
         updated_at: parse_datetime(&updated_at_str)?,
     })
@@ -373,6 +374,28 @@ impl TaskRepository for SqliteTaskRepository {
         }
     }
 
+    async fn find_by_client_request_id(
+        &self,
+        user_id: UserId,
+        client_request_id: &str,
+    ) -> Result<Option<Task>, RepositoryError> {
+        let rows = sqlx::query("SELECT * FROM tasks WHERE user_id = ? AND client_request_id = ?")
+            .bind(user_id.to_string())
+            .bind(client_request_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => {
+                let mut task = map_task_row(row)?;
+                task.tags = load_tags_for_task(&self.pool, &task.id).await?;
+                Ok(Some(task))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn find_by_date_range(
         &self,
         user_id: UserId,
@@ -460,8 +483,8 @@ impl TaskRepository for SqliteTaskRepository {
         // raises a UNIQUE violation instead of destroying the sitting task — the
         // materialization use case already checks `find_by_recurrence_slot` first.
         sqlx::query(
-            "INSERT INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, gryzzly_task_id, gryzzly_project_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO tasks (id, user_id, title, description, notes, source, source_id, jira_status, status, project_id, assignee, delegated_to, deadline, planned_start, planned_end, estimated_hours, urgency, urgency_manual, impact, tracking_state, jira_remaining_seconds, jira_original_estimate_seconds, jira_time_spent_seconds, remaining_hours_override, estimated_hours_override, recurrence_id, occurrence_date, gryzzly_task_id, gryzzly_project_id, client_request_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 title = excluded.title,
@@ -491,6 +514,7 @@ impl TaskRepository for SqliteTaskRepository {
                 occurrence_date = excluded.occurrence_date,
                 gryzzly_task_id = excluded.gryzzly_task_id,
                 gryzzly_project_id = excluded.gryzzly_project_id,
+                client_request_id = excluded.client_request_id,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at",
         )
@@ -523,6 +547,7 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(task.occurrence_date.map(|d| d.format("%Y-%m-%d").to_string()))
         .bind(&task.gryzzly_task_id)
         .bind(&task.gryzzly_project_id)
+        .bind(&task.client_request_id)
         .bind(task.created_at.to_rfc3339())
         .bind(task.updated_at.to_rfc3339())
         .execute(&self.pool)
@@ -730,6 +755,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -939,6 +965,29 @@ mod tests {
             .await
             .unwrap();
         assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_by_client_request_id_round_trips() {
+        let pool = setup().await;
+        let repo = SqliteTaskRepository::new(pool);
+
+        let mut task = make_task("Capté hors-ligne");
+        task.client_request_id = Some("clé-1".to_string());
+        repo.save(&task).await.unwrap();
+
+        let found = repo
+            .find_by_client_request_id(user_id(), "clé-1")
+            .await
+            .unwrap();
+        assert_eq!(found.map(|t| t.id), Some(task.id));
+
+        // Une clé inconnue ne doit rien renvoyer, pas la première ligne venue.
+        assert!(repo
+            .find_by_client_request_id(user_id(), "clé-2")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -1152,6 +1201,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             notes: None,
