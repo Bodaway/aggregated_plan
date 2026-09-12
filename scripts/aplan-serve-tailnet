@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+#
+# Publie le cockpit aplan sur le tailnet, et rien d'autre.
+#
+# Le bind de l'API ne change pas : elle reste sur 127.0.0.1:3001. Ce script
+# demande à tailscaled de terminer le TLS sur l'interface du tailnet et de
+# proxifier vers ce loopback. Aucun port n'est ouvert sur le LAN, aucune règle
+# de pare-feu n'est touchée.
+#
+# Idempotent : le relancer sur une configuration déjà en place ne change rien.
+
+set -euo pipefail
+
+readonly UPSTREAM="http://127.0.0.1:3001"
+readonly STATIC_DIR_DEFAULT="/home/mbt/appfactory/aggregated_plan/frontend/dist"
+
+red()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
+ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
+info() { printf '%s\n' "$*"; }
+
+die() { red "✗ $*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 1. Tailscale est-il là et connecté ?
+# ---------------------------------------------------------------------------
+
+command -v tailscale >/dev/null 2>&1 || die \
+  "tailscale n'est pas installé. Sur Arch : sudo pacman -S tailscale && sudo systemctl enable --now tailscaled"
+
+if ! tailscale status >/dev/null 2>&1; then
+  die "tailscaled ne répond pas, ou ce nœud n'est pas connecté. Lance : sudo tailscale up"
+fi
+
+backend_state=$(tailscale status --json | python3 -c \
+  'import json,sys; print(json.load(sys.stdin).get("BackendState",""))')
+[[ "$backend_state" == "Running" ]] || die \
+  "tailscaled est dans l'état « $backend_state », pas « Running ». Lance : sudo tailscale up"
+
+ok "✓ tailscaled connecté"
+
+# ---------------------------------------------------------------------------
+# 2. Funnel : garde-fou non négociable
+# ---------------------------------------------------------------------------
+#
+# `serve` publie sur le tailnet seul ; `funnel` publie sur l'Internet public.
+# Comme l'API n'authentifie rien par requête (tout résout contre un
+# default_user_id codé en dur), un funnel actif exposerait le cockpit entier,
+# sans mot de passe, à qui trouve le nom d'hôte. C'est la seule frontière de
+# sécurité de tout ce dispositif : on refuse de continuer plutôt que de la
+# franchir par inadvertance.
+
+if tailscale funnel status 2>/dev/null | grep -qi 'https://'; then
+  red "✗ Un funnel Tailscale est actif : le cockpit serait exposé sur l'Internet public."
+  red "  Coupe-le d'abord : tailscale funnel --https=443 off"
+  tailscale funnel status 2>&1 | sed 's/^/    /' >&2
+  exit 1
+fi
+
+ok "✓ aucun funnel actif"
+
+# ---------------------------------------------------------------------------
+# 3. Certificats HTTPS : sans eux, pas de PWA
+# ---------------------------------------------------------------------------
+#
+# Un service worker exige un contexte sécurisé. Sans MagicDNS + HTTPS
+# Certificates activés dans la console d'admin du tailnet, `tailscale serve`
+# ne peut pas obtenir de certificat Let's Encrypt : la page resterait joignable
+# en clair, mais l'installation de la PWA et le cache hors-ligne seraient
+# silencieusement morts. Mieux vaut échouer ici, bruyamment.
+
+cert_domain=$(tailscale status --json | python3 -c \
+  'import json,sys; d=json.load(sys.stdin).get("CertDomains") or []; print(d[0] if d else "")')
+
+if [[ -z "$cert_domain" ]]; then
+  red "✗ Aucun domaine de certificat disponible pour ce nœud."
+  red "  Active MagicDNS puis HTTPS Certificates dans la console d'admin du tailnet :"
+  red "    https://login.tailscale.com/admin/dns"
+  red "  Sans certificat il n'y a pas de contexte sécurisé, donc ni service worker ni PWA installable."
+  exit 1
+fi
+
+ok "✓ certificat disponible pour $cert_domain"
+
+# ---------------------------------------------------------------------------
+# 4. L'API répond-elle, et sert-elle bien le frontend ?
+# ---------------------------------------------------------------------------
+#
+# Vérifications en lecture seule : un GET sur la racine ne touche à rien. On
+# n'émet volontairement aucune requête GraphQL — cette instance-ci est la vraie
+# base de production.
+
+if ! curl -fsS -o /dev/null --max-time 3 "$UPSTREAM/" 2>/dev/null; then
+  warn "! $UPSTREAM/ ne renvoie pas de page."
+  warn "  Le service tourne-t-il ?   systemctl --user status aplan-api.service"
+  warn "  APLAN_STATIC_DIR est-il posé sur l'unité, et le frontend compilé ?"
+  warn "  Attendu : Environment=APLAN_STATIC_DIR=$STATIC_DIR_DEFAULT"
+  warn "  Rappel : l'unité lance le binaire installé ~/.local/bin/aplan-api, pas un cargo run."
+  warn "  Le tunnel sera quand même publié, mais il servira une API sans frontend."
+else
+  ok "✓ l'API sert une page sur $UPSTREAM/"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Publier
+# ---------------------------------------------------------------------------
+
+info ""
+info "Publication de $UPSTREAM sur le tailnet…"
+tailscale serve --bg --https=443 "$UPSTREAM"
+
+info ""
+ok "✓ cockpit publié"
+info ""
+tailscale serve status
+info ""
+info "Depuis l'iPhone (Tailscale connecté au même tailnet) :"
+info "    Plan du jour : https://$cert_domain/m"
+info "    Capture      : https://$cert_domain/m/new"
+info ""
+info "« Ajouter à l'écran d'accueil » depuis Safari installe la PWA ; l'icône ouvre la capture."
+info ""
+info "Pour tout retirer :  tailscale serve --https=443 off"
