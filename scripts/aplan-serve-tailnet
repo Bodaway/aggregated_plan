@@ -90,6 +90,24 @@ ok "✓ certificat disponible pour $cert_domain"
 # n'émet volontairement aucune requête GraphQL — cette instance-ci est la vraie
 # base de production.
 
+# Le playground GraphiQL n'est monté que si `cfg!(debug_assertions)` est vrai,
+# c'est-à-dire dans un build debug. Tant que l'API n'était joignable que depuis
+# la machine, c'était sans conséquence. Derrière le tunnel, un binaire rebuildé
+# sans `--release` offrirait à tout le tailnet une console d'exploration de
+# schéma sur une API qui n'authentifie rien par requête. On sonde, plutôt que
+# de compter sur la mémoire de qui fera le prochain rebuild.
+if curl -fsS -o /dev/null --max-time 3 "$UPSTREAM/graphql/playground" 2>/dev/null; then
+  red "✗ $UPSTREAM/graphql/playground répond : ce binaire est un build debug."
+  red "  Publier ce build donnerait au tailnet une console GraphiQL sur une API"
+  red "  qui n'authentifie rien par requête. Rebuild en release avant de publier :"
+  red "    cd backend && cargo build --release -p api"
+  red "    install -m755 target/release/api ~/.local/bin/aplan-api"
+  red "    systemctl --user restart aplan-api.service"
+  exit 1
+fi
+
+ok "✓ pas de playground GraphiQL exposé (build release)"
+
 if ! curl -fsS -o /dev/null --max-time 3 "$UPSTREAM/" 2>/dev/null; then
   warn "! $UPSTREAM/ ne renvoie pas de page."
   warn "  Le service tourne-t-il ?   systemctl --user status aplan-api.service"
