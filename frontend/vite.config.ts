@@ -20,6 +20,10 @@ export default defineConfig({
         name: 'aplan — cockpit',
         short_name: 'aplan',
         description: 'Plan du jour et capture rapide',
+        // vite-plugin-pwa met `en` par défaut et ne le déduit pas du
+        // `<html lang>` : sans cette ligne, iOS annonce une interface
+        // française comme anglaise aux lecteurs d'écran.
+        lang: 'fr',
         // L'icône de l'écran d'accueil tombe sur la capture : c'est l'usage
         // où le téléphone bat le poste.
         start_url: '/m/new',
