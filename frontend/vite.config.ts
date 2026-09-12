@@ -1,9 +1,45 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      // Seule la coquille est précachée. Les réponses GraphQL ne le sont
+      // jamais : un plan du jour périmé qui se présente comme le plan du jour
+      // est pire qu'un écran qui dit franchement qu'il est hors ligne.
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/graphql/, /^\/auth/],
+      },
+      manifest: {
+        name: 'aplan — cockpit',
+        short_name: 'aplan',
+        description: 'Plan du jour et capture rapide',
+        // L'icône de l'écran d'accueil tombe sur la capture : c'est l'usage
+        // où le téléphone bat le poste.
+        start_url: '/m/new',
+        scope: '/m',
+        display: 'standalone',
+        background_color: '#0b0f14',
+        theme_color: '#0b0f14',
+        icons: [
+          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          {
+            src: '/icons/icon-maskable-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable',
+          },
+        ],
+      },
+    }),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
