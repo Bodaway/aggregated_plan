@@ -532,6 +532,17 @@ aggregated-plan/
 |       |       +-- BreakScreen.tsx           # Running break: ring, remaining time, "J'y retourne"
 |       |       +-- useActiveBreak.ts         # `activeBreak` poll, gated on surface visibility
 |       |       +-- useSurfaceVisibility.ts   # `document.visibilityState` animation gate
+|       |       +-- useDominantBlock.ts       # Which panel wears the single glow: agenda > pressure > matrix
+|       |       +-- useAgentSessions.ts       # `openClaudeSessions`, re-queried on every opening
+|       |       +-- useNeuralBudget.ts        # `neuralBudget`, re-queried on every opening
+|       |       +-- blocks/
+|       |           +-- PressureBlock.tsx     # Dominant cell: deadlines, quarters, day load, next break, capacity
+|       |           +-- MatrixBlock.tsx       # Top of the Eisenhower matrix + what sits below the line
+|       |           +-- AgendaBlock.tsx       # Next real meeting and the day's timeline
+|       |           +-- NeuralBudgetBlock.tsx # Claude burn over the rolling window, from the local index
+|       |           +-- AgentsBlock.tsx       # Live Claude Code sessions and the task each is on
+|       |           +-- StationBlock.tsx      # Clock, date, and (Tauri only) CPU/RAM/network
+|       |           +-- Ticker.tsx            # Unresolved alerts and break adherence, one strip
 |       |
 |       +-- components/               # Reusable UI components
 |           +-- layout/

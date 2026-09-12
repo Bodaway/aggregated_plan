@@ -8,6 +8,7 @@ pub mod memory_retriever;
 pub mod memory_file_source;
 pub mod notifier;
 pub mod surface;
+pub mod claude_transcript_source;
 
 pub use jira_client::*;
 pub use outlook_client::*;
@@ -19,3 +20,4 @@ pub use memory_retriever::*;
 pub use memory_file_source::*;
 pub use notifier::{Notification, NotificationOutcome, Notifier, NullNotifier};
 pub use surface::{NullSurface, SurfaceController};
+pub use claude_transcript_source::*;

@@ -1,0 +1,12 @@
+query NeuralBudget($windowHours: Int!, $sparklineDays: Int!) {
+  neuralBudget(windowHours: $windowHours, sparklineDays: $sparklineDays) {
+    windowHours
+    consumedTokens
+    cacheReadTokens
+    declaredCeiling
+    consumedRatio
+    perDay
+    perModel { model tokens }
+    topProject { name tokens ratio }
+  }
+}

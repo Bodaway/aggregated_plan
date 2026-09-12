@@ -8,6 +8,7 @@ use uuid::Uuid;
 use application::repositories::*;
 use application::services::MemoryRetriever;
 use application::use_cases::{activity_reporting, activity_tracking, alerts, configuration, dashboard, deduplication, priority, task_management, worklog as worklog_uc};
+use application::use_cases::claude_usage;
 use application::use_cases::breaks as breaks_uc;
 use application::use_cases::brief as brief_uc;
 use application::use_cases::consolidation as consolidation_uc;
@@ -885,6 +886,35 @@ impl QueryRoot {
             .await
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
         Ok(sessions.into_iter().map(ClaudeSessionGql).collect())
+    }
+
+    /// Claude token consumption over a rolling window — the HUD's Neural budget.
+    ///
+    /// Defaults match the panel: five hours because that is the window the
+    /// subscription itself is measured over, ten days of sparkline because that is
+    /// what fits the panel's width.
+    async fn neural_budget(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 5)] window_hours: i32,
+        #[graphql(default = 10)] sparkline_days: i32,
+    ) -> Result<NeuralBudgetGql> {
+        let user_id = *ctx.data::<UserId>()?;
+        let repo = ctx.data::<Arc<dyn ClaudeUsageRepository>>()?;
+        let config_repo = ctx.data::<Arc<dyn ConfigRepository>>()?;
+
+        let budget = claude_usage::neural_budget(
+            repo.as_ref(),
+            config_repo.as_ref(),
+            user_id,
+            Utc::now(),
+            window_hours.max(1) as i64,
+            sparkline_days.max(1) as i64,
+        )
+        .await
+        .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+
+        Ok(budget.into())
     }
 
     /// Memory candidates awaiting validation (`status = PENDING`).

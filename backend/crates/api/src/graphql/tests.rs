@@ -470,6 +470,57 @@ impl SyncStatusRepository for StubSyncStatusRepository {
 /// GraphQL test: no assertion could tell a key that was actually written from one
 /// that never was. Now a real in-memory map, so `{ configuration }` is a faithful
 /// instrument on what a resolver wrote via `ConfigRepository::set`.
+/// An in-memory Claude usage index.
+///
+/// Deliberately a real store rather than a repository that answers nothing: the
+/// resolver's job is to hand the domain a set of records and pass its verdict back,
+/// and a stub that always returned an empty vector would let a resolver that
+/// ignored its arguments pass every test here.
+#[derive(Default)]
+struct InMemoryClaudeUsageRepository {
+    records: Mutex<HashMap<String, domain::rules::claude_usage::UsageRecord>>,
+    files: Mutex<HashMap<String, application::repositories::IndexedFile>>,
+}
+#[async_trait]
+impl application::repositories::ClaudeUsageRepository for InMemoryClaudeUsageRepository {
+    async fn upsert_requests(
+        &self,
+        records: &[domain::rules::claude_usage::UsageRecord],
+    ) -> Result<usize, RepositoryError> {
+        let mut store = self.records.lock().unwrap();
+        for record in records {
+            store.insert(record.request_id.clone(), record.clone());
+        }
+        Ok(records.len())
+    }
+    async fn file_state(
+        &self,
+        path: &str,
+    ) -> Result<Option<application::repositories::IndexedFile>, RepositoryError> {
+        Ok(self.files.lock().unwrap().get(path).cloned())
+    }
+    async fn set_file_state(
+        &self,
+        state: &application::repositories::IndexedFile,
+    ) -> Result<(), RepositoryError> {
+        self.files.lock().unwrap().insert(state.path.clone(), state.clone());
+        Ok(())
+    }
+    async fn records_since(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<domain::rules::claude_usage::UsageRecord>, RepositoryError> {
+        Ok(self
+            .records
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|r| r.occurred_at >= since)
+            .cloned()
+            .collect())
+    }
+}
+
 struct StubConfigRepository {
     values: Mutex<HashMap<(UserId, String), String>>,
 }
@@ -1756,6 +1807,8 @@ fn build_test_schema_with_memory(
     let memory_retriever: Arc<dyn application::services::MemoryRetriever> = memory_store;
     let memory_file_source: Arc<dyn application::services::MemoryFileSource> =
         Arc::new(StubMemoryFileSource::default());
+    let claude_usage_repo: Arc<dyn application::repositories::ClaudeUsageRepository> =
+        Arc::new(InMemoryClaudeUsageRepository::default());
 
     Schema::build(
         CombinedQuery(QueryRoot),
@@ -1784,6 +1837,7 @@ fn build_test_schema_with_memory(
     .data(session_repo)
     .data(break_rule_repo)
     .data(break_event_repo)
+    .data(claude_usage_repo)
     .data(default_user_id)
     .finish()
 }
@@ -2832,6 +2886,76 @@ async fn current_activity_query_returns_null_when_none() {
     assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
     let data = result.data.into_json().unwrap();
     assert!(data["currentActivity"].is_null());
+}
+
+#[tokio::test]
+async fn neural_budget_reports_zeros_rather_than_nothing_on_an_empty_index() {
+    // The index is built by a background job that may never have run — on a fresh
+    // machine, or one that has never used Claude Code. The panel must render a
+    // budget of zero, not fail: an error here would blank a HUD panel over an
+    // entirely normal state.
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(
+            r#"{ neuralBudget { windowHours consumedTokens cacheReadTokens declaredCeiling
+                                consumedRatio perDay perModel { model tokens }
+                                topProject { name } } }"#,
+        )
+        .await;
+
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let budget = &result.data.into_json().unwrap()["neuralBudget"];
+    assert_eq!(budget["windowHours"], 5, "the subscription's own window");
+    assert_eq!(budget["consumedTokens"], 0);
+    assert_eq!(budget["cacheReadTokens"], 0);
+    assert_eq!(budget["consumedRatio"], 0.0);
+    assert_eq!(budget["perDay"].as_array().unwrap().len(), 10);
+    assert_eq!(budget["perModel"].as_array().unwrap().len(), 0);
+    assert!(budget["topProject"].is_null());
+}
+
+#[tokio::test]
+async fn neural_budget_takes_its_ceiling_from_configuration() {
+    // The one figure the app cannot measure: no public API exposes the subscription
+    // quota, so it is typed in and read back from `configuration`. Until it is set
+    // the denominator is zero, and the ratio says so instead of inventing one.
+    let schema = build_test_schema();
+
+    let before = schema.execute(r#"{ neuralBudget { declaredCeiling } }"#).await;
+    assert_eq!(
+        before.data.into_json().unwrap()["neuralBudget"]["declaredCeiling"],
+        0
+    );
+
+    let set = schema
+        .execute(
+            r#"mutation { updateConfiguration(key: "aplan.claude.declared_ceiling_tokens",
+                                              value: "2500000") }"#,
+        )
+        .await;
+    assert!(set.errors.is_empty(), "Errors: {:?}", set.errors);
+
+    let after = schema.execute(r#"{ neuralBudget { declaredCeiling } }"#).await;
+    assert!(after.errors.is_empty(), "Errors: {:?}", after.errors);
+    assert_eq!(
+        after.data.into_json().unwrap()["neuralBudget"]["declaredCeiling"],
+        2_500_000
+    );
+}
+
+#[tokio::test]
+async fn neural_budget_honours_the_window_and_sparkline_arguments() {
+    let schema = build_test_schema();
+
+    let result = schema
+        .execute(r#"{ neuralBudget(windowHours: 24, sparklineDays: 3) { windowHours perDay } }"#)
+        .await;
+
+    assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    let budget = &result.data.into_json().unwrap()["neuralBudget"];
+    assert_eq!(budget["windowHours"], 24);
+    assert_eq!(budget["perDay"].as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]

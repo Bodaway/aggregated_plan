@@ -48,6 +48,7 @@ pub struct SchemaDeps {
     pub session_repo: Arc<dyn SessionRepository>,
     pub break_rule_repo: Arc<dyn BreakRuleRepository>,
     pub break_event_repo: Arc<dyn BreakEventRepository>,
+    pub claude_usage_repo: Arc<dyn ClaudeUsageRepository>,
 }
 
 /// Build the async-graphql schema with all repository instances injected as data.
@@ -75,6 +76,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
         session_repo,
         break_rule_repo,
         break_event_repo,
+        claude_usage_repo,
     } = deps;
     // Default user for local development
     let default_user_id: UserId =
@@ -107,6 +109,7 @@ pub fn build_schema(deps: SchemaDeps) -> AppSchema {
     .data(session_repo)
     .data(break_rule_repo)
     .data(break_event_repo)
+    .data(claude_usage_repo)
     .data(default_user_id)
     .finish()
 }

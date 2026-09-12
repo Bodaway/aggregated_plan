@@ -241,8 +241,12 @@ seule source de vérité : changer le thème du poste repeint le HUD.
 
 ## 8. Les six blocs du HUD
 
-1. **Focus & temps** — tâche active, chrono, les quatre quarts de la journée et leur
-   remplissage, prochaine pause et compte à rebours.
+> **Révisé après usage.** Le bloc 1 tel que décrit ci-dessous a été **supprimé** :
+> voir §8 bis. La liste d'origine est conservée telle quelle parce que les blocs
+> 2 à 6 n'ont pas bougé et que le raisonnement de composition reste valable.
+
+1. ~~**Focus & temps** — tâche active, chrono~~, les quatre quarts de la journée et
+   leur remplissage, prochaine pause et compte à rebours.
 2. **Pression** — échéances du jour et J-N, alertes de surcharge, charge planifiée
    contre capacité.
 3. **Agenda** — prochaine réunion avec compte à rebours, timeline de la journée.
@@ -257,6 +261,38 @@ non six cartes de même poids visuel.
 
 ---
 
+## 8 bis. Focus supprimé, Pression promue
+
+**Le constat.** Le bloc dominant du HUD — la plus grande case, celle que l'œil
+prend en premier — a affiché « No active task / No timer » en permanence depuis
+sa mise en service. Ce n'est pas un bug d'affichage : `FocusBlock` lisait
+`currentActivity`, c'est-à-dire le créneau *ouvert* que crée le chronomètre
+manuel (`startActivity`, le bouton de l'application web). L'usage réel passe par
+les sessions Claude et `aplan log`, qui produisent des créneaux **fermés** au
+flush et n'ouvrent jamais de créneau courant. Le héros du HUD était donc vide
+par construction, pas par hasard.
+
+**La décision.** Pression prend la grande case (4 colonnes × 2 rangées) et
+absorbe tout ce que le pied de Focus portait de réel : les quatre quarts, la
+charge du jour, la prochaine pause. Rien n'est perdu — seuls le titre de tâche
+et le chronomètre, les deux seuls éléments alimentés par le minuteur manuel,
+disparaissent. Le nouveau bloc **Priorité** occupe la case libérée par Pression
+(5 × 1) : le haut de la matrice d'Eisenhower, critiques d'abord, puis le
+quadrant urgent-et-important, avec en pied le décompte de ce qui reste dans les
+trois autres quadrants.
+
+**L'arbitrage du halo** garde son intention d'origine mot pour mot — « le défaut,
+c'est le travail, pas l'alarme » — en remplaçant simplement sa branche par
+défaut : `agenda` > `pressure` > `matrix`.
+
+**Ce qu'il fallait éviter.** Réparer Focus plutôt que le remplacer était
+tentant : le brancher sur le pointeur de session et le worklog du jour lui aurait
+rendu un contenu. Écarté parce que le bloc Agents, une fois sur données réelles,
+dit déjà quelle session travaille sur quelle tâche — deux panneaux voisins
+répondant à la même question.
+
+---
+
 ## 9. L'index de conso Claude
 
 Source : `~/.claude/projects/**/*.jsonl`. État constaté sur la machine :
@@ -267,6 +303,14 @@ et `sessionId` ; le nom du dossier encode le chemin du projet.
 
 **Index incrémental obligatoire** : offset de lecture et `mtime` mémorisés par
 fichier, jamais de re-scan complet.
+
+**Le bloc Agents n'attend plus cet index.** Il a été branché sur
+`openClaudeSessions` — la table `sessions` de la migration 014 — qui répondait
+déjà à tout son contrat. La seule chose que l'index lui apportera est une
+meilleure fraîcheur : `last_seen_at` ne bouge qu'aux appels `aplan`, donc une
+session qui réfléchit sans journaliser paraît silencieuse. Le panneau dit
+« Quiet », pas « Idle », précisément pour ne pas affirmer plus que ce qu'il
+mesure ; le `mtime` du transcript est le signal qui permettra le mot fort.
 
 **Limite assumée** : le quota d'abonnement lui-même (les chiffres de `/usage`) n'est
 pas exposé par une API publique — il vient d'un endpoint interne interrogé avec le

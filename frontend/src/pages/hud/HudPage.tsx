@@ -4,8 +4,8 @@ import { useDominantBlock } from './useDominantBlock';
 import { useActiveBreak } from './useActiveBreak';
 import { BreakScreen } from './BreakScreen';
 import { HudNav } from './HudNav';
-import { FocusBlock } from './blocks/FocusBlock';
 import { PressureBlock } from './blocks/PressureBlock';
+import { MatrixBlock } from './blocks/MatrixBlock';
 import { AgendaBlock } from './blocks/AgendaBlock';
 import { NeuralBudgetBlock } from './blocks/NeuralBudgetBlock';
 import { AgentsBlock } from './blocks/AgentsBlock';
@@ -117,8 +117,8 @@ function HudGrid() {
   return (
     <div data-testid="hud-grid" className="hud" data-open={openState}>
       <HudNav />
-      <FocusBlock lit={dominant === 'focus'} />
       <PressureBlock lit={dominant === 'pressure'} />
+      <MatrixBlock lit={dominant === 'matrix'} />
       <AgendaBlock lit={dominant === 'agenda'} />
       <NeuralBudgetBlock />
       <AgentsBlock />

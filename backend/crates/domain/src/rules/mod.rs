@@ -20,3 +20,4 @@ pub mod memory_import;
 pub mod memory_lifecycle;
 pub mod brief;
 pub mod search;
+pub mod claude_usage;

@@ -873,8 +873,13 @@ type CombinedQuery {
 	"""
 	weeklyActivitySummary(weekStart: NaiveDate!): WeeklyActivitySummaryGql!
 	"""
-	All non-dismissed tasks for the current user, projected to a lean
-	payload for client-side fuzzy search. Unpaginated on purpose.
+	Every task of the current user, **whatever its tracking state**, projected
+	to a lean payload for client-side fuzzy search. Unpaginated on purpose.
+	
+	It used to exclude `Dismissed`. Search is exempt from the app-wide
+	followed-only rule precisely because it is the last way back to a task:
+	dismissing one hid it from every view, and hiding it from search too made it
+	unreachable rather than merely out of the way.
 	"""
 	searchableTasks: [SearchableTaskGql!]!
 	"""
@@ -982,6 +987,14 @@ type CombinedQuery {
 	Every Claude Code session still open, most recently seen first.
 	"""
 	openClaudeSessions: [ClaudeSessionGql!]!
+	"""
+	Claude token consumption over a rolling window — the HUD's Neural budget.
+	
+	Defaults match the panel: five hours because that is the window the
+	subscription itself is measured over, ten days of sparkline because that is
+	what fits the panel's width.
+	"""
+	neuralBudget(windowHours: Int! = 5, sparklineDays: Int! = 10): NeuralBudgetGql!
 	"""
 	Memory candidates awaiting validation (`status = PENDING`).
 	"""
@@ -1455,6 +1468,11 @@ type MergeMemoryResultGql {
 	discardedId: ID!
 }
 
+type ModelUsageGql {
+	model: String!
+	tokens: Int!
+}
+
 """
 ISO 8601 calendar date without timezone.
 Format: %Y-%m-%d
@@ -1474,6 +1492,34 @@ ISO 8601 combined date and time without timezone.
 * `2015-07-01T08:59:60.123`,
 """
 scalar NaiveDateTime
+
+"""
+Claude token consumption over a rolling window, as the HUD's Neural budget
+panel draws it.
+
+Two fields deserve their separation. `consumedTokens` is
+`input + output + cache_creation` and nothing else; `cacheReadTokens` sits
+beside it because on the real corpus it measures 36x the other three combined,
+and folding it in would turn a burn gauge into a cache-hit meter. And
+`declaredCeiling` is typed in by hand — no public API exposes the subscription
+quota — which is why the panel says so on screen rather than only in a comment.
+"""
+type NeuralBudgetGql {
+	windowHours: Int!
+	consumedTokens: Int!
+	cacheReadTokens: Int!
+	declaredCeiling: Int!
+	"""
+	Uncapped: a gauge that silently stops at 1.0 hides the one moment it is for.
+	"""
+	consumedRatio: Float!
+	"""
+	One total per day, oldest first, most recent last.
+	"""
+	perDay: [Int!]!
+	perModel: [ModelUsageGql!]!
+	topProject: ProjectUsageGql
+}
 
 """
 Evidence that fell outside the working windows — surfaced so the user can decide,
@@ -1567,6 +1613,20 @@ Lightweight project summary returned on tasks (stub until data loader is impleme
 """
 type ProjectSummaryGql {
 	name: String!
+}
+
+type ProjectUsageGql {
+	"""
+	The absolute path, worktrees folded back onto their checkout. The panel
+	shows its last segment; the whole path travels so a caller can tell two
+	same-named directories apart.
+	"""
+	name: String!
+	tokens: Int!
+	"""
+	Share of the window's consumption, 0..1.
+	"""
+	ratio: Float!
 }
 
 """

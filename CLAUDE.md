@@ -140,7 +140,7 @@ Key mutations: `createTask`, `updateTask`, `deleteTask`, `updatePriority`, `star
 
 SQLite with migrations at `migrations/sqlite/`. All IDs are UUID strings (`TEXT`). Dates stored as ISO 8601 `TEXT`. Enums as lowercase `TEXT`. Booleans as `INTEGER` (0/1).
 
-25 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, timesheet_quarter_shares, signal_project_mappings, memories, memory_stakeholders, memories_fts, sessions, break_rules, break_events.
+27 tables: users, projects, tasks, task_tags, task_links, meetings, activity_slots, alerts, tags, sync_status, configuration, worklog_entries, task_recurrences, task_recurrence_tags, gryzzly_tasks, timesheet_drafts, timesheet_draft_lines, timesheet_quarter_shares, signal_project_mappings, memories, memory_stakeholders, memories_fts, sessions, break_rules, break_events, claude_usage_requests, claude_usage_files.
 
 Timesheet quarter arbitration (migration `018`): the day is four two-hour quarters cut from
 the configured windows, and `timesheet_quarter_shares` holds one row per (draft, quarter,
@@ -158,6 +158,24 @@ tasks. The global `aplan.active_task_id` pointer keeps its own meaning — the h
 hand — and the two never merge. `worklog_entries.session_id` and `activity_slots.session_id`
 carry authorship (NULL = the human), and `activity_slots.source` (`worklog` | `manual`, NULL
 read as `manual`) marks which slots the worklog projection owns and may therefore rebuild.
+
+Claude usage index (migration `024`): `claude_usage_requests` is **one row per API
+request**, keyed by `request_id`, and that key is the design. A single call writes
+one `assistant` line per content block — thinking, text, tool_use — and **each
+repeats the identical `usage` object**: 56 151 lines for 28 675 requests on the real
+corpus, so summing lines inflates the burn by 1.89x. The primary key also buys
+idempotence, which is what makes `claude_usage_files` (path, size, mtime, offset)
+a pure speed cache: a lost cursor costs one rescan (5.5 s over 663 files; 42 ms once
+the cursor is warm), never a wrong total. A file that has **shrunk below its
+recorded offset** was compacted and is re-read from zero. "Consumed" is
+`input + output + cache_creation` — `cache_read` is 35x all of it together and would
+turn the gauge into a cache-hit meter, and `thinking_tokens` is a *part of*
+`output_tokens`, never a cost beside it. The ceiling is unmeasurable (no public API
+exposes the subscription quota) and lives in `configuration` under
+`aplan.claude.declared_ceiling_tokens`; until it is set the HUD draws **no gauge at
+all**. Anything not `type: "assistant"`, and the `<synthetic>` placeholder, is
+excluded. The tree is nested — subagent transcripts live in `<session>/subagents/`
+and deeper — so the walk is recursive; 47% of requests are sidechains.
 
 Semantic memory (migration `012`): `memories` is bi-temporal (`occurred_at` / `invalidated_at` / `superseded_by`) with stakeholders in the junction table `memory_stakeholders`, and `memories_fts` is a **standalone** FTS5 index (no `content=`, no triggers) that the repository writes in the same transaction as the memory row.
 
