@@ -4,12 +4,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-// The grid now also hosts FocusBlock, which reads real data hooks (urql
-// underneath) — mocked here so this page-level test stays about the boot
-// sequence / grid handoff, not about GraphQL wiring (FocusBlock.test.tsx
-// owns that).
-vi.mock('@/hooks/use-activity', () => ({ useActivity: () => ({ currentActivity: null }) }));
+// The grid's blocks read real data hooks (urql underneath) — mocked here so
+// this page-level test stays about the boot sequence / grid handoff, not
+// about GraphQL wiring (each block's own test owns that).
 vi.mock('@/hooks/use-timesheet', () => ({ useTimesheet: () => ({ day: null }) }));
+vi.mock('@/hooks/use-priority-matrix', () => ({ usePriorityMatrix: () => ({ data: null }) }));
 const dashboardMock = vi.fn();
 vi.mock('@/hooks/use-dashboard', () => ({ useDashboard: (...args: unknown[]) => dashboardMock(...args) }));
 vi.mock('@/hooks/use-break-rules', () => ({
@@ -17,10 +16,15 @@ vi.mock('@/hooks/use-break-rules', () => ({
   useBreakRules: () => ({ stats: { perRule: [] } }),
 }));
 
-// The break screen is the one branch of this page that talks to the API on its
-// own (`endBreak`); `BreakScreen.test.tsx` owns that wiring, so here the page
-// only has to be able to render it.
-vi.mock('urql', () => ({ useMutation: () => [{ fetching: false }, vi.fn()] }));
+// Two branches of this page talk to the API through urql directly rather
+// than through a `@/hooks` module: the break screen's `endBreak`, and the
+// Agents block's session query (`useAgentSessions`). `BreakScreen.test.tsx`
+// and `AgentsBlock.test.tsx` own that wiring — here the page only has to be
+// able to render both.
+vi.mock('urql', () => ({
+  useMutation: () => [{ fetching: false }, vi.fn()],
+  useQuery: () => [{ data: undefined, fetching: false }, vi.fn()],
+}));
 const activeBreakMock = vi.fn();
 vi.mock('./useActiveBreak', () => ({ useActiveBreak: () => activeBreakMock() }));
 
@@ -150,10 +154,10 @@ describe('HudPage', () => {
     }
   });
 
-  it('rests the glow on Focus when nothing is pressing', () => {
+  it('rests the glow on Priority when nothing is pressing', () => {
     mockDashboard(SCENARIOS.calm);
     renderGrid();
-    expect(screen.getByTestId('focus-block').className).toContain('hud-panel--lit');
+    expect(screen.getByTestId('matrix-block').className).toContain('hud-panel--lit');
     expect(screen.getByTestId('pressure-block').className).not.toContain('hud-panel--lit');
     expect(screen.getByTestId('agenda-block').className).not.toContain('hud-panel--lit');
   });
@@ -162,14 +166,14 @@ describe('HudPage', () => {
     mockDashboard(SCENARIOS.overloaded);
     renderGrid();
     expect(screen.getByTestId('pressure-block').className).toContain('hud-panel--lit');
-    expect(screen.getByTestId('focus-block').className).not.toContain('hud-panel--lit');
+    expect(screen.getByTestId('matrix-block').className).not.toContain('hud-panel--lit');
   });
 
   it('moves the glow onto Agenda when a meeting is minutes away', () => {
     mockDashboard(SCENARIOS.imminentMeeting);
     renderGrid();
     expect(screen.getByTestId('agenda-block').className).toContain('hud-panel--lit');
-    expect(screen.getByTestId('focus-block').className).not.toContain('hud-panel--lit');
+    expect(screen.getByTestId('matrix-block').className).not.toContain('hud-panel--lit');
   });
 
   it('gives an imminent meeting the glow even while the week is overloaded', () => {

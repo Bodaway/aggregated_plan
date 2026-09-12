@@ -7,7 +7,7 @@ import { useSurfaceVisibility } from './useSurfaceVisibility';
 
 /** The three blocks that can carry the HUD's one glow. Neural budget, Agents
  *  and Station never do — they report, they never demand attention. */
-export type DominantBlock = 'focus' | 'pressure' | 'agenda';
+export type DominantBlock = 'matrix' | 'pressure' | 'agenda';
 
 /** A meeting this close is imminent. Strictly under ten minutes, and only
  *  ahead of the start: once the meeting is under way the moment whose miss is
@@ -53,7 +53,11 @@ function isPastDeadlineHour(now: number): boolean {
  *    on this screen whose moment, once missed, cannot be recovered.
  * 2. `pressure` — the week is overloaded (the domain's own R16 verdict, not
  *    a rounded gauge), or a deadline due today is still open after 15:00.
- * 3. `focus` — otherwise. The default is work, not alarm.
+ * 3. `matrix` — otherwise. The default is work, not alarm: the top of the
+ *    Eisenhower matrix is what to do when nothing is on fire. This branch
+ *    used to be `focus`, a block built on the manual chronometer that never
+ *    runs here — so the HUD's resting state pointed at a permanently empty
+ *    panel.
  */
 function arbitrate(data: DailyDashboardData | null, today: string, now: number): DominantBlock {
   if (hasImminentMeeting(data?.meetings ?? [], today, now)) return 'agenda';
@@ -62,11 +66,11 @@ function arbitrate(data: DailyDashboardData | null, today: string, now: number):
   if (overloaded) return 'pressure';
   if (isPastDeadlineHour(now) && hasOpenDeadlineOn(data?.tasks ?? [], today)) return 'pressure';
 
-  return 'focus';
+  return 'matrix';
 }
 
 /**
- * Which of the six blocks wears the HUD's one glow right now.
+ * Which of the blocks wears the HUD's one glow right now.
  *
  * Exactly one, always: the return type is a single block name, and `HudPage`
  * derives every `lit` prop from it — the invariant cannot be broken by

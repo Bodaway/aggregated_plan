@@ -9,13 +9,16 @@ use application::jobs::{
 };
 use application::repositories::{
     ActivitySlotRepository, AlertRepository, BreakEventRepository, BreakRuleRepository,
-    ConfigRepository, GryzzlyCatalogRepository, MeetingRepository, RecurrenceRepository,
+    ClaudeUsageRepository, ConfigRepository, GryzzlyCatalogRepository, MeetingRepository,
+    RecurrenceRepository,
     SessionRepository, SignalMappingRepository, TaskRepository, TimesheetDraftRepository,
     WorklogRepository,
 };
 use application::services::git_connector::GitConnector;
 use application::services::{Notifier, SurfaceController};
+use application::services::ClaudeTranscriptSource;
 use application::use_cases::breaks::{run_break_tick, BreakTickDeps};
+use application::use_cases::claude_usage::index_claude_usage;
 use application::use_cases::recurrence::run_recurrence_pass;
 use application::use_cases::session_reaper::{reap_idle_sessions, ReapOutcome};
 use application::use_cases::timesheet::run_eod_pass;
@@ -380,6 +383,73 @@ pub async fn run_recurrence_scheduler(deps: RecurrenceDeps, user_id: UserId) {
         health = next_health;
         report(
             "recurrence maintenance",
+            decision.log,
+            failure.as_deref(),
+            decision.retry_in,
+        );
+
+        tokio::time::sleep(decision.retry_in).await;
+    }
+}
+
+/// Dependencies the Claude usage indexer needs.
+pub struct ClaudeUsageDeps {
+    pub source: Arc<dyn ClaudeTranscriptSource>,
+    pub repo: Arc<dyn ClaudeUsageRepository>,
+}
+
+/// Long-lived background task: fold the new tail of every Claude Code transcript
+/// into the usage index, then wait as long as `RetryPolicy::claude_usage()` says to.
+///
+/// Its own loop and its own `JobHealth`, like every other job here: this one reads
+/// a directory that belongs to another program, and its failures must never feed
+/// the back-off signal of the end-of-day job's git and Gryzzly integration.
+///
+/// Nothing here is fatal. A machine that has never run Claude Code lists no files
+/// and the pass is a no-op; a transcript that cannot be read is skipped. The worst
+/// outcome is a HUD panel with no numbers in it, which is what it shows today
+/// anyway.
+pub async fn run_claude_usage_scheduler(deps: ClaudeUsageDeps) {
+    let policy = RetryPolicy::claude_usage();
+    let mut health = JobHealth::default();
+    loop {
+        let attempt =
+            index_claude_usage(deps.source.as_ref(), deps.repo.as_ref(), Utc::now()).await;
+
+        if let Ok(outcome) = &attempt {
+            // Only when something actually moved. After the first pass the cursor
+            // means most ticks read nothing, and a line every five minutes saying
+            // so would bury the ones that matter.
+            if outcome.records_written > 0 || outcome.lines_rejected > 0 {
+                tracing::info!(
+                    files_seen = outcome.files_seen,
+                    files_read = outcome.files_read,
+                    files_restarted = outcome.files_restarted,
+                    records = outcome.records_written,
+                    rejected = outcome.lines_rejected,
+                    "claude usage index updated"
+                );
+            }
+            // Separate, and at warn: a rejection rate that climbs is how a change
+            // to the transcript format shows itself. Left at debug it would look
+            // exactly like a quiet week.
+            if outcome.lines_rejected > 0 {
+                tracing::warn!(
+                    rejected = outcome.lines_rejected,
+                    "claude transcript lines could not be decoded"
+                );
+            }
+        }
+
+        let failure = attempt.as_ref().err().map(ToString::to_string);
+        let observed = match &failure {
+            Some(signature) => AttemptOutcome::Failed { signature },
+            None => AttemptOutcome::Succeeded,
+        };
+        let (next_health, decision) = health.observe(observed, Utc::now(), &policy);
+        health = next_health;
+        report(
+            "claude usage index",
             decision.log,
             failure.as_deref(),
             decision.retry_in,

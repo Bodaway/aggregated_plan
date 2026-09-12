@@ -23,6 +23,7 @@ pub mod session;
 pub mod search;
 pub mod break_rule;
 pub mod active_break;
+pub mod neural_budget;
 
 pub use gryzzly::*;
 pub use task::*;
@@ -49,3 +50,4 @@ pub use session::*;
 pub use search::*;
 pub use break_rule::*;
 pub use active_break::*;
+pub use neural_budget::*;

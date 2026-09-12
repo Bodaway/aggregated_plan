@@ -507,3 +507,11 @@ pub struct SetSessionMode;
     response_derives = "Debug, Clone"
 )]
 pub struct EndSession;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/neural_budget.graphql",
+    response_derives = "Debug, Clone"
+)]
+pub struct NeuralBudget;

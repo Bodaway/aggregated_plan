@@ -21,3 +21,4 @@ pub mod slot_classification;
 pub mod slot_repair;
 pub mod search;
 pub mod breaks;
+pub mod claude_usage;

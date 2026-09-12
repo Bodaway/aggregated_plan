@@ -10,7 +10,7 @@
    The glow is a budget, not an effect: exactly one panel wears
    `.hud-panel--lit` at a time, and only that panel gets a shadow. The other
    panels are a one-pixel rule on a blurred, translucent ground. Which one it
-   is moves with urgency — `useDominantBlock` arbitrates between Focus,
+   is moves with urgency — `useDominantBlock` arbitrates between Priority,
    Pressure and Agenda — so all three of those must be able to wear it, and
    Neural budget, Agents and Station never do.
 --------------------------------------------------------------------------- */
@@ -66,14 +66,14 @@
   grid-template-rows: auto 1fr 1fr auto;
   grid-template-areas:
     'nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav'
-    'focus    focus    focus    focus    pressure pressure pressure pressure pressure agenda   agenda   agenda'
-    'focus    focus    focus    focus    neural   neural   neural   neural   neural   agents   agents   agents'
+    'pressure pressure pressure pressure matrix   matrix   matrix   matrix   matrix   agenda   agenda   agenda'
+    'pressure pressure pressure pressure neural   neural   neural   neural   neural   agents   agents   agents'
     'station  station  station  station  ticker   ticker   ticker   ticker   ticker   ticker   ticker   ticker';
 }
 
 /* --- reflow: narrow container (the laptop screen) ---
-   Focus goes full width, and the other five pair up across four rows
-   instead of packing six blocks into three. --- */
+   Pressure, the dominant block, goes full width, and the other five pair up
+   across four rows instead of packing six blocks into three. --- */
 @container hud (max-width: 1500px) {
   .hud {
     gap: 0.8em;
@@ -81,8 +81,8 @@
     grid-template-rows: auto 1.25fr 1fr 1fr auto;
     grid-template-areas:
       'nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav      nav'
-      'focus    focus    focus    focus    focus    focus    focus    focus    focus    focus    focus    focus'
-      'pressure pressure pressure pressure pressure pressure pressure agenda   agenda   agenda   agenda   agenda'
+      'pressure pressure pressure pressure pressure pressure pressure pressure pressure pressure pressure pressure'
+      'matrix   matrix   matrix   matrix   matrix   matrix   matrix   agenda   agenda   agenda   agenda   agenda'
       'neural   neural   neural   neural   neural   neural   neural   agents   agents   agents   agents   agents'
       'station  station  station  station  station  ticker   ticker   ticker   ticker   ticker   ticker   ticker';
   }
@@ -90,8 +90,8 @@
 
 /* --- named grid zones: each block claims its area, never its own scale --- */
 .hud-nav      { grid-area: nav; }
-.hud-focus    { grid-area: focus; }
 .hud-pressure { grid-area: pressure; }
+.hud-matrix   { grid-area: matrix; }
 .hud-agenda   { grid-area: agenda; }
 .hud-neural   { grid-area: neural; }
 .hud-agents   { grid-area: agents; }
@@ -152,8 +152,8 @@
    first pass was over before it registered as anything. 430ms end to end is
    still one gesture rather than eight arrivals. */
 .hud[data-open='playing'] > .hud-nav      { animation-delay: 0ms; }
-.hud[data-open='playing'] > .hud-focus    { animation-delay: 70ms; }
-.hud[data-open='playing'] > .hud-pressure { animation-delay: 130ms; }
+.hud[data-open='playing'] > .hud-pressure { animation-delay: 70ms; }
+.hud[data-open='playing'] > .hud-matrix   { animation-delay: 130ms; }
 .hud[data-open='playing'] > .hud-agenda   { animation-delay: 190ms; }
 .hud[data-open='playing'] > .hud-neural   { animation-delay: 250ms; }
 .hud[data-open='playing'] > .hud-agents   { animation-delay: 310ms; }
@@ -398,18 +398,6 @@
   text-shadow: 0 0 14px color-mix(in srgb, var(--cn-teal) 85%, transparent);
 }
 
-/* Review finding: Neural budget and Agents both render on plan-2 stub data
-   (see stub-data.ts's own banner comment) that reads as entirely real on
-   screen — plausible session names, a plausible token count. The code-level
-   warnings protect a developer reading the source; they do nothing for
-   whoever is looking at the HUD. This marker is the on-screen equivalent,
-   living in the one place every block already puts its identity — cheap to
-   delete alongside stub-data.ts once plan 2 supplies the real resolvers. */
-.hud-label__stub {
-  color: var(--cn-orange);
-  margin-left: 0.6em;
-}
-
 .hud-kv {
   display: flex;
   justify-content: space-between;
@@ -442,68 +430,25 @@
   box-shadow: 0 0 12px color-mix(in srgb, var(--cn-red) 60%, transparent);
 }
 
-/* --- the Focus block's own content: label, task, hero chronometer, the
-   gradient bar above, four quarters and a two-column footer. The outer
-   panel look (background, border, corner brackets) already lives in
-   `.hud-panel` / `.hud-panel--lit` above, shared with Pressure and Agenda,
-   the two other blocks dominance can move to — only the internal layout is
-   specific to Focus.
+/* --- the day group, carried by the Pressure block: the gradient bar above,
+   the four quarters of the day and a two-column footer. All of it belonged
+   to the Focus block until Focus was removed — it was built around
+   `currentActivity`, the MANUAL chronometer, which never runs in a workflow
+   driven by Claude sessions and `aplan log`, so its hero was permanently
+   empty while everything below it was real. Pressure took the dominant cell
+   and this content came with it.
 
    One deliberate correction against the mockup: its "current quarter" tint
    carried a `--cn-teal` box-shadow, but the glow budget above is exactly one
    `--cn-teal` box-shadow for the whole file (the dominant panel's own). The
    current quarter is marked by background/border strength alone instead. */
-.hud-focus {
-  display: flex;
-  flex-direction: column;
-}
-
-.hud-focus__task {
-  font-size: 0.9em;
-  color: var(--hud-ink-mid);
-  margin-top: 0.93em;
-  line-height: 1.45;
-}
-.hud-focus__task b {
-  color: var(--hud-ink);
-  font-weight: 400;
-}
-.hud-focus__task--empty {
-  font-style: italic;
-}
-
-.hud-focus__chrono {
-  font-weight: 200;
-  font-size: 6.2em;
-  line-height: 0.95;
-  margin: 0.28em 0 0;
-  letter-spacing: 0.01em;
-  color: var(--hud-ink);
-  font-variant-numeric: tabular-nums;
-  text-shadow:
-    0 0 26px color-mix(in srgb, var(--cn-teal) 70%, transparent),
-    0 0 72px color-mix(in srgb, var(--cn-teal) 30%, transparent);
-}
-/* Review finding: at the hero's 6.2em/200-weight, "--:--:--" reads as a
-   loading skeleton, not an idle timer — presence in the DOM is not
-   legibility. The idle state drops the glyph grid for a short worded label
-   at ordinary text scale instead of a shrunk chronometer, so "nothing is
-   running" reads as deliberate rather than broken. */
-.hud-focus__chrono--idle {
-  font-size: 1em;
-  font-weight: 400;
-  font-style: italic;
-  line-height: 1.45;
-  margin-top: 0.6em;
-  letter-spacing: normal;
-  color: var(--hud-ink-mid);
-  text-shadow: none;
+.hud-pressure__day {
+  margin-top: auto;
 }
 
 .hud-quarters {
   display: flex;
   gap: 0.27em;
-  margin-top: auto;
 }
 .hud-quarters__segment {
   flex: 1;
@@ -531,7 +476,7 @@
   flex: 1;
 }
 
-.hud-focus__foot {
+.hud-pressure__foot {
   margin-top: 1.6em;
   padding-top: 1.2em;
   border-top: 1px solid color-mix(in srgb, var(--cn-teal) 15%, transparent);
@@ -539,23 +484,23 @@
   justify-content: space-between;
   align-items: flex-end;
 }
-.hud-focus__foot-caption {
+.hud-pressure__foot-caption {
   font-size: 0.72em;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--hud-ink-mid);
 }
-.hud-focus__foot-value {
+.hud-pressure__foot-value {
   font-size: 1.8em;
   font-weight: 300;
   color: var(--hud-ink);
   font-variant-numeric: tabular-nums;
 }
-.hud-focus__foot-unit {
+.hud-pressure__foot-unit {
   font-size: 1em;
   color: var(--hud-ink-mid);
 }
-.hud-focus__foot-warning {
+.hud-pressure__foot-warning {
   font-size: 0.68em;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -563,21 +508,11 @@
   margin-top: 0.3em;
 }
 
-@container hud (max-width: 1500px) {
-  .hud-focus { flex-direction: row; align-items: flex-start; gap: 2em; flex-wrap: wrap; }
-  .hud-focus__chrono { font-size: 4.6em; }
-  /* Same specificity as the rule above, declared after it so it wins here
-     too — without this the idle label would revert to a shrunk-but-still-
-     giant glyph size on the narrow (laptop) reflow. */
-  .hud-focus__chrono--idle { font-size: 1em; }
-  .hud-focus__foot { margin-top: 0; margin-left: auto; align-self: flex-end; border-top: 0; }
-}
-
-/* --- the Pressure block: deadlines sorted by proximity, plus a capacity
-   gauge. This block and Agenda below both carry the glow when
-   `useDominantBlock` names them — they take `.hud-panel--lit` on the same
-   element, exactly as Focus does, and nothing here is specific to being lit
-   (see the glow-budget comment above `.hud-panel--lit`). --- */
+/* --- the Pressure block: deadlines sorted by proximity, the day group
+   above, and the week's capacity gauge. This block and Agenda and Priority
+   all carry the glow when `useDominantBlock` names them — they take
+   `.hud-panel--lit` on the same element, and nothing here is specific to
+   being lit (see the glow-budget comment above `.hud-panel--lit`). --- */
 .hud-pressure {
   display: flex;
   flex-direction: column;
@@ -631,8 +566,11 @@
   margin-top: 0.6em;
 }
 
+/* No `margin-top: auto` any more: the whole day group below the deadline
+   list already claims the leftover height (`.hud-pressure__day`), and a
+   second auto margin inside a non-flex parent silently does nothing. */
 .hud-pressure__capacity {
-  margin-top: auto;
+  margin-top: 0.9em;
   padding-top: 0.6em;
 }
 
@@ -640,6 +578,127 @@
    domain's own `overload` verdict (R16), not re-derived here. */
 .hud-gauge--over i {
   background: var(--cn-orange);
+}
+
+/* Below the laptop breakpoint the dominant cell is no longer a tall square
+   but a full-width band twelve columns across, so the deadline list and the
+   day group sit side by side instead of stacked. The label keeps its own
+   line (`flex-basis: 100%`) — wrapped inline between two panels of content
+   it stops reading as a title. */
+@container hud (max-width: 1500px) {
+  .hud-pressure {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 2em;
+    flex-wrap: wrap;
+  }
+  .hud-pressure > .hud-label { flex-basis: 100%; }
+  .hud-pressure__list,
+  .hud-pressure__empty { flex: 1 1 40%; }
+  .hud-pressure__day { margin-top: 0; flex: 1 1 40%; }
+  .hud-pressure__foot { margin-top: 0.9em; padding-top: 0.9em; }
+}
+
+/* --- the Priority block: the top of the Eisenhower matrix — the critical
+   band first, then the urgent-and-important quadrant. It occupies the cell
+   Pressure vacated when Pressure moved into the dominant one, and it is the
+   arbitration's DEFAULT (see `useDominantBlock`): with no meeting minutes
+   away and no overload, what the HUD points at is the work to do, not an
+   alarm. --- */
+.hud-matrix {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-matrix__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.13em;
+  margin-top: 0.6em;
+  /* Capped in the component as well: this panel's grid area has a fixed
+     height, so overflow is the fallback, never the plan. */
+  overflow: hidden;
+}
+
+/* Roomier than the Agents rows this layout is borrowed from, and
+   deliberately: those pack a secondary panel, these are the answer to "what
+   now" on a cell twice as tall. Measured on the real overlay, five rows at
+   the Agents scale left two thirds of the panel empty. */
+.hud-matrix__row {
+  display: grid;
+  grid-template-columns: 0.5em 1fr auto;
+  gap: 0.6em;
+  align-items: center;
+  font-size: 0.95em;
+  line-height: 1.9;
+  color: var(--hud-ink-mid);
+}
+.hud-matrix__row b {
+  color: var(--hud-ink-mid);
+  font-weight: 400;
+  font-size: 0.85em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A decorative status mark, not text — the same reading of --hud-ink-low's
+   "never text" rule that `.hud-agents__dot--idle` already relies on. Teal
+   marks the critical band and ink-low the quadrant under it, so the
+   severity difference is told by weight rather than by spending a second
+   glow, or a second red on a panel where red already means "due today". */
+.hud-matrix__dot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--hud-ink-low);
+}
+.hud-matrix__dot--critical {
+  background: var(--cn-teal);
+}
+
+.hud-matrix__what {
+  color: var(--hud-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-matrix__empty {
+  font-style: italic;
+  color: var(--hud-ink-mid);
+  margin-top: 0.6em;
+}
+
+/* `margin-top: auto` on a flex column: the same device Pressure used to sit
+   its capacity gauge on the floor of its panel, so this line holds the foot
+   whether the list above it has one row or five. */
+.hud-matrix__backlog {
+  margin-top: auto;
+  padding-top: 0.9em;
+  border-top: 1px solid color-mix(in srgb, var(--cn-teal) 15%, transparent);
+}
+.hud-matrix__backlog-caption {
+  font-size: 0.72em;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--hud-ink-mid);
+}
+.hud-matrix__backlog-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.67em;
+  margin-top: 0.4em;
+  font-size: 0.8em;
+  color: var(--hud-ink-mid);
+}
+.hud-matrix__backlog-row b {
+  color: var(--hud-ink);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.35em;
 }
 
 /* --- the Agenda block: countdown to the next real meeting, and a timeline
@@ -687,7 +746,7 @@
 /* --- the Neural budget block: burn against a hand-set ceiling, a per-day
    sparkline, and a per-model/per-project breakdown. Neither this block nor
    Agents below can ever carry the glow (see the glow-budget comment above
-   `.hud-panel--lit`) — unlike Focus, Pressure and Agenda, dominance never
+   `.hud-panel--lit`) — unlike Priority, Pressure and Agenda, dominance never
    moves here: these two report, they never demand attention.
 
    Design doc §9's stated limitation: the ceiling this gauge measures against
@@ -1023,9 +1082,8 @@
 
    The one thing it does not share is the glow budget, and it does not need
    to: with no grid on screen there is no second hot spot to compete with,
-   and the countdown carries the same --cn-teal text-shadow the Focus
-   chronometer does rather than a box-shadow this file only ever spends
-   once.
+   and the countdown carries a --cn-teal TEXT-shadow rather than a
+   box-shadow, which is the budget this file only ever spends once.
    --- */
 .hud-break {
   position: relative;

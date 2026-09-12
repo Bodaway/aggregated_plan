@@ -13,6 +13,7 @@ mod queries;
 mod reattribute_cmd;
 mod recurrence_cmd;
 mod search_cmd;
+mod usage_cmd;
 mod session_cmd;
 mod slots_cmd;
 mod timesheet_cmd;
@@ -250,6 +251,10 @@ fn main() -> ExitCode {
         cli::Commands::Search { q, limit } => {
             search_cmd::search(&args.api_url, args.json, &q, limit)
         }
+        cli::Commands::Usage {
+            window_hours,
+            sparkline_days,
+        } => usage_cmd::usage(&args.api_url, args.json, window_hours, sparkline_days),
         cli::Commands::Inbox { cmd, limit } => match cmd {
             None => memory_cmd::inbox_list(&args.api_url, args.json, limit),
             Some(cli::InboxCmd::Accept { id, kind, force }) => {

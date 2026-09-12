@@ -16,10 +16,11 @@ mod state;
 
 use uuid::Uuid;
 
-use application::repositories::{BreakEventRepository, BreakRuleRepository};
+use application::repositories::{BreakEventRepository, BreakRuleRepository, ClaudeUsageRepository};
 use application::services::{NullNotifier, NullSurface, Notifier, SurfaceController};
 use graphql::schema::SchemaDeps;
 use infrastructure::database::*;
+use infrastructure::connectors::claude_transcripts::FsClaudeTranscriptSource;
 use infrastructure::connectors::microsoft::oauth::{MicrosoftOAuth, MicrosoftOAuthConfig};
 use infrastructure::connectors::microsoft::token_provider::RefreshingGraphTokenProvider;
 use infrastructure::notify::{HudToggleSurface, NotifySendNotifier};
@@ -185,6 +186,9 @@ async fn main() {
         Arc::new(SqliteBreakRuleRepository::new(db_pool.clone()));
     let break_event_repo: Arc<dyn BreakEventRepository> =
         Arc::new(SqliteBreakEventRepository::new(db_pool.clone()));
+    // Same reason: read by the GraphQL resolver and written by the indexing job.
+    let claude_usage_repo: Arc<dyn ClaudeUsageRepository> =
+        Arc::new(SqliteClaudeUsageRepository::new(db_pool.clone()));
 
     let eod_deps = jobs::EodDeps {
         worklog_repo: worklog_repo.clone(),
@@ -223,6 +227,7 @@ async fn main() {
         session_repo: session_repo.clone(),
         break_rule_repo: break_rule_repo.clone(),
         break_event_repo: break_event_repo.clone(),
+        claude_usage_repo: claude_usage_repo.clone(),
     };
     let schema = graphql::schema::build_schema(deps);
 
@@ -313,6 +318,19 @@ async fn main() {
         config_repo: config_repo.clone(),
     };
     tokio::spawn(jobs::run_session_reaper_scheduler(session_reaper_deps, default_user_id));
+
+    // Only when there is a transcript tree to read. No HOME (a container, a system
+    // unit with a scrubbed environment) means no Claude Code on this machine, and a
+    // job looping over a path that cannot exist is noise, not resilience.
+    match FsClaudeTranscriptSource::from_home() {
+        Some(source) => {
+            tokio::spawn(jobs::run_claude_usage_scheduler(jobs::ClaudeUsageDeps {
+                source: Arc::new(source),
+                repo: claude_usage_repo.clone(),
+            }));
+        }
+        None => tracing::info!("no HOME: the Claude usage index will not be built"),
+    }
 
     tokio::spawn(jobs::run_recurrence_scheduler(
         jobs::RecurrenceDeps {

@@ -72,13 +72,13 @@ describe('useDominantBlock', () => {
     vi.useRealTimers();
   });
 
-  it('leaves the glow on Focus when nothing is pressing', () => {
-    expect(dominant().current).toBe('focus');
+  it('leaves the glow on Priority when nothing is pressing', () => {
+    expect(dominant().current).toBe('matrix');
   });
 
-  it('leaves the glow on Focus before any data has arrived', () => {
+  it('leaves the glow on Priority before any data has arrived', () => {
     dashboardMock.mockReturnValue({ data: null });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   // ─── rule 1: an imminent meeting ───
@@ -89,10 +89,10 @@ describe('useDominantBlock', () => {
     expect(dominant().current).toBe('agenda');
   });
 
-  it('holds Focus at exactly ten minutes out — the window is strictly under ten', () => {
+  it('holds Priority at exactly ten minutes out — the window is strictly under ten', () => {
     at('2026-08-28T09:50:00');
     mockDashboard({ meetings: [meeting()] });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   it('still lights Agenda at the start instant itself', () => {
@@ -104,7 +104,7 @@ describe('useDominantBlock', () => {
   it('releases the glow once the meeting is under way — the missable moment has passed', () => {
     at('2026-08-28T10:05:00');
     mockDashboard({ meetings: [meeting()] });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   it('ignores a placeholder the Agenda block itself refuses to show', () => {
@@ -115,7 +115,7 @@ describe('useDominantBlock', () => {
         meeting({ id: 'ooo', title: 'Congés', startTime: '2026-08-28T12:00:00', endTime: '2026-08-28T13:00:00', showAs: 'free' }),
       ],
     });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   it('ignores a meeting that belongs to another day, as the timeline does', () => {
@@ -123,7 +123,7 @@ describe('useDominantBlock', () => {
     // draws today only, so the glow must not announce it.
     at('2026-08-28T23:55:00');
     mockDashboard({ meetings: [meeting({ startTime: '2026-08-29T00:00:00', endTime: '2026-08-29T01:00:00' })] });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   // ─── rule 2: capacity, and a deadline still open in the afternoon ───
@@ -137,7 +137,7 @@ describe('useDominantBlock', () => {
     // 39.9h of a 40h week rounds up to a gauge reading 100%, but R16 says the
     // week is fine. The glow must follow the verdict, not the rounding.
     mockDashboard({ weeklyWorkload: { capacity: 10, totalPlanned: 39.9, totalMeetings: 0, overload: false } });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   it('hands the glow to Pressure at exactly 15:00 with a deadline still open today', () => {
@@ -146,22 +146,22 @@ describe('useDominantBlock', () => {
     expect(dominant().current).toBe('pressure');
   });
 
-  it('holds Focus one minute before the threshold', () => {
+  it('holds Priority one minute before the threshold', () => {
     at('2026-08-28T14:59:00');
     mockDashboard({ tasks: [task()] });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
-  it('holds Focus in the afternoon when today’s deadline is already closed', () => {
+  it('holds Priority in the afternoon when today’s deadline is already closed', () => {
     at('2026-08-28T16:00:00');
     mockDashboard({ tasks: [task({ status: 'DONE' }), task({ id: 't2', status: 'CANCELLED' })] });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
-  it('holds Focus in the afternoon for a deadline that is not today’s', () => {
+  it('holds Priority in the afternoon for a deadline that is not today’s', () => {
     at('2026-08-28T16:00:00');
     mockDashboard({ tasks: [task({ deadline: '2026-08-30' }), task({ id: 't2', deadline: '2026-08-25' })] });
-    expect(dominant().current).toBe('focus');
+    expect(dominant().current).toBe('matrix');
   });
 
   // ─── the order itself ───
@@ -182,7 +182,7 @@ describe('useDominantBlock', () => {
     at('2026-08-28T14:59:50');
     mockDashboard({ tasks: [task()] });
     const result = dominant();
-    expect(result.current).toBe('focus');
+    expect(result.current).toBe('matrix');
 
     act(() => void vi.advanceTimersByTime(20_000));
     expect(result.current).toBe('pressure');
@@ -193,10 +193,10 @@ describe('useDominantBlock', () => {
     mockDashboard({ tasks: [task()] });
     setVisibility('hidden');
     const result = dominant();
-    expect(result.current).toBe('focus');
+    expect(result.current).toBe('matrix');
 
     act(() => void vi.advanceTimersByTime(60_000));
-    expect(result.current).toBe('focus');
+    expect(result.current).toBe('matrix');
 
     act(() => setVisibility('visible'));
     expect(result.current).toBe('pressure');

@@ -1904,6 +1904,72 @@ espacées, filets d'un pixel plutôt qu'ombres portées, angles nets. L'onglet
 courant est marqué par une arête allumée dans la barre latérale, le même
 langage que le panneau dominant du HUD — une seule chose est vive à la fois.
 
+### Les panneaux de l'overlay
+
+L'overlay tient sept panneaux, de poids délibérément inégaux.
+
+La **grande case**, en haut à gauche, revient à **Pression** : les échéances
+ouvertes classées par proximité, les quatre quarts de la journée et celui où
+l'on se trouve, la charge du jour contre la capacité, le compte à rebours de la
+prochaine pause, et la jauge de charge de la semaine. C'est la question « qu'est-ce
+qui me tombe dessus aujourd'hui » posée en un seul endroit.
+
+À sa droite, **Priorité** répond à « et maintenant, je fais quoi » : le haut de
+la matrice d'Eisenhower, c'est-à-dire d'abord les tâches critiques d'où qu'elles
+viennent dans la grille, puis le quadrant urgent-et-important. Une pastille vive
+marque les critiques. En pied de panneau, une ligne dit ce qui reste **sous la
+ligne** — combien de tâches dans les trois autres quadrants —, sans quoi une
+liste courte se lirait « plus rien à faire » au lieu de « plus rien en haut ».
+
+Les autres panneaux rapportent sans réclamer : **Agenda** (prochaine réunion et
+timeline du jour), **Budget neuronal** (consommation Claude sur les cinq dernières
+heures), **Agents** (les sessions Claude Code vivantes et la tâche de chacune),
+**Station** (horloge, date, CPU/RAM/réseau) et le **bandeau** d'alertes. Plus aucun
+panneau du HUD n'affiche de données factices.
+
+Le halo ne se pose que sur un panneau à la fois, et l'arbitrage est le suivant :
+Agenda si une réunion démarre dans moins de dix minutes — c'est le seul rendez-vous
+manqué qu'on ne rattrape pas —, sinon Pression si la semaine est en surcharge ou
+qu'une échéance du jour est encore ouverte après 15 h, sinon Priorité. Au repos,
+l'overlay pointe donc le travail à faire, pas une alarme.
+
+**Ce qui a changé** : la grande case portait auparavant un panneau *Focus* bâti
+sur le chronomètre manuel de l'application. Ce chronomètre ne tourne jamais dans
+un usage piloté par les sessions Claude et `aplan log`, si bien que le panneau le
+plus visible de l'overlay affichait en permanence « aucune tâche active, aucun
+minuteur ». Tout ce qui vivait sous ce titre — les quarts, la charge, la pause —
+était réel et a suivi Pression dans la grande case ; Priorité occupe la case
+libérée.
+
+### Ce que compte le budget neuronal
+
+La consommation vient des transcripts Claude Code de la machine, indexés en tâche de
+fond toutes les cinq minutes. Trois choix méritent d'être connus, parce qu'ils
+changent le chiffre d'un facteur deux ou trente :
+
+- **Une requête API compte une fois.** Un appel écrit une ligne de transcript par
+  bloc de contenu — réflexion, texte, appel d'outil — et chacune répète la même
+  consommation. Les sommer gonflerait le total de 89 %.
+- **Le cache lu est affiché à côté du total, jamais dedans.** Il pèse 35 fois la
+  somme de tout le reste ; l'inclure ferait de la jauge un taux de cache.
+- **Les sous-agents comptent.** Ils représentent 47 % des requêtes, et c'est
+  précisément ce qui rend le chiffre intéressant.
+
+Le plafond, lui, n'est pas mesurable : aucune API publique n'expose le quota
+d'abonnement. Il se saisit à la main (`aplan config set
+aplan.claude.declared_ceiling_tokens <n>`), et **tant qu'il n'est pas saisi le
+panneau n'affiche aucune jauge** — une barre contre un dénominateur nul se lirait
+« il reste de la marge » quelle que soit la consommation. Le même relevé s'obtient
+au clavier avec `aplan usage`.
+
+### Ce que le panneau Agents sait, et ce qu'il ne sait pas
+
+La fraîcheur d'une session vient de son dernier appel `aplan`, pas de sa dernière
+pensée. Une session qui lit du code une demi-heure sans rien journaliser est
+donc **silencieuse** sans être inactive, et le panneau dit « Quiet 30 min », pas
+« Idle » : il n'affirme que ce qu'il mesure. Le vrai signal — la fraîcheur du
+transcript — arrivera avec l'indexeur de consommation Claude.
+
 ### Les arrivées
 
 Ouvrir l'overlay et changer d'onglet déclenchent chacun une brève animation

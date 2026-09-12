@@ -131,6 +131,7 @@ mod tests {
             session_repo: Arc::new(SqliteSessionRepository::new(pool.clone())),
             break_rule_repo: Arc::new(SqliteBreakRuleRepository::new(pool.clone())),
             break_event_repo: Arc::new(SqliteBreakEventRepository::new(pool.clone())),
+            claude_usage_repo: Arc::new(SqliteClaudeUsageRepository::new(pool.clone())),
         };
 
         AppState {

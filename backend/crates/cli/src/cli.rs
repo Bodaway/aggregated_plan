@@ -366,6 +366,19 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Claude token consumption over a rolling window, from the local transcript
+    /// index. The same figures the HUD's Neural budget panel draws — and the
+    /// shortest way to check the indexing job is running without opening the
+    /// overlay.
+    Usage {
+        /// Length of the rolling window. Defaults to the five hours the
+        /// subscription itself is measured over.
+        #[arg(long, default_value_t = 5)]
+        window_hours: i64,
+        /// How many days of history the sparkline covers.
+        #[arg(long, default_value_t = 10)]
+        sparkline_days: i64,
+    },
     /// Search across everything aplan holds: tasks, worklog entries, meetings and
     /// memories. Results are grouped per entity — memories by relevance, the rest
     /// by recency — and capped, because the caller is usually an agent.

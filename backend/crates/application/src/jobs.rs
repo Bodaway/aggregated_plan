@@ -93,6 +93,27 @@ impl RetryPolicy {
             reminder_every: 12,
         }
     }
+
+    /// The Claude usage indexer: a pass every 5 minutes while healthy, backing off
+    /// to 30 minutes.
+    ///
+    /// The base is set by what the number is *for*: the HUD reads a five-hour
+    /// rolling window, so a figure five minutes stale is wrong by a sixtieth of its
+    /// own window and nobody can see it. Finer would buy nothing; `breaks()`'s
+    /// 30-second tick exists because there the tick's granularity IS the feature,
+    /// which is not the case here.
+    ///
+    /// Nothing about the cost argues for slower. A pass over the whole corpus
+    /// (661 files, 629 MB) takes about two seconds, and after the first one the
+    /// cursor means a tick opens only the handful of transcripts that grew.
+    pub const fn claude_usage() -> Self {
+        Self {
+            base: Duration::from_secs(5 * 60),
+            ceiling: Duration::from_secs(30 * 60),
+            escalate_after: 3,
+            reminder_every: 12,
+        }
+    }
 }
 
 /// What one attempt produced, as far as the policy is concerned.
