@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::routing::{get, post};
@@ -6,6 +7,7 @@ use axum::Router;
 use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 mod auth;
@@ -43,7 +45,7 @@ enum Command {
 /// router `main` actually serves instead of a hand-rolled stand-in that could
 /// silently drift from it -- see the `require_csrf_header` regression this
 /// guards against.
-pub(crate) fn build_router(state: state::AppState) -> Router {
+pub(crate) fn build_router(state: state::AppState, static_dir: Option<PathBuf>) -> Router {
     let mut app = Router::new()
         .route(
             "/graphql",
@@ -59,7 +61,7 @@ pub(crate) fn build_router(state: state::AppState) -> Router {
     if cfg!(debug_assertions) {
         app = app.route("/graphql/playground", get(graphql::schema::graphql_playground));
     }
-    app.layer(
+    let app = app.layer(
         CorsLayer::new()
             .allow_origin([
                 // The Vite dev server, used by `pnpm dev` and by the Tauri HUD's
@@ -101,8 +103,26 @@ pub(crate) fn build_router(state: state::AppState) -> Router {
                 axum::http::HeaderName::from_static(security::CSRF_HEADER_NAME),
             ]),
     )
-    .layer(TraceLayer::new_for_http())
-    .with_state(state)
+    .layer(TraceLayer::new_for_http());
+    // Le service statique est monté en `fallback_service` : il ne voit que ce
+    // qu'aucune route n'a résolu, donc il ne peut ni masquer `/graphql` ni
+    // court-circuiter `require_csrf_header`. Absent, le routeur est
+    // rigoureusement celui d'avant -- c'est ce que garantit
+    // `unknown_route_is_404_without_static_dir`.
+    let app = match static_dir {
+        Some(dir) => {
+            // `.fallback(...)`, pas `.not_found_service(...)` : ce dernier force
+            // le statut de la réponse à 404 (`SetStatus`, voir tower-http
+            // `ServeDir::not_found_service`), ce qui casserait le contrat de
+            // `serves_index_for_unknown_route_when_static_dir_set` (200 attendu).
+            // `.fallback` invoque `index.html` sans toucher au statut que
+            // `ServeFile` renvoie lui-même -- 200, puisque le fichier existe.
+            let index = ServeFile::new(dir.join("index.html"));
+            app.fallback_service(ServeDir::new(dir).fallback(index))
+        }
+        None => app,
+    };
+    app.with_state(state)
 }
 
 #[tokio::main]
@@ -267,13 +287,19 @@ async fn main() {
         Err(e) => tracing::error!("slot provenance classification failed: {e}"),
     }
 
-    let app = build_router(state::AppState {
-        schema: schema.clone(),
-        config_repo: config_repo.clone(),
-        oauth: oauth.clone(),
-        default_user_id,
-        oauth_state: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-    });
+    // Répertoire du frontend compilé. Non configuré => l'API se comporte
+    // exactement comme avant : le service statique n'existe que pour le tunnel.
+    let static_dir = std::env::var("APLAN_STATIC_DIR").ok().map(PathBuf::from);
+    let app = build_router(
+        state::AppState {
+            schema: schema.clone(),
+            config_repo: config_repo.clone(),
+            oauth: oauth.clone(),
+            default_user_id,
+            oauth_state: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        },
+        static_dir,
+    );
 
     tokio::spawn(jobs::run_eod_scheduler(eod_deps, default_user_id));
 
@@ -327,4 +353,126 @@ async fn main() {
     tracing::info!("Server running on http://{}", addr);
     let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+// Extrait ici plutôt que dupliqué dans `security.rs` : les deux modules de
+// tests (celui-ci et `security::tests`) ont besoin du même `AppState` réel
+// pour driver `build_router`, et un `pub(crate)` sur ce module est plus
+// propre qu'un aller-retour d'imports entre les deux fichiers.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    use infrastructure::connectors::git::ShellGitConnector;
+    use infrastructure::connectors::memory_files::FsMemoryFileSource;
+
+    /// Builds the exact `AppState` `main` builds, backed by an in-memory,
+    /// migrated, seeded SQLite DB (see `create_sqlite_pool`) instead of a
+    /// hand-rolled stand-in. This is what lets the tests below (and
+    /// `security::tests`) drive `crate::build_router` -- the router `main`
+    /// actually serves -- rather than a look-alike that could silently drift
+    /// from it.
+    pub(crate) async fn test_app_state() -> state::AppState {
+        let pool = create_sqlite_pool("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+
+        let config_repo: Arc<dyn application::repositories::ConfigRepository> =
+            Arc::new(SqliteConfigRepository::new(pool.clone()));
+        let oauth = Arc::new(MicrosoftOAuth::new(MicrosoftOAuthConfig {
+            client_id: String::new(),
+            tenant_id: String::new(),
+            client_secret: String::new(),
+            redirect_uri: "http://localhost:3001/auth/microsoft/callback".to_string(),
+        }));
+        let graph_token_provider: Arc<dyn application::services::GraphTokenProvider> =
+            Arc::new(RefreshingGraphTokenProvider::new(config_repo.clone(), oauth.clone()));
+
+        let deps = SchemaDeps {
+            task_repo: Arc::new(SqliteTaskRepository::new(pool.clone())),
+            meeting_repo: Arc::new(SqliteMeetingRepository::new(pool.clone())),
+            project_repo: Arc::new(SqliteProjectRepository::new(pool.clone())),
+            activity_repo: Arc::new(SqliteActivitySlotRepository::new(pool.clone())),
+            alert_repo: Arc::new(SqliteAlertRepository::new(pool.clone())),
+            tag_repo: Arc::new(SqliteTagRepository::new(pool.clone())),
+            task_link_repo: Arc::new(SqliteTaskLinkRepository::new(pool.clone())),
+            sync_repo: Arc::new(SqliteSyncStatusRepository::new(pool.clone())),
+            config_repo: config_repo.clone(),
+            worklog_repo: Arc::new(SqliteWorklogRepository::new(pool.clone())),
+            recurrence_repo: Arc::new(SqliteRecurrenceRepository::new(pool.clone())),
+            gryzzly_catalog_repo: Arc::new(SqliteGryzzlyCatalogRepository::new(pool.clone())),
+            timesheet_draft_repo: Arc::new(SqliteTimesheetDraftRepository::new(pool.clone())),
+            signal_mapping_repo: Arc::new(SqliteSignalMappingRepository::new(pool.clone())),
+            memory_repo: Arc::new(SqliteMemoryRepository::new(pool.clone())),
+            memory_retriever: Arc::new(SqliteMemoryRetriever::new(pool.clone())),
+            memory_file_source: Arc::new(FsMemoryFileSource::new()),
+            git_connector: Arc::new(ShellGitConnector::new()),
+            graph_token_provider,
+            session_repo: Arc::new(SqliteSessionRepository::new(pool.clone())),
+            break_rule_repo: Arc::new(SqliteBreakRuleRepository::new(pool.clone())),
+            break_event_repo: Arc::new(SqliteBreakEventRepository::new(pool.clone())),
+        };
+
+        state::AppState {
+            schema: graphql::schema::build_schema(deps),
+            config_repo,
+            oauth,
+            default_user_id: Uuid::parse_str(state::DEFAULT_USER_ID_STR).unwrap(),
+            oauth_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request as HttpRequest, StatusCode};
+    use tower::ServiceExt;
+
+    use crate::test_support::test_app_state;
+
+    #[tokio::test]
+    async fn serves_index_for_unknown_route_when_static_dir_set() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<!doctype html>APP").unwrap();
+        let req = HttpRequest::get("/m/new").body(Body::empty()).unwrap();
+        let res = build_router(test_app_state().await, Some(dir.path().to_path_buf()))
+            .oneshot(req)
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        // Le fallback SPA doit rendre index.html, pas un 404 : sans ça un
+        // rechargement sur /m/new casse la PWA.
+        assert_eq!(body, b"<!doctype html>APP".as_ref());
+    }
+
+    #[tokio::test]
+    async fn graphql_still_requires_csrf_header_with_static_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "APP").unwrap();
+        let req = HttpRequest::post("/graphql")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"query":"{ __typename }"}"#))
+            .unwrap();
+        let res = build_router(test_app_state().await, Some(dir.path().to_path_buf()))
+            .oneshot(req)
+            .await
+            .unwrap();
+        // Le service statique ne doit jamais avaler /graphql ni court-circuiter
+        // le garde CSRF.
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn unknown_route_is_404_without_static_dir() {
+        let req = HttpRequest::get("/m").body(Body::empty()).unwrap();
+        let res = build_router(test_app_state().await, None)
+            .oneshot(req)
+            .await
+            .unwrap();
+        // Sans APLAN_STATIC_DIR le routeur reste rigoureusement l'actuel.
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
 }
