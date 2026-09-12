@@ -103,6 +103,14 @@ pub trait TaskRepository: Send + Sync {
     /// boilerplate override for a feature unrelated to what they test. The one
     /// double that *does* test this behaviour (`task_management::tests`) and the
     /// real `SqliteTaskRepository` both override it.
+    ///
+    /// A real implementation that inherits this default does **not** silently
+    /// duplicate: `save` upserts with `ON CONFLICT(id)`, so a replay carrying a
+    /// fresh `id` but a known key hits the unique partial index on
+    /// `(user_id, client_request_id)` and surfaces a `RepositoryError`. The
+    /// failure mode is the mobile capture staying stuck in its queue, retrying
+    /// an insert that can never succeed -- loud, but only once someone looks.
+    /// Any new real repository must override this.
     async fn find_by_client_request_id(
         &self,
         _user_id: UserId,

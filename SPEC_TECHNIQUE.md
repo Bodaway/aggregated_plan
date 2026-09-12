@@ -7162,3 +7162,151 @@ génération — le `reset` gagne. **Retarder le `reset` jusqu'à la résolution
 solution évidente et fausse** : elle annule toute édition faite dans l'intervalle (18 tests le
 démontrent). Un job mis en file depuis l'échec supersède également l'entrée refusée, les
 instantanés étant cumulatifs.
+
+---
+
+## 25. Exposition réseau : tunnel Tailscale et PWA mobile
+
+### 25.1 Pourquoi le bind ne change pas
+
+`graphql_handler` n'authentifie rien par requête : tout résout contre un `default_user_id` codé
+en dur (`api/src/state.rs`). `security.rs` le formule déjà sans détour — *reachability equals
+authority*. Passer le bind de `127.0.0.1:3001` à `0.0.0.0` publierait donc un cockpit sans mot de
+passe sur le LAN, avec `updateConfiguration` (sans allow-list de clés) et `triggerSync` à portée
+de n'importe quel appareil du réseau.
+
+Le bind reste donc **inchangé**. L'accès distant est déporté sur un tunnel :
+
+```
+iPhone 12 ──WireGuard──▶ tailnet ──▶ tailscaled (poste)
+                                        │  tailscale serve
+                                        │  TLS Let's Encrypt pour <machine>.<tailnet>.ts.net
+                                        ▼
+                                  127.0.0.1:3001   ← bind inchangé
+                                  ├─ POST /graphql (routes Axum)
+                                  └─ GET  /*       (ServeDir → frontend/dist)
+```
+
+Aucun port n'est ouvert sur le LAN, aucune règle nftables n'est posée, aucun certificat n'est à
+installer sur l'iPhone — celui de `*.ts.net` est un vrai certificat Let's Encrypt, donc le
+contexte est sécurisé nativement, ce qu'exige le service worker.
+
+`serve`, **jamais `funnel`** : `funnel` publierait le cockpit sur l'Internet public. C'est la
+frontière de sécurité de tout le dispositif, et `scripts/aplan-serve-tailnet` refuse de publier
+si un funnel est actif.
+
+### 25.2 L'API sert le frontend
+
+`build_router(state, static_dir: Option<PathBuf>)` monte `frontend/dist` en **`fallback_service`**
+quand `APLAN_STATIC_DIR` est défini. Le fallback ne voit que ce qu'aucune route n'a résolu : il ne
+peut donc ni masquer `/graphql` ni court-circuiter `require_csrf_header`. Sans la variable, le
+routeur est rigoureusement celui d'avant — un test le garantit.
+
+Le fallback SPA utilise `ServeDir::fallback(ServeFile::new(index.html))` et **non**
+`not_found_service` : ce dernier force le statut à 404 via `SetStatus`, ce qui casserait le
+rechargement de la PWA sur `/m/new`.
+
+Conséquence voulue : la page et `/graphql` partagent la même origine. Rien à ajouter à
+l'allow-list CORS pour le nom `.ts.net`, et l'en-tête `x-aplan-client` garde toute sa valeur —
+un script same-origin le pose librement, une page tierce ne le peut toujours pas sans passer le
+préflight.
+
+Côté client, `resolveApiUrl` (`frontend/src/lib/api-origin.ts`) rend l'origine **relative** sur
+`http(s)`, et ne garde le loopback absolu que hors HTTP — la fenêtre de production du HUD Tauri
+charge `tauri://localhost` et n'a aucune origine HTTP à laquelle se rattacher. En développement,
+`server.proxy` de Vite recrée l'origine unique que l'API fournit elle-même en production.
+
+### 25.3 Le playground GraphiQL et le build release
+
+La route `/graphql/playground` n'est montée que sous `cfg!(debug_assertions)`. Tant que l'API
+n'était joignable que depuis la machine, c'était sans conséquence. Derrière le tunnel, un binaire
+rebuildé sans `--release` offrirait à tout le tailnet une console d'exploration de schéma sur une
+API qui n'authentifie rien. `scripts/aplan-serve-tailnet` sonde donc cette route et **refuse de
+publier** si elle répond.
+
+### 25.4 Idempotence de la capture (migration `023`)
+
+`CreateTaskInput` ne portait aucun identifiant fourni par le client. Si le téléphone envoie une
+capture, que le serveur la commit, et que la réponse se perd, le rejeu de la file hors-ligne
+créerait un doublon.
+
+`tasks.client_request_id` (`TEXT`, NULLable) porte la clé, sous un **index unique partiel** sur
+`(user_id, client_request_id) WHERE client_request_id IS NOT NULL` — le chemin desktop n'envoie
+rien et laisse la colonne à `NULL`, que l'index partiel autorise explicitement.
+
+`create_personal_task` court-circuite : si la clé est déjà connue, il **renvoie la tâche
+existante** au lieu d'échouer. Le rejeu est un no-op observable, pas une erreur que le client
+aurait à interpréter. L'index reste le garde-fou d'une vraie course, et il est loyal parce que
+`save` upsert en `ON CONFLICT(id) DO UPDATE` et non en `INSERT OR REPLACE` : un conflit sur la
+clé remonte une erreur, il n'écrase ni ne supprime rien.
+
+`TaskRepository::find_by_client_request_id` porte une implémentation par défaut `Ok(None)`, pour
+épargner un override de pure forme aux ~12 doubles de test que la fonctionnalité ne concerne pas.
+Toute nouvelle implémentation réelle doit l'override : sans quoi le rejeu heurte l'index et la
+capture reste coincée en file.
+
+### 25.5 La PWA
+
+Deux écrans seulement, sous `/m`, hors du gabarit desktop (même traitement que `/hud`) :
+
+| Route | Écran | Rôle |
+|-------|-------|------|
+| `/m` | `TodayPage` | En retard / aujourd'hui / demain, plus la tâche active. Lecture seule. |
+| `/m/new` | `CapturePage` | Titre, échéance et projet optionnels. Cible de `start_url`. |
+
+Les douze pages desktop ne sont pas touchées : pas de responsive rétroactif sur `DashboardPage`
+(29 Ko) ni `SettingsPage` (33 Ko), dont la densité ne survit pas à 390 px.
+
+`TodayPage` interroge `tasks` avec **`first: 200` explicite** : le défaut de 50 en ordre
+décroissant ferait taire silencieusement les échéances les plus anciennes.
+
+**Seule la coquille est précachée.** `navigateFallbackDenylist` exclut `/graphql` et `/auth` —
+sans quoi une requête API en échec renverrait `index.html`, que urql tenterait de parser en JSON.
+Les réponses GraphQL ne sont jamais mises en cache : hors ligne, `TodayPage` affiche sa dernière
+version connue **horodatée** (« Hors ligne — vu à HH:MM ») plutôt que de faire passer un plan
+périmé pour le plan du jour.
+
+La file de capture (`frontend/src/lib/capture-queue.ts`) vit dans IndexedDB derrière un
+`QueueStore` injectable. Chaque entrée porte son UUID, généré **à la saisie** et non à l'envoi —
+sinon deux envois de la même saisie porteraient deux clés et créeraient deux tâches.
+
+**Limite structurelle, pas un défaut d'implémentation :** iOS Safari n'implémente pas la
+Background Sync API. Une capture faite sans réseau ne part donc pas d'elle-même en arrière-plan :
+elle part au flush du montage, ou sur l'événement `online`, c'est-à-dire **à la prochaine
+ouverture de l'app**. Un badge « n en attente » reste visible en permanence pour que ce délai ne
+soit jamais une surprise.
+
+### 25.6 Risque accepté
+
+L'autorité sur le cockpit est **l'appartenance au tailnet plus le verrouillage natif de
+l'iPhone**. Il n'y a pas d'authentification applicative. Trois durcissements ont été proposés et
+écartés délibérément :
+
+- l'allow-list des clés de `updateConfiguration` — sans elle, on peut pointer `gryzzly.base_url`
+  ou `jira.base_url` vers un hôte arbitraire puis exfiltrer un token via `triggerSync` ;
+- un verrou applicatif par passkey ;
+- la validation du `Host`, qui fermerait la variante DNS-rebinding que `security.rs` documente
+  déjà comme non couverte.
+
+Conséquence concrète : un appareil du tailnet compromis, ou un iPhone perdu déverrouillé, a
+autorité pleine sur le cockpit. C'est un arbitrage assumé, pas un oubli — et il doit être
+réexaminé si le tailnet accueille un jour un appareil qui n'est pas celui de l'utilisateur.
+
+### 25.7 Mise en service
+
+Prérequis manuels, hors périmètre du code : installer `tailscale` et `tailscale up` ; activer
+**MagicDNS** puis **HTTPS Certificates** dans la console d'admin du tailnet (sans ce réglage, pas
+de certificat, donc ni service worker ni PWA installable) ; installer Tailscale sur l'iPhone.
+
+Puis, dans l'ordre :
+
+```bash
+cd frontend && pnpm build                      # produit dist/, sw.js, manifest.webmanifest
+cd backend && cargo build --release -p api     # --release : voir § 25.3
+install -m755 backend/target/release/api ~/.local/bin/aplan-api
+systemctl --user restart aplan-api.service     # avec Environment=APLAN_STATIC_DIR=.../frontend/dist
+scripts/aplan-serve-tailnet
+```
+
+Le service lance le **binaire installé** `~/.local/bin/aplan-api`, jamais un `cargo run` : sans
+le rebuild et le remplacement, le frontend interrogerait un backend périmé.

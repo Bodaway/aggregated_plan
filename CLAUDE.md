@@ -188,6 +188,22 @@ every restart. The visual lives in the Tauri HUD, shown through `SurfaceControll
 (`application/services`) → `aplan-hud-toggle show|hide`; a surface that will not come up is
 logged, never fatal — a pause without a screen is still a pause.
 
+Offline capture idempotency (migration `023`): `tasks.client_request_id` carries a key the
+mobile PWA generates **at input time, not at send time** — generating it at send would give two
+sends of one entry two keys, which is the duplicate the column exists to prevent. The unique
+index is **partial** (`WHERE client_request_id IS NOT NULL`) because the desktop path sends
+nothing and leaves the column `NULL`. `create_personal_task` short-circuits on a known key and
+returns the existing task, so a replay is an observable no-op rather than an error the client
+must interpret. The index stays honest because `save` upserts with `ON CONFLICT(id) DO UPDATE`,
+never `INSERT OR REPLACE` — a key conflict raises, it does not delete and re-insert.
+
+Network exposure: the API bind stays `127.0.0.1:3001`. Remote access goes through
+`tailscale serve` (**never `funnel`**, which publishes to the public internet), and
+`APLAN_STATIC_DIR` makes the API serve `frontend/dist` so the page and `/graphql` share one
+origin. `graphql_handler` authenticates nothing per request, so reachability still equals
+authority — that is why the bind must not move. See `SPEC_TECHNIQUE.md` § 25 and
+`scripts/aplan-serve-tailnet`.
+
 ## Key Domain Concepts
 
 - **Half-day granularity**: Activity tracking uses morning (08:00-12:00) and afternoon (13:00-17:00) slots
@@ -200,6 +216,22 @@ logged, never fatal — a pause without a screen is still a pause.
 
 ## Common Gotchas
 
+- **Rebuild the API with `--release` before publishing it on the tailnet.** The
+  `/graphql/playground` route is mounted only under `cfg!(debug_assertions)`; a debug binary
+  behind the tunnel would hand every tailnet device a schema console on an API that
+  authenticates nothing. `scripts/aplan-serve-tailnet` probes that route and refuses to publish
+  if it answers.
+- The frontend has **no GraphQL codegen**. Queries are template literals exported from
+  `frontend/src/graphql/queries/*.ts`; the `.graphql` files in that directory are dead
+  scaffolding (`tasks.graphql` has unbalanced braces). Adding a schema field needs no frontend
+  regeneration.
+- `frontend/src/presentation/` is dead scaffolding from the initial commit and its
+  `app.test.tsx` has always failed (it imports a `@application/index` alias that never
+  existed). One failing suite in `pnpm test` is the expected baseline, not a regression.
+- The API router serves static files via `fallback_service`, so `/graphql` keeps priority and
+  the CSRF guard is never bypassed. The SPA fallback uses `ServeDir::fallback`, **not**
+  `not_found_service`, which forces a 404 status via `SetStatus` and would break a reload on
+  `/m/new`.
 - `sqlx::migrate!` macro path is relative to the crate's `Cargo.toml`, not the workspace root
 - Infrastructure repos use runtime queries (`sqlx::query`), not compile-time checked (`sqlx::query!`)
 - The `participants` field in meetings and `related_items` in alerts are JSON-serialized `TEXT` columns
