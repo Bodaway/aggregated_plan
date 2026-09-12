@@ -7312,12 +7312,29 @@ de certificat, donc ni service worker ni PWA installable) ; installer Tailscale 
 Puis, dans l'ordre :
 
 ```bash
+pnpm install                                   # après un merge qui touche le lockfile
 cd frontend && pnpm build                      # produit dist/, sw.js, manifest.webmanifest
+rsync -a --delete frontend/dist/ ~/.local/share/aplan/dist/
+
 cd backend && cargo build --release -p api     # --release : voir § 25.3
-install -m755 backend/target/release/api ~/.local/bin/aplan-api
-systemctl --user restart aplan-api.service     # avec Environment=APLAN_STATIC_DIR=.../frontend/dist
+# Le répertoire cible de cargo est redirigé hors de l'arbre (~/.build/cargo-target
+# sur cette machine) : ne pas supposer `backend/target/`.
+TARGET=$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["target_directory"])')
+install -m755 "$TARGET/release/api" ~/.local/bin/aplan-api
+
+systemctl --user restart aplan-api.service
 scripts/aplan-serve-tailnet
 ```
 
 Le service lance le **binaire installé** `~/.local/bin/aplan-api`, jamais un `cargo run` : sans
-le rebuild et le remplacement, le frontend interrogerait un backend périmé.
+le rebuild et le remplacement, le frontend interrogerait un backend périmé. Le `dist` suit la
+même logique et vit lui aussi hors de l'arbre de build, sous
+`~/.local/share/aplan/dist`, que l'unité désigne par
+`Environment=APLAN_STATIC_DIR`.
+
+**Le sondage du playground teste le contenu, pas le statut.** Depuis que l'API sert le
+frontend, toute route inconnue — `/graphql/playground` comprise — retombe sur le fallback SPA
+et renvoie 200 avec `index.html`. Un garde-fou basé sur le code de statut serait un faux
+positif permanent ; `scripts/aplan-serve-tailnet` cherche donc la signature `graphiql` dans le
+corps.

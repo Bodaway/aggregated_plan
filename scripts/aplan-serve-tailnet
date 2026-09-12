@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly UPSTREAM="http://127.0.0.1:3001"
-readonly STATIC_DIR_DEFAULT="/home/mbt/appfactory/aggregated_plan/frontend/dist"
+readonly STATIC_DIR_DEFAULT="/home/mbt/.local/share/aplan/dist"
 
 red()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
@@ -96,12 +96,19 @@ ok "✓ certificat disponible pour $cert_domain"
 # sans `--release` offrirait à tout le tailnet une console d'exploration de
 # schéma sur une API qui n'authentifie rien par requête. On sonde, plutôt que
 # de compter sur la mémoire de qui fera le prochain rebuild.
-if curl -fsS -o /dev/null --max-time 3 "$UPSTREAM/graphql/playground" 2>/dev/null; then
-  red "✗ $UPSTREAM/graphql/playground répond : ce binaire est un build debug."
-  red "  Publier ce build donnerait au tailnet une console GraphiQL sur une API"
-  red "  qui n'authentifie rien par requête. Rebuild en release avant de publier :"
+# On teste le *contenu*, pas le code de statut : depuis que l'API sert le
+# frontend, toute route inconnue -- celle-ci comprise -- retombe sur le fallback
+# SPA et renvoie 200 avec index.html. Un test sur le statut serait donc un faux
+# positif permanent.
+if curl -fsS --max-time 3 "$UPSTREAM/graphql/playground" 2>/dev/null \
+   | grep -qiE 'graphiql|graphql-playground'; then
+  red "✗ $UPSTREAM/graphql/playground sert une console GraphiQL : ce binaire est un build debug."
+  red "  Publier ce build donnerait au tailnet une console d'exploration de schéma"
+  red "  sur une API qui n'authentifie rien par requête. Rebuild en release :"
   red "    cd backend && cargo build --release -p api"
-  red "    install -m755 target/release/api ~/.local/bin/aplan-api"
+  red "    install -m755 \"\$(cargo metadata --no-deps --format-version 1 \\"
+  red "      | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"target_directory\"])')/release/api\" \\"
+  red "      ~/.local/bin/aplan-api"
   red "    systemctl --user restart aplan-api.service"
   exit 1
 fi
