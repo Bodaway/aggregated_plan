@@ -66,82 +66,18 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::{Request as HttpRequest, StatusCode};
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
-    use uuid::Uuid;
 
-    use crate::graphql::schema::{build_schema, SchemaDeps};
-    use crate::state::AppState;
-    use infrastructure::connectors::git::ShellGitConnector;
-    use infrastructure::connectors::memory_files::FsMemoryFileSource;
-    use infrastructure::connectors::microsoft::oauth::{MicrosoftOAuth, MicrosoftOAuthConfig};
-    use infrastructure::connectors::microsoft::token_provider::RefreshingGraphTokenProvider;
-    use infrastructure::database::*;
+    // `test_app_state()` vit maintenant dans `crate::test_support` (main.rs) :
+    // ce module de tests et les nouveaux tests du service statique dans
+    // `main.rs` ont besoin du même `AppState`, donc plus propre de le
+    // construire à un seul endroit que de le dupliquer ici.
+    use crate::test_support::test_app_state;
 
     /// Text the middleware itself returns on rejection. Asserting on this (not
     /// just the status code) tells a 403 produced by `require_csrf_header`
     /// apart from a coincidental 403 the handler itself might one day return.
     const REJECTION_BODY: &str = "missing required client header";
-
-    /// Builds the exact `AppState` `main` builds, backed by an in-memory,
-    /// migrated, seeded SQLite DB (see `create_sqlite_pool`) instead of a
-    /// hand-rolled stand-in. This is what lets the tests below drive
-    /// `crate::build_router` -- the router `main` actually serves -- rather
-    /// than a look-alike that could silently drift from it. See this module's
-    /// previous tests (before this rewrite) for the failure mode that guards
-    /// against: they built their own router and applied the layer themselves,
-    /// so they would still pass if `build_router` stopped applying it.
-    async fn test_app_state() -> AppState {
-        let pool = create_sqlite_pool("sqlite::memory:")
-            .await
-            .expect("in-memory sqlite pool");
-
-        let config_repo: Arc<dyn application::repositories::ConfigRepository> =
-            Arc::new(SqliteConfigRepository::new(pool.clone()));
-        let oauth = Arc::new(MicrosoftOAuth::new(MicrosoftOAuthConfig {
-            client_id: String::new(),
-            tenant_id: String::new(),
-            client_secret: String::new(),
-            redirect_uri: "http://localhost:3001/auth/microsoft/callback".to_string(),
-        }));
-        let graph_token_provider: Arc<dyn application::services::GraphTokenProvider> =
-            Arc::new(RefreshingGraphTokenProvider::new(config_repo.clone(), oauth.clone()));
-
-        let deps = SchemaDeps {
-            task_repo: Arc::new(SqliteTaskRepository::new(pool.clone())),
-            meeting_repo: Arc::new(SqliteMeetingRepository::new(pool.clone())),
-            project_repo: Arc::new(SqliteProjectRepository::new(pool.clone())),
-            activity_repo: Arc::new(SqliteActivitySlotRepository::new(pool.clone())),
-            alert_repo: Arc::new(SqliteAlertRepository::new(pool.clone())),
-            tag_repo: Arc::new(SqliteTagRepository::new(pool.clone())),
-            task_link_repo: Arc::new(SqliteTaskLinkRepository::new(pool.clone())),
-            sync_repo: Arc::new(SqliteSyncStatusRepository::new(pool.clone())),
-            config_repo: config_repo.clone(),
-            worklog_repo: Arc::new(SqliteWorklogRepository::new(pool.clone())),
-            recurrence_repo: Arc::new(SqliteRecurrenceRepository::new(pool.clone())),
-            gryzzly_catalog_repo: Arc::new(SqliteGryzzlyCatalogRepository::new(pool.clone())),
-            timesheet_draft_repo: Arc::new(SqliteTimesheetDraftRepository::new(pool.clone())),
-            signal_mapping_repo: Arc::new(SqliteSignalMappingRepository::new(pool.clone())),
-            memory_repo: Arc::new(SqliteMemoryRepository::new(pool.clone())),
-            memory_retriever: Arc::new(SqliteMemoryRetriever::new(pool.clone())),
-            memory_file_source: Arc::new(FsMemoryFileSource::new()),
-            git_connector: Arc::new(ShellGitConnector::new()),
-            graph_token_provider,
-            session_repo: Arc::new(SqliteSessionRepository::new(pool.clone())),
-            break_rule_repo: Arc::new(SqliteBreakRuleRepository::new(pool.clone())),
-            break_event_repo: Arc::new(SqliteBreakEventRepository::new(pool.clone())),
-            claude_usage_repo: Arc::new(SqliteClaudeUsageRepository::new(pool.clone())),
-        };
-
-        AppState {
-            schema: build_schema(deps),
-            config_repo,
-            oauth,
-            default_user_id: Uuid::parse_str(crate::state::DEFAULT_USER_ID_STR).unwrap(),
-            oauth_state: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
 
     #[tokio::test]
     async fn rejects_post_graphql_without_header() {
@@ -149,7 +85,7 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(r#"{"query":"{ __typename }"}"#))
             .unwrap();
-        let res = crate::build_router(test_app_state().await)
+        let res = crate::build_router(test_app_state().await, None)
             .oneshot(req)
             .await
             .unwrap();
@@ -168,7 +104,7 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(r#"{"query":"{ __typename }"}"#))
             .unwrap();
-        let res = crate::build_router(test_app_state().await)
+        let res = crate::build_router(test_app_state().await, None)
             .oneshot(req)
             .await
             .unwrap();
@@ -187,7 +123,7 @@ mod tests {
         let req = HttpRequest::get("/auth/microsoft/login")
             .body(Body::empty())
             .unwrap();
-        let res = crate::build_router(test_app_state().await)
+        let res = crate::build_router(test_app_state().await, None)
             .oneshot(req)
             .await
             .unwrap();
@@ -212,7 +148,7 @@ mod tests {
             .header("content-type", "text/plain")
             .body(Body::from(r#"{"query":"{ __typename }"}"#))
             .unwrap();
-        let res = crate::build_router(test_app_state().await)
+        let res = crate::build_router(test_app_state().await, None)
             .oneshot(req)
             .await
             .unwrap();

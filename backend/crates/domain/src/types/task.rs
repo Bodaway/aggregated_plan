@@ -45,6 +45,9 @@ pub struct Task {
     /// Snapshot of the assigned Gryzzly task's project id, captured at assign time so a
     /// future hours-upload can build a declaration without a live catalog row.
     pub gryzzly_project_id: Option<String>,
+    /// Clé d'idempotence fournie par le client (capture mobile hors-ligne).
+    /// `None` pour tout ce qui ne vient pas de la file de la PWA.
+    pub client_request_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -190,6 +193,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

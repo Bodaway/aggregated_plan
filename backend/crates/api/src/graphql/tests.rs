@@ -1986,6 +1986,7 @@ fn make_recurrence_instance(
         occurrence_date: Some(occurrence_date),
         gryzzly_task_id: None,
         gryzzly_project_id: None,
+        client_request_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -4169,6 +4170,7 @@ async fn run_reconstruction_with_seeded_worklog_produces_project_line_and_fill()
             occurrence_date: None,
             gryzzly_task_id: Some("g1".to_string()),
             gryzzly_project_id: Some("p1".to_string()),
+            client_request_id: None,
             created_at: now,
             updated_at: now,
         })

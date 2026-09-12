@@ -96,6 +96,29 @@ pub trait TaskRepository: Send + Sync {
         source_id: &str,
     ) -> Result<Option<Task>, RepositoryError>;
 
+    /// Retrouve une tâche par la clé d'idempotence du client, si elle existe.
+    ///
+    /// Default implementation returns `Ok(None)` -- most test doubles across the
+    /// workspace never exercise offline-capture replay and would otherwise need a
+    /// boilerplate override for a feature unrelated to what they test. The one
+    /// double that *does* test this behaviour (`task_management::tests`) and the
+    /// real `SqliteTaskRepository` both override it.
+    ///
+    /// A real implementation that inherits this default does **not** silently
+    /// duplicate: `save` upserts with `ON CONFLICT(id)`, so a replay carrying a
+    /// fresh `id` but a known key hits the unique partial index on
+    /// `(user_id, client_request_id)` and surfaces a `RepositoryError`. The
+    /// failure mode is the mobile capture staying stuck in its queue, retrying
+    /// an insert that can never succeed -- loud, but only once someone looks.
+    /// Any new real repository must override this.
+    async fn find_by_client_request_id(
+        &self,
+        _user_id: UserId,
+        _client_request_id: &str,
+    ) -> Result<Option<Task>, RepositoryError> {
+        Ok(None)
+    }
+
     /// Find tasks within a date range (based on deadline or planned dates).
     async fn find_by_date_range(
         &self,

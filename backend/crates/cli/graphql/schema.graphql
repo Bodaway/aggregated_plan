@@ -1109,6 +1109,10 @@ input CreateTaskInput {
 	impact: ImpactLevelGql
 	urgency: UrgencyLevelGql
 	tagIds: [ID!]
+	"""
+	Clé d'idempotence de la capture mobile hors-ligne ; ignorer côté desktop.
+	"""
+	clientRequestId: String
 }
 
 """

@@ -769,6 +769,7 @@ mod tests {
             occurrence_date: None,
             gryzzly_task_id: None,
             gryzzly_project_id: None,
+            client_request_id: None,
             created_at: now(),
             updated_at: now(),
         }

@@ -14,6 +14,8 @@ import { MemoryPage } from '@/pages/MemoryPage';
 import { SearchProvider } from '@/lib/search/SearchProvider';
 import { HudPage } from '@/pages/hud/HudPage';
 import { ReturnToHudOnOpen } from '@/pages/hud/ReturnToHudOnOpen';
+import { TodayPage } from '@/pages/mobile/today-page';
+import { CapturePage } from '@/pages/mobile/capture-page';
 import { landingRoute } from '@/lib/landing-route';
 
 export function App() {
@@ -23,6 +25,11 @@ export function App() {
         <ReturnToHudOnOpen />
         <Routes>
           <Route path="/hud" element={<HudPage />} />
+          {/* Écrans mobiles : hors du gabarit desktop, comme /hud -- le tunnel
+              Tailscale ne doit jamais rendre la barre latérale desktop sur un
+              écran de 390px. */}
+          <Route path="/m" element={<TodayPage />} />
+          <Route path="/m/new" element={<CapturePage />} />
           <Route path="/" element={<Navigate to={landingRoute()} replace />} />
         <Route
           path="/dashboard"

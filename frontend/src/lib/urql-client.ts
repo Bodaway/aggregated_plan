@@ -1,8 +1,16 @@
 import { Client, cacheExchange, fetchExchange, subscriptionExchange } from 'urql';
 import { createClient as createSSEClient } from 'graphql-sse';
+import { resolveApiUrl } from './api-origin';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+// Origine relative sur http(s) (voir api-origin.ts) : la page et l'API
+// partagent la même origine, que ce soit derrière le tunnel Tailscale ou
+// derrière le proxy de dev Vite.
+const API_URL = resolveApiUrl(window.location.protocol, import.meta.env.VITE_API_URL);
 
+// `graphql-sse` n'utilise que `fetch` en interne (jamais `new URL()` ni
+// `EventSource`), donc une URL relative comme `/graphql/sse` se résout
+// correctement contre l'origine du document -- pas besoin de la rattacher
+// explicitement à `window.location.origin`.
 const sseClient = createSSEClient({
   url: `${API_URL}/graphql/sse`,
 });

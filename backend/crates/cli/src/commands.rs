@@ -1584,6 +1584,9 @@ pub fn new(
             UrgencyArg::Critical => create_task::UrgencyLevelGql::CRITICAL,
         }),
         tag_ids: None,
+        // Le CLI parle pour un humain devant son clavier, pas pour la file de
+        // capture hors-ligne de la PWA : pas de clé de rejeu à porter ici.
+        client_request_id: None,
     };
 
     let result = client.run::<CreateTask>(create_task::Variables { input });

@@ -1993,6 +1993,66 @@ compteurs, mots d'état — pour lesquels 3:1 est le seuil applicable.
 
 ---
 
+## 11 ter. Accès mobile : PWA et tunnel
+
+### Le besoin
+
+Une tâche qui naît en réunion, dans un couloir ou dans le métro n'avait aucun chemin vers le
+cockpit avant le retour au poste. Elle se perdait. L'accès mobile existe pour ce cas-là, et
+pour lui seul.
+
+### Ce qui est joignable, et par qui
+
+Le cockpit est joignable depuis l'iPhone via un tunnel chiffré (Tailscale). Il **n'est pas**
+publié sur le réseau local : aucun autre appareil du Wi-Fi ne peut l'atteindre, et il n'est pas
+non plus publié sur Internet. L'accès fonctionne aussi bien à la maison qu'ailleurs, puisqu'il
+ne dépend pas du réseau local mais du tunnel.
+
+L'adresse est `https://<machine>.<tailnet>.ts.net`. Depuis Safari, « Ajouter à l'écran
+d'accueil » installe l'application : elle s'ouvre alors en plein écran, sans barre de
+navigateur, et son icône mène directement à la capture.
+
+### Les deux écrans
+
+**Capture** (`/m/new`) — l'écran d'accueil de l'application. Un champ titre qui prend le focus
+tout de suite, une échéance et un projet optionnels, un bouton. C'est le seul usage où le
+téléphone bat franchement le poste.
+
+**Plan du jour** (`/m`) — en lecture seule : ce qui est en retard, ce qui tombe aujourd'hui, ce
+qui tombe demain, et la tâche active. L'équivalent mobile du brief matinal.
+
+Le reste du cockpit — matrice de priorité, charge, pointage, journal, mémoire, réglages — reste
+sur le poste. Ces écrans sont denses par nature et ne survivraient pas à 390 pixels de large ;
+les adapter aurait coûté plus que les deux écrans ci-dessus réunis, pour un résultat médiocre.
+
+### Sans réseau
+
+La capture fonctionne hors ligne. Une tâche saisie sans réseau est mise de côté sur le
+téléphone et part dès que le tunnel revient. Un compteur « n en attente » reste affiché en
+permanence tant que quelque chose n'est pas parti.
+
+**Ce départ n'est pas instantané.** iOS n'autorise pas une application web à émettre en
+arrière-plan : ce qui est en attente part à la **prochaine ouverture de l'application**, pas
+pendant qu'elle est fermée. Le compteur est là pour que ce délai soit visible plutôt que
+supposé.
+
+Un envoi rejoué ne crée jamais de doublon, même si la réponse du serveur s'est perdue en route :
+chaque capture porte un identifiant qui la rend reconnaissable.
+
+Le plan du jour, lui, n'est pas consultable hors ligne au sens strict : il affiche sa dernière
+version connue, explicitement datée (« Hors ligne — vu à 08:12 »). Il ne fait jamais passer un
+plan périmé pour le plan du jour.
+
+### Ce qui protège l'accès, et ce qui ne le protège pas
+
+L'accès est protégé par l'appartenance au tunnel — seuls les appareils explicitement enrôlés y
+entrent — et par le verrouillage natif de l'iPhone.
+
+**Il n'y a pas de mot de passe applicatif.** C'est un choix assumé : un appareil du tunnel qui
+serait compromis, ou un iPhone perdu déverrouillé, donnerait accès à l'ensemble du cockpit.
+Cette décision tient tant que le tunnel ne contient que les appareils de l'utilisateur, et doit
+être réexaminée le jour où ce n'est plus le cas.
+
 ## 12. Glossaire
 
 | Terme | Définition |

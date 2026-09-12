@@ -241,6 +241,8 @@ pub struct CreateTaskInput {
     pub impact: Option<ImpactLevelGql>,
     pub urgency: Option<UrgencyLevelGql>,
     pub tag_ids: Option<Vec<ID>>,
+    /// Clé d'idempotence de la capture mobile hors-ligne ; ignorer côté desktop.
+    pub client_request_id: Option<String>,
 }
 
 /// Input for updating an existing task.
