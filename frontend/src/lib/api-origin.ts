@@ -12,6 +12,12 @@ const TAURI_FALLBACK_API_URL = 'http://127.0.0.1:3001';
  * origine HTTP à laquelle se rattacher, il lui faut le loopback absolu.
  */
 export function resolveApiUrl(protocol: string, override?: string): string {
-  if (override) return override;
+  // `!== undefined` et non un test de véracité : Vite laisse la variable
+  // `undefined` quand elle n'est pas déclarée, mais rend `''` quand elle l'est
+  // et qu'elle est vide. Les deux cas sont distincts, et une chaîne vide est
+  // une configuration explicite — « pas de préfixe d'origine ». La confondre
+  // avec une absence ferait reprendre la main au repli Tauri en silence, sur
+  // un réglage que quelqu'un a délibérément posé.
+  if (override !== undefined) return override;
   return protocol.startsWith('http') ? '' : TAURI_FALLBACK_API_URL;
 }
